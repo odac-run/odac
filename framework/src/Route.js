@@ -218,7 +218,7 @@ class Route {
       if (file.substr(-3) !== '.js') continue
       let mtime = fs.statSync(`${__dir}/route/${file}`).mtimeMs
       Candy.Route.buff = file.replace('.js', '')
-      if (!routes2[Candy.Route.buff] || routes2[Candy.Route.buff] < mtime) {
+      if (!routes2[Candy.Route.buff] || routes2[Candy.Route.buff] < mtime - 1000) {
         delete require.cache[require.resolve(`${__dir}/route/${file}`)]
         routes2[Candy.Route.buff] = mtime
         require(`${__dir}/route/${file}`)
@@ -251,7 +251,7 @@ class Route {
     this.#registerInternalRoutes()
     setInterval(() => {
       this.#init()
-    }, 1000)
+    }, 5000)
   }
 
   #registerInternalRoutes() {
