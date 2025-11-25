@@ -523,7 +523,8 @@ module.exports = {
           host: db.host ?? '127.0.0.1',
           user: db.user,
           password: db.password,
-          database: db.database
+          database: db.database,
+          stringifyObjects: true
         })
         Candy.Mysql.conn[key].connect(err => {
           if (err) {
