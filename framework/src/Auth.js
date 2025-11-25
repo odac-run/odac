@@ -7,11 +7,22 @@ class Auth {
     this.#request = request
   }
 
+  #validateInput(where) {
+    if (!where || typeof where !== 'object') return false
+    for (const key in where) {
+      const value = where[key]
+      if (value instanceof Promise) continue
+      if (typeof value !== 'string' && typeof value !== 'number') return false
+    }
+    return true
+  }
+
   async check(where) {
     if (!Candy.Config.auth) Candy.Config.auth = {}
     this.#table = Candy.Config.auth.table || 'users'
     if (!this.#table) return false
     if (where) {
+      if (!this.#validateInput(where)) return false
       let sql = Candy.Mysql.table(this.#table)
       if (!sql) {
         console.error('CandyPack Auth Error: MySQL connection not configured. Please add database configuration to your config.json')
