@@ -130,25 +130,22 @@ class Route {
         }
       }
     }
-    if (
-      this.routes[Candy.Request.route]['#page'] &&
-      this.routes[Candy.Request.route]['#page'][url] &&
-      typeof this.routes[Candy.Request.route]['#page'][url].cache === 'function'
-    ) {
+    let authPageController = this.#controller(Candy.Request.route, '#page', url)
+    if (authPageController) {
       if (await Candy.Auth.check()) {
-        Candy.Request.page = this.routes[Candy.Request.route]['#page'][url].file
+        if (authPageController.params)
+          for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
+        Candy.Request.page = authPageController.cache.file || authPageController.file
         Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-        return this.routes[Candy.Request.route]['#page'][url].cache(Candy)
+        return authPageController.cache(Candy)
       }
     }
-    if (
-      this.routes[Candy.Request.route]['page'] &&
-      this.routes[Candy.Request.route]['page'][url] &&
-      typeof this.routes[Candy.Request.route]['page'][url].cache === 'function'
-    ) {
-      Candy.Request.page = this.routes[Candy.Request.route]['page'][url].file
+    let pageController = this.#controller(Candy.Request.route, 'page', url)
+    if (pageController) {
+      if (pageController.params) for (let key in pageController.params) Candy.Request.data.url[key] = pageController.params[key]
+      Candy.Request.page = pageController.cache.file || pageController.file
       Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-      return this.routes[Candy.Request.route]['page'][url].cache(Candy)
+      return pageController.cache(Candy)
     }
     if (url && !url.includes('/../') && fs.existsSync(`${__dir}/public${url}`)) {
       let stat = fs.lstatSync(`${__dir}/public${url}`)
