@@ -3,6 +3,7 @@ const nodeCrypto = require('crypto')
 
 class Api {
   #commands = {
+    auth: (...args) => Candy.server('Hub').auth(...args),
     'mail.create': (...args) => Candy.server('Mail').create(...args),
     'mail.delete': (...args) => Candy.server('Mail').delete(...args),
     'mail.list': (...args) => Candy.server('Mail').list(...args),
