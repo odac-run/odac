@@ -6,23 +6,26 @@ const mockLog = {
   init: jest.fn().mockReturnThis()
 }
 
+// Global config store
+let mockConfigData = {
+    firewall: {
+        enabled: true,
+        rateLimit: {
+            enabled: true,
+            windowMs: 1000,
+            max: 2
+        },
+        blacklist: [],
+        whitelist: []
+    }
+}
+
 // Mock Candy global
 global.Candy = {
   core: jest.fn((module) => {
     if (module === 'Log') return mockLog
     if (module === 'Config') return {
-      config: {
-        firewall: {
-            enabled: true,
-            rateLimit: {
-                enabled: true,
-                windowMs: 1000,
-                max: 2
-            },
-            blacklist: [],
-            whitelist: []
-        }
-      }
+      config: mockConfigData
     }
     return {}
   })
@@ -35,11 +38,18 @@ describe('Firewall', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    // Reset config
+    mockConfigData.firewall = {
+        enabled: true,
+        rateLimit: {
+            enabled: true,
+            windowMs: 1000,
+            max: 2
+        },
+        blacklist: [],
+        whitelist: []
+    }
     firewall = new Firewall()
-  })
-
-  afterEach(() => {
-     if (firewall.cleanupInterval) clearInterval(firewall.cleanupInterval)
   })
 
   test('should allow requests from normal IPs', () => {
@@ -57,16 +67,13 @@ describe('Firewall', () => {
 
   test('should allow requests from whitelisted IPs even if rate limited', () => {
       // Mock rate limit config to be very strict
-      firewall = new Firewall()
-      // Manually set low limit
+      mockConfigData.firewall.rateLimit.max = 0
+      firewall = new Firewall() // reload config
+
       firewall.addWhitelist('1.2.3.4')
 
       const req = { socket: { remoteAddress: '1.2.3.4' }, headers: {} }
 
-      // Send many requests
-      expect(firewall.check(req).allowed).toBe(true)
-      expect(firewall.check(req).allowed).toBe(true)
-      expect(firewall.check(req).allowed).toBe(true)
       expect(firewall.check(req).allowed).toBe(true)
   })
 
@@ -106,5 +113,63 @@ describe('Firewall', () => {
       const req = { socket: {}, headers: { 'x-forwarded-for': '1.2.3.4' } }
       firewall.addBlock('1.2.3.4')
       expect(firewall.check(req).allowed).toBe(false)
+  })
+
+  test('should handle x-forwarded-for with multiple IPs', () => {
+      // First IP is client
+      const req = { socket: {}, headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' } }
+      firewall.addBlock('1.2.3.4')
+      const result = firewall.check(req)
+      expect(result.allowed).toBe(false)
+      expect(result.reason).toBe('blacklist')
+  })
+
+  test('should handle x-forwarded-for with spaces', () => {
+      const req = { socket: {}, headers: { 'x-forwarded-for': ' 1.2.3.4 , 5.6.7.8 ' } }
+      firewall.addBlock('1.2.3.4')
+      expect(firewall.check(req).allowed).toBe(false)
+  })
+
+  test('should allow everything when disabled', () => {
+      mockConfigData.firewall.enabled = false
+      firewall = new Firewall() // reload config
+
+      firewall.addBlock('1.2.3.4') // even if blocked
+      const req = { socket: { remoteAddress: '1.2.3.4' }, headers: {} }
+
+      expect(firewall.check(req).allowed).toBe(true)
+  })
+
+  test('should remove block', () => {
+      firewall.addBlock('1.2.3.4')
+      const req = { socket: { remoteAddress: '1.2.3.4' }, headers: {} }
+      expect(firewall.check(req).allowed).toBe(false)
+
+      firewall.removeBlock('1.2.3.4')
+      expect(firewall.check(req).allowed).toBe(true)
+  })
+
+  test('should remove whitelist', () => {
+      // Set strict rate limit
+      mockConfigData.firewall.rateLimit.max = 0
+      firewall = new Firewall()
+
+      firewall.addWhitelist('1.2.3.4')
+      const req = { socket: { remoteAddress: '1.2.3.4' }, headers: {} }
+      expect(firewall.check(req).allowed).toBe(true)
+
+      firewall.removeWhitelist('1.2.3.4')
+      expect(firewall.check(req).allowed).toBe(false) // rate limited
+  })
+
+  test('should persist changes to config', () => {
+      firewall.addBlock('1.1.1.1')
+      expect(mockConfigData.firewall.blacklist).toContain('1.1.1.1')
+
+      firewall.addWhitelist('2.2.2.2')
+      expect(mockConfigData.firewall.whitelist).toContain('2.2.2.2')
+
+      firewall.removeBlock('1.1.1.1')
+      expect(mockConfigData.firewall.blacklist).not.toContain('1.1.1.1')
   })
 })
