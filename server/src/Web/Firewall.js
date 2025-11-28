@@ -36,10 +36,15 @@ class Firewall {
   check(req) {
     if (!this.#config.enabled) return true
 
-    let ip = req.socket.remoteAddress || req.headers['x-forwarded-for']
+    let ip = req.socket?.remoteAddress || req.headers['x-forwarded-for']
+
+    // Normalize IPv6-mapped IPv4 addresses
     if (ip && ip.startsWith('::ffff:')) {
       ip = ip.substring(7)
     }
+
+    // Note: Native IPv6 addresses are not fully normalized (e.g. :: vs 0:0...).
+    // Blacklist/Whitelist entries for IPv6 should match the format provided by the socket (usually compressed).
 
     if (!ip) return true
 
