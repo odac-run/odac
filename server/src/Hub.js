@@ -1,11 +1,20 @@
 const {log} = Candy.core('Log', false).init('Hub')
 
 const axios = require('axios')
+const os = require('os')
 
 class Hub {
   auth(code) {
     log('CandyPack authenticating...')
-    let data = {code: code}
+    const packageJson = require('../../package.json')
+    let data = {
+      code: code,
+      os: os.platform(),
+      arch: os.arch(),
+      hostname: os.hostname(),
+      version: packageJson.version,
+      node: process.version
+    }
     this.call('auth', data)
       .then(response => {
         let token = response.token
