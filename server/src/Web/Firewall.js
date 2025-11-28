@@ -1,4 +1,4 @@
-const {log, error} = Candy.core('Log', false).init('Firewall')
+const {log} = Candy.core('Log', false).init('Firewall')
 
 class Firewall {
   #blacklist = new Set()
@@ -73,7 +73,7 @@ class Firewall {
 
       if (record.count > this.#config.rateLimit.max) {
         if (record.count === this.#config.rateLimit.max + 1) {
-            log(`Rate limit exceeded for IP: ${ip}`)
+          log(`Rate limit exceeded for IP: ${ip}`)
         }
         return false
       }
@@ -95,37 +95,37 @@ class Firewall {
   }
 
   addBlock(ip) {
-      if (this.#whitelist.has(ip)) this.#whitelist.delete(ip)
-      this.#blacklist.add(ip)
-      this.#save()
+    if (this.#whitelist.has(ip)) this.#whitelist.delete(ip)
+    this.#blacklist.add(ip)
+    this.#save()
   }
 
   removeBlock(ip) {
-      this.#blacklist.delete(ip)
-      this.#save()
+    this.#blacklist.delete(ip)
+    this.#save()
   }
 
   addWhitelist(ip) {
-      if (this.#blacklist.has(ip)) this.#blacklist.delete(ip)
-      this.#whitelist.add(ip)
-      this.#save()
+    if (this.#blacklist.has(ip)) this.#blacklist.delete(ip)
+    this.#whitelist.add(ip)
+    this.#save()
   }
 
   removeWhitelist(ip) {
-      this.#whitelist.delete(ip)
-      this.#save()
+    this.#whitelist.delete(ip)
+    this.#save()
   }
 
   #save() {
-      // Update the global config
-      if (!Candy.core('Config').config.firewall) Candy.core('Config').config.firewall = {}
+    // Update the global config
+    if (!Candy.core('Config').config.firewall) Candy.core('Config').config.firewall = {}
 
-      Candy.core('Config').config.firewall.blacklist = Array.from(this.#blacklist)
-      Candy.core('Config').config.firewall.whitelist = Array.from(this.#whitelist)
-      // Config module handles saving automatically when properties change if using Proxy,
-      // but here we are modifying the object structure.
-      // Assuming Config module watches for changes or we need to trigger save.
-      // Looking at Config.js, it uses Proxy to detect changes.
+    Candy.core('Config').config.firewall.blacklist = Array.from(this.#blacklist)
+    Candy.core('Config').config.firewall.whitelist = Array.from(this.#whitelist)
+    // Config module handles saving automatically when properties change if using Proxy,
+    // but here we are modifying the object structure.
+    // Assuming Config module watches for changes or we need to trigger save.
+    // Looking at Config.js, it uses Proxy to detect changes.
   }
 }
 
