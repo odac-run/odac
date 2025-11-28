@@ -1,5 +1,8 @@
 const {log} = Candy.core('Log', false).init('Firewall')
 
+/**
+ * Firewall class to handle IP blocking and rate limiting.
+ */
 class Firewall {
   #blacklist = new Set()
   #whitelist = new Set()
@@ -14,6 +17,9 @@ class Firewall {
     if (this.#cleanupInterval.unref) this.#cleanupInterval.unref()
   }
 
+  /**
+   * Load configuration from the global Config module.
+   */
   load() {
     // Load configuration from Candy.core('Config').config
     const config = Candy.core('Config').config.firewall || {}
@@ -33,8 +39,13 @@ class Firewall {
     this.#whitelist = this.#config.whitelist
   }
 
+  /**
+   * Check if a request should be allowed.
+   * @param {Object} req - The HTTP request object.
+   * @returns {Object} An object containing {allowed: boolean, reason?: string}.
+   */
   check(req) {
-    if (!this.#config.enabled) return true
+    if (!this.#config.enabled) return {allowed: true}
 
     let ip = req.socket?.remoteAddress || req.headers['x-forwarded-for']
 
@@ -46,15 +57,15 @@ class Firewall {
     // Note: Native IPv6 addresses are not fully normalized (e.g. :: vs 0:0...).
     // Blacklist/Whitelist entries for IPv6 should match the format provided by the socket (usually compressed).
 
-    if (!ip) return true
+    if (!ip) return {allowed: true}
 
     // 1. Check whitelist (bypass everything)
-    if (this.#whitelist.has(ip)) return true
+    if (this.#whitelist.has(ip)) return {allowed: true}
 
     // 2. Check blacklist
     if (this.#blacklist.has(ip)) {
       log(`Blocked request from blacklisted IP: ${ip}`)
-      return false
+      return {allowed: false, reason: 'blacklist'}
     }
 
     // 3. Rate limiting
@@ -80,14 +91,16 @@ class Firewall {
         if (record.count === this.#config.rateLimit.max + 1) {
           log(`Rate limit exceeded for IP: ${ip}`)
         }
-        return false
+        return {allowed: false, reason: 'rate_limit'}
       }
     }
 
-    return true
+    return {allowed: true}
   }
 
-  // Cleanup method to run periodically
+  /**
+   * Cleanup stale rate limit records.
+   */
   cleanup() {
     const now = Date.now()
     const windowMs = this.#config.rateLimit.windowMs
@@ -99,23 +112,39 @@ class Firewall {
     }
   }
 
+  /**
+   * Add an IP to the blacklist.
+   * @param {string} ip - The IP address to block.
+   */
   addBlock(ip) {
     if (this.#whitelist.has(ip)) this.#whitelist.delete(ip)
     this.#blacklist.add(ip)
     this.#save()
   }
 
+  /**
+   * Remove an IP from the blacklist.
+   * @param {string} ip - The IP address to unblock.
+   */
   removeBlock(ip) {
     this.#blacklist.delete(ip)
     this.#save()
   }
 
+  /**
+   * Add an IP to the whitelist.
+   * @param {string} ip - The IP address to whitelist.
+   */
   addWhitelist(ip) {
     if (this.#blacklist.has(ip)) this.#blacklist.delete(ip)
     this.#whitelist.add(ip)
     this.#save()
   }
 
+  /**
+   * Remove an IP from the whitelist.
+   * @param {string} ip - The IP address to remove from whitelist.
+   */
   removeWhitelist(ip) {
     this.#whitelist.delete(ip)
     this.#save()

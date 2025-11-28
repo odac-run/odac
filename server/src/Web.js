@@ -189,9 +189,15 @@ class Web {
   }
 
   request(req, res, secure) {
-    if (!this.#firewall.check(req)) {
-      res.writeHead(429, {'Content-Type': 'text/plain'})
-      res.end('Too Many Requests')
+    const result = this.#firewall.check(req)
+    if (!result.allowed) {
+      if (result.reason === 'blacklist') {
+        res.writeHead(403, {'Content-Type': 'text/plain'})
+        res.end('Forbidden')
+      } else {
+        res.writeHead(429, {'Content-Type': 'text/plain'})
+        res.end('Too Many Requests')
+      }
       return
     }
 

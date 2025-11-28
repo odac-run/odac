@@ -44,13 +44,15 @@ describe('Firewall', () => {
 
   test('should allow requests from normal IPs', () => {
     const req = { socket: { remoteAddress: '127.0.0.1' }, headers: {} }
-    expect(firewall.check(req)).toBe(true)
+    expect(firewall.check(req).allowed).toBe(true)
   })
 
   test('should block requests from blacklisted IPs', () => {
     firewall.addBlock('1.2.3.4')
     const req = { socket: { remoteAddress: '1.2.3.4' }, headers: {} }
-    expect(firewall.check(req)).toBe(false)
+    const result = firewall.check(req)
+    expect(result.allowed).toBe(false)
+    expect(result.reason).toBe('blacklist')
   })
 
   test('should allow requests from whitelisted IPs even if rate limited', () => {
@@ -62,45 +64,47 @@ describe('Firewall', () => {
       const req = { socket: { remoteAddress: '1.2.3.4' }, headers: {} }
 
       // Send many requests
-      expect(firewall.check(req)).toBe(true)
-      expect(firewall.check(req)).toBe(true)
-      expect(firewall.check(req)).toBe(true)
-      expect(firewall.check(req)).toBe(true)
+      expect(firewall.check(req).allowed).toBe(true)
+      expect(firewall.check(req).allowed).toBe(true)
+      expect(firewall.check(req).allowed).toBe(true)
+      expect(firewall.check(req).allowed).toBe(true)
   })
 
   test('should enforce rate limits', () => {
       const req = { socket: { remoteAddress: '10.0.0.1' }, headers: {} }
 
       // Config is max 2 per 1000ms
-      expect(firewall.check(req)).toBe(true) // 1
-      expect(firewall.check(req)).toBe(true) // 2
-      expect(firewall.check(req)).toBe(false) // 3 - blocked
+      expect(firewall.check(req).allowed).toBe(true) // 1
+      expect(firewall.check(req).allowed).toBe(true) // 2
+      const result = firewall.check(req) // 3 - blocked
+      expect(result.allowed).toBe(false)
+      expect(result.reason).toBe('rate_limit')
   })
 
   test('should reset rate limits after window', async () => {
       const req = { socket: { remoteAddress: '10.0.0.2' }, headers: {} }
 
-      expect(firewall.check(req)).toBe(true) // 1
-      expect(firewall.check(req)).toBe(true) // 2
-      expect(firewall.check(req)).toBe(false) // 3
+      expect(firewall.check(req).allowed).toBe(true) // 1
+      expect(firewall.check(req).allowed).toBe(true) // 2
+      expect(firewall.check(req).allowed).toBe(false) // 3
 
       // Wait for window to pass (1000ms)
       await new Promise(resolve => setTimeout(resolve, 1100))
 
-      expect(firewall.check(req)).toBe(true) // Should be allowed again
+      expect(firewall.check(req).allowed).toBe(true) // Should be allowed again
   })
 
   test('should handle IPv6 mapped IPv4 addresses', () => {
       const req = { socket: { remoteAddress: '::ffff:127.0.0.1' }, headers: {} }
-      expect(firewall.check(req)).toBe(true)
+      expect(firewall.check(req).allowed).toBe(true)
 
       firewall.addBlock('127.0.0.1')
-      expect(firewall.check(req)).toBe(false)
+      expect(firewall.check(req).allowed).toBe(false)
   })
 
   test('should use x-forwarded-for if socket address is missing', () => {
       const req = { socket: {}, headers: { 'x-forwarded-for': '1.2.3.4' } }
       firewall.addBlock('1.2.3.4')
-      expect(firewall.check(req)).toBe(false)
+      expect(firewall.check(req).allowed).toBe(false)
   })
 })
