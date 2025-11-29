@@ -30,6 +30,13 @@ module.exports = {
       _candy.Lang = new (require('./Lang.js'))(_candy)
       _candy.View = new (require('./View.js'))(_candy)
 
+      if (global.Candy?.Route?.class) {
+        for (const name in global.Candy.Route.class) {
+          const Module = global.Candy.Route.class[name].module
+          _candy[name] = typeof Module === 'function' ? new Module(_candy) : Module
+        }
+      }
+
       _candy.__ = function (...args) {
         return _candy.Lang.get(...args)
       }

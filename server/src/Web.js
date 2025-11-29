@@ -11,6 +11,7 @@ const path = require('path')
 const tls = require('tls')
 
 const WebProxy = require('./Web/Proxy.js')
+const WebFirewall = require('./Web/Firewall.js')
 
 class Web {
   #active = {}
@@ -21,6 +22,7 @@ class Web {
   #sslCache = new Map()
   #ports = {}
   #proxy
+  #firewall
   #server_http
   #server_https
   #started = {}
@@ -29,6 +31,7 @@ class Web {
   constructor() {
     this.#log = log
     this.#proxy = new WebProxy(this.#log)
+    this.#firewall = new WebFirewall()
   }
 
   clearSSLCache(domain) {
@@ -186,6 +189,18 @@ class Web {
   }
 
   request(req, res, secure) {
+    const result = this.#firewall.check(req)
+    if (!result.allowed) {
+      if (result.reason === 'blacklist') {
+        res.writeHead(403, {'Content-Type': 'text/plain'})
+        res.end('Forbidden')
+      } else {
+        res.writeHead(429, {'Content-Type': 'text/plain'})
+        res.end('Too Many Requests')
+      }
+      return
+    }
+
     let host = req.headers.host || req.headers[':authority']
     if (!host) return this.index(req, res)
 

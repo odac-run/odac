@@ -223,6 +223,24 @@
         {
           "file": "02-your-trusty-candy-assistant.md",
           "title": "Using Candy"
+        },
+        {
+          "file": "03-controller-classes.md",
+          "title": "Controller Classes"
+        }
+      ]
+    },
+    {
+      "file": "05-forms",
+      "title": "Forms",
+      "children": [
+        {
+          "file": "01-custom-forms.md",
+          "title": "Custom Forms"
+        },
+        {
+          "file": "02-automatic-database-insert.md",
+          "title": "Automatic Database Insert"
         }
       ]
     },
