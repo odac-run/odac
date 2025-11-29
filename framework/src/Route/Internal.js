@@ -271,6 +271,79 @@ class Internal {
       }
     })
   }
+
+  static async customForm(Candy) {
+    const token = await Candy.request('_candy_form_token')
+    if (!token) {
+      return Candy.return({
+        result: {success: false},
+        errors: {_candy_form: 'Invalid request'}
+      })
+    }
+
+    const formData = Candy.Request.session(`_custom_form_${token}`)
+
+    if (!formData) {
+      return Candy.return({
+        result: {success: false},
+        errors: {_candy_form: 'Form session expired. Please refresh the page.'}
+      })
+    }
+
+    if (formData.expires < Date.now()) {
+      Candy.Request.session(`_custom_form_${token}`, null)
+      return Candy.return({
+        result: {success: false},
+        errors: {_candy_form: 'Form session expired. Please refresh the page.'}
+      })
+    }
+
+    if (formData.sessionId !== Candy.Request.session('_client')) {
+      return Candy.return({
+        result: {success: false},
+        errors: {_candy_form: 'Invalid session'}
+      })
+    }
+
+    if (formData.userAgent !== Candy.Request.header('user-agent')) {
+      return Candy.return({
+        result: {success: false},
+        errors: {_candy_form: 'Invalid request'}
+      })
+    }
+
+    if (formData.ip !== Candy.Request.ip) {
+      return Candy.return({
+        result: {success: false},
+        errors: {_candy_form: 'Invalid request'}
+      })
+    }
+
+    const config = formData.config
+    const validator = Candy.validator()
+    const data = {}
+
+    for (const field of config.fields) {
+      const value = await Candy.request(field.name)
+
+      for (const validation of field.validations) {
+        this.#validateField(validator, field, validation, value)
+      }
+
+      data[field.name] = value
+    }
+
+    if (await validator.error()) {
+      return validator.result()
+    }
+
+    Candy.Request.session(`_custom_form_${token}`, null)
+
+    Candy.formData = data
+    Candy.formConfig = config
+
+    return null
+  }
 }
 
 module.exports = Internal

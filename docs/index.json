@@ -227,6 +227,16 @@
       ]
     },
     {
+      "file": "05-forms",
+      "title": "Forms",
+      "children": [
+        {
+          "file": "01-custom-forms.md",
+          "title": "Custom Forms"
+        }
+      ]
+    },
+    {
       "file": "06-request-and-response",
       "title": "Request & Response",
       "children": [
