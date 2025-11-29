@@ -72,6 +72,13 @@ class Route {
     if (url.startsWith('/_candy/')) {
       Candy.Request.route = '_candy_internal'
     }
+
+    if (['post', 'put', 'patch', 'delete'].includes(Candy.Request.method)) {
+      const formToken = await Candy.request('_candy_form_token')
+      if (formToken) {
+        await Internal.processForm(Candy)
+      }
+    }
     if (
       Candy.Request.url === '/' &&
       Candy.Request.method === 'get' &&
@@ -332,6 +339,7 @@ class Route {
 
   set(type, url, file, options = {}) {
     if (Array.isArray(type)) {
+      type = type.map(t => t.toLowerCase())
       for (const t of type) {
         this.set(t, url, file, options)
       }

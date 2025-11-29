@@ -480,21 +480,26 @@ class Form {
     if (!formMatch) return config
 
     const formTag = formMatch[0]
-    const actionMatch = formTag.match(/action=["']([^"']+)["']/)
-    const methodMatch = formTag.match(/method=["']([^"']+)["']/)
-    const classMatch = formTag.match(/class=["']([^"']+)["']/)
-    const idMatch = formTag.match(/id=["']([^"']+)["']/)
-    const tableMatch = formTag.match(/table=["']([^"']+)["']/)
-    const redirectMatch = formTag.match(/redirect=["']([^"']+)["']/)
-    const successMatch = formTag.match(/success=["']([^"']+)["']/)
+    const extractAttr = name => {
+      const match = formTag.match(new RegExp(`${name}=(['"])((?:(?!\\1).)*)\\1`))
+      return match ? match[2] : null
+    }
 
-    if (actionMatch) config.action = actionMatch[1]
-    if (methodMatch) config.method = methodMatch[1].toUpperCase()
-    if (classMatch) config.class = classMatch[1]
-    if (idMatch) config.id = idMatch[1]
-    if (tableMatch) config.table = tableMatch[1]
-    if (redirectMatch) config.redirect = redirectMatch[1]
-    if (successMatch) config.successMessage = successMatch[1]
+    const actionMatch = extractAttr('action')
+    const methodMatch = extractAttr('method')
+    const classMatch = extractAttr('class')
+    const idMatch = extractAttr('id')
+    const tableMatch = extractAttr('table')
+    const redirectMatch = extractAttr('redirect')
+    const successMatch = extractAttr('success')
+
+    if (actionMatch) config.action = actionMatch
+    if (methodMatch) config.method = methodMatch.toUpperCase()
+    if (classMatch) config.class = classMatch
+    if (idMatch) config.id = idMatch
+    if (tableMatch) config.table = tableMatch
+    if (redirectMatch) config.redirect = redirectMatch
+    if (successMatch) config.successMessage = successMatch
 
     const submitMatch = html.match(/<candy:submit([^>/]*)(?:\/?>|>(.*?)<\/candy:submit>)/)
     if (submitMatch) {
@@ -564,23 +569,26 @@ class Form {
       return this.generateFieldHtml(field)
     })
 
+    const escapeHtml = str =>
+      String(str).replace(/[&<>"']/g, m => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[m])
+
     const submitMatch = innerContent.match(/<candy:submit[\s\S]*?(?:<\/candy:submit>|\/?>)/)
     if (submitMatch) {
-      let submitAttrs = `type="submit" data-submit-text="${submitText}" data-loading-text="${submitLoading}"`
-      if (config.submitClass) submitAttrs += ` class="${config.submitClass}"`
-      if (config.submitStyle) submitAttrs += ` style="${config.submitStyle}"`
-      if (config.submitId) submitAttrs += ` id="${config.submitId}"`
-      const submitButton = `<button ${submitAttrs}>${submitText}</button>`
+      let submitAttrs = `type="submit" data-submit-text="${escapeHtml(submitText)}" data-loading-text="${escapeHtml(submitLoading)}"`
+      if (config.submitClass) submitAttrs += ` class="${escapeHtml(config.submitClass)}"`
+      if (config.submitStyle) submitAttrs += ` style="${escapeHtml(config.submitStyle)}"`
+      if (config.submitId) submitAttrs += ` id="${escapeHtml(config.submitId)}"`
+      const submitButton = `<button ${submitAttrs}>${escapeHtml(submitText)}</button>`
       innerContent = innerContent.replace(submitMatch[0], submitButton)
     }
 
     innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
 
-    let formAttrs = `class="candy-custom-form${config.class ? ' ' + config.class : ''}" data-candy-form="${formToken}" method="${method}" action="${action}" novalidate`
-    if (config.id) formAttrs += ` id="${config.id}"`
+    let formAttrs = `class="candy-custom-form${config.class ? ' ' + escapeHtml(config.class) : ''}" data-candy-form="${escapeHtml(formToken)}" method="${escapeHtml(method)}" action="${escapeHtml(action)}" novalidate`
+    if (config.id) formAttrs += ` id="${escapeHtml(config.id)}"`
 
     let html = `<form ${formAttrs}>\n`
-    html += `  <input type="hidden" name="_candy_form_token" value="${formToken}">\n`
+    html += `  <input type="hidden" name="_candy_form_token" value="${escapeHtml(formToken)}">\n`
     html += innerContent
     html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
     html += `</form>`

@@ -255,11 +255,27 @@ Automatic DB insert includes all security features:
 
 ## Combining with Custom Logic
 
-You can still add custom logic by creating a controller for the same route:
+You can add custom logic by specifying a custom `action` attribute. When you do this, the form data is validated and prepared, but the automatic DB insert is skipped. Instead, your controller receives the validated data via `Candy.formData`:
 
 ```javascript
-// This runs AFTER automatic DB insert
-Candy.Route.post('/_candy/form', Candy => {
+// In your view:
+// <candy:form action="/contact/submit" table="contacts">
+
+// In your controller:
+Candy.Route.post('/contact/submit', async Candy => {
+  // Candy.formData contains validated form data
+  // Candy.formConfig contains form configuration
+  
+  // Perform custom logic (send email, call API, etc.)
+  await sendEmail(Candy.formData.email, 'Thank you!')
+  
+  // Manually insert to database if needed
+  await Candy.Mysql.query('INSERT INTO contacts SET ?', Candy.formData)
+  
+  return Candy.return({
+    result: {success: true, message: 'Message sent!'}
+  })
+})
   const data = Candy.formData
   
   // Send welcome email

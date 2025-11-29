@@ -272,6 +272,65 @@ class Internal {
     })
   }
 
+  static async processForm(Candy) {
+    const token = await Candy.request('_candy_form_token')
+    if (!token) return
+
+    const formData = Candy.Request.session(`_custom_form_${token}`)
+    if (!formData) return
+
+    if (formData.expires < Date.now()) {
+      Candy.Request.session(`_custom_form_${token}`, null)
+      return
+    }
+
+    if (formData.sessionId !== Candy.Request.session('_client')) return
+    if (formData.userAgent !== Candy.Request.header('user-agent')) return
+    if (formData.ip !== Candy.Request.ip) return
+
+    const config = formData.config
+    const validator = Candy.validator()
+    const data = {}
+
+    const uniqueFields = []
+
+    for (const field of config.fields) {
+      const value = await Candy.request(field.name)
+
+      for (const validation of field.validations) {
+        this.#validateField(validator, field, validation, value)
+
+        if (validation.rule.includes('unique')) {
+          if (!uniqueFields.some(f => f.name === field.name)) {
+            uniqueFields.push({name: field.name, message: validation.message})
+          }
+        }
+      }
+
+      if (!field.skip) {
+        data[field.name] = value
+      }
+    }
+
+    for (const set of config.sets || []) {
+      if (set.value !== undefined && set.value !== null) {
+        if (set.ifEmpty && data[set.name] !== undefined && data[set.name] !== null && data[set.name] !== '') continue
+        data[set.name] = set.value
+      } else if (set.compute) {
+        data[set.name] = await this.computeValue(set.compute, Candy)
+      } else if (set.callback) {
+        if (typeof Candy.fn[set.callback] === 'function') {
+          data[set.name] = await Candy.fn[set.callback](Candy)
+        }
+      }
+    }
+
+    Candy.formData = data
+    Candy.formConfig = config
+    Candy.formValidator = validator
+    Candy.formUniqueFields = uniqueFields
+  }
+
   static async customForm(Candy) {
     const token = await Candy.request('_candy_form_token')
     if (!token) {
@@ -319,69 +378,41 @@ class Internal {
       })
     }
 
-    const config = formData.config
-    const validator = Candy.validator()
-    const data = {}
-
-    const uniqueFields = []
-
-    for (const field of config.fields) {
-      const value = await Candy.request(field.name)
-
-      for (const validation of field.validations) {
-        this.#validateField(validator, field, validation, value)
-
-        if (validation.rule.includes('unique')) {
-          uniqueFields.push(field.name)
-        }
-      }
-
-      if (!field.skip) {
-        data[field.name] = value
-      }
+    if (await Candy.formValidator.error()) {
+      return Candy.formValidator.result()
     }
 
-    for (const set of config.sets || []) {
-      if (set.value !== null) {
-        if (set.ifEmpty && data[set.name]) continue
-        data[set.name] = set.value
-      } else if (set.compute) {
-        data[set.name] = await this.computeValue(set.compute, Candy)
-      } else if (set.callback) {
-        if (typeof Candy.fn[set.callback] === 'function') {
-          data[set.name] = await Candy.fn[set.callback](Candy)
-        }
-      }
-    }
-
-    if (await validator.error()) {
-      return validator.result()
-    }
-
-    if (config.table) {
+    if (Candy.formConfig.table) {
       try {
         const mysql = Candy.Mysql
 
-        for (const fieldName of uniqueFields) {
-          const existingRecord = await mysql.query(`SELECT id FROM ?? WHERE ?? = ? LIMIT 1`, [config.table, fieldName, data[fieldName]])
+        for (const field of Candy.formUniqueFields) {
+          if (Candy.formData[field.name] == null) continue
+
+          const existingRecord = await mysql.query(`SELECT id FROM ?? WHERE ?? = ? LIMIT 1`, [
+            Candy.formConfig.table,
+            field.name,
+            Candy.formData[field.name]
+          ])
 
           if (existingRecord && existingRecord.length > 0) {
+            const errorMessage = field.message || `This ${field.name} is already registered`
             return Candy.return({
               result: {success: false},
-              errors: {[fieldName]: `This ${fieldName} is already registered`}
+              errors: {[field.name]: errorMessage}
             })
           }
         }
 
-        await mysql.query('INSERT INTO ?? SET ?', [config.table, data])
+        await mysql.query('INSERT INTO ?? SET ?', [Candy.formConfig.table, Candy.formData])
 
         Candy.Request.session(`_custom_form_${token}`, null)
 
         return Candy.return({
           result: {
             success: true,
-            message: config.successMessage || 'Form submitted successfully!',
-            redirect: config.redirect
+            message: Candy.formConfig.successMessage || 'Form submitted successfully!',
+            redirect: Candy.formConfig.redirect
           }
         })
       } catch (error) {
@@ -400,9 +431,6 @@ class Internal {
     }
 
     Candy.Request.session(`_custom_form_${token}`, null)
-
-    Candy.formData = data
-    Candy.formConfig = config
 
     return null
   }

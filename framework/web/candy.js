@@ -728,7 +728,7 @@ class candy {
     const connect = () => {
       if (isClosed) return
 
-      const urlWithToken = url + (url.includes('?') ? '&' : '?') + '_token=' + this.token()
+      const urlWithToken = url + (url.includes('?') ? '&' : '?') + '_token=' + encodeURIComponent(this.token())
       eventSource = new EventSource(urlWithToken)
 
       eventSource.onopen = e => {
