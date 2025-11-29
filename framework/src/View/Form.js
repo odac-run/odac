@@ -1,7 +1,7 @@
 const nodeCrypto = require('crypto')
 
 class Form {
-  static FORM_TYPES = ['register', 'login']
+  static FORM_TYPES = ['register', 'login', 'form']
 
   static parse(content, Candy) {
     for (const type of this.FORM_TYPES) {
@@ -33,6 +33,8 @@ class Form {
       return this.extractRegisterConfig(html, formToken)
     } else if (type === 'login') {
       return this.extractLoginConfig(html, formToken)
+    } else if (type === 'form') {
+      return this.extractFormConfig(html, formToken)
     }
   }
 
@@ -41,6 +43,8 @@ class Form {
       this.storeRegisterConfig(token, config, Candy)
     } else if (type === 'login') {
       this.storeLoginConfig(token, config, Candy)
+    } else if (type === 'form') {
+      this.storeFormConfig(token, config, Candy)
     }
   }
 
@@ -49,6 +53,8 @@ class Form {
       return this.generateRegisterForm(originalHtml, config, formToken)
     } else if (type === 'login') {
       return this.generateLoginForm(originalHtml, config, formToken)
+    } else if (type === 'form') {
+      return this.generateCustomForm(originalHtml, config, formToken)
     }
   }
 
@@ -447,6 +453,142 @@ class Form {
 
     let html = `<form class="candy-login-form" data-candy-login="${formToken}" method="POST" action="/_candy/login" novalidate>\n`
     html += `  <input type="hidden" name="_candy_login_token" value="${formToken}">\n`
+    html += innerContent
+    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `</form>`
+
+    return html
+  }
+
+  static extractFormConfig(html, formToken) {
+    const config = {
+      token: formToken,
+      action: null,
+      method: 'POST',
+      submitText: 'Submit',
+      submitLoading: 'Processing...',
+      fields: [],
+      sets: [],
+      class: '',
+      id: null,
+      table: null,
+      redirect: null,
+      successMessage: null
+    }
+
+    const formMatch = html.match(/<candy:form([^>]*)>/)
+    if (!formMatch) return config
+
+    const formTag = formMatch[0]
+    const extractAttr = name => {
+      const match = formTag.match(new RegExp(`${name}=(['"])((?:(?!\\1).)*)\\1`))
+      return match ? match[2] : null
+    }
+
+    const actionMatch = extractAttr('action')
+    const methodMatch = extractAttr('method')
+    const classMatch = extractAttr('class')
+    const idMatch = extractAttr('id')
+    const tableMatch = extractAttr('table')
+    const redirectMatch = extractAttr('redirect')
+    const successMatch = extractAttr('success')
+
+    if (actionMatch) config.action = actionMatch
+    if (methodMatch) config.method = methodMatch.toUpperCase()
+    if (classMatch) config.class = classMatch
+    if (idMatch) config.id = idMatch
+    if (tableMatch) config.table = tableMatch
+    if (redirectMatch) config.redirect = redirectMatch
+    if (successMatch) config.successMessage = successMatch
+
+    const submitMatch = html.match(/<candy:submit([^>/]*)(?:\/?>|>(.*?)<\/candy:submit>)/)
+    if (submitMatch) {
+      const submitTag = submitMatch[1]
+      const textMatch = submitTag.match(/text=["']([^"']+)["']/)
+      const loadingMatch = submitTag.match(/loading=["']([^"']+)["']/)
+      const classMatch = submitTag.match(/class=["']([^"']+)["']/)
+      const styleMatch = submitTag.match(/style=["']([^"']+)["']/)
+      const idMatch = submitTag.match(/id=["']([^"']+)["']/)
+
+      if (textMatch) config.submitText = textMatch[1]
+      else if (submitMatch[2]) config.submitText = submitMatch[2].trim()
+
+      if (loadingMatch) config.submitLoading = loadingMatch[1]
+      if (classMatch) config.submitClass = classMatch[1]
+      if (styleMatch) config.submitStyle = styleMatch[1]
+      if (idMatch) config.submitId = idMatch[1]
+    }
+
+    const fieldMatches = html.match(/<candy:field[\s\S]*?<\/candy:field>/g)
+    if (fieldMatches) {
+      for (const fieldHtml of fieldMatches) {
+        const field = this.parseField(fieldHtml)
+        if (field) config.fields.push(field)
+      }
+    }
+
+    const setMatches = html.match(/<candy:set[^>]*\/?>/g)
+    if (setMatches) {
+      for (const setTag of setMatches) {
+        const set = this.parseSet(setTag)
+        if (set) config.sets.push(set)
+      }
+    }
+
+    return config
+  }
+
+  static storeFormConfig(token, config, Candy) {
+    if (!Candy.View) Candy.View = {}
+    if (!Candy.View.customForms) Candy.View.customForms = {}
+
+    const formData = {
+      config: config,
+      created: Date.now(),
+      expires: Date.now() + 30 * 60 * 1000,
+      sessionId: Candy.Request.session('_client'),
+      userAgent: Candy.Request.header('user-agent'),
+      ip: Candy.Request.ip
+    }
+
+    Candy.View.customForms[token] = formData
+    Candy.Request.session(`_custom_form_${token}`, formData)
+  }
+
+  static generateCustomForm(originalHtml, config, formToken) {
+    const submitText = config.submitText || 'Submit'
+    const submitLoading = config.submitLoading || 'Processing...'
+    const action = config.action || '/_candy/form'
+    const method = config.method || 'POST'
+
+    let innerContent = originalHtml.replace(/<candy:form[^>]*>/, '').replace(/<\/candy:form>/, '')
+
+    innerContent = innerContent.replace(/<candy:field[\s\S]*?<\/candy:field>/g, fieldMatch => {
+      const field = this.parseField(fieldMatch)
+      if (!field) return fieldMatch
+      return this.generateFieldHtml(field)
+    })
+
+    const escapeHtml = str =>
+      String(str).replace(/[&<>"']/g, m => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[m])
+
+    const submitMatch = innerContent.match(/<candy:submit[\s\S]*?(?:<\/candy:submit>|\/?>)/)
+    if (submitMatch) {
+      let submitAttrs = `type="submit" data-submit-text="${escapeHtml(submitText)}" data-loading-text="${escapeHtml(submitLoading)}"`
+      if (config.submitClass) submitAttrs += ` class="${escapeHtml(config.submitClass)}"`
+      if (config.submitStyle) submitAttrs += ` style="${escapeHtml(config.submitStyle)}"`
+      if (config.submitId) submitAttrs += ` id="${escapeHtml(config.submitId)}"`
+      const submitButton = `<button ${submitAttrs}>${escapeHtml(submitText)}</button>`
+      innerContent = innerContent.replace(submitMatch[0], submitButton)
+    }
+
+    innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
+
+    let formAttrs = `class="candy-custom-form${config.class ? ' ' + escapeHtml(config.class) : ''}" data-candy-form="${escapeHtml(formToken)}" method="${escapeHtml(method)}" action="${escapeHtml(action)}" novalidate`
+    if (config.id) formAttrs += ` id="${escapeHtml(config.id)}"`
+
+    let html = `<form ${formAttrs}>\n`
+    html += `  <input type="hidden" name="_candy_form_token" value="${escapeHtml(formToken)}">\n`
     html += innerContent
     html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
     html += `</form>`

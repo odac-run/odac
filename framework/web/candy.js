@@ -728,7 +728,8 @@ class candy {
     const connect = () => {
       if (isClosed) return
 
-      eventSource = new EventSource(url)
+      const urlWithToken = url + (url.includes('?') ? '&' : '?') + '_token=' + encodeURIComponent(this.token())
+      eventSource = new EventSource(urlWithToken)
 
       eventSource.onopen = e => {
         if (onOpen) onOpen(e)
@@ -779,5 +780,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const token = form.getAttribute(`data-candy-${type}`)
       window.Candy.form({form: `form[data-candy-${type}="${token}"]`})
     })
+  })
+
+  const customForms = document.querySelectorAll('form.candy-custom-form[data-candy-form]')
+  customForms.forEach(form => {
+    const token = form.getAttribute('data-candy-form')
+    window.Candy.form({form: `form[data-candy-form="${token}"]`})
   })
 })

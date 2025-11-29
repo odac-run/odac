@@ -72,6 +72,13 @@ class Route {
     if (url.startsWith('/_candy/')) {
       Candy.Request.route = '_candy_internal'
     }
+
+    if (['post', 'put', 'patch', 'delete'].includes(Candy.Request.method)) {
+      const formToken = await Candy.request('_candy_form_token')
+      if (formToken) {
+        await Internal.processForm(Candy)
+      }
+    }
     if (
       Candy.Request.url === '/' &&
       Candy.Request.method === 'get' &&
@@ -135,17 +142,21 @@ class Route {
       if (await Candy.Auth.check()) {
         if (authPageController.params)
           for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
-        Candy.Request.page = authPageController.cache.file || authPageController.file
+        Candy.Request.page = authPageController.cache?.file || authPageController.file
         Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-        return authPageController.cache(Candy)
+        if (typeof authPageController.cache === 'function') {
+          return authPageController.cache(Candy)
+        }
       }
     }
     let pageController = this.#controller(Candy.Request.route, 'page', url)
     if (pageController) {
       if (pageController.params) for (let key in pageController.params) Candy.Request.data.url[key] = pageController.params[key]
-      Candy.Request.page = pageController.cache.file || pageController.file
+      Candy.Request.page = pageController.cache?.file || pageController.file
       Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-      return pageController.cache(Candy)
+      if (typeof pageController.cache === 'function') {
+        return pageController.cache(Candy)
+      }
     }
     if (url && !url.includes('/../') && fs.existsSync(`${__dir}/public${url}`)) {
       let stat = fs.lstatSync(`${__dir}/public${url}`)
@@ -282,6 +293,28 @@ class Route {
       {token: true}
     )
 
+    this.set(
+      ['POST', 'GET', 'PUT', 'PATCH', 'DELETE'],
+      '/_candy/form',
+      async Candy => {
+        const csrfToken = await Candy.request('_token')
+        if (!csrfToken || !Candy.token(csrfToken)) {
+          return Candy.Request.abort(401)
+        }
+        const result = await Internal.customForm(Candy)
+        if (result !== null) return result
+
+        return Candy.return({
+          result: {
+            success: false,
+            message: 'No handler defined for this form'
+          },
+          errors: {_candy_form: 'Form action not configured'}
+        })
+      },
+      {token: true}
+    )
+
     delete Candy.Route.buff
   }
 
@@ -303,6 +336,14 @@ class Route {
   }
 
   set(type, url, file, options = {}) {
+    if (Array.isArray(type)) {
+      type = type.map(t => t.toLowerCase())
+      for (const t of type) {
+        this.set(t, url, file, options)
+      }
+      return
+    }
+
     if (!options) options = {}
     if (typeof url !== 'string') url = String(url)
     if (url.length && url.substr(-1) === '/') url = url.substr(0, url.length - 1)

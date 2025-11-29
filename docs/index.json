@@ -231,6 +231,20 @@
       ]
     },
     {
+      "file": "05-forms",
+      "title": "Forms",
+      "children": [
+        {
+          "file": "01-custom-forms.md",
+          "title": "Custom Forms"
+        },
+        {
+          "file": "02-automatic-database-insert.md",
+          "title": "Automatic Database Insert"
+        }
+      ]
+    },
+    {
       "file": "06-request-and-response",
       "title": "Request & Response",
       "children": [
