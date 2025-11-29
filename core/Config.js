@@ -29,7 +29,8 @@ class Config {
     ssl: ['ssl'],
     mail: ['mail'],
     dns: ['dns'],
-    api: ['api']
+    api: ['api'],
+    firewall: ['firewall']
   }
 
   // Initialize default configuration for module keys
@@ -47,6 +48,17 @@ class Config {
           config[key] = {}
         } else if (key === 'services') {
           config[key] = []
+        } else if (key === 'firewall') {
+          config[key] = {
+            enabled: true,
+            blacklist: [],
+            whitelist: [],
+            rateLimit: {
+              enabled: true,
+              windowMs: 60000,
+              max: 300
+            }
+          }
         } else {
           config[key] = {}
         }
