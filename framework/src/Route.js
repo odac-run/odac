@@ -213,7 +213,7 @@ class Route {
       let name = file.replace('.js', '')
       if (!Candy.Route.class) Candy.Route.class = {}
       if (Candy.Route.class[name]) {
-        if (Candy.Route.class[name].mtime >= fs.statSync(Candy.Route.class[name].path).mtimeMs) continue
+        if (Candy.Route.class[name].mtime >= fs.statSync(Candy.Route.class[name].path).mtimeMs + 1000) continue
         delete require.cache[require.resolve(Candy.Route.class[name].path)]
       }
       Candy.Route.class[name] = {
@@ -327,7 +327,7 @@ class Route {
       if (result instanceof Promise) result = await result
       if (result) param.Request.end(result)
       param.Request.print(param)
-      param.View.print(param)
+      await param.View.print(param)
     } catch (e) {
       console.error(e)
       param.Request.abort(500)
