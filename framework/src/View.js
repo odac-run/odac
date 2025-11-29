@@ -53,9 +53,10 @@ class View {
       //  <candy:fetch fetch="/get/products" as="data" method="GET" headers="{}" body="null" refresh="false">
     },
     for: {
-      function: 'for(let $key in $in){ let $value = $constructor[$key];',
+      function: 'for(let $key in $constructor){ let $value = $constructor[$key];',
       arguments: {
-        in: null,
+        var: null,
+        get: null,
         key: 'key',
         value: 'value'
       }
@@ -79,12 +80,13 @@ class View {
     },
     list: {
       arguments: {
-        list: 'list',
+        var: null,
+        get: null,
         key: 'key',
         value: 'value'
       },
       end: '}',
-      function: 'for(let $key in $list){ let $value = $list[$key];',
+      function: 'for(let $key in $constructor){ let $value = $constructor[$key];',
       replace: 'ul'
     },
     while: {
@@ -348,6 +350,23 @@ class View {
             }
           if (!func.function) continue
           let fun = func.function
+
+          if (key === 'for' || key === 'list') {
+            if (!vars.var && !vars.get) {
+              console.error(`"var" or "get" is required for "${match}"\n  in "${file}"`)
+              continue
+            }
+            let constructor
+            if (vars.var) {
+              constructor = `await ${vars.var}`
+              delete vars.var
+            } else if (vars.get) {
+              constructor = `get('${vars.get}')`
+              delete vars.get
+            }
+            fun = fun.replace('$constructor', constructor)
+          }
+
           for (let key in func.arguments) {
             if (vars[key] === undefined) {
               if (func.arguments[key] === null) console.error(`"${key}" is required for "${match}"\n  in "${file}"`)
