@@ -233,6 +233,10 @@
         {
           "file": "01-custom-forms.md",
           "title": "Custom Forms"
+        },
+        {
+          "file": "02-automatic-database-insert.md",
+          "title": "Automatic Database Insert"
         }
       ]
     },

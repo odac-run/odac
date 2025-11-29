@@ -323,18 +323,80 @@ class Internal {
     const validator = Candy.validator()
     const data = {}
 
+    const uniqueFields = []
+
     for (const field of config.fields) {
       const value = await Candy.request(field.name)
 
       for (const validation of field.validations) {
         this.#validateField(validator, field, validation, value)
+
+        if (validation.rule.includes('unique')) {
+          uniqueFields.push(field.name)
+        }
       }
 
-      data[field.name] = value
+      if (!field.skip) {
+        data[field.name] = value
+      }
+    }
+
+    for (const set of config.sets || []) {
+      if (set.value !== null) {
+        if (set.ifEmpty && data[set.name]) continue
+        data[set.name] = set.value
+      } else if (set.compute) {
+        data[set.name] = await this.computeValue(set.compute, Candy)
+      } else if (set.callback) {
+        if (typeof Candy.fn[set.callback] === 'function') {
+          data[set.name] = await Candy.fn[set.callback](Candy)
+        }
+      }
     }
 
     if (await validator.error()) {
       return validator.result()
+    }
+
+    if (config.table) {
+      try {
+        const mysql = Candy.Mysql
+
+        for (const fieldName of uniqueFields) {
+          const existingRecord = await mysql.query(`SELECT id FROM ?? WHERE ?? = ? LIMIT 1`, [config.table, fieldName, data[fieldName]])
+
+          if (existingRecord && existingRecord.length > 0) {
+            return Candy.return({
+              result: {success: false},
+              errors: {[fieldName]: `This ${fieldName} is already registered`}
+            })
+          }
+        }
+
+        await mysql.query('INSERT INTO ?? SET ?', [config.table, data])
+
+        Candy.Request.session(`_custom_form_${token}`, null)
+
+        return Candy.return({
+          result: {
+            success: true,
+            message: config.successMessage || 'Form submitted successfully!',
+            redirect: config.redirect
+          }
+        })
+      } catch (error) {
+        if (error.message === 'Database connection not configured') {
+          return Candy.return({
+            result: {success: false},
+            errors: {_candy_form: 'Database not configured. Please check your config.json'}
+          })
+        }
+
+        return Candy.return({
+          result: {success: false},
+          errors: {_candy_form: error.message || 'Database error occurred'}
+        })
+      }
     }
 
     Candy.Request.session(`_custom_form_${token}`, null)

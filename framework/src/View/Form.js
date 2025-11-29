@@ -468,8 +468,12 @@ class Form {
       submitText: 'Submit',
       submitLoading: 'Processing...',
       fields: [],
+      sets: [],
       class: '',
-      id: null
+      id: null,
+      table: null,
+      redirect: null,
+      successMessage: null
     }
 
     const formMatch = html.match(/<candy:form([^>]*)>/)
@@ -480,11 +484,17 @@ class Form {
     const methodMatch = formTag.match(/method=["']([^"']+)["']/)
     const classMatch = formTag.match(/class=["']([^"']+)["']/)
     const idMatch = formTag.match(/id=["']([^"']+)["']/)
+    const tableMatch = formTag.match(/table=["']([^"']+)["']/)
+    const redirectMatch = formTag.match(/redirect=["']([^"']+)["']/)
+    const successMatch = formTag.match(/success=["']([^"']+)["']/)
 
     if (actionMatch) config.action = actionMatch[1]
     if (methodMatch) config.method = methodMatch[1].toUpperCase()
     if (classMatch) config.class = classMatch[1]
     if (idMatch) config.id = idMatch[1]
+    if (tableMatch) config.table = tableMatch[1]
+    if (redirectMatch) config.redirect = redirectMatch[1]
+    if (successMatch) config.successMessage = successMatch[1]
 
     const submitMatch = html.match(/<candy:submit([^>/]*)(?:\/?>|>(.*?)<\/candy:submit>)/)
     if (submitMatch) {
@@ -509,6 +519,14 @@ class Form {
       for (const fieldHtml of fieldMatches) {
         const field = this.parseField(fieldHtml)
         if (field) config.fields.push(field)
+      }
+    }
+
+    const setMatches = html.match(/<candy:set[^>]*\/?>/g)
+    if (setMatches) {
+      for (const setTag of setMatches) {
+        const set = this.parseSet(setTag)
+        if (set) config.sets.push(set)
       }
     }
 
@@ -555,6 +573,8 @@ class Form {
       const submitButton = `<button ${submitAttrs}>${submitText}</button>`
       innerContent = innerContent.replace(submitMatch[0], submitButton)
     }
+
+    innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
 
     let formAttrs = `class="candy-custom-form${config.class ? ' ' + config.class : ''}" data-candy-form="${formToken}" method="${method}" action="${action}" novalidate`
     if (config.id) formAttrs += ` id="${config.id}"`
