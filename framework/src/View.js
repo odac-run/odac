@@ -10,7 +10,7 @@ class View {
   #earlyHints = null
   #functions = {
     '{!!': {
-      function: '${',
+      function: '${await ',
       close: '!!}',
       end: '}'
     },
@@ -20,7 +20,7 @@ class View {
       end: '*/ html += `'
     },
     '{{': {
-      function: '${Candy.Var(',
+      function: '${Candy.Var(await ',
       close: '}}',
       end: ').html().replace(/\\n/g, "<br>")}'
     },
@@ -119,7 +119,7 @@ class View {
   }
 
   // - PRINT VIEW
-  print() {
+  async print() {
     if (this.#candy.Request.res.finished) return
 
     const routePath = this.#candy.Request.req.url.split('?')[0]
@@ -142,7 +142,7 @@ class View {
           let viewPath = this.#part[element]
           if (viewPath.includes('.')) viewPath = viewPath.replace(/\./g, '/')
           if (fs.existsSync(`./view/${element}/${viewPath}.html`)) {
-            output[element] = this.#render(`./view/${element}/${viewPath}.html`)
+            output[element] = await this.#render(`./view/${element}/${viewPath}.html`)
           }
         }
       }
@@ -165,7 +165,7 @@ class View {
         if (!this.#part[key]) continue
         if (this.#part[key].includes('.')) this.#part[key] = this.#part[key].replace(/\./g, '/')
         if (fs.existsSync(`./view/${key}/${this.#part[key]}.html`)) {
-          result = result.replace(`{{ ${key.toUpperCase()} }}`, this.#render(`./view/${key}/${this.#part[key]}.html`))
+          result = result.replace(`{{ ${key.toUpperCase()} }}`, await this.#render(`./view/${key}/${this.#part[key]}.html`))
         }
       }
       if (this.#part.all) {
@@ -177,7 +177,7 @@ class View {
             file.splice(-1, 0, part.toLowerCase())
             file = file.join('/')
             if (fs.existsSync(`./view/${file}.html`)) {
-              result = result.replace(`{{ ${part.toUpperCase()} }}`, this.#render(`./view/${file}.html`))
+              result = result.replace(`{{ ${part.toUpperCase()} }}`, await this.#render(`./view/${file}.html`))
             }
           }
       }
@@ -216,11 +216,11 @@ class View {
       attributes = attributes.trim()
 
       const attrs = {}
-      const attrMatches = attributes.match(/(\w+)(?:=["']([^"']*)["'])?/g) || []
-      for (const attr of attrMatches) {
-        const parts = attr.split('=')
-        const key = parts[0].trim()
-        const value = parts[1] ? parts[1].replace(/["']/g, '').trim() : true
+      const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
+      let match
+      while ((match = attrRegex.exec(attributes))) {
+        const key = match[1]
+        const value = match[3] !== undefined ? match[3] : match[4] !== undefined ? match[4] : true
         attrs[key] = value
       }
 
@@ -245,11 +245,11 @@ class View {
         innerContent = innerContent.trim()
 
         const attrs = {}
-        const attrMatches = attributes.match(/(\w+)(?:=["']([^"']*)["'])?/g) || []
-        for (const attr of attrMatches) {
-          const parts = attr.split('=')
-          const key = parts[0].trim()
-          const value = parts[1] ? parts[1].replace(/["']/g, '').trim() : true
+        const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
+        let match
+        while ((match = attrRegex.exec(attributes))) {
+          const key = match[1]
+          const value = match[3] !== undefined ? match[3] : match[4] !== undefined ? match[4] : true
           attrs[key] = value
         }
 
@@ -263,13 +263,13 @@ class View {
             if (variable.startsWith("'") && variable.endsWith("'")) {
               placeholders.push(variable)
             } else {
-              placeholders.push(`Candy.Var(${variable}).html().replace(/\\n/g, "<br>")`)
+              placeholders.push(`Candy.Var(await ${variable}).html().replace(/\\n/g, "<br>")`)
             }
             return `%s${placeholderIndex++}`
           })
 
           processedContent = processedContent.replace(/\{!!([^}]+)!!}/g, (match, variable) => {
-            placeholders.push(variable.trim())
+            placeholders.push(`await ${variable.trim()}`)
             return `%s${placeholderIndex++}`
           })
 
@@ -294,7 +294,7 @@ class View {
     return content
   }
 
-  #render(file) {
+  async #render(file) {
     let mtime = fs.statSync(file).mtimeMs
     let content = fs.readFileSync(file, 'utf8')
 
@@ -325,14 +325,21 @@ class View {
           : result.match(new RegExp(`<candy:${key}.*?>`, 'g'))
         if (!matches) continue
         for (let match of matches) {
-          let args = match.match(/(\w+)(?:=["']([^"']*)["'])?/g) || []
+          const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
+          let attrMatch
+          const args = []
+          while ((attrMatch = attrRegex.exec(match))) {
+            args.push(attrMatch[0])
+          }
           if (!func.close) match = match.replace(/<candy:|>/g, '')
           let vars = {}
           if (func.arguments)
             for (let arg of args) {
-              const parts = arg.split('=')
-              const key = parts[0].trim()
-              const value = parts[1] ? parts[1].replace(/["']/g, '').trim() : true
+              const argRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/
+              const argMatch = argRegex.exec(arg)
+              if (!argMatch) continue
+              const key = argMatch[1]
+              const value = argMatch[3] !== undefined ? argMatch[3] : argMatch[4] !== undefined ? argMatch[4] : true
               if (func.arguments[key] === undefined) {
                 att += `${key}="${value}"`
                 continue
@@ -364,7 +371,10 @@ class View {
       }
       let cache = `${nodeCrypto.createHash('md5').update(file).digest('hex')}`
       if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, {recursive: true})
-      fs.writeFileSync(`${CACHE_DIR}/${cache}`, `module.exports = (Candy, get, __) => {\nlet html = '';\n${result}\nreturn html.trim()\n}`)
+      fs.writeFileSync(
+        `${CACHE_DIR}/${cache}`,
+        `module.exports = async (Candy, get, __) => {\nlet html = '';\n${result}\nreturn html.trim()\n}`
+      )
       delete require.cache[require.resolve(`${__dir}/${CACHE_DIR}/${cache}`)]
       if (!Candy.View) Candy.View = {}
       if (!Candy.View.cache) Candy.View.cache = {}
@@ -374,7 +384,7 @@ class View {
       }
     }
     try {
-      return require(`${__dir}/${CACHE_DIR}/${Candy.View.cache[file].cache}`)(
+      return await require(`${__dir}/${CACHE_DIR}/${Candy.View.cache[file].cache}`)(
         this.#candy,
         key => this.#candy.Request.get(key),
         (...args) => this.#candy.Lang.get(...args)

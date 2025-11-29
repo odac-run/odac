@@ -88,7 +88,8 @@ class Var {
   }
 
   html() {
-    return this.#value.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    if (this.#value === null || this.#value === undefined) return ''
+    return String(this.#value).replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
 
   is(...args) {
