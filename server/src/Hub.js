@@ -1,11 +1,20 @@
-const {log} = Candy.core('Log', false).init('Client')
+const {log} = Candy.core('Log', false).init('Hub')
 
 const axios = require('axios')
+const os = require('os')
 
-class Client {
+class Hub {
   auth(code) {
     log('CandyPack authenticating...')
-    let data = {code: code}
+    const packageJson = require('../../package.json')
+    let data = {
+      code: code,
+      os: os.platform(),
+      arch: os.arch(),
+      hostname: os.hostname(),
+      version: packageJson.version,
+      node: process.version
+    }
     this.call('auth', data)
       .then(response => {
         let token = response.token
@@ -21,7 +30,7 @@ class Client {
   call(action, data) {
     return new Promise((resolve, reject) => {
       axios
-        .post('https://api.candypack.dev/' + action, data)
+        .post('https://hub.candypack.dev/' + action, data)
         .then(response => {
           if (!response.data.result.success) return reject(response.data.result.message)
           resolve(response.data.data)
@@ -34,4 +43,4 @@ class Client {
   }
 }
 
-module.exports = new Client()
+module.exports = new Hub()
