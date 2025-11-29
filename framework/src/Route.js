@@ -203,15 +203,13 @@ class Route {
       if (!Candy.Route.class) Candy.Route.class = {}
       if (Candy.Route.class[name]) {
         if (Candy.Route.class[name].mtime >= fs.statSync(Candy.Route.class[name].path).mtimeMs) continue
-        delete global[name]
         delete require.cache[require.resolve(Candy.Route.class[name].path)]
       }
-      if (global[name]) continue
       Candy.Route.class[name] = {
         path: `${__dir}/controller/${file}`,
-        mtime: fs.statSync(`${__dir}/controller/${file}`).mtimeMs
+        mtime: fs.statSync(`${__dir}/controller/${file}`).mtimeMs,
+        module: require(`${__dir}/controller/${file}`)
       }
-      global[name] = require(Candy.Route.class[name].path)
     }
     let dir = fs.readdirSync(`${__dir}/route/`)
     for (const file of dir) {

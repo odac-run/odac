@@ -223,6 +223,10 @@
         {
           "file": "02-your-trusty-candy-assistant.md",
           "title": "Using Candy"
+        },
+        {
+          "file": "03-controller-classes.md",
+          "title": "Controller Classes"
         }
       ]
     },
