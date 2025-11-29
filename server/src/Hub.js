@@ -4,7 +4,7 @@ const axios = require('axios')
 const os = require('os')
 
 class Hub {
-  auth(code) {
+  async auth(code) {
     log('CandyPack authenticating...')
     const packageJson = require('../../package.json')
     let data = {
@@ -15,16 +15,17 @@ class Hub {
       version: packageJson.version,
       node: process.version
     }
-    this.call('auth', data)
-      .then(response => {
-        let token = response.token
-        let secret = response.secret
-        Candy.core('Config').config.auth = {token: token, secret: secret}
-        log('CandyPack authenticated!')
-      })
-      .catch(error => {
-        log(error ? error : 'CandyPack authentication failed!')
-      })
+    try {
+      const response = await this.call('auth', data)
+      let token = response.token
+      let secret = response.secret
+      Candy.core('Config').config.auth = {token: token, secret: secret}
+      log('CandyPack authenticated!')
+      return Candy.server('Api').result(true, __('Authentication successful'))
+    } catch (error) {
+      log(error ? error : 'CandyPack authentication failed!')
+      return Candy.server('Api').result(false, error || __('Authentication failed'))
+    }
   }
 
   call(action, data) {
