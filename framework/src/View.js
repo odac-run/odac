@@ -53,7 +53,8 @@ class View {
       //  <candy:fetch fetch="/get/products" as="data" method="GET" headers="{}" body="null" refresh="false">
     },
     for: {
-      function: 'for(let $key in $constructor){ let $value = $constructor[$key];',
+      function: '{ let _arr = $constructor; for(let $key in _arr){ let $value = _arr[$key];',
+      end: '}}',
       arguments: {
         var: null,
         get: null,
@@ -85,8 +86,8 @@ class View {
         key: 'key',
         value: 'value'
       },
-      end: '}',
-      function: 'for(let $key in $constructor){ let $value = $constructor[$key];',
+      end: '}}',
+      function: '{ let _arr = $constructor; for(let $key in _arr){ let $value = _arr[$key];',
       replace: 'ul'
     },
     while: {
@@ -324,29 +325,30 @@ class View {
         let func = this.#functions[key]
         let matches = func.close
           ? result.match(new RegExp(`${key}[\\s\\S]*?${func.close}`, 'g'))
-          : result.match(new RegExp(`<candy:${key}.*?>`, 'g'))
+          : result.match(new RegExp(`<candy:${key}[^>]*>`, 'g'))
         if (!matches) continue
         for (let match of matches) {
+          let matchForParsing = match
+          if (!func.close) matchForParsing = matchForParsing.replace(/<candy:|>/g, '')
           const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
           let attrMatch
           const args = []
-          while ((attrMatch = attrRegex.exec(match))) {
+          while ((attrMatch = attrRegex.exec(matchForParsing))) {
             args.push(attrMatch[0])
           }
-          if (!func.close) match = match.replace(/<candy:|>/g, '')
           let vars = {}
           if (func.arguments)
             for (let arg of args) {
               const argRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/
               const argMatch = argRegex.exec(arg)
               if (!argMatch) continue
-              const key = argMatch[1]
+              const argKey = argMatch[1]
               const value = argMatch[3] !== undefined ? argMatch[3] : argMatch[4] !== undefined ? argMatch[4] : true
-              if (func.arguments[key] === undefined) {
-                att += `${key}="${value}"`
+              if (func.arguments[argKey] === undefined) {
+                att += `${argKey}="${value}"`
                 continue
               }
-              vars[key] = value
+              vars[argKey] = value
             }
           if (!func.function) continue
           let fun = func.function
@@ -364,23 +366,21 @@ class View {
               constructor = `get('${vars.get}')`
               delete vars.get
             }
-            fun = fun.replace('$constructor', constructor)
+            fun = fun.replace(/\$constructor/g, constructor)
           }
 
-          for (let key in func.arguments) {
-            if (vars[key] === undefined) {
-              if (func.arguments[key] === null) console.error(`"${key}" is required for "${match}"\n  in "${file}"`)
-              vars[key] = func.arguments[key]
+          for (let argKey in func.arguments) {
+            if (argKey === 'var' || argKey === 'get') continue
+            if (vars[argKey] === undefined) {
+              if (func.arguments[argKey] === null) console.error(`"${argKey}" is required for "${match}"\n  in "${file}"`)
+              vars[argKey] = func.arguments[argKey]
             }
-            fun = fun.replace(new RegExp(`\\$${key}`, 'g'), vars[key])
+            fun = fun.replace(new RegExp(`\\$${argKey}`, 'g'), vars[argKey])
           }
           if (func.close) {
             result = result.replace(match, fun + match.substring(key.length, match.length - func.close.length) + func.end)
           } else {
-            result = result.replace(
-              `<candy:${match}>`,
-              (func.replace ? `<${[func.replace, att].join(' ')}>` : '') + '`; ' + fun + ' html += `'
-            )
+            result = result.replace(match, (func.replace ? `<${[func.replace, att].join(' ')}>` : '') + '`; ' + fun + ' html += `')
             result = result.replace(
               `</candy:${key}>`,
               '`; ' + (func.end ?? '}') + ' html += `' + (func.replace ? `</${func.replace}>` : '')
