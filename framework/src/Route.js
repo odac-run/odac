@@ -101,6 +101,7 @@ class Route {
         Candy.Request.ajaxLoad = loadElements.split(',')
       }
       Candy.Request.isAjaxLoad = true
+      Candy.Request.clientSkeleton = Candy.Request.header('X-Candy-Skeleton')
     }
     if (Candy.Config.route && Candy.Config.route[url]) {
       Candy.Config.route[url] = Candy.Config.route[url].replace('${candy}', `${__dir}/node_modules/candypack`)

@@ -149,11 +149,17 @@ class View {
         }
       }
 
+      const currentSkeleton = this.#part.skeleton || 'main'
+      const clientSkeleton = this.#candy.Request.clientSkeleton
+      const skeletonChanged = clientSkeleton && clientSkeleton !== currentSkeleton
+
       this.#candy.Request.header('Content-Type', 'application/json')
       this.#candy.Request.header('X-Candy-Page', this.#candy.Request.page || '')
+
       this.#candy.Request.end({
         output: output,
-        variables: variables
+        variables: variables,
+        skeletonChanged: skeletonChanged
       })
       return
     }
@@ -162,6 +168,10 @@ class View {
     let result = ''
     if (this.#part.skeleton && fs.existsSync(`./skeleton/${this.#part.skeleton}.html`)) {
       result = fs.readFileSync(`./skeleton/${this.#part.skeleton}.html`, 'utf8')
+
+      // Add data-candy-navigate to content wrapper for auto-navigation
+      result = this.#addNavigateAttribute(result)
+
       for (let key in this.#part) {
         if (['all', 'skeleton'].includes(key)) continue
         if (!this.#part[key]) continue
@@ -429,6 +439,22 @@ class View {
     this.#part.skeleton = name
     this.#sendEarlyHintsIfAvailable()
     return this
+  }
+
+  #addNavigateAttribute(skeleton) {
+    skeleton = skeleton.replace(/(<[^>]+>)(\s*\{\{\s*CONTENT\s*\}\})/, (match, openTag, content) => {
+      if (openTag.includes('data-candy-navigate')) return match
+      const tagWithAttr = openTag.slice(0, -1) + ' data-candy-navigate="content">'
+      return tagWithAttr + content
+    })
+
+    const skeletonName = this.#part.skeleton || 'main'
+    skeleton = skeleton.replace(/<html([^>]*)>/, (match, attrs) => {
+      if (attrs.includes('data-candy-skeleton')) return match
+      return `<html${attrs} data-candy-skeleton="${skeletonName}">`
+    })
+
+    return skeleton
   }
 
   #sendEarlyHintsIfAvailable() {

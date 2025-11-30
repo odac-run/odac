@@ -107,7 +107,7 @@ class candy {
   }
 
   #on(element, event, selector, handler) {
-    element.addEventListener(event, function (e) {
+    element.addEventListener(event, e => {
       let target = e.target.closest(selector)
       if (target) {
         handler.call(target, e)
@@ -600,15 +600,23 @@ class candy {
 
     this.#isNavigating = true
 
+    const currentSkeleton = document.documentElement.dataset.candySkeleton
+
     this.#ajax({
       url: url,
       type: 'GET',
       headers: {
         'X-Candy': 'ajaxload',
-        'X-Candy-Load': Object.keys(this.#loader.elements).join(',')
+        'X-Candy-Load': Object.keys(this.#loader.elements).join(','),
+        'X-Candy-Skeleton': currentSkeleton || ''
       },
       dataType: 'json',
       success: (data, status, xhr) => {
+        if (data.skeletonChanged) {
+          window.location.href = url
+          return
+        }
+
         if (url !== currentUrl && push) {
           window.history.pushState(null, document.title, url)
         }
@@ -690,12 +698,13 @@ class candy {
     this.#loader.elements = elements
     this.#loader.callback = callback
 
+    const candyInstance = this
+
     // Handle link clicks
-    this.#on(document, 'click', selector, e => {
+    this.#on(document, 'click', selector, function (e) {
       if (e.ctrlKey || e.metaKey) return
 
-      // Get the matched anchor element (passed as 'this' from #on method)
-      const anchor = e.currentTarget || e.target.closest(selector)
+      const anchor = this
       if (!anchor) return
 
       const url = anchor.getAttribute('href')
@@ -708,7 +717,7 @@ class candy {
 
       if ((target === null || target === '_self') && !isExternal) {
         e.preventDefault()
-        this.load(url, callback)
+        candyInstance.load(url, callback)
       }
     })
 
@@ -770,6 +779,22 @@ class candy {
 }
 
 window.Candy = new candy()
+
+// Auto-initialize navigation from data-candy-navigate attribute
+;(function initAutoNavigate() {
+  const init = () => {
+    const contentEl = document.querySelector('[data-candy-navigate="content"]')
+    if (contentEl) {
+      window.Candy.loader('a[href^="/"]:not([data-navigate="false"]):not(.no-navigate)', {content: '[data-candy-navigate="content"]'}, null)
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init)
+  } else {
+    init()
+  }
+})()
 
 document.addEventListener('DOMContentLoaded', () => {
   const formTypes = ['register', 'login']
