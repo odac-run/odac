@@ -592,6 +592,17 @@ class candy {
     this.#isNavigating = true
 
     const currentSkeleton = document.documentElement.dataset.candySkeleton
+    const elements = Object.entries(this.#loader.elements)
+
+    // Start fade out immediately for instant feedback
+    const elementsToUpdate = []
+    elements.forEach(([key, selector]) => {
+      const element = document.querySelector(selector)
+      if (element) {
+        elementsToUpdate.push({key, element})
+        this.#fadeOut(element, 200)
+      }
+    })
 
     this.#ajax({
       url: url,
@@ -620,35 +631,22 @@ class candy {
           document.documentElement.dataset.candyPage = newPage
         }
 
-        // Update elements with fade effect
-        const elements = Object.entries(this.#loader.elements)
-        let completed = 0
-
-        if (elements.length === 0) {
+        if (elementsToUpdate.length === 0) {
           this.#handleLoadComplete(data, callback)
           return
         }
 
-        elements.forEach(([key, selector]) => {
-          const element = document.querySelector(selector)
-          if (!element) {
+        // Update content and fade in
+        let completed = 0
+        elementsToUpdate.forEach(({key, element}) => {
+          if (data.output && data.output[key]) {
+            element.innerHTML = data.output[key]
+          }
+          this.#fadeIn(element, 200, () => {
             completed++
-            if (completed === elements.length) {
+            if (completed === elementsToUpdate.length) {
               this.#handleLoadComplete(data, callback)
             }
-            return
-          }
-
-          this.#fadeOut(element, 400, () => {
-            if (data.output && data.output[key]) {
-              element.innerHTML = data.output[key]
-            }
-            this.#fadeIn(element, 400, () => {
-              completed++
-              if (completed === elements.length) {
-                this.#handleLoadComplete(data, callback)
-              }
-            })
           })
         })
       },
