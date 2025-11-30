@@ -40,7 +40,7 @@ class View {
       // TODO: Implement mysql
     },
     elseif: {
-      function: '} else if($condition){',
+      function: '} else if(await ($condition)){',
       arguments: {
         condition: true
       }
@@ -63,7 +63,7 @@ class View {
       }
     },
     if: {
-      function: 'if($condition){',
+      function: 'if(await ($condition)){',
       arguments: {
         condition: true
       }
@@ -91,7 +91,7 @@ class View {
       replace: 'ul'
     },
     while: {
-      function: 'while($condition){',
+      function: 'while(await ($condition)){',
       arguments: {
         condition: true
       }
