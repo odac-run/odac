@@ -612,13 +612,15 @@ class candy {
       },
       dataType: 'json',
       success: (data, status, xhr) => {
+        const finalUrl = xhr.responseURL || url
+
         if (data.skeletonChanged) {
-          window.location.href = url
+          window.location.href = finalUrl
           return
         }
 
-        if (url !== currentUrl && push) {
-          window.history.pushState(null, document.title, url)
+        if (finalUrl !== currentUrl && push) {
+          window.history.pushState(null, document.title, finalUrl)
         }
 
         const newPage = xhr.getResponseHeader('X-Candy-Page')
