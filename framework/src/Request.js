@@ -13,6 +13,7 @@ class CandyRequest {
   variables = {}
   isAjaxLoad = false
   ajaxLoad = null
+  clientSkeleton = null
   page = null
 
   constructor(id, req, res, candy) {
