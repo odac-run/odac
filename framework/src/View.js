@@ -225,7 +225,7 @@ class View {
       return `<candy:js>${jsContent}</candy:js>`
     })
 
-    content = content.replace(/<candy:([a-z]+)([^>]*?)\/>/g, (fullMatch, tagName, attributes) => {
+    content = content.replace(/<candy([^>]*?)\/>/g, (fullMatch, attributes) => {
       attributes = attributes.trim()
 
       const attrs = {}
@@ -237,11 +237,7 @@ class View {
         attrs[key] = value
       }
 
-      if (tagName === 'else') {
-        return '<candy:else>'
-      } else if (tagName === 'elseif' && attrs.condition) {
-        return `<candy:elseif condition="${attrs.condition}">`
-      } else if (attrs.get) {
+      if (attrs.get) {
         return `{{ get('${attrs.get}') || '' }}`
       } else if (attrs.var) {
         if (attrs.raw) {
