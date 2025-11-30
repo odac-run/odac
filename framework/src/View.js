@@ -39,14 +39,14 @@ class View {
     mysql: {
       // TODO: Implement mysql
     },
-    else: {
-      function: '} else {'
-    },
     elseif: {
       function: '} else if($condition){',
       arguments: {
         condition: true
       }
+    },
+    else: {
+      function: '} else {'
     },
     fetch: {
       // TODO: Implement fetch
@@ -225,6 +225,9 @@ class View {
       return `<candy:js>${jsContent}</candy:js>`
     })
 
+    content = content.replace(/<candy:else\s*\/>/g, '<candy:else>')
+    content = content.replace(/<candy:elseif\s+([^>]*?)\/>/g, '<candy:elseif $1>')
+
     content = content.replace(/<candy([^>]*?)\/>/g, (fullMatch, attributes) => {
       attributes = attributes.trim()
 
@@ -335,11 +338,11 @@ class View {
         let func = this.#functions[key]
         let matches = func.close
           ? result.match(new RegExp(`${key}[\\s\\S]*?${func.close}`, 'g'))
-          : result.match(new RegExp(`<candy:${key}[^>]*>`, 'g'))
+          : result.match(new RegExp(`<candy:${key}(?:\\s+[^>]*?(?:"[^"]*"|'[^']*'|[^"'>])*)?>`, 'g'))
         if (!matches) continue
         for (let match of matches) {
           let matchForParsing = match
-          if (!func.close) matchForParsing = matchForParsing.replace(/<candy:|>/g, '')
+          if (!func.close) matchForParsing = matchForParsing.replace(/^<candy:/, '').replace(/>$/, '')
           const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
           let attrMatch
           const args = []
