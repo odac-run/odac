@@ -9,7 +9,7 @@ class Monitor {
   #height
   #logs = {content: [], mtime: null, selected: null, watched: []}
   #logging = false
-  #modules = ['api', 'client', 'config', 'dns', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web']
+  #modules = ['api', 'client', 'config', 'dns', 'hub', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web']
   #printing = false
   #selected = 0
   #services = []
