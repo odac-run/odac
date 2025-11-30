@@ -225,7 +225,7 @@ class View {
       return `<candy:js>${jsContent}</candy:js>`
     })
 
-    content = content.replace(/<candy([^>]*?)\/>/g, (fullMatch, attributes) => {
+    content = content.replace(/<candy:([a-z]+)([^>]*?)\/>/g, (fullMatch, tagName, attributes) => {
       attributes = attributes.trim()
 
       const attrs = {}
@@ -237,7 +237,11 @@ class View {
         attrs[key] = value
       }
 
-      if (attrs.get) {
+      if (tagName === 'else') {
+        return '<candy:else>'
+      } else if (tagName === 'elseif' && attrs.condition) {
+        return `<candy:elseif condition="${attrs.condition}">`
+      } else if (attrs.get) {
         return `{{ get('${attrs.get}') || '' }}`
       } else if (attrs.var) {
         if (attrs.raw) {
@@ -449,9 +453,18 @@ class View {
     })
 
     const skeletonName = this.#part.skeleton || 'main'
+    const pageName = this.#candy.Request.page || ''
+
     skeleton = skeleton.replace(/<html([^>]*)>/, (match, attrs) => {
-      if (attrs.includes('data-candy-skeleton')) return match
-      return `<html${attrs} data-candy-skeleton="${skeletonName}">`
+      const updates = []
+      if (!attrs.includes('data-candy-skeleton')) {
+        updates.push(`data-candy-skeleton="${skeletonName}"`)
+      }
+      if (!attrs.includes('data-candy-page')) {
+        updates.push(`data-candy-page="${pageName}"`)
+      }
+      if (updates.length === 0) return match
+      return `<html${attrs} ${updates.join(' ')}>`
     })
 
     return skeleton

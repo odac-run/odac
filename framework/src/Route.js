@@ -144,7 +144,6 @@ class Route {
         if (authPageController.params)
           for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
         Candy.Request.page = authPageController.cache?.file || authPageController.file
-        Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
         if (typeof authPageController.cache === 'function') {
           return authPageController.cache(Candy)
         }
@@ -154,7 +153,6 @@ class Route {
     if (pageController) {
       if (pageController.params) for (let key in pageController.params) Candy.Request.data.url[key] = pageController.params[key]
       Candy.Request.page = pageController.cache?.file || pageController.file
-      Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
       if (typeof pageController.cache === 'function') {
         return pageController.cache(Candy)
       }

@@ -528,9 +528,7 @@ class candy {
 
   page() {
     if (!this.#page) {
-      let data = this.data()
-      if (data !== null) this.#page = data.page
-      else this.token(true)
+      this.#page = document.documentElement.dataset.candyPage || ''
     }
     return this.#page
   }
@@ -542,7 +540,6 @@ class candy {
   }
 
   token() {
-    let data = this.data()
     if (!this.#token.listener) {
       document.addEventListener('candy:ajaxSuccess', event => {
         const {detail} = event
@@ -556,22 +553,16 @@ class candy {
           console.error('Error in ajaxSuccess token handler:', e)
         }
       })
-      this.#token.listener = true // Mark as listener attached
+      this.#token.listener = true
     }
     if (!this.#token.hash.length) {
-      if (!this.#token.data && data) {
-        this.#page = data.page
-        this.#token.hash.push(data.token)
-        this.#token.data = true
-      } else {
-        var req = new XMLHttpRequest()
-        req.open('GET', '/', false)
-        req.setRequestHeader('X-Candy', 'token')
-        req.setRequestHeader('X-Candy-Client', this.client())
-        req.send(null)
-        var req_data = JSON.parse(req.response)
-        if (req_data.token) this.#token.hash.push(req_data.token)
-      }
+      var req = new XMLHttpRequest()
+      req.open('GET', '/', false)
+      req.setRequestHeader('X-Candy', 'token')
+      req.setRequestHeader('X-Candy-Client', this.client())
+      req.send(null)
+      var req_data = JSON.parse(req.response)
+      if (req_data.token) this.#token.hash.push(req_data.token)
     }
     this.#token.hash.filter(n => n)
     var return_token = this.#token.hash.shift()
@@ -624,7 +615,10 @@ class candy {
         }
 
         const newPage = xhr.getResponseHeader('X-Candy-Page')
-        if (newPage) this.#page = newPage
+        if (newPage) {
+          this.#page = newPage
+          document.documentElement.dataset.candyPage = newPage
+        }
 
         // Update elements with fade effect
         const elements = Object.entries(this.#loader.elements)
