@@ -2,11 +2,39 @@ const {log} = Candy.core('Log', false).init('Hub')
 
 const axios = require('axios')
 const os = require('os')
+const fs = require('fs')
 
 class Hub {
+  getLinuxDistro() {
+    if (os.platform() !== 'linux') return null
+
+    try {
+      const osRelease = fs.readFileSync('/etc/os-release', 'utf8')
+      const lines = osRelease.split('\n')
+      const distro = {}
+
+      for (const line of lines) {
+        const [key, value] = line.split('=')
+        if (key && value) {
+          distro[key] = value.replace(/"/g, '')
+        }
+      }
+
+      return {
+        name: distro.NAME || distro.ID || 'Unknown',
+        version: distro.VERSION_ID || distro.VERSION || 'Unknown',
+        id: distro.ID || 'unknown'
+      }
+    } catch {
+      return null
+    }
+  }
+
   async auth(code) {
     log('CandyPack authenticating...')
     const packageJson = require('../../package.json')
+    const distro = this.getLinuxDistro()
+
     let data = {
       code: code,
       os: os.platform(),
@@ -14,6 +42,10 @@ class Hub {
       hostname: os.hostname(),
       version: packageJson.version,
       node: process.version
+    }
+
+    if (distro) {
+      data.distro = distro
     }
     try {
       const response = await this.call('auth', data)
