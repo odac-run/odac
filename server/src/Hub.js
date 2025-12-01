@@ -82,20 +82,42 @@ class Hub {
       axios
         .post(url, data)
         .then(response => {
-          log('Response received for %s: success=%s', action, response.data.result.success)
+          log('Raw response received for %s', action)
+          log('Response structure: %j', {
+            hasData: !!response.data,
+            hasResult: !!(response.data && response.data.result),
+            dataKeys: response.data ? Object.keys(response.data) : []
+          })
+
+          if (!response.data) {
+            log('Response has no data')
+            return reject('Invalid response: no data')
+          }
+
+          if (!response.data.result) {
+            log('Response has no result field')
+            return reject('Invalid response: no result field')
+          }
+
           if (!response.data.result.success) {
             log('API returned error: %s', response.data.result.message)
             return reject(response.data.result.message)
           }
+
           log('API call successful: %s', action)
           resolve(response.data.data)
         })
         .catch(error => {
           log('API call failed: %s - %s', action, error.message)
           if (error.response) {
+            log('Error response status: %s', error.response.status)
             log('Error response data: %j', error.response.data)
             reject(error.response.data)
+          } else if (error.request) {
+            log('No response received, request was made')
+            reject('No response from server')
           } else {
+            log('Request setup error: %s', error.message)
             reject(error.message)
           }
         })
