@@ -594,15 +594,75 @@ class candy {
     const currentSkeleton = document.documentElement.dataset.candySkeleton
     const elements = Object.entries(this.#loader.elements)
 
-    // Start fade out immediately for instant feedback
+    // Collect elements to update
     const elementsToUpdate = []
     elements.forEach(([key, selector]) => {
       const element = document.querySelector(selector)
       if (element) {
         elementsToUpdate.push({key, element})
-        this.#fadeOut(element, 200)
       }
     })
+
+    let ajaxData = null
+    let ajaxXhr = null
+    let fadeOutComplete = false
+    let ajaxComplete = false
+
+    const applyUpdate = () => {
+      if (!fadeOutComplete || !ajaxComplete || !ajaxData) return
+
+      const finalUrl = ajaxXhr.responseURL || url
+
+      if (ajaxData.skeletonChanged) {
+        window.location.href = finalUrl
+        return
+      }
+
+      if (finalUrl !== currentUrl && push) {
+        window.history.pushState(null, document.title, finalUrl)
+      }
+
+      const newPage = ajaxXhr.getResponseHeader('X-Candy-Page')
+      if (newPage) {
+        this.#page = newPage
+        document.documentElement.dataset.candyPage = newPage
+      }
+
+      if (elementsToUpdate.length === 0) {
+        this.#handleLoadComplete(ajaxData, callback)
+        return
+      }
+
+      // Update content and fade in
+      let completed = 0
+      elementsToUpdate.forEach(({key, element}) => {
+        if (ajaxData.output && ajaxData.output[key] !== undefined) {
+          element.innerHTML = ajaxData.output[key]
+        }
+        this.#fadeIn(element, 200, () => {
+          completed++
+          if (completed === elementsToUpdate.length) {
+            this.#handleLoadComplete(ajaxData, callback)
+          }
+        })
+      })
+    }
+
+    // Start fade out
+    if (elementsToUpdate.length > 0) {
+      let fadeOutCount = 0
+      elementsToUpdate.forEach(({element}) => {
+        this.#fadeOut(element, 200, () => {
+          fadeOutCount++
+          if (fadeOutCount === elementsToUpdate.length) {
+            fadeOutComplete = true
+            applyUpdate()
+          }
+        })
+      })
+    } else {
+      fadeOutComplete = true
+    }
 
     this.#ajax({
       url: url,
@@ -614,41 +674,10 @@ class candy {
       },
       dataType: 'json',
       success: (data, status, xhr) => {
-        const finalUrl = xhr.responseURL || url
-
-        if (data.skeletonChanged) {
-          window.location.href = finalUrl
-          return
-        }
-
-        if (finalUrl !== currentUrl && push) {
-          window.history.pushState(null, document.title, finalUrl)
-        }
-
-        const newPage = xhr.getResponseHeader('X-Candy-Page')
-        if (newPage) {
-          this.#page = newPage
-          document.documentElement.dataset.candyPage = newPage
-        }
-
-        if (elementsToUpdate.length === 0) {
-          this.#handleLoadComplete(data, callback)
-          return
-        }
-
-        // Update content and fade in
-        let completed = 0
-        elementsToUpdate.forEach(({key, element}) => {
-          if (data.output && data.output[key]) {
-            element.innerHTML = data.output[key]
-          }
-          this.#fadeIn(element, 200, () => {
-            completed++
-            if (completed === elementsToUpdate.length) {
-              this.#handleLoadComplete(data, callback)
-            }
-          })
-        })
+        ajaxData = data
+        ajaxXhr = xhr
+        ajaxComplete = true
+        applyUpdate()
       },
       error: () => {
         this.#isNavigating = false
