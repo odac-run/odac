@@ -119,6 +119,16 @@ class Route {
         }
       }
     }
+    if (Candy.Request.route === '_candy_internal') {
+      let controller = this.#controller('_candy_internal', Candy.Request.method, url)
+      if (controller) {
+        Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        if (typeof controller.cache === 'function') {
+          if (controller.params) for (let key in controller.params) Candy.Request.data.url[key] = controller.params[key]
+          return controller.cache(Candy)
+        }
+      }
+    }
     for (let method of ['#' + Candy.Request.method, Candy.Request.method]) {
       let controller = this.#controller(Candy.Request.route, method, url)
       if (controller && (await Candy.Auth.check())) {
