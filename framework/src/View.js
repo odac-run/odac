@@ -156,6 +156,7 @@ class View {
 
       this.#candy.Request.header('Content-Type', 'application/json')
       this.#candy.Request.header('X-Candy-Page', this.#candy.Request.page || '')
+      this.#candy.Request.header('Vary', 'X-Candy')
 
       this.#candy.Request.end({
         output: output,

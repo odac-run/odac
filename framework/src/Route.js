@@ -329,8 +329,8 @@ class Route {
       if (result instanceof Stream) return
       if (param.Request.res.finished || param.Request.res.writableEnded) return
       if (result) param.Request.end(result)
-      param.Request.print(param)
       await param.View.print(param)
+      param.Request.print(param)
     } catch (e) {
       console.error(e)
       param.Request.abort(500)
