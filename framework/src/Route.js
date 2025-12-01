@@ -323,6 +323,8 @@ class Route {
     try {
       let result = this.check(param)
       if (result instanceof Promise) result = await result
+      const Stream = require('./Stream.js')
+      if (result instanceof Stream) return
       if (result) param.Request.end(result)
       param.Request.print(param)
       await param.View.print(param)

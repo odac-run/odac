@@ -12,6 +12,14 @@ class Stream {
   }
 
   #init() {
+    if (this.#res.headersSent || this.#res.writableEnded) {
+      this.#closed = true
+      return
+    }
+
+    this.#req.setTimeout(0)
+    this.#res.setTimeout(0)
+
     this.#res.setHeader('Content-Type', 'text/event-stream')
     this.#res.setHeader('Cache-Control', 'no-cache')
     this.#res.setHeader('Connection', 'keep-alive')
@@ -116,7 +124,9 @@ class Stream {
     if (this.#closed) return
     this.#closed = true
     clearInterval(this.#heartbeat)
-    this.#res.end()
+    if (!this.#res.writableEnded) {
+      this.#res.end()
+    }
   }
 
   #pipeIterator(iterator) {

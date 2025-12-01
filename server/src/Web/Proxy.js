@@ -33,7 +33,8 @@ class WebProxy {
       port: website.port,
       path: req.url,
       method: req.method,
-      headers: {}
+      headers: {},
+      timeout: 0
     }
 
     for (const [key, value] of Object.entries(req.headers)) {
@@ -47,6 +48,12 @@ class WebProxy {
 
     const proxyReq = http.request(options, proxyRes => {
       this.#handleEarlyHints(proxyRes, res)
+
+      const isSSE = proxyRes.headers['content-type']?.includes('text/event-stream')
+      if (isSSE) {
+        req.setTimeout(0)
+        res.setTimeout(0)
+      }
 
       const responseHeaders = {}
       const forbiddenHeaders = [
@@ -90,6 +97,13 @@ class WebProxy {
     const onProxyRes = (proxyRes, req, res) => {
       this.#handleEarlyHints(proxyRes, res)
       delete proxyRes.headers['x-candy-early-hints']
+
+      const isSSE = proxyRes.headers['content-type']?.includes('text/event-stream')
+      if (isSSE) {
+        req.setTimeout(0)
+        res.setTimeout(0)
+        proxyRes.setTimeout(0)
+      }
     }
 
     const onError = (err, req, res) => {
@@ -113,7 +127,7 @@ class WebProxy {
     res.on('finish', cleanup)
     res.on('close', cleanup)
 
-    this.#proxy.web(req, res, {target: 'http://127.0.0.1:' + website.port})
+    this.#proxy.web(req, res, {target: 'http://127.0.0.1:' + website.port, timeout: 0, proxyTimeout: 0})
   }
 }
 
