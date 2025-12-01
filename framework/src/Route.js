@@ -64,6 +64,11 @@ const mime = {
 class Route {
   loading = false
   routes = {}
+  auth = {
+    page: (path, authFile, file) => this.authPage(path, authFile, file),
+    post: (path, authFile, file) => this.authPost(path, authFile, file),
+    get: (path, authFile, file) => this.authGet(path, authFile, file)
+  }
 
   async check(Candy) {
     let url = Candy.Request.url.split('?')[0]
@@ -122,7 +127,7 @@ class Route {
     for (let method of ['#' + Candy.Request.method, Candy.Request.method]) {
       let controller = this.#controller(Candy.Request.route, method, url)
       if (controller) {
-        if (!Candy.Request.method.startsWith('#') || (await Candy.Auth.check())) {
+        if (!method.startsWith('#') || (await Candy.Auth.check())) {
           Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
           if (
             ['post', 'get'].includes(Candy.Request.method) &&

@@ -16,15 +16,15 @@ Candy.Route.page("/users", {
 ```
 This example tells CandyPack to render the `/users` page by assembling a view from multiple parts, likely using a main `dashboard` skeleton and filling it with different content blocks.
 
-#### `authPage(path, { ... }, { ... })`
-Similar to `page()`, but requires authentication. You can provide two view configurations: one for authenticated users and one for guests.
+#### `auth.page(path, { ... })`
+Similar to `page()`, but requires authentication. Only authenticated users can access this route.
 
 ```javascript
-// Authenticated users see the dashboard, guests see the login page
-Candy.Route.authPage('/', 
-    {skeleton: 'main', content: 'dashboard'},
-    {skeleton: 'auth', content: 'auth.login'}
-);
+// Only authenticated users can see the dashboard
+Candy.Route.auth.page('/', {
+    skeleton: 'main', 
+    content: 'dashboard'
+});
 ```
 
 See [Authentication-Aware Routes](04-authentication-aware-routes.md) for more details.
