@@ -88,9 +88,11 @@ class Route {
     ) {
       Candy.Request.header('Access-Control-Allow-Origin', (Candy.Request.ssl ? 'https://' : 'http://') + Candy.Request.host)
       Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+      const routeData = this.routes[Candy.Request.route]
+      const pageFile = routeData?.page?.[url]?.file || routeData?.error?.[404]?.file || ''
       return {
         token: Candy.token(),
-        page: this.routes[Candy.Request.route]['page'][url].file || this.routes[Candy.Request.route].error[404].file || ''
+        page: pageFile
       }
     }
 
