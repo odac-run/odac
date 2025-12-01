@@ -121,7 +121,7 @@ class Route {
     }
     for (let method of ['#' + Candy.Request.method, Candy.Request.method]) {
       let controller = this.#controller(Candy.Request.route, method, url)
-      if (controller) {
+      if (controller && (await Candy.Auth.check())) {
         if (!Candy.Request.method.startsWith('#') || (await Candy.Auth.check())) {
           Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
           if (
@@ -138,14 +138,11 @@ class Route {
       }
     }
     let authPageController = this.#controller(Candy.Request.route, '#page', url)
-    if (authPageController) {
-      if (await Candy.Auth.check()) {
-        if (authPageController.params)
-          for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
-        Candy.Request.page = authPageController.cache?.file || authPageController.file
-        if (typeof authPageController.cache === 'function') {
-          return authPageController.cache(Candy)
-        }
+    if (authPageController && (await Candy.Auth.check())) {
+      if (authPageController.params) for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
+      Candy.Request.page = authPageController.cache?.file || authPageController.file
+      if (typeof authPageController.cache === 'function') {
+        return authPageController.cache(Candy)
       }
     }
     let pageController = this.#controller(Candy.Request.route, 'page', url)
