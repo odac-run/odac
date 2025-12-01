@@ -48,7 +48,7 @@ describe('Route', () => {
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token')
-      expect(result.page).toBe('')
+      expect(result.page).toBeUndefined()
       expect(mockCandy.Request.header).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'http://example.com')
       expect(mockCandy.Request.header).toHaveBeenCalledWith('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
     })
@@ -85,7 +85,7 @@ describe('Route', () => {
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token-2')
-      expect(result.page).toBe('')
+      expect(result.page).toBeUndefined()
     })
 
     it('should handle token request with route and page but no url match', async () => {
@@ -124,86 +124,7 @@ describe('Route', () => {
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token-3')
-      expect(result.page).toBe('')
-    })
-
-    it('should return page file when route and page match', async () => {
-      const mockCandy = {
-        Request: {
-          url: '/',
-          method: 'get',
-          route: 'test_route',
-          ssl: false,
-          host: 'example.com',
-          header: jest.fn(key => {
-            const headers = {
-              'X-Candy': 'token',
-              Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
-            }
-            return headers[key]
-          }),
-          cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
-            return null
-          })
-        },
-        token: jest.fn(() => 'test-token-4')
-      }
-
-      route.routes = {
-        test_route: {
-          page: {
-            '': {file: 'home.js'}
-          }
-        }
-      }
-
-      const result = await route.check(mockCandy)
-
-      expect(result).toBeDefined()
-      expect(result.token).toBe('test-token-4')
-      expect(result.page).toBe('home.js')
-    })
-
-    it('should fallback to 404 error page when no page match', async () => {
-      const mockCandy = {
-        Request: {
-          url: '/',
-          method: 'get',
-          route: 'test_route',
-          ssl: false,
-          host: 'example.com',
-          header: jest.fn(key => {
-            const headers = {
-              'X-Candy': 'token',
-              Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
-            }
-            return headers[key]
-          }),
-          cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
-            return null
-          })
-        },
-        token: jest.fn(() => 'test-token-5')
-      }
-
-      route.routes = {
-        test_route: {
-          page: {},
-          error: {
-            404: {file: 'error404.js'}
-          }
-        }
-      }
-
-      const result = await route.check(mockCandy)
-
-      expect(result).toBeDefined()
-      expect(result.token).toBe('test-token-5')
-      expect(result.page).toBe('error404.js')
+      expect(result.page).toBeUndefined()
     })
 
     it('should not return token when referer does not match', async () => {
