@@ -751,7 +751,7 @@ class candy {
   }
 
   listen(url, onMessage, options = {}) {
-    const {onError = null, onOpen = null, autoReconnect = true, reconnectDelay = 3000} = options
+    const {onError = null, onOpen = null, autoReconnect = false, reconnectDelay = 3000} = options
 
     let eventSource = null
     let reconnectTimer = null
