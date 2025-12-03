@@ -270,7 +270,15 @@ class View {
           attrs[key] = value
         }
 
-        if (attrs.t || attrs.translate) {
+        if (attrs.get) {
+          return `{{ get('${attrs.get}') || '' }}`
+        } else if (attrs.var) {
+          if (attrs.raw) {
+            return `{!! ${attrs.var} !!}`
+          } else {
+            return `{{ ${attrs.var} }}`
+          }
+        } else if (attrs.t || attrs.translate) {
           const placeholders = []
           let processedContent = innerContent
           let placeholderIndex = 1
@@ -293,14 +301,12 @@ class View {
           const translationCall =
             placeholders.length > 0 ? `__('${processedContent}', ${placeholders.join(', ')})` : `__('${processedContent}')`
 
-          // Check if raw attribute is present
           if (attrs.raw) {
             return `{!! ${translationCall} !!}`
           } else {
             return `{{ ${translationCall} }}`
           }
         } else {
-          // <candy> without attributes = string literal
           return `{{ '${innerContent}' }}`
         }
       })
