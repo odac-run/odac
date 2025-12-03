@@ -11,7 +11,7 @@ const path = require('path')
 const tls = require('tls')
 
 const WebProxy = require('./Web/Proxy.js')
-const WebFirewall = require('./Web/Firewall.js')
+const Firewall = require('./Firewall.js')
 
 class Web {
   #active = {}
@@ -31,7 +31,7 @@ class Web {
   constructor() {
     this.#log = log
     this.#proxy = new WebProxy(this.#log)
-    this.#firewall = new WebFirewall()
+    this.#firewall = new Firewall()
   }
 
   clearSSLCache(domain) {
@@ -189,7 +189,8 @@ class Web {
   }
 
   request(req, res, secure) {
-    const result = this.#firewall.check(req)
+    let ip = req.socket?.remoteAddress || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+    const result = this.#firewall.check(ip)
     if (!result.allowed) {
       if (result.reason === 'blacklist') {
         res.writeHead(403, {'Content-Type': 'text/plain'})

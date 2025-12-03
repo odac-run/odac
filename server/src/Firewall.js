@@ -1,7 +1,7 @@
 const {log} = Candy.core('Log', false).init('Firewall')
 
 /**
- * Firewall class to handle IP blocking and rate limiting.
+ * Firewall class to handle IP blocking and rate limiting for all services (Web, DNS, Mail, etc).
  */
 class Firewall {
   #requestCounts = new Map() // IP -> { count, timestamp }
@@ -35,23 +35,17 @@ class Firewall {
   }
 
   /**
-   * Check if a request should be allowed.
-   * @param {Object} req - The HTTP request object.
+   * Check if an IP should be allowed.
+   * @param {string} ip - The IP address to check.
    * @returns {Object} An object containing {allowed: boolean, reason?: string}.
    */
-  check(req) {
+  check(ip) {
     if (!this.#config.enabled) return {allowed: true}
-
-    // Extract IP address safely, handling x-forwarded-for which can be a comma-separated list
-    let ip = req.socket?.remoteAddress || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
 
     // Normalize IPv6-mapped IPv4 addresses
     if (ip && ip.startsWith('::ffff:')) {
       ip = ip.substring(7)
     }
-
-    // Note: Native IPv6 addresses are not fully normalized (e.g. :: vs 0:0...).
-    // Blacklist/Whitelist entries for IPv6 should match the format provided by the socket (usually compressed).
 
     if (!ip) return {allowed: true}
 
@@ -160,10 +154,6 @@ class Firewall {
 
     Candy.core('Config').config.firewall.blacklist = Array.from(this.#config.blacklist)
     Candy.core('Config').config.firewall.whitelist = Array.from(this.#config.whitelist)
-    // Config module handles saving automatically when properties change if using Proxy,
-    // but here we are modifying the object structure.
-    // Assuming Config module watches for changes or we need to trigger save.
-    // Looking at Config.js, it uses Proxy to detect changes.
   }
 }
 
