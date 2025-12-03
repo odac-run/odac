@@ -16,6 +16,19 @@ Candy.Route.page("/users", {
 ```
 This example tells CandyPack to render the `/users` page by assembling a view from multiple parts, likely using a main `dashboard` skeleton and filling it with different content blocks.
 
+**Page Identifier:** When using view objects, the page identifier (accessible via `Candy.page()` in frontend) is automatically set to the `content` or `all` value. In this example, the page identifier would be `"users"`, allowing you to run page-specific JavaScript:
+
+```javascript
+// Frontend
+Candy.action({
+  page: {
+    users: function() {
+      console.log('Users page loaded')
+    }
+  }
+})
+```
+
 #### `auth.page(path, { ... })`
 Similar to `page()`, but requires authentication. Only authenticated users can access this route.
 

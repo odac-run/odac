@@ -623,7 +623,7 @@ class candy {
       }
 
       const newPage = ajaxXhr.getResponseHeader('X-Candy-Page')
-      if (newPage) {
+      if (newPage !== null) {
         this.#page = newPage
         document.documentElement.dataset.candyPage = newPage
       }

@@ -14,7 +14,10 @@ Actions are the fundamental building block of `candy.js`. An action is a collect
 
 ### Pages
 
-`candy.js` has a concept of "pages", which allows you to scope your JavaScript to a specific page. The current page is determined by the backend and passed to the frontend via a cookie.
+`candy.js` has a concept of "pages", which allows you to scope your JavaScript to a specific page. The current page identifier is determined by the backend based on:
+- **Controller name** when using controller files (e.g., `'user'` for `controller/page/user.js`)
+- **View name** when using view objects (e.g., `'dashboard'` from `{content: 'dashboard'}`)
+- This identifier is accessible via `Candy.page()` and stored in `data-candy-page` attribute on the `<html>` element.
 
 ### Lifecycle Events
 
@@ -129,7 +132,7 @@ Candy.get('/api/users', function(data) {
 
 -   **`Candy.client()`**: Returns a unique client identifier from a cookie.
 -   **`Candy.data()`**: Returns data from the `candy_data` cookie, which is set by the backend. This data includes the current page and the initial CSRF token.
--   **`Candy.page()`**: Returns the identifier of the current page.
+-   **`Candy.page()`**: Returns the identifier of the current page. This is the controller name (e.g., `'user'`) or view name (e.g., `'dashboard'`) set by the backend. Use this to conditionally run code for specific pages.
 -   **`Candy.storage()`**: A wrapper for `localStorage`.
     ```javascript
     // Set a value

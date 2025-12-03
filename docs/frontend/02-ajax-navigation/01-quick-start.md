@@ -320,21 +320,34 @@ Candy.load('/about', function(page, variables) {
 
 ## Page-Specific Actions
 
-Run code when specific pages load:
+Run code when specific pages load. The page identifier is based on the controller name or view name:
 
 ```javascript
 Candy.action({
   page: {
+    // Runs when controller/page/index.js is used
     index: function(variables) {
       console.log('Home page loaded')
     },
+    
+    // Runs when controller/page/about.js is used
     about: function(variables) {
       console.log('About page loaded')
       console.log('Server data:', variables)
+    },
+    
+    // Runs when view object has {content: 'dashboard'}
+    dashboard: function(variables) {
+      console.log('Dashboard loaded')
     }
   }
 })
 ```
+
+**Page Identifier Rules:**
+- **With controller**: Uses controller filename (e.g., `user.js` → `'user'`)
+- **With view object**: Uses `content` or `all` value (e.g., `{content: 'dashboard'}` → `'dashboard'`)
+- Accessible via `Candy.page()` or `document.documentElement.dataset.candyPage`
 
 ## Server Variables
 

@@ -435,6 +435,10 @@ class View {
     if (args.length === 1 && typeof args[0] === 'object') for (let key in args[0]) this.#part[key] = args[0][key]
     else if (args.length === 2) this.#part[args[0]] = args[1]
 
+    if (!this.#candy.Request.page) {
+      this.#candy.Request.page = this.#part.content || this.#part.all || ''
+    }
+
     this.#sendEarlyHintsIfAvailable()
     return this
   }

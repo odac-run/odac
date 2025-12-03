@@ -13,3 +13,16 @@ Candy.Route.page('/', 'index');
 // When a user visits yoursite.com/contact
 Candy.Route.page('/contact', 'contact-form');
 ```
+
+**Page Identifier:** The controller filename becomes the page identifier in the frontend. For example, `'contact-form'` becomes accessible as `Candy.page()` returning `"contact-form"`. This allows you to run page-specific JavaScript:
+
+```javascript
+// Frontend
+Candy.action({
+  page: {
+    'contact-form': function() {
+      console.log('Contact form page loaded')
+    }
+  }
+})
+```
