@@ -7,12 +7,34 @@ const fs = require('fs')
 
 class Hub {
   constructor() {
-    setTimeout(() => {
-      this.check()
-      setInterval(() => {
+    this.websocket = null
+    this.httpInterval = null
+    this.websocketReconnectAttempts = 0
+    this.maxReconnectAttempts = 5
+
+    this.startHttpPolling()
+  }
+
+  startHttpPolling() {
+    if (this.httpInterval) {
+      return
+    }
+
+    log('Starting HTTP polling (60s interval)')
+    this.check()
+    this.httpInterval = setInterval(() => {
+      if (!this.websocket) {
         this.check()
-      }, 10000)
-    }, 1000)
+      }
+    }, 10000)
+  }
+
+  stopHttpPolling() {
+    if (this.httpInterval) {
+      log('Stopping HTTP polling')
+      clearInterval(this.httpInterval)
+      this.httpInterval = null
+    }
   }
 
   async check() {
@@ -25,18 +47,152 @@ class Hub {
       const status = this.getSystemStatus()
       status.timestamp = Math.floor(Date.now() / 1000)
 
-      const response = await this.call('report', status)
+      const response = await this.call('status', status)
 
-      if (response.commands && response.commands.length > 0) {
-        if (this.verifyResponse(response)) {
-          this.processCommands(response)
-        } else {
-          log('Response verification failed, ignoring commands')
+      if (!response.authenticated) {
+        log('Server not authenticated: %s', response.reason || 'unknown')
+        if (response.reason === 'token_invalid' || response.reason === 'signature_invalid') {
+          log('Authentication credentials invalid, clearing config')
+          delete Candy.core('Config').config.hub
         }
+        return
+      }
+
+      if (response.websocket && !this.websocket) {
+        log('WebSocket requested by cloud')
+        this.connectWebSocket(response.websocketUrl, response.websocketToken)
       }
     } catch (error) {
       log('Failed to report status: %s', error)
     }
+  }
+
+  connectWebSocket(url, token) {
+    if (this.websocket) {
+      log('WebSocket already connected')
+      return
+    }
+
+    try {
+      const WebSocket = require('ws')
+      const wsUrl = `${url}?token=${token}`
+
+      log('Connecting to WebSocket: %s', url)
+      this.websocket = new WebSocket(wsUrl, {
+        rejectUnauthorized: true
+      })
+
+      this.websocket.on('open', () => {
+        log('WebSocket connected')
+        this.websocketReconnectAttempts = 0
+        this.stopHttpPolling()
+        this.sendWebSocketStatus()
+      })
+
+      this.websocket.on('message', data => {
+        this.handleWebSocketMessage(data)
+      })
+
+      this.websocket.on('close', () => {
+        log('WebSocket disconnected')
+        this.websocket = null
+        this.startHttpPolling()
+      })
+
+      this.websocket.on('error', error => {
+        log('WebSocket error: %s', error.message)
+      })
+    } catch (error) {
+      log('Failed to connect WebSocket: %s', error.message)
+      this.websocket = null
+      this.startHttpPolling()
+    }
+  }
+
+  disconnectWebSocket() {
+    if (this.websocket) {
+      log('Disconnecting WebSocket')
+      this.websocket.close()
+      this.websocket = null
+      this.startHttpPolling()
+    }
+  }
+
+  sendWebSocketStatus() {
+    if (!this.websocket || this.websocket.readyState !== 1) {
+      return
+    }
+
+    const status = this.getSystemStatus()
+    const timestamp = Math.floor(Date.now() / 1000)
+
+    const message = {
+      type: 'status',
+      data: status,
+      timestamp: timestamp,
+      signature: this.signWebSocketMessage({type: 'status', data: status, timestamp})
+    }
+
+    this.websocket.send(JSON.stringify(message))
+  }
+
+  handleWebSocketMessage(data) {
+    try {
+      const message = JSON.parse(data.toString())
+
+      if (message.type === 'disconnect') {
+        log('Cloud requested disconnect: %s', message.reason || 'unknown')
+        this.disconnectWebSocket()
+        return
+      }
+
+      if (message.type === 'command') {
+        if (this.verifyWebSocketMessage(message)) {
+          this.processCommand(message.data)
+        } else {
+          log('WebSocket message verification failed')
+        }
+      }
+    } catch (error) {
+      log('Failed to handle WebSocket message: %s', error.message)
+    }
+  }
+
+  signWebSocketMessage(message) {
+    const hub = Candy.core('Config').config.hub
+    if (!hub || !hub.secret) {
+      return null
+    }
+
+    const payload = JSON.stringify({type: message.type, data: message.data, timestamp: message.timestamp})
+    return nodeCrypto.createHmac('sha256', hub.secret).update(payload).digest('hex')
+  }
+
+  verifyWebSocketMessage(message) {
+    const {type, data, timestamp, signature} = message
+
+    if (!signature || !timestamp) {
+      log('Missing signature or timestamp in WebSocket message')
+      return false
+    }
+
+    const now = Math.floor(Date.now() / 1000)
+    if (Math.abs(now - timestamp) > 300) {
+      log('WebSocket message timestamp too old or in future')
+      return false
+    }
+
+    const expectedSignature = this.signWebSocketMessage({type, data, timestamp})
+    if (signature !== expectedSignature) {
+      log('Invalid WebSocket message signature')
+      return false
+    }
+
+    return true
+  }
+
+  processCommand(command) {
+    log('Processing command: %s', command.action)
   }
 
   getSystemStatus() {
@@ -74,43 +230,6 @@ class Hub {
     const usage = 100 - ~~((100 * idle) / total)
 
     return usage
-  }
-
-  verifyResponse(response) {
-    const {commands, timestamp, signature} = response
-
-    if (!signature || !timestamp) {
-      log('Missing signature or timestamp')
-      return false
-    }
-
-    const now = Math.floor(Date.now() / 1000)
-    if (Math.abs(now - timestamp) > 300) {
-      log('Timestamp too old or in future: %d seconds difference', Math.abs(now - timestamp))
-      return false
-    }
-
-    const hub = Candy.core('Config').config.hub
-    const expectedSignature = nodeCrypto
-      .createHmac('sha256', hub.secret)
-      .update(JSON.stringify(commands) + timestamp)
-      .digest('hex')
-
-    if (signature !== expectedSignature) {
-      log('Invalid signature')
-      return false
-    }
-
-    log('Response verified successfully')
-    return true
-  }
-
-  processCommands(response) {
-    const {commands} = response
-    log('Processing %d commands', commands.length)
-    for (const cmd of commands) {
-      log('Command: %s', cmd.action)
-    }
   }
 
   getLinuxDistro() {
@@ -239,6 +358,12 @@ class Hub {
 
           if (!response.data.result.success) {
             log('API returned error: %s', response.data.result.message)
+
+            if (response.data.data && response.data.data.authenticated === false) {
+              log('Authentication failed, returning data for handling')
+              return resolve(response.data.data)
+            }
+
             return reject(response.data.result.message)
           }
 
