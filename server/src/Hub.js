@@ -198,6 +198,7 @@ class Hub {
   getSystemStatus() {
     const totalMem = os.totalmem()
     const freeMem = os.freemem()
+    const diskInfo = this.getDiskUsage()
 
     return {
       cpu: this.getCpuUsage(),
@@ -205,11 +206,55 @@ class Hub {
         used: totalMem - freeMem,
         total: totalMem
       },
+      disk: diskInfo,
       uptime: os.uptime(),
       hostname: os.hostname(),
       platform: os.platform(),
       arch: os.arch(),
       node: process.version
+    }
+  }
+
+  getDiskUsage() {
+    try {
+      const {execSync} = require('child_process')
+      let command
+
+      if (os.platform() === 'win32') {
+        command = 'wmic logicaldisk get size,freespace,caption'
+      } else {
+        command = "df -k / | tail -1 | awk '{print $2,$3}'"
+      }
+
+      const output = execSync(command, {encoding: 'utf8'})
+
+      if (os.platform() === 'win32') {
+        const lines = output.trim().split('\n')
+        if (lines.length > 1) {
+          const parts = lines[1].trim().split(/\s+/)
+          const free = parseInt(parts[1]) || 0
+          const total = parseInt(parts[2]) || 0
+          return {
+            used: total - free,
+            total: total
+          }
+        }
+      } else {
+        const parts = output.trim().split(/\s+/)
+        const total = parseInt(parts[0]) * 1024
+        const used = parseInt(parts[1]) * 1024
+        return {
+          used: used,
+          total: total
+        }
+      }
+    } catch (error) {
+      log('Failed to get disk usage: %s', error.message)
+    }
+
+    return {
+      used: 0,
+      total: 0
     }
   }
 
