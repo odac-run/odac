@@ -21,7 +21,7 @@ class Hub {
 
     try {
       const status = this.getSystemStatus()
-      const response = await this.call('report', status)
+      const response = await this.call('status', status)
 
       if (response.commands && response.commands.length > 0) {
         this.processCommands(response.commands)
