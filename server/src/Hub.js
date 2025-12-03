@@ -21,10 +21,16 @@ class Hub {
 
     try {
       const status = this.getSystemStatus()
-      const response = await this.call('status', status)
+      status.timestamp = Math.floor(Date.now() / 1000)
+
+      const response = await this.call('report', status)
 
       if (response.commands && response.commands.length > 0) {
-        this.processCommands(response.commands)
+        if (this.verifyResponse(response)) {
+          this.processCommands(response)
+        } else {
+          log('Response verification failed, ignoring commands')
+        }
       }
     } catch (error) {
       log('Failed to report status: %s', error)
@@ -68,7 +74,37 @@ class Hub {
     return usage
   }
 
-  processCommands(commands) {
+  verifyResponse(response) {
+    const {commands, timestamp, signature} = response
+
+    if (!signature || !timestamp) {
+      log('Missing signature or timestamp')
+      return false
+    }
+
+    const now = Math.floor(Date.now() / 1000)
+    if (Math.abs(now - timestamp) > 300) {
+      log('Timestamp too old or in future: %d seconds difference', Math.abs(now - timestamp))
+      return false
+    }
+
+    const auth = Candy.core('Config').config.auth
+    const expectedSignature = crypto
+      .createHmac('sha256', auth.secret)
+      .update(JSON.stringify(commands) + timestamp)
+      .digest('hex')
+
+    if (signature !== expectedSignature) {
+      log('Invalid signature')
+      return false
+    }
+
+    log('Response verified successfully')
+    return true
+  }
+
+  processCommands(response) {
+    const {commands} = response
     log('Processing %d commands', commands.length)
     for (const cmd of commands) {
       log('Command: %s', cmd.action)
@@ -144,6 +180,17 @@ class Hub {
     }
   }
 
+  signRequest(data) {
+    const auth = Candy.core('Config').config.auth
+    if (!auth || !auth.secret) {
+      return null
+    }
+
+    const signature = crypto.createHmac('sha256', auth.secret).update(JSON.stringify(data)).digest('hex')
+
+    return signature
+  }
+
   call(action, data) {
     log('Hub API call: %s', action)
     return new Promise((resolve, reject) => {
@@ -154,7 +201,13 @@ class Hub {
       const auth = Candy.core('Config').config.auth
       if (auth && auth.token) {
         headers['Authorization'] = `Bearer ${auth.token}`
-        headers['X-Secret'] = auth.secret
+      }
+
+      if (action !== 'auth' && data.timestamp) {
+        const signature = this.signRequest(data)
+        if (signature) {
+          headers['X-Signature'] = signature
+        }
       }
 
       axios
