@@ -118,8 +118,10 @@ class Cli {
       let lines = detail.result.split('\n')
       for (let line of lines) result.push(line)
     } else {
+      const isAuthenticated = !!(Candy.core('Config').config.hub && Candy.core('Config').config.hub.token)
       for (const command in Candy.core('Commands')) {
         if (commands && commands !== true && commands[0] !== command) continue
+        if (isAuthenticated && command === 'auth') continue
         let obj = Candy.core('Commands')[command]
         if (commands === true && !obj.action) continue
         let detail = await this.#detail(command, obj)
@@ -228,6 +230,7 @@ class Cli {
     status.uptime = uptimeString
     status.services = Candy.core('Config').config.services ? Object.keys(Candy.core('Config').config.services).length : 0
     status.websites = Candy.core('Config').config.websites ? Object.keys(Candy.core('Config').config.websites).length : 0
+    status.auth = !!(Candy.core('Config').config.hub && Candy.core('Config').config.hub.token)
     var args = process.argv.slice(2)
     if (args.length == 0) {
       let length = 0

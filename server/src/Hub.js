@@ -11,6 +11,8 @@ class Hub {
     this.httpInterval = null
     this.websocketReconnectAttempts = 0
     this.maxReconnectAttempts = 5
+    this.lastNetworkStats = null
+    this.lastNetworkTime = null
 
     this.startHttpPolling()
   }
@@ -199,6 +201,8 @@ class Hub {
     const totalMem = os.totalmem()
     const freeMem = os.freemem()
     const diskInfo = this.getDiskUsage()
+    const networkInfo = this.getNetworkUsage()
+    const servicesInfo = this.getServicesInfo()
 
     return {
       cpu: this.getCpuUsage(),
@@ -207,11 +211,36 @@ class Hub {
         total: totalMem
       },
       disk: diskInfo,
+      network: networkInfo,
+      services: servicesInfo,
       uptime: os.uptime(),
       hostname: os.hostname(),
       platform: os.platform(),
       arch: os.arch(),
       node: process.version
+    }
+  }
+
+  getServicesInfo() {
+    try {
+      const config = Candy.core('Config').config
+
+      const websites = config.websites ? Object.keys(config.websites).length : 0
+      const services = config.services ? config.services.length : 0
+      const mailAccounts = config.mail && config.mail.accounts ? Object.keys(config.mail.accounts).length : 0
+
+      return {
+        websites: websites,
+        services: services,
+        mail: mailAccounts
+      }
+    } catch (error) {
+      log('Failed to get services info: %s', error.message)
+      return {
+        websites: 0,
+        services: 0,
+        mail: 0
+      }
     }
   }
 
@@ -255,6 +284,73 @@ class Hub {
     return {
       used: 0,
       total: 0
+    }
+  }
+
+  getNetworkUsage() {
+    try {
+      const {execSync} = require('child_process')
+      let command
+
+      if (os.platform() === 'win32') {
+        command = 'netstat -e'
+      } else if (os.platform() === 'darwin') {
+        command = "netstat -ib | grep -e 'en0' | head -1 | awk '{print $7,$10}'"
+      } else {
+        command = "cat /proc/net/dev | grep -E 'eth0|ens|enp' | head -1 | awk '{print $2,$10}'"
+      }
+
+      const output = execSync(command, {encoding: 'utf8', timeout: 5000})
+      let currentStats = {received: 0, sent: 0}
+
+      if (os.platform() === 'win32') {
+        const lines = output.split('\n')
+        for (const line of lines) {
+          if (line.includes('Bytes')) {
+            const parts = line.trim().split(/\s+/)
+            currentStats.received = parseInt(parts[1]) || 0
+            currentStats.sent = parseInt(parts[2]) || 0
+            break
+          }
+        }
+      } else {
+        const parts = output.trim().split(/\s+/)
+        currentStats.received = parseInt(parts[0]) || 0
+        currentStats.sent = parseInt(parts[1]) || 0
+      }
+
+      const now = Date.now()
+
+      if (this.lastNetworkStats && this.lastNetworkTime) {
+        const timeDiff = (now - this.lastNetworkTime) / 1000
+        const receivedDiff = currentStats.received - this.lastNetworkStats.received
+        const sentDiff = currentStats.sent - this.lastNetworkStats.sent
+
+        const bandwidth = {
+          download: Math.max(0, Math.round(receivedDiff / timeDiff)),
+          upload: Math.max(0, Math.round(sentDiff / timeDiff))
+        }
+
+        this.lastNetworkStats = currentStats
+        this.lastNetworkTime = now
+
+        return bandwidth
+      }
+
+      this.lastNetworkStats = currentStats
+      this.lastNetworkTime = now
+
+      return {
+        download: 0,
+        upload: 0
+      }
+    } catch (error) {
+      log('Failed to get network usage: %s', error.message)
+    }
+
+    return {
+      download: 0,
+      upload: 0
     }
   }
 
