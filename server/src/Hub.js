@@ -500,9 +500,9 @@ class Hub {
           if (!response.data.result.success) {
             log('API returned error: %s', response.data.result.message)
 
-            if (response.data.data && response.data.data.authenticated === false) {
-              log('Authentication failed, returning data for handling')
-              return resolve(response.data.data)
+            if (response.data.result.authenticated === false) {
+              log('Authentication failed, returning result for handling')
+              return resolve(response.data.result)
             }
 
             return reject(response.data.result.message)

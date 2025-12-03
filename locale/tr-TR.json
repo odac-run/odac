@@ -79,5 +79,6 @@
     "Enter the subdomain name (subdomain.example.com): ": "Alt alan adı girin (altalanadi.ornek.com): ",
     "Create a new subdomain": "Yeni bir alt alan adı oluştur",
     "Delete a subdomain": "Bir alt alan adı sil",
-    "Delete a Service": "Bir Hizmet Sil"
+    "Delete a Service": "Bir Hizmet Sil",
+    "Authentication successful": "Authentication successful"
 }
