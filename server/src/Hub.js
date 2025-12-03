@@ -1,6 +1,7 @@
 const {log} = Candy.core('Log', false).init('Hub')
 
 const axios = require('axios')
+const nodeCrypto = require('crypto')
 const os = require('os')
 const fs = require('fs')
 
@@ -90,7 +91,7 @@ class Hub {
     }
 
     const hub = Candy.core('Config').config.hub
-    const expectedSignature = crypto
+    const expectedSignature = nodeCrypto
       .createHmac('sha256', hub.secret)
       .update(JSON.stringify(commands) + timestamp)
       .digest('hex')
@@ -187,7 +188,7 @@ class Hub {
       return null
     }
 
-    const signature = crypto.createHmac('sha256', hub.secret).update(JSON.stringify(data)).digest('hex')
+    const signature = nodeCrypto.createHmac('sha256', hub.secret).update(JSON.stringify(data)).digest('hex')
 
     return signature
   }
