@@ -30,7 +30,8 @@ class Config {
     mail: ['mail'],
     dns: ['dns'],
     api: ['api'],
-    firewall: ['firewall']
+    firewall: ['firewall'],
+    hub: ['hub']
   }
 
   // Initialize default configuration for module keys

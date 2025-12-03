@@ -7,15 +7,16 @@ const fs = require('fs')
 class Hub {
   constructor() {
     setTimeout(() => {
+      this.check()
       setInterval(() => {
         this.check()
-      }, 60000)
+      }, 10000)
     }, 1000)
   }
 
   async check() {
-    const auth = Candy.core('Config').config.auth
-    if (!auth || !auth.token) {
+    const hub = Candy.core('Config').config.hub
+    if (!hub || !hub.token) {
       return
     }
 
@@ -88,9 +89,9 @@ class Hub {
       return false
     }
 
-    const auth = Candy.core('Config').config.auth
+    const hub = Candy.core('Config').config.hub
     const expectedSignature = crypto
-      .createHmac('sha256', auth.secret)
+      .createHmac('sha256', hub.secret)
       .update(JSON.stringify(commands) + timestamp)
       .digest('hex')
 
@@ -171,7 +172,7 @@ class Hub {
       let token = response.token
       let secret = response.secret
       log('Token received: %s...', token ? token.substring(0, 8) : 'none')
-      Candy.core('Config').config.auth = {token: token, secret: secret}
+      Candy.core('Config').config.hub = {token: token, secret: secret}
       log('CandyPack authenticated!')
       return Candy.server('Api').result(true, __('Authentication successful'))
     } catch (error) {
@@ -181,12 +182,12 @@ class Hub {
   }
 
   signRequest(data) {
-    const auth = Candy.core('Config').config.auth
-    if (!auth || !auth.secret) {
+    const hub = Candy.core('Config').config.hub
+    if (!hub || !hub.secret) {
       return null
     }
 
-    const signature = crypto.createHmac('sha256', auth.secret).update(JSON.stringify(data)).digest('hex')
+    const signature = crypto.createHmac('sha256', hub.secret).update(JSON.stringify(data)).digest('hex')
 
     return signature
   }
@@ -198,9 +199,9 @@ class Hub {
       log('POST request to: %s', url)
 
       const headers = {}
-      const auth = Candy.core('Config').config.auth
-      if (auth && auth.token) {
-        headers['Authorization'] = `Bearer ${auth.token}`
+      const hub = Candy.core('Config').config.hub
+      if (hub && hub.token) {
+        headers['Authorization'] = `Bearer ${hub.token}`
       }
 
       if (action !== 'auth' && data.timestamp) {
