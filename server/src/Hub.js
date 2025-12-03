@@ -5,6 +5,76 @@ const os = require('os')
 const fs = require('fs')
 
 class Hub {
+  constructor() {
+    setTimeout(() => {
+      setInterval(() => {
+        this.check()
+      }, 60000)
+    }, 1000)
+  }
+
+  async check() {
+    const auth = Candy.core('Config').config.auth
+    if (!auth || !auth.token) {
+      return
+    }
+
+    try {
+      const status = this.getSystemStatus()
+      const response = await this.call('report', status)
+
+      if (response.commands && response.commands.length > 0) {
+        this.processCommands(response.commands)
+      }
+    } catch (error) {
+      log('Failed to report status: %s', error)
+    }
+  }
+
+  getSystemStatus() {
+    const totalMem = os.totalmem()
+    const freeMem = os.freemem()
+
+    return {
+      cpu: this.getCpuUsage(),
+      memory: {
+        used: totalMem - freeMem,
+        total: totalMem
+      },
+      uptime: os.uptime(),
+      hostname: os.hostname(),
+      platform: os.platform(),
+      arch: os.arch(),
+      node: process.version
+    }
+  }
+
+  getCpuUsage() {
+    const cpus = os.cpus()
+    let totalIdle = 0
+    let totalTick = 0
+
+    for (const cpu of cpus) {
+      for (const type in cpu.times) {
+        totalTick += cpu.times[type]
+      }
+      totalIdle += cpu.times.idle
+    }
+
+    const idle = totalIdle / cpus.length
+    const total = totalTick / cpus.length
+    const usage = 100 - ~~((100 * idle) / total)
+
+    return usage
+  }
+
+  processCommands(commands) {
+    log('Processing %d commands', commands.length)
+    for (const cmd of commands) {
+      log('Command: %s', cmd.action)
+    }
+  }
+
   getLinuxDistro() {
     log('Getting Linux distro info...')
     if (os.platform() !== 'linux') {
@@ -79,8 +149,21 @@ class Hub {
     return new Promise((resolve, reject) => {
       const url = 'https://hub.candypack.dev/' + action
       log('POST request to: %s', url)
+
+      const headers = {}
+      const auth = Candy.core('Config').config.auth
+      if (auth && auth.token) {
+        headers['Authorization'] = `Bearer ${auth.token}`
+        headers['X-Secret'] = auth.secret
+      }
+
       axios
-        .post(url, data)
+        .post(url, data, {
+          headers,
+          httpsAgent: new (require('https').Agent)({
+            rejectUnauthorized: true
+          })
+        })
         .then(response => {
           log('Raw response received for %s', action)
           log('Response structure: %j', {

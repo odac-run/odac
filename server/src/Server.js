@@ -7,6 +7,7 @@ class Server {
     Candy.server('Web')
     Candy.server('Mail')
     Candy.server('Api')
+    Candy.server('Hub')
     setTimeout(function () {
       setInterval(function () {
         Candy.server('Service').check()
