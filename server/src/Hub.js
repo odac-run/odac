@@ -204,6 +204,9 @@ class Hub {
     const networkInfo = this.getNetworkUsage()
     const servicesInfo = this.getServicesInfo()
 
+    const serverStarted = Candy.core('Config').config.server.started
+    const candypackUptime = serverStarted ? Math.floor((Date.now() - serverStarted) / 1000) : 0
+
     return {
       cpu: this.getCpuUsage(),
       memory: {
@@ -213,7 +216,7 @@ class Hub {
       disk: diskInfo,
       network: networkInfo,
       services: servicesInfo,
-      uptime: os.uptime(),
+      uptime: candypackUptime,
       hostname: os.hostname(),
       platform: os.platform(),
       arch: os.arch(),

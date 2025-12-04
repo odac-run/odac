@@ -80,5 +80,6 @@
     "Create a new subdomain": "Yeni bir alt alan adı oluştur",
     "Delete a subdomain": "Bir alt alan adı sil",
     "Delete a Service": "Bir Hizmet Sil",
-    "Authentication successful": "Authentication successful"
+    "Authentication successful": "Authentication successful",
+    "Logged in": "Logged in"
 }
