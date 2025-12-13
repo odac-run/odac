@@ -199,8 +199,7 @@ class Hub {
   }
 
   getSystemStatus() {
-    const totalMem = os.totalmem()
-    const freeMem = os.freemem()
+    const memoryInfo = this.getMemoryUsage()
     const diskInfo = this.getDiskUsage()
     const networkInfo = this.getNetworkUsage()
     const servicesInfo = this.getServicesInfo()
@@ -210,10 +209,7 @@ class Hub {
 
     return {
       cpu: this.getCpuUsage(),
-      memory: {
-        used: totalMem - freeMem,
-        total: totalMem
-      },
+      memory: memoryInfo,
       disk: diskInfo,
       network: networkInfo,
       services: servicesInfo,
@@ -245,6 +241,50 @@ class Hub {
         services: 0,
         mail: 0
       }
+    }
+  }
+
+  getMemoryUsage() {
+    const totalMem = os.totalmem()
+
+    if (os.platform() === 'darwin') {
+      try {
+        const {execSync} = require('child_process')
+        const output = execSync('vm_stat', {encoding: 'utf8'})
+        const lines = output.split('\n')
+
+        let pageSize = 4096
+        let pagesActive = 0
+        let pagesWired = 0
+        let pagesCompressed = 0
+
+        for (const line of lines) {
+          if (line.includes('page size of')) {
+            pageSize = parseInt(line.match(/(\d+)/)[1])
+          } else if (line.includes('Pages active')) {
+            pagesActive = parseInt(line.match(/:\s*(\d+)/)[1])
+          } else if (line.includes('Pages wired down')) {
+            pagesWired = parseInt(line.match(/:\s*(\d+)/)[1])
+          } else if (line.includes('Pages occupied by compressor')) {
+            pagesCompressed = parseInt(line.match(/:\s*(\d+)/)[1])
+          }
+        }
+
+        const usedMem = (pagesActive + pagesWired + pagesCompressed) * pageSize
+
+        return {
+          used: usedMem,
+          total: totalMem
+        }
+      } catch (error) {
+        log('Failed to get macOS memory usage: %s', error.message)
+      }
+    }
+
+    const freeMem = os.freemem()
+    return {
+      used: totalMem - freeMem,
+      total: totalMem
     }
   }
 
