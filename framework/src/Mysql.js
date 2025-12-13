@@ -309,7 +309,7 @@ class Mysql {
 
   groupBy(...args) {
     this.#arr['group by'] = this.#arr['group by'] ?? ''
-    let select = this.#arr['group by'].split(',')
+    let select = this.#arr['group by'] ? this.#arr['group by'].split(',') : []
     //       if(count(func_get_args())==1 && is_array(func_get_args()[0])){
     //         if(isset(func_get_args()[0]['ct']) && isset(func_get_args()[0]['v']) && func_get_args()[0]['ct'] == $GLOBALS['candy_token_mysql']){
     //           $select[] = func_get_args()[0]['v'];
