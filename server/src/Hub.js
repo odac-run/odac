@@ -13,6 +13,7 @@ class Hub {
     this.maxReconnectAttempts = 5
     this.lastNetworkStats = null
     this.lastNetworkTime = null
+    this.lastCpuStats = null
 
     this.startHttpPolling()
   }
@@ -369,11 +370,23 @@ class Hub {
       totalIdle += cpu.times.idle
     }
 
-    const idle = totalIdle / cpus.length
-    const total = totalTick / cpus.length
-    const usage = 100 - ~~((100 * idle) / total)
+    const currentStats = {
+      idle: totalIdle,
+      total: totalTick
+    }
 
-    return usage
+    if (!this.lastCpuStats) {
+      this.lastCpuStats = currentStats
+      return 0
+    }
+
+    const idleDiff = currentStats.idle - this.lastCpuStats.idle
+    const totalDiff = currentStats.total - this.lastCpuStats.total
+    const usage = 100 - ~~((100 * idleDiff) / totalDiff)
+
+    this.lastCpuStats = currentStats
+
+    return Math.max(0, Math.min(100, usage))
   }
 
   getLinuxDistro() {
