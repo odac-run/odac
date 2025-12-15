@@ -2,6 +2,7 @@ const fs = require('fs')
 
 const Cron = require('./Route/Cron.js')
 const Internal = require('./Route/Internal.js')
+const MiddlewareChain = require('./Route/Middleware.js')
 
 var routes2 = {}
 const mime = {
@@ -70,7 +71,7 @@ class Route {
     page: (path, authFile, file) => this.authPage(path, authFile, file),
     post: (path, authFile, file) => this.authPost(path, authFile, file),
     get: (path, authFile, file) => this.authGet(path, authFile, file),
-    use: (...middlewares) => this.use(...middlewares)
+    use: (...middlewares) => new MiddlewareChain(this, [...middlewares.flat()])
   }
 
   async #runMiddlewares(Candy, middlewares) {
@@ -400,12 +401,7 @@ class Route {
   }
 
   use(...middlewares) {
-    if (middlewares.length === 0) {
-      this._pendingMiddlewares = []
-    } else {
-      this._pendingMiddlewares.push(...middlewares.flat())
-    }
-    return this
+    return new MiddlewareChain(this, [...middlewares.flat()])
   }
 
   set(type, url, file, options = {}) {

@@ -47,15 +47,6 @@ Candy.Route
   .post('/api/upload', 'api.upload')
 ```
 
-#### Reset Middleware
-```javascript
-Candy.Route
-  .use('logger')
-  .page('/dashboard', 'dashboard')
-  .use()  // Clear middlewares
-  .page('/public', 'public')
-```
-
 #### With Auth Routes
 
 `Candy.Route.auth` already requires authentication. You can add additional middleware on top:
@@ -203,7 +194,6 @@ Candy.Route
   .use('cors', 'rateLimit')
   .get('/api/public', 'api.public')
   .post('/api/contact', 'api.contact')
-  .use()  // Reset
 
 // User routes (requires login)
 Candy.Route.auth
