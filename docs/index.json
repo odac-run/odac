@@ -209,6 +209,10 @@
         {
           "file": "07-cron-jobs.md",
           "title": "Cron Jobs"
+        },
+        {
+          "file": "08-middleware.md",
+          "title": "Middleware"
         }
       ]
     },
