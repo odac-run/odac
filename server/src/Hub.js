@@ -33,7 +33,7 @@ class Hub {
       if (!this.websocket) {
         this.check()
       }
-    }, 10000)
+    }, 60000)
   }
 
   stopHttpPolling() {
