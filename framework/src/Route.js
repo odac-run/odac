@@ -96,6 +96,21 @@ class Route {
     }
   }
 
+  async #executeController(Candy, controller) {
+    const middlewareResult = await this.#runMiddlewares(Candy, controller.middlewares)
+    if (middlewareResult !== undefined) return middlewareResult
+
+    if (controller.params) {
+      for (let key in controller.params) {
+        Candy.Request.data.url[key] = controller.params[key]
+      }
+    }
+
+    if (typeof controller.cache === 'function') {
+      return controller.cache(Candy)
+    }
+  }
+
   async check(Candy) {
     let url = Candy.Request.url.split('?')[0]
     if (url.substr(-1) === '/') url = url.substr(0, url.length - 1)
@@ -162,45 +177,19 @@ class Route {
           )
             return Candy.Request.abort(401)
 
-          if (controller.middlewares) {
-            const middlewareResult = await this.#runMiddlewares(Candy, controller.middlewares)
-            if (middlewareResult !== undefined) return middlewareResult
-          }
-
-          if (typeof controller.cache === 'function') {
-            if (controller.params) for (let key in controller.params) Candy.Request.data.url[key] = controller.params[key]
-            return controller.cache(Candy)
-          }
+          return await this.#executeController(Candy, controller)
         }
       }
     }
     let authPageController = this.#controller(Candy.Request.route, '#page', url)
     if (authPageController && (await Candy.Auth.check())) {
-      if (authPageController.params) for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
       Candy.Request.page = authPageController.cache?.file || authPageController.file
-
-      if (authPageController.middlewares) {
-        const middlewareResult = await this.#runMiddlewares(Candy, authPageController.middlewares)
-        if (middlewareResult !== undefined) return middlewareResult
-      }
-
-      if (typeof authPageController.cache === 'function') {
-        return authPageController.cache(Candy)
-      }
+      return await this.#executeController(Candy, authPageController)
     }
     let pageController = this.#controller(Candy.Request.route, 'page', url)
     if (pageController) {
-      if (pageController.params) for (let key in pageController.params) Candy.Request.data.url[key] = pageController.params[key]
       Candy.Request.page = pageController.cache?.file || pageController.file
-
-      if (pageController.middlewares) {
-        const middlewareResult = await this.#runMiddlewares(Candy, pageController.middlewares)
-        if (middlewareResult !== undefined) return middlewareResult
-      }
-
-      if (typeof pageController.cache === 'function') {
-        return pageController.cache(Candy)
-      }
+      return await this.#executeController(Candy, pageController)
     }
     if (url && !url.includes('/../') && fs.existsSync(`${__dir}/public${url}`)) {
       let stat = fs.lstatSync(`${__dir}/public${url}`)
