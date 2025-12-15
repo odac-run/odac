@@ -286,6 +286,11 @@ class CandyRequest {
     this.#status = code
   }
 
+  // - CLEAR TIMEOUT (for long-running connections like SSE)
+  clearTimeout() {
+    clearTimeout(this.#timeout)
+  }
+
   // - WRITE DATA
   write(data) {
     if (this.res.finished) return

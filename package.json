@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "acme-client": "^5.1.0",
+    "axios": "^1.7.9",
     "bcrypt": "^5.1.1",
     "dkim-signer": "^0.2.2",
     "find-process": "^2.0.0",
@@ -46,7 +47,8 @@
     "selfsigned": "^2.4.1",
     "smtp-server": "^3.13.4",
     "sqlite3": "^5.1.7",
-    "ssh2": "^1.15.0"
+    "ssh2": "^1.15.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",

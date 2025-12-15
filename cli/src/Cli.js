@@ -120,6 +120,7 @@ class Cli {
     } else {
       for (const command in Candy.core('Commands')) {
         if (commands && commands !== true && commands[0] !== command) continue
+        if (Candy.server('Hub').isAuthenticated() && command === 'auth') continue
         let obj = Candy.core('Commands')[command]
         if (commands === true && !obj.action) continue
         let detail = await this.#detail(command, obj)
@@ -228,6 +229,7 @@ class Cli {
     status.uptime = uptimeString
     status.services = Candy.core('Config').config.services ? Object.keys(Candy.core('Config').config.services).length : 0
     status.websites = Candy.core('Config').config.websites ? Object.keys(Candy.core('Config').config.websites).length : 0
+    status.auth = Candy.server('Hub').isAuthenticated()
     var args = process.argv.slice(2)
     if (args.length == 0) {
       let length = 0

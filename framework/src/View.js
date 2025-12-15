@@ -39,21 +39,22 @@ class View {
     mysql: {
       // TODO: Implement mysql
     },
-    else: {
-      function: '} else {'
-    },
     elseif: {
-      function: '} else if($condition){',
+      function: '} else if(await ($condition)){',
       arguments: {
         condition: true
       }
+    },
+    else: {
+      function: '} else {'
     },
     fetch: {
       // TODO: Implement fetch
       //  <candy:fetch fetch="/get/products" as="data" method="GET" headers="{}" body="null" refresh="false">
     },
     for: {
-      function: 'for(let $key in $constructor){ let $value = $constructor[$key];',
+      function: '{ let _arr = $constructor; for(let $key in _arr){ let $value = _arr[$key];',
+      end: '}}',
       arguments: {
         var: null,
         get: null,
@@ -62,7 +63,7 @@ class View {
       }
     },
     if: {
-      function: 'if($condition){',
+      function: 'if(await ($condition)){',
       arguments: {
         condition: true
       }
@@ -85,12 +86,12 @@ class View {
         key: 'key',
         value: 'value'
       },
-      end: '}',
-      function: 'for(let $key in $constructor){ let $value = $constructor[$key];',
+      end: '}}',
+      function: '{ let _arr = $constructor; for(let $key in _arr){ let $value = _arr[$key];',
       replace: 'ul'
     },
     while: {
-      function: 'while($condition){',
+      function: 'while(await ($condition)){',
       arguments: {
         condition: true
       }
@@ -155,6 +156,7 @@ class View {
 
       this.#candy.Request.header('Content-Type', 'application/json')
       this.#candy.Request.header('X-Candy-Page', this.#candy.Request.page || '')
+      this.#candy.Request.header('Vary', 'X-Candy')
 
       this.#candy.Request.end({
         output: output,
@@ -224,6 +226,9 @@ class View {
       return `<candy:js>${jsContent}</candy:js>`
     })
 
+    content = content.replace(/<candy:else\s*\/>/g, '<candy:else>')
+    content = content.replace(/<candy:elseif\s+([^>]*?)\/>/g, '<candy:elseif $1>')
+
     content = content.replace(/<candy([^>]*?)\/>/g, (fullMatch, attributes) => {
       attributes = attributes.trim()
 
@@ -265,7 +270,15 @@ class View {
           attrs[key] = value
         }
 
-        if (attrs.t || attrs.translate) {
+        if (attrs.get) {
+          return `{{ get('${attrs.get}') || '' }}`
+        } else if (attrs.var) {
+          if (attrs.raw) {
+            return `{!! ${attrs.var} !!}`
+          } else {
+            return `{{ ${attrs.var} }}`
+          }
+        } else if (attrs.t || attrs.translate) {
           const placeholders = []
           let processedContent = innerContent
           let placeholderIndex = 1
@@ -288,14 +301,12 @@ class View {
           const translationCall =
             placeholders.length > 0 ? `__('${processedContent}', ${placeholders.join(', ')})` : `__('${processedContent}')`
 
-          // Check if raw attribute is present
           if (attrs.raw) {
             return `{!! ${translationCall} !!}`
           } else {
             return `{{ ${translationCall} }}`
           }
         } else {
-          // <candy> without attributes = string literal
           return `{{ '${innerContent}' }}`
         }
       })
@@ -334,29 +345,30 @@ class View {
         let func = this.#functions[key]
         let matches = func.close
           ? result.match(new RegExp(`${key}[\\s\\S]*?${func.close}`, 'g'))
-          : result.match(new RegExp(`<candy:${key}.*?>`, 'g'))
+          : result.match(new RegExp(`<candy:${key}(?:\\s+[^>]*?(?:"[^"]*"|'[^']*'|[^"'>])*)?>`, 'g'))
         if (!matches) continue
         for (let match of matches) {
+          let matchForParsing = match
+          if (!func.close) matchForParsing = matchForParsing.replace(/^<candy:/, '').replace(/>$/, '')
           const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
           let attrMatch
           const args = []
-          while ((attrMatch = attrRegex.exec(match))) {
+          while ((attrMatch = attrRegex.exec(matchForParsing))) {
             args.push(attrMatch[0])
           }
-          if (!func.close) match = match.replace(/<candy:|>/g, '')
           let vars = {}
           if (func.arguments)
             for (let arg of args) {
               const argRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/
               const argMatch = argRegex.exec(arg)
               if (!argMatch) continue
-              const key = argMatch[1]
+              const argKey = argMatch[1]
               const value = argMatch[3] !== undefined ? argMatch[3] : argMatch[4] !== undefined ? argMatch[4] : true
-              if (func.arguments[key] === undefined) {
-                att += `${key}="${value}"`
+              if (func.arguments[argKey] === undefined) {
+                att += `${argKey}="${value}"`
                 continue
               }
-              vars[key] = value
+              vars[argKey] = value
             }
           if (!func.function) continue
           let fun = func.function
@@ -374,23 +386,21 @@ class View {
               constructor = `get('${vars.get}')`
               delete vars.get
             }
-            fun = fun.replace('$constructor', constructor)
+            fun = fun.replace(/\$constructor/g, constructor)
           }
 
-          for (let key in func.arguments) {
-            if (vars[key] === undefined) {
-              if (func.arguments[key] === null) console.error(`"${key}" is required for "${match}"\n  in "${file}"`)
-              vars[key] = func.arguments[key]
+          for (let argKey in func.arguments) {
+            if (argKey === 'var' || argKey === 'get') continue
+            if (vars[argKey] === undefined) {
+              if (func.arguments[argKey] === null) console.error(`"${argKey}" is required for "${match}"\n  in "${file}"`)
+              vars[argKey] = func.arguments[argKey]
             }
-            fun = fun.replace(new RegExp(`\\$${key}`, 'g'), vars[key])
+            fun = fun.replace(new RegExp(`\\$${argKey}`, 'g'), vars[argKey])
           }
           if (func.close) {
             result = result.replace(match, fun + match.substring(key.length, match.length - func.close.length) + func.end)
           } else {
-            result = result.replace(
-              `<candy:${match}>`,
-              (func.replace ? `<${[func.replace, att].join(' ')}>` : '') + '`; ' + fun + ' html += `'
-            )
+            result = result.replace(match, (func.replace ? `<${[func.replace, att].join(' ')}>` : '') + '`; ' + fun + ' html += `')
             result = result.replace(
               `</candy:${key}>`,
               '`; ' + (func.end ?? '}') + ' html += `' + (func.replace ? `</${func.replace}>` : '')
@@ -431,6 +441,10 @@ class View {
     if (args.length === 1 && typeof args[0] === 'object') for (let key in args[0]) this.#part[key] = args[0][key]
     else if (args.length === 2) this.#part[args[0]] = args[1]
 
+    if (!this.#candy.Request.page) {
+      this.#candy.Request.page = this.#part.content || this.#part.all || ''
+    }
+
     this.#sendEarlyHintsIfAvailable()
     return this
   }
@@ -449,9 +463,18 @@ class View {
     })
 
     const skeletonName = this.#part.skeleton || 'main'
+    const pageName = this.#candy.Request.page || ''
+
     skeleton = skeleton.replace(/<html([^>]*)>/, (match, attrs) => {
-      if (attrs.includes('data-candy-skeleton')) return match
-      return `<html${attrs} data-candy-skeleton="${skeletonName}">`
+      const updates = []
+      if (!attrs.includes('data-candy-skeleton')) {
+        updates.push(`data-candy-skeleton="${skeletonName}"`)
+      }
+      if (!attrs.includes('data-candy-page')) {
+        updates.push(`data-candy-page="${pageName}"`)
+      }
+      if (updates.length === 0) return match
+      return `<html${attrs} ${updates.join(' ')}>`
     })
 
     return skeleton

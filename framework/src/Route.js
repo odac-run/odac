@@ -64,6 +64,11 @@ const mime = {
 class Route {
   loading = false
   routes = {}
+  auth = {
+    page: (path, authFile, file) => this.authPage(path, authFile, file),
+    post: (path, authFile, file) => this.authPost(path, authFile, file),
+    get: (path, authFile, file) => this.authGet(path, authFile, file)
+  }
 
   async check(Candy) {
     let url = Candy.Request.url.split('?')[0]
@@ -89,8 +94,7 @@ class Route {
       Candy.Request.header('Access-Control-Allow-Origin', (Candy.Request.ssl ? 'https://' : 'http://') + Candy.Request.host)
       Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
       return {
-        token: Candy.token(),
-        page: this.routes[Candy.Request.route]['page'][url].file || this.routes[Candy.Request.route].error[404].file || ''
+        token: Candy.token()
       }
     }
 
@@ -123,7 +127,7 @@ class Route {
     for (let method of ['#' + Candy.Request.method, Candy.Request.method]) {
       let controller = this.#controller(Candy.Request.route, method, url)
       if (controller) {
-        if (!Candy.Request.method.startsWith('#') || (await Candy.Auth.check())) {
+        if (!method.startsWith('#') || (await Candy.Auth.check())) {
           Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
           if (
             ['post', 'get'].includes(Candy.Request.method) &&
@@ -139,22 +143,17 @@ class Route {
       }
     }
     let authPageController = this.#controller(Candy.Request.route, '#page', url)
-    if (authPageController) {
-      if (await Candy.Auth.check()) {
-        if (authPageController.params)
-          for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
-        Candy.Request.page = authPageController.cache?.file || authPageController.file
-        Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-        if (typeof authPageController.cache === 'function') {
-          return authPageController.cache(Candy)
-        }
+    if (authPageController && (await Candy.Auth.check())) {
+      if (authPageController.params) for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
+      Candy.Request.page = authPageController.cache?.file || authPageController.file
+      if (typeof authPageController.cache === 'function') {
+        return authPageController.cache(Candy)
       }
     }
     let pageController = this.#controller(Candy.Request.route, 'page', url)
     if (pageController) {
       if (pageController.params) for (let key in pageController.params) Candy.Request.data.url[key] = pageController.params[key]
       Candy.Request.page = pageController.cache?.file || pageController.file
-      Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
       if (typeof pageController.cache === 'function') {
         return pageController.cache(Candy)
       }
@@ -326,9 +325,12 @@ class Route {
     try {
       let result = this.check(param)
       if (result instanceof Promise) result = await result
+      const Stream = require('./Stream.js')
+      if (result instanceof Stream) return
+      if (param.Request.res.finished || param.Request.res.writableEnded) return
       if (result) param.Request.end(result)
-      param.Request.print(param)
       await param.View.print(param)
+      param.Request.print(param)
     } catch (e) {
       console.error(e)
       param.Request.abort(500)

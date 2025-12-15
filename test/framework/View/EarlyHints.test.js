@@ -1,4 +1,4 @@
-const EarlyHints = require('../../framework/src/View/EarlyHints')
+const EarlyHints = require('../../../framework/src/View/EarlyHints')
 
 describe('EarlyHints', () => {
   let earlyHints

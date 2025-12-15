@@ -71,6 +71,7 @@ module.exports = {
         return _candy.Request.write(value)
       }
       _candy.stream = function (input) {
+        _candy.Request.clearTimeout()
         return new (require('./Stream'))(_candy.Request.req, _candy.Request.res, input)
       }
     }
