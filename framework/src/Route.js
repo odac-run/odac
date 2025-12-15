@@ -326,10 +326,7 @@ class Route {
       let result = this.check(param)
       if (result instanceof Promise) result = await result
       const Stream = require('./Stream.js')
-      if (result instanceof Stream) {
-        param.Request.req.on('close', () => param.cleanup())
-        return
-      }
+      if (result instanceof Stream) return
       if (param.Request.res.finished || param.Request.res.writableEnded) {
         param.cleanup()
         return
