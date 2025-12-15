@@ -34,9 +34,6 @@ class Stream {
 
     const handleClose = () => {
       this.close()
-      if (this.#candy && typeof this.#candy.cleanup === 'function') {
-        this.#candy.cleanup()
-      }
     }
 
     this.#req.on('close', handleClose)
