@@ -98,6 +98,7 @@ describe('Hub', () => {
     })
 
     it('should check status periodically', () => {
+      Hub.stopHttpPolling()
       const checkSpy = jest.spyOn(Hub, 'check').mockResolvedValue()
       mockCandy.setMock('core', 'Config', {
         config: {
@@ -106,6 +107,7 @@ describe('Hub', () => {
         }
       })
 
+      Hub.startHttpPolling()
       jest.advanceTimersByTime(10000)
       expect(checkSpy).toHaveBeenCalled()
     })
