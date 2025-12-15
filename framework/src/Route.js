@@ -81,7 +81,7 @@ class Route {
 
       if (!middleware) {
         console.error(`Middleware not found: ${mw}`)
-        continue
+        return Candy.Request.abort(500)
       }
 
       const result = await middleware(Candy)
