@@ -16,7 +16,6 @@ jest.mock('axios')
 const axios = require('axios')
 
 jest.mock('ws')
-const WebSocket = require('ws')
 
 jest.mock('os')
 const os = require('os')
