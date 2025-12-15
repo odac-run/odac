@@ -36,7 +36,7 @@ module.exports = async (Candy) => {
 
 ## Multiple Messages
 
-### Callback Pattern
+### Callback Pattern with Auto-Cleanup
 
 ```javascript
 // controller/get/index.js
@@ -44,14 +44,17 @@ module.exports = async (Candy) => {
   Candy.stream((send) => {
     send({ type: 'connected' })
     
-    setInterval(() => {
+    // Use Candy.setInterval for automatic cleanup
+    Candy.setInterval(() => {
       send({ time: Date.now() })
     }, 1000)
   })
 }
 ```
 
-### With Cleanup
+**Important:** Always use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions. They are automatically cleaned up when the connection closes.
+
+### Manual Cleanup (Alternative)
 
 ```javascript
 // controller/get/index.js
@@ -126,19 +129,18 @@ module.exports = async (Candy) => {
 ```javascript
 // controller/monitor/get/index.js
 module.exports = async (Candy) => {
-  const stream = Candy.stream()
-  
-  stream.send({ type: 'connected' })
-  
-  const interval = setInterval(() => {
-    stream.send({ time: Date.now() })
-  }, 1000)
-  
-  stream.on('close', () => {
-    clearInterval(interval)
+  return Candy.stream((send) => {
+    send({ type: 'connected' })
+    
+    // Use Candy.setInterval for automatic cleanup
+    Candy.setInterval(() => {
+      send({ time: Date.now() })
+    }, 1000)
   })
 }
 ```
+
+**Note:** When using `Candy.setInterval()` or `Candy.setTimeout()`, cleanup is automatic. No need for manual `clearInterval()` or `clearTimeout()`.
 
 ### Error Handling
 
@@ -166,7 +168,7 @@ Candy.Route.get('/logs', 'logs')
 
 // controller/logs/get/index.js
 module.exports = async (Candy) => {
-  Candy.stream(async function* () {
+  return Candy.stream(async function* () {
     const logStream = await getDeploymentLogs()
     
     for await (const log of logStream) {
@@ -187,7 +189,7 @@ Candy.Route.get('/posts', 'posts')
 
 // controller/posts/get/index.js
 module.exports = async (Candy) => {
-  Candy.stream(async function* () {
+  return Candy.stream(async function* () {
     let page = 1
     let hasMore = true
     
@@ -275,12 +277,45 @@ CandyPack uses **Server-Sent Events (SSE)** for streaming:
 - **Reconnection:** Automatic (browser handles)
 - **Compression:** Supported via HTTP/2
 
+## Memory Management
+
+CandyPack automatically manages timers and intervals in streaming contexts:
+
+```javascript
+module.exports = async (Candy) => {
+  return Candy.stream((send) => {
+    // ✅ Automatically cleaned up when connection closes
+    Candy.setInterval(() => {
+      send({ time: Date.now() })
+    }, 1000)
+    
+    Candy.setTimeout(() => {
+      send({ type: 'delayed' })
+    }, 5000)
+  })
+}
+```
+
+**Why this matters:**
+- Prevents memory leaks
+- No orphaned intervals after disconnect
+- Automatic cleanup on connection close
+
+**Manual cleanup (if needed):**
+```javascript
+const intervalId = Candy.setInterval(() => { ... }, 1000)
+Candy.clearInterval(intervalId)
+
+const timeoutId = Candy.setTimeout(() => { ... }, 5000)
+Candy.clearTimeout(timeoutId)
+```
+
 ## Best Practices
 
-1. **Always handle cleanup:** Use the cleanup function or `stream.on('close')`
-2. **Throttle messages:** Don't send too frequently (use intervals)
-3. **Handle errors:** Use try-catch and `stream.error()`
-4. **Close when done:** Call `stream.close()` when finished
+1. **Use Candy timers:** Always use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions
+2. **Return the stream:** Always `return Candy.stream(...)` from your controller
+3. **Throttle messages:** Don't send too frequently (use intervals)
+4. **Handle errors:** Use try-catch for async operations
 5. **Test reconnection:** Ensure your app handles connection drops
 
 ## Troubleshooting
@@ -288,13 +323,20 @@ CandyPack uses **Server-Sent Events (SSE)** for streaming:
 **Connection drops immediately:**
 - Check if you're calling `Candy.return()` or `res.end()`
 - Don't use both streaming and regular responses
+- Make sure to `return Candy.stream(...)`
 
 **Messages not received:**
 - Verify JSON format
 - Check browser console for errors
 - Ensure CORS headers if cross-origin
 
-**High memory usage:**
-- Limit number of concurrent connections
-- Implement cleanup properly
-- Use throttling for frequent updates
+**High memory usage / Memory leaks:**
+- Use `Candy.setInterval()` instead of global `setInterval()`
+- Use `Candy.setTimeout()` instead of global `setTimeout()`
+- Avoid creating intervals outside the stream callback
+- Check for other resource leaks (database connections, file handles)
+
+**Intervals keep running after disconnect:**
+- Replace `setInterval()` with `Candy.setInterval()`
+- Replace `setTimeout()` with `Candy.setTimeout()`
+- These are automatically cleaned up when the connection closes

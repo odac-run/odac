@@ -327,13 +327,18 @@ class Route {
       if (result instanceof Promise) result = await result
       const Stream = require('./Stream.js')
       if (result instanceof Stream) return
-      if (param.Request.res.finished || param.Request.res.writableEnded) return
+      if (param.Request.res.finished || param.Request.res.writableEnded) {
+        param.cleanup()
+        return
+      }
       if (result) param.Request.end(result)
       await param.View.print(param)
       param.Request.print(param)
+      param.cleanup()
     } catch (e) {
       console.error(e)
       param.Request.abort(500)
+      param.cleanup()
       return param.Request.end()
     }
   }
