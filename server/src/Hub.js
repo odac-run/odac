@@ -147,6 +147,11 @@ class Hub {
     try {
       const message = JSON.parse(data.toString())
 
+      if (!this.verifyWebSocketMessage(message)) {
+        log('WebSocket message verification failed')
+        return
+      }
+
       if (message.type === 'disconnect') {
         log('Cloud requested disconnect: %s', message.reason || 'unknown')
         this.disconnectWebSocket()
@@ -154,11 +159,7 @@ class Hub {
       }
 
       if (message.type === 'command') {
-        if (this.verifyWebSocketMessage(message)) {
-          this.processCommand(message.data)
-        } else {
-          log('WebSocket message verification failed')
-        }
+        this.processCommand(message.data)
       }
     } catch (error) {
       log('Failed to handle WebSocket message: %s', error.message)
