@@ -113,7 +113,7 @@ class Route {
 
   async check(Candy) {
     let url = Candy.Request.url.split('?')[0]
-    if (url.substr(-1) === '/') url = url.substr(0, url.length - 1)
+    if (url.endsWith('/')) url = url.slice(0, -1)
 
     if (url.startsWith('/_candy/')) {
       Candy.Request.route = '_candy_internal'
@@ -244,7 +244,7 @@ class Route {
     if (!fs.existsSync(middlewareDir)) return
 
     for (const file of fs.readdirSync(middlewareDir)) {
-      if (file.substr(-3) !== '.js') continue
+      if (!file.endsWith('.js')) continue
       const name = file.replace('.js', '')
       const path = `${middlewareDir}${file}`
       const mtime = fs.statSync(path).mtimeMs
@@ -265,7 +265,7 @@ class Route {
     this.loading = true
     this.#loadMiddlewares()
     for (const file of fs.readdirSync(`${__dir}/controller/`)) {
-      if (file.substr(-3) !== '.js') continue
+      if (!file.endsWith('.js')) continue
       let name = file.replace('.js', '')
       if (!Candy.Route.class) Candy.Route.class = {}
       if (Candy.Route.class[name]) {
@@ -280,7 +280,7 @@ class Route {
     }
     let dir = fs.readdirSync(`${__dir}/route/`)
     for (const file of dir) {
-      if (file.substr(-3) !== '.js') continue
+      if (!file.endsWith('.js')) continue
       let mtime = fs.statSync(`${__dir}/route/${file}`).mtimeMs
       Candy.Route.buff = file.replace('.js', '')
       if (!routes2[Candy.Route.buff] || routes2[Candy.Route.buff] < mtime - 1000) {
@@ -419,7 +419,7 @@ class Route {
 
     if (!options) options = {}
     if (typeof url !== 'string') url = String(url)
-    if (url.length && url.substr(-1) === '/') url = url.substr(0, url.length - 1)
+    if (url.length && url.endsWith('/')) url = url.slice(0, -1)
 
     type = type.toLowerCase()
 
