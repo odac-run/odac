@@ -18,6 +18,10 @@ class Hub {
     this.startHttpPolling()
   }
 
+  isAuthenticated() {
+    return !!(Candy.core('Config').config.hub && Candy.core('Config').config.hub.token)
+  }
+
   startHttpPolling() {
     if (this.httpInterval) {
       return
@@ -512,7 +516,7 @@ class Hub {
   call(action, data) {
     log('Hub API call: %s', action)
     return new Promise((resolve, reject) => {
-      const url = 'https://hub.candypack.dev/' + action
+      const url = 'https://hub.odac.run/' + action
       log('POST request to: %s', url)
 
       const headers = {}
