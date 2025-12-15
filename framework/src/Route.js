@@ -64,10 +64,36 @@ const mime = {
 class Route {
   loading = false
   routes = {}
+  middlewares = {}
+  _pendingMiddlewares = []
   auth = {
     page: (path, authFile, file) => this.authPage(path, authFile, file),
     post: (path, authFile, file) => this.authPost(path, authFile, file),
-    get: (path, authFile, file) => this.authGet(path, authFile, file)
+    get: (path, authFile, file) => this.authGet(path, authFile, file),
+    use: (...middlewares) => this.use(...middlewares)
+  }
+
+  async #runMiddlewares(Candy, middlewares) {
+    if (!middlewares || middlewares.length === 0) return
+
+    for (const mw of middlewares) {
+      const middleware = typeof mw === 'function' ? mw : this.middlewares[mw]?.handler
+
+      if (!middleware) {
+        console.error(`Middleware not found: ${mw}`)
+        continue
+      }
+
+      const result = await middleware(Candy)
+
+      if (result === false) {
+        return Candy.Request.abort(403)
+      }
+
+      if (result !== undefined && result !== true) {
+        return result
+      }
+    }
   }
 
   async check(Candy) {
@@ -135,6 +161,12 @@ class Route {
             (!(await Candy.request('_token')) || !Candy.token(await Candy.Request.request('_token')))
           )
             return Candy.Request.abort(401)
+
+          if (controller.middlewares) {
+            const middlewareResult = await this.#runMiddlewares(Candy, controller.middlewares)
+            if (middlewareResult !== undefined) return middlewareResult
+          }
+
           if (typeof controller.cache === 'function') {
             if (controller.params) for (let key in controller.params) Candy.Request.data.url[key] = controller.params[key]
             return controller.cache(Candy)
@@ -146,6 +178,12 @@ class Route {
     if (authPageController && (await Candy.Auth.check())) {
       if (authPageController.params) for (let key in authPageController.params) Candy.Request.data.url[key] = authPageController.params[key]
       Candy.Request.page = authPageController.cache?.file || authPageController.file
+
+      if (authPageController.middlewares) {
+        const middlewareResult = await this.#runMiddlewares(Candy, authPageController.middlewares)
+        if (middlewareResult !== undefined) return middlewareResult
+      }
+
       if (typeof authPageController.cache === 'function') {
         return authPageController.cache(Candy)
       }
@@ -154,6 +192,12 @@ class Route {
     if (pageController) {
       if (pageController.params) for (let key in pageController.params) Candy.Request.data.url[key] = pageController.params[key]
       Candy.Request.page = pageController.cache?.file || pageController.file
+
+      if (pageController.middlewares) {
+        const middlewareResult = await this.#runMiddlewares(Candy, pageController.middlewares)
+        if (middlewareResult !== undefined) return middlewareResult
+      }
+
       if (typeof pageController.cache === 'function') {
         return pageController.cache(Candy)
       }
@@ -199,15 +243,38 @@ class Route {
         return {
           params: params,
           cache: this.routes[route][method][key].cache,
-          token: this.routes[route][method][key].token
+          token: this.routes[route][method][key].token,
+          middlewares: this.routes[route][method][key].middlewares
         }
     }
     return false
   }
 
+  #loadMiddlewares() {
+    const middlewareDir = `${__dir}/middleware/`
+    if (!fs.existsSync(middlewareDir)) return
+
+    for (const file of fs.readdirSync(middlewareDir)) {
+      if (file.substr(-3) !== '.js') continue
+      const name = file.replace('.js', '')
+      const path = `${middlewareDir}${file}`
+      const mtime = fs.statSync(path).mtimeMs
+
+      if (this.middlewares[name] && this.middlewares[name].mtime >= mtime - 1000) continue
+
+      delete require.cache[require.resolve(path)]
+      this.middlewares[name] = {
+        path,
+        mtime,
+        handler: require(path)
+      }
+    }
+  }
+
   #init() {
     if (this.loading) return
     this.loading = true
+    this.#loadMiddlewares()
     for (const file of fs.readdirSync(`${__dir}/controller/`)) {
       if (file.substr(-3) !== '.js') continue
       let name = file.replace('.js', '')
@@ -343,13 +410,22 @@ class Route {
     }
   }
 
+  use(...middlewares) {
+    if (middlewares.length === 0) {
+      this._pendingMiddlewares = []
+    } else {
+      this._pendingMiddlewares.push(...middlewares.flat())
+    }
+    return this
+  }
+
   set(type, url, file, options = {}) {
     if (Array.isArray(type)) {
       type = type.map(t => t.toLowerCase())
       for (const t of type) {
         this.set(t, url, file, options)
       }
-      return
+      return this
     }
 
     if (!options) options = {}
@@ -377,7 +453,7 @@ class Route {
       if (!isFunction && this.routes[Candy.Route.buff][type][url].mtime < fs.statSync(path).mtimeMs) {
         delete this.routes[Candy.Route.buff][type][url]
         delete require.cache[require.resolve(path)]
-      } else return
+      } else return this
     }
 
     if (isFunction || fs.existsSync(path)) {
@@ -389,7 +465,10 @@ class Route {
       this.routes[Candy.Route.buff][type][url].path = path
       this.routes[Candy.Route.buff][type][url].loaded = routes2[Candy.Route.buff]
       this.routes[Candy.Route.buff][type][url].token = options.token ?? true
+      this.routes[Candy.Route.buff][type][url].middlewares = this._pendingMiddlewares.length > 0 ? [...this._pendingMiddlewares] : undefined
     }
+
+    return this
   }
 
   page(path, file) {
@@ -398,17 +477,20 @@ class Route {
         _candy.View.set(file)
         return
       })
-      return
+      return this
     }
     if (file) this.set('page', path, file)
+    return this
   }
 
   post(path, file, options) {
     this.set('post', path, file, options)
+    return this
   }
 
   get(path, file, options) {
     this.set('get', path, file, options)
+    return this
   }
 
   authPage(path, authFile, file) {
@@ -423,7 +505,7 @@ class Route {
           return
         })
       }
-      return
+      return this
     }
     if (authFile) this.set('#page', path, authFile)
     if (file) {
@@ -436,16 +518,19 @@ class Route {
         this.set('page', path, file)
       }
     }
+    return this
   }
 
   authPost(path, authFile, file) {
     if (authFile) this.set('#post', path, authFile)
     if (file) this.post(path, file)
+    return this
   }
 
   authGet(path, authFile, file) {
     if (authFile) this.set('#get', path, authFile)
     if (file) this.get(path, file)
+    return this
   }
 
   error(code, file) {
