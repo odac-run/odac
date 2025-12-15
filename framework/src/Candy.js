@@ -30,6 +30,35 @@ module.exports = {
       _candy.Lang = new (require('./Lang.js'))(_candy)
       _candy.View = new (require('./View.js'))(_candy)
 
+      _candy._intervals = []
+      _candy._timeouts = []
+      _candy.setInterval = function (callback, delay, ...args) {
+        const id = setInterval(callback, delay, ...args)
+        _candy._intervals.push(id)
+        return id
+      }
+      _candy.setTimeout = function (callback, delay, ...args) {
+        const id = setTimeout(callback, delay, ...args)
+        _candy._timeouts.push(id)
+        return id
+      }
+      _candy.clearInterval = function (id) {
+        const index = _candy._intervals.indexOf(id)
+        if (index > -1) _candy._intervals.splice(index, 1)
+        clearInterval(id)
+      }
+      _candy.clearTimeout = function (id) {
+        const index = _candy._timeouts.indexOf(id)
+        if (index > -1) _candy._timeouts.splice(index, 1)
+        clearTimeout(id)
+      }
+      _candy.cleanup = function () {
+        for (const id of _candy._intervals) clearInterval(id)
+        for (const id of _candy._timeouts) clearTimeout(id)
+        _candy._intervals = []
+        _candy._timeouts = []
+      }
+
       if (global.Candy?.Route?.class) {
         for (const name in global.Candy.Route.class) {
           const Module = global.Candy.Route.class[name].module
@@ -72,7 +101,7 @@ module.exports = {
       }
       _candy.stream = function (input) {
         _candy.Request.clearTimeout()
-        return new (require('./Stream'))(_candy.Request.req, _candy.Request.res, input)
+        return new (require('./Stream'))(_candy.Request.req, _candy.Request.res, input, _candy)
       }
     }
 

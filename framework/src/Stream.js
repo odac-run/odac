@@ -3,10 +3,12 @@ class Stream {
   #req
   #res
   #closed = false
+  #candy
 
-  constructor(req, res, input) {
+  constructor(req, res, input, candy) {
     this.#req = req
     this.#res = res
+    this.#candy = candy
     this.#init()
     this.#handleInput(input)
   }
@@ -30,9 +32,15 @@ class Stream {
       }
     }, 30000)
 
-    this.#req.on('close', () => {
+    const handleClose = () => {
       this.close()
-    })
+      if (this.#candy && typeof this.#candy.cleanup === 'function') {
+        this.#candy.cleanup()
+      }
+    }
+
+    this.#req.on('close', handleClose)
+    this.#res.on('close', handleClose)
   }
 
   #handleInput(input) {
@@ -126,6 +134,9 @@ class Stream {
     clearInterval(this.#heartbeat)
     if (!this.#res.writableEnded) {
       this.#res.end()
+    }
+    if (this.#candy && typeof this.#candy.cleanup === 'function') {
+      this.#candy.cleanup()
     }
   }
 
