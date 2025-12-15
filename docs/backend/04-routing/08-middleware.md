@@ -120,17 +120,31 @@ module.exports = async (Candy) => {
 ```javascript
 // middleware/rateLimit.js
 const requests = new Map()
+let lastCleanup = Date.now()
 
 module.exports = async (Candy) => {
   const ip = Candy.Request.ip
   const now = Date.now()
-  const limit = 100 // requests per minute
+  const limit = 100
+  const window = 60000
+  
+  if (now - lastCleanup > window) {
+    for (const [key, times] of requests.entries()) {
+      const recent = times.filter(time => now - time < window)
+      if (recent.length === 0) {
+        requests.delete(key)
+      } else {
+        requests.set(key, recent)
+      }
+    }
+    lastCleanup = now
+  }
   
   if (!requests.has(ip)) {
     requests.set(ip, [])
   }
   
-  const userRequests = requests.get(ip).filter(time => now - time < 60000)
+  const userRequests = requests.get(ip).filter(time => now - time < window)
   
   if (userRequests.length >= limit) {
     return Candy.abort(429, 'Too many requests')
@@ -140,6 +154,8 @@ module.exports = async (Candy) => {
   requests.set(ip, userRequests)
 }
 ```
+
+> **Note:** This example uses in-memory storage for simplicity. For production environments with multiple server instances, consider using Redis or Memcached for distributed rate limiting.
 
 #### Premium Check with View
 ```javascript
