@@ -29,6 +29,13 @@ class MiddlewareChain {
     this._route._pendingMiddlewares = []
     return this
   }
+
+  ws(path, handler, options) {
+    this._route._pendingMiddlewares = [...this._middlewares]
+    this._route.ws(path, handler, options)
+    this._route._pendingMiddlewares = []
+    return this
+  }
 }
 
 module.exports = MiddlewareChain
