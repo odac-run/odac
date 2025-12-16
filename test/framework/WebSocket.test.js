@@ -81,4 +81,14 @@ describe('Route WebSocket Integration', () => {
     const chain = Candy.Route.use('test-middleware')
     expect(typeof chain.ws).toBe('function')
   })
+
+  it('should support middleware with auth.ws()', () => {
+    const chain = Candy.Route.use('test-middleware')
+    expect(typeof chain.auth.ws).toBe('function')
+  })
+
+  it('should support auth.use() with ws()', () => {
+    const chain = Candy.Route.auth.use('test-middleware')
+    expect(typeof chain.ws).toBe('function')
+  })
 })
