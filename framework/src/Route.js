@@ -573,14 +573,26 @@ class Route {
       }
 
       if (middlewares) {
-        const middlewareResult = await this.#runMiddlewares(Candy, middlewares)
-        if (middlewareResult === false) {
-          ws.close(4003, 'Forbidden')
-          return
-        }
-        if (middlewareResult !== undefined && middlewareResult !== true) {
-          ws.close(4000, 'Middleware rejected')
-          return
+        for (const mw of middlewares) {
+          const middleware = typeof mw === 'function' ? mw : this.middlewares[mw]?.handler
+
+          if (!middleware) {
+            console.error(`Middleware not found: ${mw}`)
+            ws.close(4000, 'Internal error')
+            return
+          }
+
+          const result = await middleware(Candy)
+
+          if (result === false) {
+            ws.close(4003, 'Forbidden')
+            return
+          }
+
+          if (result !== undefined && result !== true) {
+            ws.close(4000, 'Middleware rejected')
+            return
+          }
         }
       }
       return handler(ws, Candy)
