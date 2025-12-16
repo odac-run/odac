@@ -1,6 +1,6 @@
 # WebSocket Client
 
-candy.js provides a simple WebSocket client with automatic reconnection.
+candy.js provides a simple WebSocket client with automatic reconnection and cross-tab sharing support.
 
 ## Basic Usage
 
@@ -24,7 +24,41 @@ ws.send({type: 'hello', message: 'Hi there!'})
 const ws = Candy.ws('/chat', {
   autoReconnect: true,        // Auto-reconnect on disconnect (default: true)
   reconnectDelay: 3000,       // Delay between reconnect attempts (default: 3000ms)
-  maxReconnectAttempts: 10    // Max reconnect attempts (default: 10)
+  maxReconnectAttempts: 10,   // Max reconnect attempts (default: 10)
+  shared: false               // Share connection across browser tabs (default: false)
+})
+```
+
+## Shared WebSocket (Cross-Tab)
+
+Enable `shared: true` to share a single WebSocket connection across all browser tabs:
+
+```javascript
+const ws = Candy.ws('/chat', {shared: true})
+```
+
+**Benefits:**
+- Single connection shared across all tabs
+- Reduced server load
+- Synchronized state across tabs
+- Automatic cleanup when all tabs close
+
+**Browser Support:**
+- Uses SharedWorker API (supported in Chrome, Edge, Firefox)
+- Falls back to regular WebSocket if SharedWorker is unavailable
+
+**Example:**
+```javascript
+// Tab 1
+const ws = Candy.ws('/notifications', {shared: true})
+ws.on('message', data => {
+  console.log('Notification:', data)
+})
+
+// Tab 2 (same connection)
+const ws2 = Candy.ws('/notifications', {shared: true})
+ws2.on('message', data => {
+  console.log('Same notification:', data)
 })
 ```
 

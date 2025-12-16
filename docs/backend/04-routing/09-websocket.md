@@ -121,3 +121,44 @@ Store per-connection data:
 ws.data.username = 'john'
 ws.data.joinedAt = Date.now()
 ```
+
+## Real-Time Notifications Example
+
+```javascript
+Candy.ws('/notifications', async (ws, Candy) => {
+  const user = await Candy.Auth.user()
+  if (!user) {
+    ws.close(4001, 'Unauthorized')
+    return
+  }
+
+  ws.data.userId = user.id
+  ws.join(`user-${user.id}`)
+
+  ws.on('close', () => {
+    console.log(`User ${user.id} disconnected`)
+  })
+})
+
+// Send notification to specific user from anywhere in your app
+function notifyUser(userId, message) {
+  const wsServer = Candy.Route.wsServer
+  wsServer.toRoom(`user-${userId}`, {
+    type: 'notification',
+    message
+  })
+}
+```
+
+## Client-Side Usage
+
+Frontend clients can use shared connections across tabs:
+
+```javascript
+// All browser tabs share one connection
+const ws = Candy.ws('/notifications', {shared: true})
+
+ws.on('message', data => {
+  console.log('Notification:', data)
+})
+```

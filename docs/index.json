@@ -461,8 +461,16 @@
       "title": "WebSocket",
       "children": [
         {
+          "file": "00-overview.md",
+          "title": "Overview"
+        },
+        {
           "file": "01-websocket-client.md",
           "title": "WebSocket Client"
+        },
+        {
+          "file": "02-shared-websocket.md",
+          "title": "Shared WebSocket (Cross-Tab)"
         }
       ]
     }
