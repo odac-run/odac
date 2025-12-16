@@ -7,6 +7,15 @@ class WebSocketProxy {
     this.#log = log
   }
 
+  #validateClientFrame(buffer) {
+    if (buffer.length < 2) return true
+
+    const secondByte = buffer[1]
+    const masked = (secondByte & 0x80) !== 0
+
+    return masked
+  }
+
   upgrade(req, socket, head, website, host) {
     const options = {
       hostname: '127.0.0.1',
@@ -43,8 +52,18 @@ class WebSocketProxy {
         proxySocket.write(head)
       }
 
-      socket.pipe(proxySocket)
-      proxySocket.pipe(socket)
+      socket.on('data', chunk => {
+        if (!this.#validateClientFrame(chunk)) {
+          socket.destroy()
+          proxySocket.destroy()
+          return
+        }
+        proxySocket.write(chunk)
+      })
+
+      proxySocket.on('data', chunk => {
+        socket.write(chunk)
+      })
 
       socket.on('error', () => proxySocket.destroy())
       proxySocket.on('error', () => socket.destroy())
