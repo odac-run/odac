@@ -1,4 +1,4 @@
-const {WebSocketServer, WebSocketClient} = require('../../framework/src/WebSocket.js')
+const {WebSocketServer} = require('../../framework/src/WebSocket.js')
 
 describe('WebSocketServer', () => {
   let server
