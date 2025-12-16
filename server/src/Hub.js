@@ -5,6 +5,8 @@ const nodeCrypto = require('crypto')
 const os = require('os')
 const fs = require('fs')
 
+const POLLING_INTERVAL_SECONDS = 60
+
 class Hub {
   constructor() {
     this.websocket = null
@@ -21,10 +23,7 @@ class Hub {
   }
 
   check() {
-    this.checkCounter++
-    if (this.checkCounter >= 60) {
-      this.checkCounter = 0
-    }
+    this.checkCounter = (this.checkCounter + 1) % POLLING_INTERVAL_SECONDS
 
     if (this.websocket || this.checkCounter !== 0) {
       return
