@@ -119,7 +119,7 @@ class Web {
     progress('directory', 'progress', __('Setting up website files for %s...', domain))
 
     childProcess.execSync('npm link candypack', {cwd: web.path})
-    if (fs.existsSync(web.path + 'node_modules/.bin')) fs.rmSync(web.path + 'node_modules/.bin', {recursive: true})
+    if (fs.existsSync(web.path + '/node_modules/.bin')) fs.rmSync(web.path + '/node_modules/.bin', {recursive: true})
     if (!fs.existsSync(web.path + '/node_modules')) fs.mkdirSync(web.path + '/node_modules')
 
     // Copy web template files
