@@ -9,10 +9,10 @@ Advanced authentication and middleware patterns for WebSocket routes.
 The simplest way to require authentication:
 
 ```javascript
-Candy.Route.auth.ws('/secure', async (ws, Candy) => {
+Candy.Route.auth.ws('/secure', async Candy => {
   const user = await Candy.Auth.user()
   
-  ws.send({
+  Candy.ws.send({
     type: 'authenticated',
     user: user.name
   })
@@ -29,23 +29,23 @@ Candy.Route.auth.ws('/secure', async (ws, Candy) => {
 For custom authentication logic:
 
 ```javascript
-Candy.Route.ws('/custom-auth', async (ws, Candy) => {
+Candy.Route.ws('/custom-auth', async Candy => {
   const token = Candy.Request.header('Authorization')
   
   if (!token) {
-    ws.close(4001, 'Missing token')
+    Candy.ws.close(4001, 'Missing token')
     return
   }
 
   const user = await validateCustomToken(token)
   
   if (!user) {
-    ws.close(4001, 'Invalid token')
+    Candy.ws.close(4001, 'Invalid token')
     return
   }
 
-  ws.data.user = user
-  ws.send({type: 'authenticated'})
+  Candy.ws.data.user = user
+  Candy.ws.send({type: 'authenticated'})
 })
 ```
 
@@ -54,8 +54,8 @@ Candy.Route.ws('/custom-auth', async (ws, Candy) => {
 ### Basic Middleware
 
 ```javascript
-Candy.Route.use('rate-limit').ws('/chat', (ws, Candy) => {
-  ws.send({type: 'connected'})
+Candy.Route.use('rate-limit').ws('/chat', Candy => {
+  Candy.ws.send({type: 'connected'})
 })
 ```
 
@@ -64,8 +64,8 @@ Candy.Route.use('rate-limit').ws('/chat', (ws, Candy) => {
 Middleware runs in order:
 
 ```javascript
-Candy.Route.use('auth', 'rate-limit', 'log').ws('/chat', (ws, Candy) => {
-  ws.send({type: 'ready'})
+Candy.Route.use('auth', 'rate-limit', 'log').ws('/chat', Candy => {
+  Candy.ws.send({type: 'ready'})
 })
 ```
 
@@ -103,8 +103,8 @@ module.exports = async Candy => {
 **Usage:**
 
 ```javascript
-Candy.Route.use('websocket-rate-limit').ws('/chat', (ws, Candy) => {
-  ws.send({type: 'connected'})
+Candy.Route.use('websocket-rate-limit').ws('/chat', Candy => {
+  Candy.ws.send({type: 'connected'})
 })
 ```
 
@@ -156,15 +156,15 @@ You can combine `auth.ws()` with middleware:
 // Candy.Route.use('rate-limit').auth.ws('/chat', handler)
 
 // Instead, use middleware that includes auth check
-Candy.Route.use('websocket-auth', 'rate-limit').ws('/chat', (ws, Candy) => {
+Candy.Route.use('websocket-auth', 'rate-limit').ws('/chat', Candy => {
   const user = Candy.Auth.user()
-  ws.send({user: user.name})
+  Candy.ws.send({user: user.name})
 })
 
 // Or use auth.ws() without middleware
-Candy.Route.auth.ws('/chat', (ws, Candy) => {
+Candy.Route.auth.ws('/chat', Candy => {
   const user = Candy.Auth.user()
-  ws.send({user: user.name})
+  Candy.ws.send({user: user.name})
 })
 ```
 
@@ -201,12 +201,12 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('chat-rate-limit').auth.ws('/chat', async (ws, Candy) => {
+Candy.Route.use('chat-rate-limit').auth.ws('/chat', async Candy => {
   const user = await Candy.Auth.user()
-  ws.join('general')
+  Candy.ws.join('general')
   
-  ws.on('message', data => {
-    ws.to('general').send({
+  Candy.ws.on('message', data => {
+    Candy.ws.to('general').send({
       user: user.name,
       text: data.text
     })
@@ -229,16 +229,16 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('admin-only').ws('/admin-dashboard', (ws, Candy) => {
+Candy.Route.use('admin-only').ws('/admin-dashboard', Candy => {
   const sendStats = async () => {
     const stats = await getSystemStats()
-    ws.send({type: 'stats', data: stats})
+    Candy.ws.send({type: 'stats', data: stats})
   }
   
   sendStats()
   const interval = setInterval(sendStats, 5000)
   
-  ws.on('close', () => clearInterval(interval))
+  Candy.ws.on('close', () => clearInterval(interval))
 })
 ```
 
@@ -260,8 +260,8 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('ip-whitelist').ws('/internal', (ws, Candy) => {
-  ws.send({type: 'internal-access-granted'})
+Candy.Route.use('ip-whitelist').ws('/internal', Candy => {
+  Candy.ws.send({type: 'internal-access-granted'})
 })
 ```
 

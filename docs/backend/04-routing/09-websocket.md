@@ -8,19 +8,23 @@ WebSocket routes are defined in your route files (e.g., `route/www.js` or `route
 
 ```javascript
 // route/websocket.js
-Candy.Route.ws('/chat', (ws, Candy) => {
-  ws.send({type: 'welcome', message: 'Connected!'})
+Candy.Route.ws('/chat', Candy => {
+  Candy.ws.send({type: 'welcome', message: 'Connected!'})
 
-  ws.on('message', data => {
+  Candy.ws.on('message', data => {
     console.log('Received:', data)
-    ws.send({type: 'echo', data})
+    Candy.ws.send({type: 'echo', data})
   })
 
-  ws.on('close', () => {
+  Candy.ws.on('close', () => {
     console.log('Client disconnected')
   })
 })
 ```
+
+**Handler Signature:**
+
+The handler receives the `Candy` instance as the only parameter. The WebSocket client is accessible via `Candy.ws`, providing a consistent API with HTTP routes where everything is accessed through the `Candy` object.
 
 **CSRF Token Protection:**
 
@@ -28,8 +32,8 @@ By default, WebSocket routes require a valid CSRF token (like `Route.get()` and 
 
 **Disable token requirement:**
 ```javascript
-Candy.Route.ws('/public', (ws, Candy) => {
-  ws.send({type: 'public'})
+Candy.Route.ws('/public', Candy => {
+  Candy.ws.send({type: 'public'})
 }, {token: false})
 ```
 
@@ -41,30 +45,32 @@ web/
 │   └── websocket.js    # WebSocket routes (recommended)
 ```
 
-## WebSocket Client Methods
+## WebSocket Client API (Candy.ws)
+
+The WebSocket client is accessible via `Candy.ws` in your handler, providing a consistent API pattern with HTTP routes.
 
 ### Sending Messages
 
 ```javascript
-ws.send({type: 'message', text: 'Hello'})  // JSON object
-ws.send('Plain text message')               // String
-ws.sendBinary(buffer)                       // Binary data
+Candy.ws.send({type: 'message', text: 'Hello'})  // JSON object
+Candy.ws.send('Plain text message')               // String
+Candy.ws.sendBinary(buffer)                       // Binary data
 ```
 
 ### Event Handlers
 
 ```javascript
-ws.on('message', data => {})  // Incoming message
-ws.on('close', () => {})      // Connection closed
-ws.on('error', err => {})     // Error occurred
+Candy.ws.on('message', data => {})  // Incoming message
+Candy.ws.on('close', () => {})      // Connection closed
+Candy.ws.on('error', err => {})     // Error occurred
 ```
 
 ### Connection Management
 
 ```javascript
-ws.close()           // Close connection
-ws.ping()            // Send ping frame
-ws.id                // Unique client ID
+Candy.ws.close()           // Close connection
+Candy.ws.ping()            // Send ping frame
+Candy.ws.id                // Unique client ID
 ```
 
 ## Rooms
@@ -72,20 +78,20 @@ ws.id                // Unique client ID
 Group clients into rooms for targeted broadcasting:
 
 ```javascript
-Candy.Route.ws('/game', (ws, Candy) => {
+Candy.Route.ws('/game', Candy => {
   const roomId = Candy.Request.data.url.room || 'lobby'
   
-  ws.join(roomId)
+  Candy.ws.join(roomId)
   
-  ws.on('message', data => {
-    ws.to(roomId).send({
+  Candy.ws.on('message', data => {
+    Candy.ws.to(roomId).send({
       type: 'chat',
       message: data.message
     })
   })
 
-  ws.on('close', () => {
-    ws.leave(roomId)
+  Candy.ws.on('close', () => {
+    Candy.ws.leave(roomId)
   })
 })
 ```
@@ -94,10 +100,10 @@ Candy.Route.ws('/game', (ws, Candy) => {
 
 ```javascript
 // Send to all clients except sender
-ws.broadcast({type: 'notification', text: 'New user joined'})
+Candy.ws.broadcast({type: 'notification', text: 'New user joined'})
 
 // Send to all clients in a room
-ws.to('room-name').send({type: 'update', data: {}})
+Candy.ws.to('room-name').send({type: 'update', data: {}})
 ```
 
 ## URL Parameters
@@ -105,11 +111,11 @@ ws.to('room-name').send({type: 'update', data: {}})
 WebSocket routes support dynamic parameters:
 
 ```javascript
-Candy.Route.ws('/room/{roomId}/user/{userId}', (ws, Candy) => {
+Candy.Route.ws('/room/{roomId}/user/{userId}', Candy => {
   const {roomId, userId} = Candy.Request.data.url
   
-  ws.join(roomId)
-  ws.data.userId = userId
+  Candy.ws.join(roomId)
+  Candy.ws.data.userId = userId
 })
 ```
 
@@ -118,16 +124,16 @@ Candy.Route.ws('/room/{roomId}/user/{userId}', (ws, Candy) => {
 ### Manual Authentication Check
 
 ```javascript
-Candy.Route.ws('/secure', async (ws, Candy) => {
+Candy.Route.ws('/secure', async Candy => {
   const isAuthenticated = await Candy.Auth.check()
   
   if (!isAuthenticated) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
   const user = await Candy.Auth.user()
-  ws.data.user = user
+  Candy.ws.data.user = user
 })
 ```
 
@@ -136,11 +142,11 @@ Candy.Route.ws('/secure', async (ws, Candy) => {
 Automatically requires authentication (also requires token by default):
 
 ```javascript
-Candy.Route.auth.ws('/secure', async (ws, Candy) => {
+Candy.Route.auth.ws('/secure', async Candy => {
   const user = await Candy.Auth.user()
-  ws.data.user = user
+  Candy.ws.data.user = user
   
-  ws.send({
+  Candy.ws.send({
     type: 'welcome',
     user: user.name
   })
@@ -176,8 +182,8 @@ WebSocket routes support middleware just like HTTP routes:
 
 ```javascript
 // Define middleware
-Candy.Route.use('auth-check', 'rate-limit').ws('/chat', (ws, Candy) => {
-  ws.send({type: 'welcome'})
+Candy.Route.use('auth-check', 'rate-limit').ws('/chat', Candy => {
+  Candy.ws.send({type: 'welcome'})
 })
 ```
 
@@ -202,8 +208,8 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('websocket-auth').ws('/secure', (ws, Candy) => {
-  ws.send({type: 'authenticated'})
+Candy.Route.use('websocket-auth').ws('/secure', Candy => {
+  Candy.ws.send({type: 'authenticated'})
 })
 ```
 
@@ -212,24 +218,24 @@ Candy.Route.use('websocket-auth').ws('/secure', (ws, Candy) => {
 Store per-connection data:
 
 ```javascript
-ws.data.username = 'john'
-ws.data.joinedAt = Date.now()
+Candy.ws.data.username = 'john'
+Candy.ws.data.joinedAt = Date.now()
 ```
 
 ## Real-Time Notifications Example
 
 ```javascript
-Candy.Route.ws('/notifications', async (ws, Candy) => {
+Candy.Route.ws('/notifications', async Candy => {
   const user = await Candy.Auth.user()
   if (!user) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
-  ws.data.userId = user.id
-  ws.join(`user-${user.id}`)
+  Candy.ws.data.userId = user.id
+  Candy.ws.join(`user-${user.id}`)
 
-  ws.on('close', () => {
+  Candy.ws.on('close', () => {
     console.log(`User ${user.id} disconnected`)
   })
 })

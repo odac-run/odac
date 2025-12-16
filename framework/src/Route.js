@@ -547,6 +547,8 @@ class Route {
     const requireAuth = type === '#ws'
 
     const wrappedHandler = async (ws, Candy) => {
+      Candy.ws = ws
+
       if (requireAuth) {
         const isAuthenticated = await Candy.Auth.check()
         if (!isAuthenticated) {
@@ -556,7 +558,7 @@ class Route {
       }
 
       if (token) {
-        const wsToken = Candy.Request.header('Sec-WebSocket-Protocol')
+        const wsToken = Candy.Request._wsHeaders ? Candy.Request._wsHeaders['sec-websocket-protocol'] : null
         const tokens = wsToken ? wsToken.split(', ') : []
         const candyToken = tokens.find(t => t.startsWith('candy-token-'))
 
@@ -595,7 +597,7 @@ class Route {
           }
         }
       }
-      return handler(ws, Candy)
+      return handler(Candy)
     }
 
     this.#wsServer.route(path, wrappedHandler)

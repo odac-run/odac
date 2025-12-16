@@ -8,11 +8,11 @@ Simple echo server that sends back received messages:
 
 ```javascript
 // route/websocket.js
-Candy.Route.ws('/echo', ws => {
-  ws.send({type: 'welcome', message: 'Connected!'})
+Candy.Route.ws('/echo', Candy => {
+  Candy.ws.send({type: 'welcome', message: 'Connected!'})
 
-  ws.on('message', data => {
-    ws.send({type: 'echo', data})
+  Candy.ws.on('message', data => {
+    Candy.ws.send({type: 'echo', data})
   })
 })
 ```
@@ -29,27 +29,27 @@ ws.send({message: 'Hello!'})
 ### Using auth.ws() (Recommended)
 
 ```javascript
-Candy.Route.auth.ws('/chat', async (ws, Candy) => {
+Candy.Route.auth.ws('/chat', async Candy => {
   const user = await Candy.Auth.user()
 
-  ws.join('general')
-  ws.data.user = user
+  Candy.ws.join('general')
+  Candy.ws.data.user = user
 
-  ws.to('general').send({
+  Candy.ws.to('general').send({
     type: 'user_joined',
     user: user.name
   })
 
-  ws.on('message', data => {
-    ws.to('general').send({
+  Candy.ws.on('message', data => {
+    Candy.ws.to('general').send({
       type: 'message',
       user: user.name,
       text: data.text
     })
   })
 
-  ws.on('close', () => {
-    ws.to('general').send({
+  Candy.ws.on('close', () => {
+    Candy.ws.to('general').send({
       type: 'user_left',
       user: user.name
     })
@@ -60,32 +60,32 @@ Candy.Route.auth.ws('/chat', async (ws, Candy) => {
 ### Manual Authentication Check
 
 ```javascript
-Candy.Route.ws('/chat', async (ws, Candy) => {
+Candy.Route.ws('/chat', async Candy => {
   const user = await Candy.Auth.user()
   
   if (!user) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
-  ws.join('general')
-  ws.data.user = user
+  Candy.ws.join('general')
+  Candy.ws.data.user = user
 
-  ws.to('general').send({
+  Candy.ws.to('general').send({
     type: 'user_joined',
     user: user.name
   })
 
-  ws.on('message', data => {
-    ws.to('general').send({
+  Candy.ws.on('message', data => {
+    Candy.ws.to('general').send({
       type: 'message',
       user: user.name,
       text: data.text
     })
   })
 
-  ws.on('close', () => {
-    ws.to('general').send({
+  Candy.ws.on('close', () => {
+    Candy.ws.to('general').send({
       type: 'user_left',
       user: user.name
     })
@@ -111,25 +111,25 @@ chat.send({text: 'Hello everyone!'})
 Dynamic rooms using URL parameters:
 
 ```javascript
-Candy.Route.ws('/room/{roomId}', async (ws, Candy) => {
+Candy.Route.ws('/room/{roomId}', async Candy => {
   const {roomId} = Candy.Request.data.url
   const user = await Candy.Auth.user()
 
   if (!user) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
-  ws.join(roomId)
-  ws.data.roomId = roomId
+  Candy.ws.join(roomId)
+  Candy.ws.data.roomId = roomId
 
-  ws.send({
+  Candy.ws.send({
     type: 'joined',
     room: roomId
   })
 
-  ws.on('message', data => {
-    ws.to(roomId).send({
+  Candy.ws.on('message', data => {
+    Candy.ws.to(roomId).send({
       type: 'message',
       user: user.name,
       text: data.text,
@@ -151,18 +151,18 @@ room.send({text: 'Hi from gaming room!'})
 User-specific notification system:
 
 ```javascript
-Candy.Route.ws('/notifications', async (ws, Candy) => {
+Candy.Route.ws('/notifications', async Candy => {
   const user = await Candy.Auth.user()
 
   if (!user) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
-  ws.join(`user-${user.id}`)
-  ws.data.userId = user.id
+  Candy.ws.join(`user-${user.id}`)
+  Candy.ws.data.userId = user.id
 
-  ws.send({
+  Candy.ws.send({
     type: 'connected',
     unreadCount: await getUnreadCount(user.id)
   })
@@ -197,10 +197,10 @@ notifications.on('message', data => {
 Broadcast messages to all connected clients:
 
 ```javascript
-Candy.Route.ws('/broadcast', ws => {
-  ws.on('message', data => {
+Candy.Route.ws('/broadcast', Candy => {
+  Candy.ws.on('message', data => {
     if (data.type === 'broadcast') {
-      ws.broadcast({
+      Candy.ws.broadcast({
         type: 'announcement',
         message: data.message,
         timestamp: Date.now()
@@ -232,23 +232,23 @@ broadcast.send({
 Real-time data updates for dashboards:
 
 ```javascript
-Candy.Route.ws('/dashboard', async (ws, Candy) => {
+Candy.Route.ws('/dashboard', async Candy => {
   const user = await Candy.Auth.user()
 
   if (!user || !user.isAdmin) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
   const sendStats = async () => {
     const stats = await getSystemStats()
-    ws.send({type: 'stats', data: stats})
+    Candy.ws.send({type: 'stats', data: stats})
   }
 
   sendStats()
   const interval = setInterval(sendStats, 5000)
 
-  ws.on('close', () => {
+  Candy.ws.on('close', () => {
     clearInterval(interval)
   })
 })
@@ -289,16 +289,16 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('rate-limit').ws('/chat', (ws, Candy) => {
-  ws.send({type: 'connected'})
+Candy.Route.use('rate-limit').ws('/chat', Candy => {
+  Candy.ws.send({type: 'connected'})
 })
 ```
 
 **Multiple Middleware:**
 
 ```javascript
-Candy.Route.use('auth', 'rate-limit', 'log-connection').ws('/secure', (ws, Candy) => {
-  ws.send({type: 'authenticated'})
+Candy.Route.use('auth', 'rate-limit', 'log-connection').ws('/secure', Candy => {
+  Candy.ws.send({type: 'authenticated'})
 })
 ```
 
@@ -307,29 +307,29 @@ Candy.Route.use('auth', 'rate-limit', 'log-connection').ws('/secure', (ws, Candy
 Simple multiplayer game state synchronization:
 
 ```javascript
-Candy.Route.ws('/game/{gameId}', async (ws, Candy) => {
+Candy.Route.ws('/game/{gameId}', async Candy => {
   const {gameId} = Candy.Request.data.url
   const user = await Candy.Auth.user()
 
   if (!user) {
-    ws.close(4001, 'Unauthorized')
+    Candy.ws.close(4001, 'Unauthorized')
     return
   }
 
-  ws.join(`game-${gameId}`)
-  ws.data.gameId = gameId
-  ws.data.playerId = user.id
+  Candy.ws.join(`game-${gameId}`)
+  Candy.ws.data.gameId = gameId
+  Candy.ws.data.playerId = user.id
 
-  ws.to(`game-${gameId}`).send({
+  Candy.ws.to(`game-${gameId}`).send({
     type: 'player_joined',
     playerId: user.id,
     name: user.name
   })
 
-  ws.on('message', data => {
+  Candy.ws.on('message', data => {
     switch (data.type) {
       case 'move':
-        ws.to(`game-${gameId}`).send({
+        Candy.ws.to(`game-${gameId}`).send({
           type: 'player_moved',
           playerId: user.id,
           position: data.position
@@ -337,7 +337,7 @@ Candy.Route.ws('/game/{gameId}', async (ws, Candy) => {
         break
       
       case 'action':
-        ws.to(`game-${gameId}`).send({
+        Candy.ws.to(`game-${gameId}`).send({
           type: 'player_action',
           playerId: user.id,
           action: data.action
@@ -346,8 +346,8 @@ Candy.Route.ws('/game/{gameId}', async (ws, Candy) => {
     }
   })
 
-  ws.on('close', () => {
-    ws.to(`game-${gameId}`).send({
+  Candy.ws.on('close', () => {
+    Candy.ws.to(`game-${gameId}`).send({
       type: 'player_left',
       playerId: user.id
     })

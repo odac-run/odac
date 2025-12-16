@@ -6,33 +6,33 @@ Quick reference for CandyPack WebSocket API.
 
 ### Route Definition
 ```javascript
-Candy.Route.ws('/path', (ws, Candy) => {
-  // Handler
+Candy.Route.ws('/path', Candy => {
+  // Handler - WebSocket client accessible via Candy.ws
 })
 ```
 
-### WebSocket Client Methods
+### WebSocket Client Methods (Candy.ws)
 
 | Method | Description |
 |--------|-------------|
-| `ws.send(data)` | Send JSON data to client |
-| `ws.sendBinary(buffer)` | Send binary data |
-| `ws.close(code, reason)` | Close connection |
-| `ws.ping()` | Send ping frame |
-| `ws.join(room)` | Join a room |
-| `ws.leave(room)` | Leave a room |
-| `ws.to(room).send(data)` | Send to room |
-| `ws.broadcast(data)` | Send to all clients |
-| `ws.on(event, handler)` | Add event listener |
-| `ws.off(event, handler)` | Remove event listener |
+| `Candy.ws.send(data)` | Send JSON data to client |
+| `Candy.ws.sendBinary(buffer)` | Send binary data |
+| `Candy.ws.close(code, reason)` | Close connection |
+| `Candy.ws.ping()` | Send ping frame |
+| `Candy.ws.join(room)` | Join a room |
+| `Candy.ws.leave(room)` | Leave a room |
+| `Candy.ws.to(room).send(data)` | Send to room |
+| `Candy.ws.broadcast(data)` | Send to all clients |
+| `Candy.ws.on(event, handler)` | Add event listener |
+| `Candy.ws.off(event, handler)` | Remove event listener |
 
 ### WebSocket Client Properties
 
 | Property | Description |
 |----------|-------------|
-| `ws.id` | Unique client ID |
-| `ws.rooms` | Array of joined rooms |
-| `ws.data` | Custom data storage |
+| `Candy.ws.id` | Unique client ID |
+| `Candy.ws.rooms` | Array of joined rooms |
+| `Candy.ws.data` | Custom data storage |
 
 ### Events
 
@@ -105,28 +105,28 @@ const ws = Candy.ws('/path', options)
 ### Echo Server
 ```javascript
 // With token (default)
-Candy.Route.ws('/echo', ws => {
-  ws.on('message', data => ws.send(data))
+Candy.Route.ws('/echo', Candy => {
+  Candy.ws.on('message', data => Candy.ws.send(data))
 })
 
 // Public (no token)
-Candy.Route.ws('/public-echo', ws => {
-  ws.on('message', data => ws.send(data))
+Candy.Route.ws('/public-echo', Candy => {
+  Candy.ws.on('message', data => Candy.ws.send(data))
 }, {token: false})
 ```
 
 ### Authenticated Route
 ```javascript
 // Using auth.ws() (recommended)
-Candy.Route.auth.ws('/secure', async (ws, Candy) => {
+Candy.Route.auth.ws('/secure', async Candy => {
   const user = await Candy.Auth.user()
   // Handle connection
 })
 
 // Manual check
-Candy.Route.ws('/secure', async (ws, Candy) => {
+Candy.Route.ws('/secure', async Candy => {
   if (!await Candy.Auth.check()) {
-    return ws.close(4001, 'Unauthorized')
+    return Candy.ws.close(4001, 'Unauthorized')
   }
   // Handle connection
 })
@@ -134,26 +134,26 @@ Candy.Route.ws('/secure', async (ws, Candy) => {
 
 ### With Middleware
 ```javascript
-Candy.Route.use('auth', 'rate-limit').ws('/chat', (ws, Candy) => {
-  ws.send({type: 'welcome'})
+Candy.Route.use('auth', 'rate-limit').ws('/chat', Candy => {
+  Candy.ws.send({type: 'welcome'})
 })
 ```
 
 ### Room Broadcasting
 ```javascript
-Candy.Route.ws('/chat', (ws, Candy) => {
-  ws.join('room-1')
-  ws.on('message', data => {
-    ws.to('room-1').send(data)
+Candy.Route.ws('/chat', Candy => {
+  Candy.ws.join('room-1')
+  Candy.ws.on('message', data => {
+    Candy.ws.to('room-1').send(data)
   })
 })
 ```
 
 ### URL Parameters
 ```javascript
-Candy.Route.ws('/room/{id}', (ws, Candy) => {
+Candy.Route.ws('/room/{id}', Candy => {
   const {id} = Candy.Request.data.url
-  ws.join(id)
+  Candy.ws.join(id)
 })
 ```
 
@@ -182,27 +182,27 @@ const ws = Candy.ws('/chat', {shared: true})
 1. **Always handle authentication**
    ```javascript
    if (!await Candy.Auth.check()) {
-     return ws.close(4001, 'Unauthorized')
+     return Candy.ws.close(4001, 'Unauthorized')
    }
    ```
 
 2. **Use rooms for targeted messaging**
    ```javascript
-   ws.join(`user-${userId}`)
+   Candy.ws.join(`user-${userId}`)
    ```
 
 3. **Clean up on close**
    ```javascript
-   ws.on('close', () => {
+   Candy.ws.on('close', () => {
      clearInterval(interval)
-     ws.leave('room')
+     Candy.ws.leave('room')
    })
    ```
 
 4. **Store per-connection data**
    ```javascript
-   ws.data.userId = user.id
-   ws.data.joinedAt = Date.now()
+   Candy.ws.data.userId = user.id
+   Candy.ws.data.joinedAt = Date.now()
    ```
 
 5. **Use shared connections for notifications**

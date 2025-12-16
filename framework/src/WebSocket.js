@@ -340,6 +340,10 @@ class WebSocketServer {
       }
     }
 
+    if (Candy.Request && req.headers) {
+      Candy.Request._wsHeaders = req.headers
+    }
+
     handler(client, Candy)
   }
 
