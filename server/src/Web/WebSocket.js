@@ -1,5 +1,7 @@
 const http = require('http')
 
+const MAX_PAYLOAD_LENGTH = 10 * 1024 * 1024
+
 class WebSocketProxy {
   #log
 
@@ -13,7 +15,27 @@ class WebSocketProxy {
     const secondByte = buffer[1]
     const masked = (secondByte & 0x80) !== 0
 
-    return masked
+    if (!masked) return false
+
+    let payloadLength = secondByte & 0x7f
+
+    if (payloadLength === 126) {
+      if (buffer.length < 4) return true
+      payloadLength = buffer.readUInt16BE(2)
+    } else if (payloadLength === 127) {
+      if (buffer.length < 10) return true
+      const payloadLengthBigInt = buffer.readBigUInt64BE(2)
+      if (payloadLengthBigInt > Number.MAX_SAFE_INTEGER) {
+        return false
+      }
+      payloadLength = Number(payloadLengthBigInt)
+    }
+
+    if (payloadLength > MAX_PAYLOAD_LENGTH) {
+      return false
+    }
+
+    return true
   }
 
   upgrade(req, socket, head, website, host) {

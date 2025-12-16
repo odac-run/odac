@@ -1,6 +1,7 @@
 const nodeCrypto = require('crypto')
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+const MAX_PAYLOAD_LENGTH = 10 * 1024 * 1024
 const OPCODE = {
   CONTINUATION: 0x0,
   TEXT: 0x1,
@@ -78,8 +79,18 @@ class WebSocketClient {
       offset = 4
     } else if (payloadLength === 127) {
       if (buffer.length < 10) return null
-      payloadLength = Number(buffer.readBigUInt64BE(2))
+      const payloadLengthBigInt = buffer.readBigUInt64BE(2)
+      if (payloadLengthBigInt > Number.MAX_SAFE_INTEGER) {
+        this.close(1009, 'Payload too large')
+        return null
+      }
+      payloadLength = Number(payloadLengthBigInt)
       offset = 10
+    }
+
+    if (payloadLength > MAX_PAYLOAD_LENGTH) {
+      this.close(1009, 'Payload too large')
+      return null
     }
 
     let maskKey = null
