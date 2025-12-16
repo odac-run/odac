@@ -8,70 +8,55 @@ const fs = require('fs')
 class Hub {
   constructor() {
     this.websocket = null
-    this.httpInterval = null
     this.websocketReconnectAttempts = 0
     this.maxReconnectAttempts = 5
     this.lastNetworkStats = null
     this.lastNetworkTime = null
     this.lastCpuStats = null
-
-    this.startHttpPolling()
+    this.checkCounter = 0
   }
 
   isAuthenticated() {
     return !!(Candy.core('Config').config.hub && Candy.core('Config').config.hub.token)
   }
 
-  startHttpPolling() {
-    if (this.httpInterval) {
+  check() {
+    this.checkCounter++
+    if (this.checkCounter >= 60) {
+      this.checkCounter = 0
+    }
+
+    if (this.websocket || this.checkCounter !== 0) {
       return
     }
 
-    log('Starting HTTP polling (60s interval)')
-    this.check()
-    this.httpInterval = setInterval(() => {
-      if (!this.websocket) {
-        this.check()
-      }
-    }, 60000)
-  }
-
-  stopHttpPolling() {
-    if (this.httpInterval) {
-      log('Stopping HTTP polling')
-      clearInterval(this.httpInterval)
-      this.httpInterval = null
-    }
-  }
-
-  async check() {
     const hub = Candy.core('Config').config.hub
     if (!hub || !hub.token) {
       return
     }
 
-    try {
-      const status = this.getSystemStatus()
-      status.timestamp = Math.floor(Date.now() / 1000)
+    const status = this.getSystemStatus()
+    status.timestamp = Math.floor(Date.now() / 1000)
 
-      const response = await this.call('status', status)
-
-      if (!response.authenticated) {
-        log('Server not authenticated: %s', response.reason || 'unknown')
-        if (response.reason === 'token_invalid' || response.reason === 'signature_invalid') {
-          log('Authentication credentials invalid, clearing config')
-          delete Candy.core('Config').config.hub
+    this.call('status', status)
+      .then(response => {
+        if (!response.authenticated) {
+          log('Server not authenticated: %s', response.reason || 'unknown')
+          if (response.reason === 'token_invalid' || response.reason === 'signature_invalid') {
+            log('Authentication credentials invalid, clearing config')
+            delete Candy.core('Config').config.hub
+          }
+          return
         }
-        return
-      }
 
-      if (response.websocket && !this.websocket) {
-        log('WebSocket requested by cloud')
-        this.connectWebSocket(response.websocketUrl, response.websocketToken)
-      }
-    } catch (error) {
-      log('Failed to report status: %s', error)
-    }
+        if (response.websocket && !this.websocket) {
+          log('WebSocket requested by cloud')
+          this.connectWebSocket(response.websocketUrl, response.websocketToken)
+        }
+      })
+      .catch(error => {
+        log('Failed to report status: %s', error)
+      })
   }
 
   connectWebSocket(url, token) {
@@ -92,7 +77,6 @@ class Hub {
       this.websocket.on('open', () => {
         log('WebSocket connected')
         this.websocketReconnectAttempts = 0
-        this.stopHttpPolling()
         this.sendWebSocketStatus()
       })
 
@@ -103,7 +87,6 @@ class Hub {
       this.websocket.on('close', () => {
         log('WebSocket disconnected')
         this.websocket = null
-        this.startHttpPolling()
       })
 
       this.websocket.on('error', error => {
@@ -112,7 +95,6 @@ class Hub {
     } catch (error) {
       log('Failed to connect WebSocket: %s', error.message)
       this.websocket = null
-      this.startHttpPolling()
     }
   }
 
@@ -121,7 +103,6 @@ class Hub {
       log('Disconnecting WebSocket')
       this.websocket.close()
       this.websocket = null
-      this.startHttpPolling()
     }
   }
 
@@ -375,6 +356,12 @@ class Hub {
         const receivedDiff = currentStats.received - this.lastNetworkStats.received
         const sentDiff = currentStats.sent - this.lastNetworkStats.sent
 
+        if (receivedDiff < 0 || sentDiff < 0 || timeDiff <= 0) {
+          this.lastNetworkStats = currentStats
+          this.lastNetworkTime = now
+          return {download: 0, upload: 0}
+        }
+
         const bandwidth = {
           download: Math.max(0, Math.round(receivedDiff / timeDiff)),
           upload: Math.max(0, Math.round(sentDiff / timeDiff))
@@ -427,6 +414,12 @@ class Hub {
 
     const idleDiff = currentStats.idle - this.lastCpuStats.idle
     const totalDiff = currentStats.total - this.lastCpuStats.total
+
+    if (idleDiff < 0 || totalDiff <= 0) {
+      this.lastCpuStats = currentStats
+      return 0
+    }
+
     const usage = 100 - ~~((100 * idleDiff) / totalDiff)
 
     this.lastCpuStats = currentStats
