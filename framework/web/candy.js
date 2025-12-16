@@ -801,10 +801,10 @@ class candy {
   }
 
   ws(path, options = {}) {
-    const {autoReconnect = true, reconnectDelay = 3000, maxReconnectAttempts = 10, shared = false} = options
+    const {autoReconnect = true, reconnectDelay = 3000, maxReconnectAttempts = 10, shared = false, token = true} = options
 
     if (shared && typeof SharedWorker !== 'undefined') {
-      return this.#createSharedWebSocket(path, {autoReconnect, reconnectDelay, maxReconnectAttempts})
+      return this.#createSharedWebSocket(path, {autoReconnect, reconnectDelay, maxReconnectAttempts, token})
     }
 
     let socket = null
@@ -825,7 +825,15 @@ class candy {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${protocol}//${window.location.host}${path}`
 
-      socket = new WebSocket(wsUrl)
+      const protocols = []
+      if (token) {
+        const csrfToken = this.token()
+        if (csrfToken) {
+          protocols.push(`candy-token-${csrfToken}`)
+        }
+      }
+
+      socket = protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
 
       socket.onopen = () => {
         reconnectAttempts = 0
@@ -926,11 +934,15 @@ class candy {
     }
 
     worker.port.start()
+
+    const token = options.token ? this.token() : null
+
     worker.port.postMessage({
       type: 'connect',
       path,
       host: window.location.host,
       protocol: window.location.protocol === 'https:' ? 'wss:' : 'ws:',
+      token,
       options
     })
 
@@ -972,6 +984,7 @@ class candy {
       let reconnectTimer = null
       let reconnectAttempts = 0
       let options = {}
+      let protocols = []
       const ports = new Set()
 
       function broadcast(type, data) {
@@ -980,10 +993,10 @@ class candy {
         })
       }
 
-      function connect(wsUrl) {
+      function connect(wsUrl, protocols) {
         if (socket && socket.readyState !== WebSocket.CLOSED) return
 
-        socket = new WebSocket(wsUrl)
+        socket = protocols && protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
 
         socket.onopen = () => {
           reconnectAttempts = 0
@@ -1004,7 +1017,7 @@ class candy {
 
           if (options.autoReconnect && reconnectAttempts < options.maxReconnectAttempts) {
             reconnectAttempts++
-            reconnectTimer = setTimeout(() => connect(wsUrl), options.reconnectDelay)
+            reconnectTimer = setTimeout(() => connect(wsUrl, protocols), options.reconnectDelay)
           }
         }
 
@@ -1018,13 +1031,14 @@ class candy {
         ports.add(port)
 
         port.onmessage = event => {
-          const {type, path, host, protocol, options: opts, data} = event.data
+          const {type, path, host, protocol, token, options: opts, data} = event.data
 
           switch (type) {
             case 'connect':
               options = opts
               const wsUrl = protocol + '//' + host + path
-              connect(wsUrl)
+              protocols = token ? ['candy-token-' + token] : []
+              connect(wsUrl, protocols)
               break
             case 'send':
               if (socket && socket.readyState === WebSocket.OPEN) {

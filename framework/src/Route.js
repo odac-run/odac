@@ -73,6 +73,7 @@ class Route {
     page: (path, authFile, file) => this.authPage(path, authFile, file),
     post: (path, authFile, file) => this.authPost(path, authFile, file),
     get: (path, authFile, file) => this.authGet(path, authFile, file),
+    ws: (path, handler, options) => this.authWs(path, handler, options),
     use: (...middlewares) => new MiddlewareChain(this, [...middlewares.flat()])
   }
 
@@ -528,9 +529,64 @@ class Route {
     return Cron.job(controller)
   }
 
-  ws(path, handler) {
-    this.#wsServer.route(path, handler)
+  ws(path, handler, options = {}) {
+    this.setWs('ws', path, handler, options)
     return this
+  }
+
+  authWs(path, handler, options = {}) {
+    this.setWs('#ws', path, handler, options)
+    return this
+  }
+
+  setWs(type, path, handler, options = {}) {
+    const middlewares = this._pendingMiddlewares.length > 0 ? [...this._pendingMiddlewares] : undefined
+    this._pendingMiddlewares = []
+
+    const {token = true} = options
+    const requireAuth = type === '#ws'
+
+    const wrappedHandler = async (ws, Candy) => {
+      if (requireAuth) {
+        const isAuthenticated = await Candy.Auth.check()
+        if (!isAuthenticated) {
+          ws.close(4001, 'Unauthorized')
+          return
+        }
+      }
+
+      if (token) {
+        const wsToken = Candy.Request.header('Sec-WebSocket-Protocol')
+        const tokens = wsToken ? wsToken.split(', ') : []
+        const candyToken = tokens.find(t => t.startsWith('candy-token-'))
+
+        if (!candyToken) {
+          ws.close(4002, 'Missing token')
+          return
+        }
+
+        const tokenValue = candyToken.replace('candy-token-', '')
+        if (!Candy.token(tokenValue)) {
+          ws.close(4002, 'Invalid token')
+          return
+        }
+      }
+
+      if (middlewares) {
+        const middlewareResult = await this.#runMiddlewares(Candy, middlewares)
+        if (middlewareResult === false) {
+          ws.close(4003, 'Forbidden')
+          return
+        }
+        if (middlewareResult !== undefined && middlewareResult !== true) {
+          ws.close(4000, 'Middleware rejected')
+          return
+        }
+      }
+      return handler(ws, Candy)
+    }
+
+    this.#wsServer.route(path, wrappedHandler)
   }
 
   handleWebSocketUpgrade(req, socket, head, Candy) {
