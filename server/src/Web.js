@@ -12,6 +12,7 @@ const tls = require('tls')
 
 const WebProxy = require('./Web/Proxy.js')
 const WebFirewall = require('./Web/Firewall.js')
+const WebSocketProxy = require('./Web/WebSocket.js')
 
 class Web {
   #active = {}
@@ -28,10 +29,13 @@ class Web {
   #started = {}
   #watcher = {}
 
+  #wsProxy
+
   constructor() {
     this.#log = log
     this.#proxy = new WebProxy(this.#log)
     this.#firewall = new WebFirewall()
+    this.#wsProxy = new WebSocketProxy(this.#log)
   }
 
   clearSSLCache(domain) {
@@ -251,6 +255,7 @@ class Web {
 
     if (!this.#server_http) {
       this.#server_http = http.createServer((req, res) => this.request(req, res, false))
+      this.#server_http.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head, false))
       this.#server_http.on('error', err => {
         log(`HTTP server error: ${err.message}`)
         if (err.code === 'EADDRINUSE') {
@@ -325,6 +330,7 @@ class Web {
         log('HTTPS server starting with HTTP/1.1 only')
       }
 
+      this.#server_https.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head, true))
       this.#server_https.on('error', err => {
         log(`HTTPS server error: ${err.message}`)
         if (err.code === 'EADDRINUSE') {
@@ -334,6 +340,37 @@ class Web {
 
       this.#server_https.listen(443)
     }
+  }
+
+  #handleUpgrade(req, socket, head, secure) {
+    let host = req.headers.host
+    if (!host) {
+      socket.destroy()
+      return
+    }
+
+    if (host.includes(':')) {
+      host = host.split(':')[0]
+    }
+
+    let matchedHost = host
+    while (!Candy.core('Config').config.websites[matchedHost] && matchedHost.includes('.')) {
+      matchedHost = matchedHost.split('.').slice(1).join('.')
+    }
+
+    const website = Candy.core('Config').config.websites[matchedHost]
+    if (!website || !website.pid || !this.#watcher[website.pid]) {
+      socket.destroy()
+      return
+    }
+
+    if (!secure) {
+      socket.write('HTTP/1.1 301 Moved Permanently\r\nLocation: wss://' + host + req.url + '\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    this.#wsProxy.upgrade(req, socket, head, website, host)
   }
 
   set(domain, data) {

@@ -31,7 +31,9 @@ class CandyRequest {
     let route = req.headers.host.split('.')[0]
     if (!Candy.Route.routes[route]) route = 'www'
     this.route = route
-    this.#timeout = setTimeout(() => !this.res.finished && this.abort(408), Candy.Config.request.timeout)
+    if (this.res) {
+      this.#timeout = setTimeout(() => !this.res.finished && this.abort(408), Candy.Config.request.timeout)
+    }
     this.#data()
     if (!Candy.Request) Candy.Request = {}
     if (!this.cookie('candy_client') || !this.session('_client') || this.session('_client') !== this.cookie('candy_client')) {

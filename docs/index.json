@@ -213,6 +213,22 @@
         {
           "file": "08-middleware.md",
           "title": "Middleware"
+        },
+        {
+          "file": "09-websocket.md",
+          "title": "WebSocket"
+        },
+        {
+          "file": "09-websocket-examples.md",
+          "title": "WebSocket Examples"
+        },
+        {
+          "file": "09-websocket-quick-reference.md",
+          "title": "WebSocket Quick Reference"
+        },
+        {
+          "file": "09-websocket-auth-middleware.md",
+          "title": "WebSocket Auth & Middleware"
         }
       ]
     },
@@ -449,6 +465,24 @@
         {
           "file": "01-client-streaming.md",
           "title": "Client-Side Streaming"
+        }
+      ]
+    },
+    {
+      "file": "06-websocket",
+      "title": "WebSocket",
+      "children": [
+        {
+          "file": "00-overview.md",
+          "title": "Overview"
+        },
+        {
+          "file": "01-websocket-client.md",
+          "title": "WebSocket Client"
+        },
+        {
+          "file": "02-shared-websocket.md",
+          "title": "Shared WebSocket (Cross-Tab)"
         }
       ]
     }

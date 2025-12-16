@@ -799,6 +799,269 @@ class candy {
       }
     }
   }
+
+  ws(path, options = {}) {
+    const {autoReconnect = true, reconnectDelay = 3000, maxReconnectAttempts = 10, shared = false, token = true} = options
+
+    if (shared && typeof SharedWorker !== 'undefined') {
+      return this.#createSharedWebSocket(path, {autoReconnect, reconnectDelay, maxReconnectAttempts, token})
+    }
+
+    let socket = null
+    let reconnectTimer = null
+    let reconnectAttempts = 0
+    let isClosed = false
+    const handlers = {}
+
+    const emit = (event, ...args) => {
+      if (handlers[event]) {
+        handlers[event].forEach(fn => fn(...args))
+      }
+    }
+
+    const connect = () => {
+      if (isClosed) return
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${protocol}//${window.location.host}${path}`
+
+      const protocols = []
+      if (token) {
+        const csrfToken = this.token()
+        if (csrfToken) {
+          protocols.push(`candy-token-${csrfToken}`)
+        }
+      }
+
+      socket = protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
+
+      socket.onopen = () => {
+        reconnectAttempts = 0
+        emit('open')
+      }
+
+      socket.onmessage = e => {
+        try {
+          const data = JSON.parse(e.data)
+          emit('message', data)
+        } catch {
+          emit('message', e.data)
+        }
+      }
+
+      socket.onclose = e => {
+        emit('close', e)
+
+        if (autoReconnect && !isClosed && reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++
+          reconnectTimer = setTimeout(connect, reconnectDelay)
+        }
+      }
+
+      socket.onerror = e => {
+        emit('error', e)
+      }
+    }
+
+    connect()
+
+    return {
+      on: (event, handler) => {
+        if (!handlers[event]) handlers[event] = []
+        handlers[event].push(handler)
+        return this
+      },
+      off: (event, handler) => {
+        if (!handlers[event]) return
+        if (handler) {
+          handlers[event] = handlers[event].filter(h => h !== handler)
+        } else {
+          delete handlers[event]
+        }
+        return this
+      },
+      send: data => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(typeof data === 'object' ? JSON.stringify(data) : data)
+        }
+        return this
+      },
+      close: () => {
+        isClosed = true
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        if (socket) socket.close()
+      },
+      get state() {
+        return socket ? socket.readyState : WebSocket.CLOSED
+      },
+      get connected() {
+        return socket && socket.readyState === WebSocket.OPEN
+      }
+    }
+  }
+
+  #createSharedWebSocket(path, options) {
+    const workerUrl = this.#createWorkerBlob()
+    const worker = new SharedWorker(workerUrl, `candy-ws-${path}`)
+    const handlers = {}
+    let isConnected = false
+
+    const emit = (event, ...args) => {
+      if (handlers[event]) {
+        handlers[event].forEach(fn => fn(...args))
+      }
+    }
+
+    worker.port.onmessage = e => {
+      const {type, data} = e.data
+
+      switch (type) {
+        case 'open':
+          isConnected = true
+          emit('open')
+          break
+        case 'message':
+          emit('message', data)
+          break
+        case 'close':
+          isConnected = false
+          emit('close', data)
+          break
+        case 'error':
+          emit('error', data)
+          break
+      }
+    }
+
+    worker.port.start()
+
+    const token = options.token ? this.token() : null
+
+    worker.port.postMessage({
+      type: 'connect',
+      path,
+      host: window.location.host,
+      protocol: window.location.protocol === 'https:' ? 'wss:' : 'ws:',
+      token,
+      options
+    })
+
+    return {
+      on: (event, handler) => {
+        if (!handlers[event]) handlers[event] = []
+        handlers[event].push(handler)
+        return this
+      },
+      off: (event, handler) => {
+        if (!handlers[event]) return
+        if (handler) {
+          handlers[event] = handlers[event].filter(h => h !== handler)
+        } else {
+          delete handlers[event]
+        }
+        return this
+      },
+      send: data => {
+        worker.port.postMessage({
+          type: 'send',
+          data: typeof data === 'object' ? JSON.stringify(data) : data
+        })
+        return this
+      },
+      close: () => {
+        worker.port.postMessage({type: 'close'})
+        worker.port.close()
+      },
+      get connected() {
+        return isConnected
+      }
+    }
+  }
+
+  #createWorkerBlob() {
+    const workerCode = `
+      let socket = null
+      let reconnectTimer = null
+      let reconnectAttempts = 0
+      let options = {}
+      let protocols = []
+      const ports = new Set()
+
+      function broadcast(type, data) {
+        ports.forEach(port => {
+          port.postMessage({type, data})
+        })
+      }
+
+      function connect(wsUrl, protocols) {
+        if (socket && socket.readyState !== WebSocket.CLOSED) return
+
+        socket = protocols && protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
+
+        socket.onopen = () => {
+          reconnectAttempts = 0
+          broadcast('open')
+        }
+
+        socket.onmessage = e => {
+          try {
+            const data = JSON.parse(e.data)
+            broadcast('message', data)
+          } catch {
+            broadcast('message', e.data)
+          }
+        }
+
+        socket.onclose = e => {
+          broadcast('close', e)
+
+          if (options.autoReconnect && reconnectAttempts < options.maxReconnectAttempts) {
+            reconnectAttempts++
+            reconnectTimer = setTimeout(() => connect(wsUrl, protocols), options.reconnectDelay)
+          }
+        }
+
+        socket.onerror = e => {
+          broadcast('error', e)
+        }
+      }
+
+      self.onconnect = e => {
+        const port = e.ports[0]
+        ports.add(port)
+
+        port.onmessage = event => {
+          const {type, path, host, protocol, token, options: opts, data} = event.data
+
+          switch (type) {
+            case 'connect':
+              options = opts
+              const wsUrl = protocol + '//' + host + path
+              protocols = token ? ['candy-token-' + token] : []
+              connect(wsUrl, protocols)
+              break
+            case 'send':
+              if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(data)
+              }
+              break
+            case 'close':
+              ports.delete(port)
+              if (ports.size === 0 && socket) {
+                socket.close()
+                socket = null
+              }
+              break
+          }
+        }
+
+        port.start()
+      }
+    `
+
+    const blob = new Blob([workerCode], {type: 'application/javascript'})
+    return URL.createObjectURL(blob)
+  }
 }
 
 window.Candy = new candy()

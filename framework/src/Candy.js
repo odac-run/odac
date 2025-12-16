@@ -23,12 +23,14 @@ module.exports = {
     _candy.Server = require('./Server.js')
     _candy.Var = (...args) => new (require('./Var.js'))(...args)
 
-    if (req && res) {
+    if (req) {
       _candy.Request = new (require('./Request.js'))(id, req, res, _candy)
       _candy.Auth = new (require('./Auth.js'))(_candy.Request)
       _candy.Token = new (require('./Token.js'))(_candy.Request)
       _candy.Lang = new (require('./Lang.js'))(_candy)
-      _candy.View = new (require('./View.js'))(_candy)
+      if (res) {
+        _candy.View = new (require('./View.js'))(_candy)
+      }
 
       _candy._intervals = []
       _candy._timeouts = []
