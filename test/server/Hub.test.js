@@ -144,6 +144,8 @@ describe('Hub', () => {
     })
 
     it('should send status to hub when counter is 0', async () => {
+      jest.useRealTimers()
+
       mockCandy.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
@@ -159,8 +161,12 @@ describe('Hub', () => {
       })
 
       Hub.checkCounter = 59
-      await Hub.check()
+      Hub.check()
+
+      await new Promise(resolve => setImmediate(resolve))
       expect(axios.post).toHaveBeenCalled()
+
+      jest.useFakeTimers()
     })
 
     it('should handle authentication failure', async () => {
