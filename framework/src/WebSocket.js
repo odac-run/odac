@@ -62,6 +62,12 @@ class WebSocketClient {
     const fin = (firstByte & 0x80) !== 0
     const opcode = firstByte & 0x0f
     const masked = (secondByte & 0x80) !== 0
+
+    if (!masked) {
+      this.close(1002, 'Protocol error: client-to-server frames must be masked.')
+      return null
+    }
+
     let payloadLength = secondByte & 0x7f
 
     let offset = 2
