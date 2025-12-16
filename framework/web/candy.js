@@ -799,6 +799,94 @@ class candy {
       }
     }
   }
+
+  ws(path, options = {}) {
+    const {autoReconnect = true, reconnectDelay = 3000, maxReconnectAttempts = 10} = options
+
+    let socket = null
+    let reconnectTimer = null
+    let reconnectAttempts = 0
+    let isClosed = false
+    const handlers = {}
+
+    const emit = (event, ...args) => {
+      if (handlers[event]) {
+        handlers[event].forEach(fn => fn(...args))
+      }
+    }
+
+    const connect = () => {
+      if (isClosed) return
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${protocol}//${window.location.host}${path}`
+
+      socket = new WebSocket(wsUrl)
+
+      socket.onopen = () => {
+        reconnectAttempts = 0
+        emit('open')
+      }
+
+      socket.onmessage = e => {
+        try {
+          const data = JSON.parse(e.data)
+          emit('message', data)
+        } catch {
+          emit('message', e.data)
+        }
+      }
+
+      socket.onclose = e => {
+        emit('close', e)
+
+        if (autoReconnect && !isClosed && reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++
+          reconnectTimer = setTimeout(connect, reconnectDelay)
+        }
+      }
+
+      socket.onerror = e => {
+        emit('error', e)
+      }
+    }
+
+    connect()
+
+    return {
+      on: (event, handler) => {
+        if (!handlers[event]) handlers[event] = []
+        handlers[event].push(handler)
+        return this
+      },
+      off: (event, handler) => {
+        if (!handlers[event]) return
+        if (handler) {
+          handlers[event] = handlers[event].filter(h => h !== handler)
+        } else {
+          delete handlers[event]
+        }
+        return this
+      },
+      send: data => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(typeof data === 'object' ? JSON.stringify(data) : data)
+        }
+        return this
+      },
+      close: () => {
+        isClosed = true
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        if (socket) socket.close()
+      },
+      get state() {
+        return socket ? socket.readyState : WebSocket.CLOSED
+      },
+      get connected() {
+        return socket && socket.readyState === WebSocket.OPEN
+      }
+    }
+  }
 }
 
 window.Candy = new candy()

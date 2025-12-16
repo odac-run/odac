@@ -3,6 +3,7 @@ const fs = require('fs')
 const Cron = require('./Route/Cron.js')
 const Internal = require('./Route/Internal.js')
 const MiddlewareChain = require('./Route/Middleware.js')
+const {WebSocketServer} = require('./WebSocket.js')
 
 var routes2 = {}
 const mime = {
@@ -67,6 +68,7 @@ class Route {
   routes = {}
   middlewares = {}
   _pendingMiddlewares = []
+  #wsServer = new WebSocketServer()
   auth = {
     page: (path, authFile, file) => this.authPage(path, authFile, file),
     post: (path, authFile, file) => this.authPost(path, authFile, file),
@@ -524,6 +526,19 @@ class Route {
 
   cron(controller) {
     return Cron.job(controller)
+  }
+
+  ws(path, handler) {
+    this.#wsServer.route(path, handler)
+    return this
+  }
+
+  handleWebSocketUpgrade(req, socket, head, Candy) {
+    this.#wsServer.handleUpgrade(req, socket, head, Candy)
+  }
+
+  get wsServer() {
+    return this.#wsServer
   }
 }
 

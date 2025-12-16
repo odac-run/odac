@@ -213,6 +213,10 @@
         {
           "file": "08-middleware.md",
           "title": "Middleware"
+        },
+        {
+          "file": "09-websocket.md",
+          "title": "WebSocket"
         }
       ]
     },
@@ -449,6 +453,16 @@
         {
           "file": "01-client-streaming.md",
           "title": "Client-Side Streaming"
+        }
+      ]
+    },
+    {
+      "file": "06-websocket",
+      "title": "WebSocket",
+      "children": [
+        {
+          "file": "01-websocket-client.md",
+          "title": "WebSocket Client"
         }
       ]
     }
