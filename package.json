@@ -39,7 +39,6 @@
     "bcrypt": "^5.1.1",
     "dkim-signer": "^0.2.2",
     "find-process": "^2.0.0",
-    "http-proxy": "^1.18.1",
     "mailparser": "^3.7.1",
     "mysql2": "^3.6.5",
     "native-dns": "^0.7.0",
