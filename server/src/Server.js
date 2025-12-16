@@ -14,6 +14,7 @@ class Server {
         Candy.server('SSL').check()
         Candy.server('Web').check()
         Candy.server('Mail').check()
+        Candy.server('Hub').check()
       }, 1000)
     }, 1000)
   }

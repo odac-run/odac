@@ -62,12 +62,10 @@ describe('Hub', () => {
   })
 
   afterEach(() => {
-    if (Hub.httpInterval) {
-      clearInterval(Hub.httpInterval)
-    }
     if (Hub.websocket) {
       Hub.websocket = null
     }
+    Hub.checkCounter = 0
   })
 
   describe('initialization', () => {
@@ -75,30 +73,26 @@ describe('Hub', () => {
       expect(Hub.websocket).toBeNull()
       expect(Hub.websocketReconnectAttempts).toBe(0)
       expect(Hub.maxReconnectAttempts).toBe(5)
-    })
-
-    it('should start HTTP polling on initialization', () => {
-      expect(Hub.httpInterval).not.toBeNull()
-      expect(mockLog).toHaveBeenCalledWith('Starting HTTP polling (60s interval)')
+      expect(Hub.checkCounter).toBe(0)
     })
   })
 
-  describe('HTTP polling', () => {
-    it('should not start polling if already running', () => {
-      const initialInterval = Hub.httpInterval
-      Hub.startHttpPolling()
-      expect(Hub.httpInterval).toBe(initialInterval)
+  describe('check counter', () => {
+    it('should increment counter on each check', () => {
+      expect(Hub.checkCounter).toBe(0)
+      Hub.check()
+      expect(Hub.checkCounter).toBe(1)
+      Hub.check()
+      expect(Hub.checkCounter).toBe(2)
     })
 
-    it('should stop HTTP polling', () => {
-      Hub.stopHttpPolling()
-      expect(Hub.httpInterval).toBeNull()
-      expect(mockLog).toHaveBeenCalledWith('Stopping HTTP polling')
+    it('should reset counter after reaching 60', () => {
+      Hub.checkCounter = 59
+      Hub.check()
+      expect(Hub.checkCounter).toBe(0)
     })
 
-    it('should check status periodically', () => {
-      Hub.stopHttpPolling()
-      const checkSpy = jest.spyOn(Hub, 'check').mockResolvedValue()
+    it('should skip API call when counter is not 0', async () => {
       mockCandy.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
@@ -106,13 +100,31 @@ describe('Hub', () => {
         }
       })
 
-      Hub.startHttpPolling()
-      jest.advanceTimersByTime(10000)
-      expect(checkSpy).toHaveBeenCalled()
+      Hub.checkCounter = 1
+      await Hub.check()
+      expect(axios.post).not.toHaveBeenCalled()
+    })
+
+    it('should skip API call when websocket is connected', async () => {
+      mockCandy.setMock('core', 'Config', {
+        config: {
+          hub: {token: 'test-token', secret: 'test-secret'},
+          server: {started: Date.now()}
+        }
+      })
+
+      Hub.websocket = {readyState: 1}
+      Hub.checkCounter = 0
+      await Hub.check()
+      expect(axios.post).not.toHaveBeenCalled()
     })
   })
 
   describe('check', () => {
+    beforeEach(() => {
+      Hub.checkCounter = 0
+    })
+
     it('should return early if no hub config', async () => {
       mockCandy.setMock('core', 'Config', {
         config: {hub: null}
@@ -131,7 +143,9 @@ describe('Hub', () => {
       expect(axios.post).not.toHaveBeenCalled()
     })
 
-    it('should send status to hub', async () => {
+    it('should send status to hub when counter is 0', async () => {
+      jest.useRealTimers()
+
       mockCandy.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
@@ -146,11 +160,18 @@ describe('Hub', () => {
         }
       })
 
-      await Hub.check()
+      Hub.checkCounter = 59
+      Hub.check()
+
+      await new Promise(resolve => setImmediate(resolve))
       expect(axios.post).toHaveBeenCalled()
+
+      jest.useFakeTimers()
     })
 
     it('should handle authentication failure', async () => {
+      jest.useRealTimers()
+
       mockCandy.setMock('core', 'Config', {
         config: {
           hub: {token: 'invalid-token', secret: 'test-secret'},
@@ -165,11 +186,18 @@ describe('Hub', () => {
         }
       })
 
-      await Hub.check()
+      Hub.checkCounter = 59
+      Hub.check()
+
+      await new Promise(resolve => setImmediate(resolve))
       expect(mockLog).toHaveBeenCalledWith('Server not authenticated: %s', 'token_invalid')
+
+      jest.useFakeTimers()
     })
 
     it('should clear config on invalid token', async () => {
+      jest.useRealTimers()
+
       const config = {
         hub: {token: 'invalid-token', secret: 'test-secret'},
         server: {started: Date.now()}
@@ -183,11 +211,18 @@ describe('Hub', () => {
         }
       })
 
-      await Hub.check()
+      Hub.checkCounter = 59
+      Hub.check()
+
+      await new Promise(resolve => setImmediate(resolve))
       expect(config.hub).toBeUndefined()
+
+      jest.useFakeTimers()
     })
 
     it('should handle check errors gracefully', async () => {
+      jest.useRealTimers()
+
       mockCandy.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
@@ -197,8 +232,13 @@ describe('Hub', () => {
 
       axios.post.mockRejectedValue(new Error('Network error'))
 
-      await Hub.check()
+      Hub.checkCounter = 59
+      Hub.check()
+
+      await new Promise(resolve => setImmediate(resolve))
       expect(mockLog).toHaveBeenCalledWith('Failed to report status: %s', 'Network error')
+
+      jest.useFakeTimers()
     })
   })
 
