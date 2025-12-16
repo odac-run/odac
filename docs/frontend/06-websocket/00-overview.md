@@ -6,7 +6,7 @@ CandyPack provides built-in WebSocket support with automatic reconnection and cr
 
 **Backend (route/main.js):**
 ```javascript
-Candy.ws('/chat', (ws, Candy) => {
+Candy.Route.ws('/chat', (ws, Candy) => {
   ws.on('message', data => {
     ws.broadcast(data)
   })

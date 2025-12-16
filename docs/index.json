@@ -217,6 +217,18 @@
         {
           "file": "09-websocket.md",
           "title": "WebSocket"
+        },
+        {
+          "file": "09-websocket-examples.md",
+          "title": "WebSocket Examples"
+        },
+        {
+          "file": "09-websocket-quick-reference.md",
+          "title": "WebSocket Quick Reference"
+        },
+        {
+          "file": "09-websocket-auth-middleware.md",
+          "title": "WebSocket Auth & Middleware"
         }
       ]
     },

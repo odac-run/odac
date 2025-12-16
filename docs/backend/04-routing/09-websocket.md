@@ -2,13 +2,13 @@
 
 CandyPack provides built-in WebSocket support for real-time bidirectional communication.
 
-## Basic Usage
+## Route Definition
 
-Define WebSocket routes in your route files using `Candy.ws()`:
+WebSocket routes are defined in your route files (e.g., `route/www.js` or `route/websocket.js`) using `Candy.Route.ws()`:
 
 ```javascript
-// route/main.js
-Candy.ws('/chat', (ws, Candy) => {
+// route/websocket.js
+Candy.Route.ws('/chat', (ws, Candy) => {
   ws.send({type: 'welcome', message: 'Connected!'})
 
   ws.on('message', data => {
@@ -20,6 +20,25 @@ Candy.ws('/chat', (ws, Candy) => {
     console.log('Client disconnected')
   })
 })
+```
+
+**CSRF Token Protection:**
+
+By default, WebSocket routes require a valid CSRF token (like `Route.get()` and `Route.post()`). The token is sent via the `Sec-WebSocket-Protocol` header during the initial handshake.
+
+**Disable token requirement:**
+```javascript
+Candy.Route.ws('/public', (ws, Candy) => {
+  ws.send({type: 'public'})
+}, {token: false})
+```
+
+**Route File Structure:**
+```
+web/
+├── route/
+│   ├── www.js          # HTTP routes
+│   └── websocket.js    # WebSocket routes (recommended)
 ```
 
 ## WebSocket Client Methods
@@ -53,7 +72,7 @@ ws.id                // Unique client ID
 Group clients into rooms for targeted broadcasting:
 
 ```javascript
-Candy.ws('/game', (ws, Candy) => {
+Candy.Route.ws('/game', (ws, Candy) => {
   const roomId = Candy.Request.data.url.room || 'lobby'
   
   ws.join(roomId)
@@ -86,7 +105,7 @@ ws.to('room-name').send({type: 'update', data: {}})
 WebSocket routes support dynamic parameters:
 
 ```javascript
-Candy.ws('/room/{roomId}/user/{userId}', (ws, Candy) => {
+Candy.Route.ws('/room/{roomId}/user/{userId}', (ws, Candy) => {
   const {roomId, userId} = Candy.Request.data.url
   
   ws.join(roomId)
@@ -96,20 +115,95 @@ Candy.ws('/room/{roomId}/user/{userId}', (ws, Candy) => {
 
 ## Authentication
 
-Access the Candy context for authentication:
+### Manual Authentication Check
 
 ```javascript
-Candy.ws('/secure', async (ws, Candy) => {
+Candy.Route.ws('/secure', async (ws, Candy) => {
   const isAuthenticated = await Candy.Auth.check()
   
   if (!isAuthenticated) {
-    ws.send({error: 'Unauthorized'})
     ws.close(4001, 'Unauthorized')
     return
   }
 
   const user = await Candy.Auth.user()
   ws.data.user = user
+})
+```
+
+### Using auth.ws() (Recommended)
+
+Automatically requires authentication (also requires token by default):
+
+```javascript
+Candy.Route.auth.ws('/secure', async (ws, Candy) => {
+  const user = await Candy.Auth.user()
+  ws.data.user = user
+  
+  ws.send({
+    type: 'welcome',
+    user: user.name
+  })
+})
+```
+
+If the user is not authenticated, the connection is automatically closed with code `4001`.
+
+### Options
+
+```javascript
+Candy.Route.ws('/path', handler, {
+  token: true  // Require CSRF token (default: true)
+})
+```
+
+**Examples:**
+
+```javascript
+// Public WebSocket (no token, no auth)
+Candy.Route.ws('/public', handler, {token: false})
+
+// Token required, no auth (default)
+Candy.Route.ws('/chat', handler)
+
+// Both token and auth required
+Candy.Route.auth.ws('/secure', handler)
+```
+
+## Middleware
+
+WebSocket routes support middleware just like HTTP routes:
+
+```javascript
+// Define middleware
+Candy.Route.use('auth-check', 'rate-limit').ws('/chat', (ws, Candy) => {
+  ws.send({type: 'welcome'})
+})
+```
+
+**Middleware behavior:**
+- If middleware returns `false`, connection closes with code `4003` (Forbidden)
+- If middleware returns anything other than `true` or `undefined`, connection closes with code `4000`
+- Middleware runs before the WebSocket handler
+
+**Example with custom middleware:**
+
+```javascript
+// middleware/websocket-auth.js
+module.exports = async Candy => {
+  const token = Candy.Request.header('Authorization')
+  if (!token) return false
+  
+  const user = await validateToken(token)
+  if (!user) return false
+  
+  Candy.Auth.setUser(user)
+  return true
+}
+
+// route/websocket.js
+Candy.Route.use('websocket-auth').ws('/secure', (ws, Candy) => {
+  ws.send({type: 'authenticated'})
 })
 ```
 
@@ -125,7 +219,7 @@ ws.data.joinedAt = Date.now()
 ## Real-Time Notifications Example
 
 ```javascript
-Candy.ws('/notifications', async (ws, Candy) => {
+Candy.Route.ws('/notifications', async (ws, Candy) => {
   const user = await Candy.Auth.user()
   if (!user) {
     ws.close(4001, 'Unauthorized')

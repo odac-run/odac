@@ -25,9 +25,25 @@ const ws = Candy.ws('/chat', {
   autoReconnect: true,        // Auto-reconnect on disconnect (default: true)
   reconnectDelay: 3000,       // Delay between reconnect attempts (default: 3000ms)
   maxReconnectAttempts: 10,   // Max reconnect attempts (default: 10)
-  shared: false               // Share connection across browser tabs (default: false)
+  shared: false,              // Share connection across browser tabs (default: false)
+  token: true                 // Send CSRF token (default: true)
 })
 ```
+
+## CSRF Token Protection
+
+By default, candy.js automatically sends a CSRF token during the WebSocket handshake (similar to AJAX requests). The token is sent via the `Sec-WebSocket-Protocol` header.
+
+**Disable token (for public WebSockets):**
+```javascript
+const ws = Candy.ws('/public', {token: false})
+```
+
+**How it works:**
+1. Client calls `Candy.token()` to get current CSRF token
+2. Token is sent as `candy-token-{token}` in WebSocket protocol header
+3. Server validates token before accepting connection
+4. If invalid, connection closes with code `4002`
 
 ## Shared WebSocket (Cross-Tab)
 
