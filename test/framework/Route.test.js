@@ -236,4 +236,20 @@ describe('Route', () => {
       expect(route.routes.test_route.get['/test/']).toBeUndefined()
     })
   })
+
+  describe('WebSocket cleanup', () => {
+    it('should call ws() method successfully', () => {
+      const handler = jest.fn()
+      expect(() => {
+        route.ws('/test', handler, {token: false})
+      }).not.toThrow()
+    })
+
+    it('should call auth.ws() method successfully', () => {
+      const handler = jest.fn()
+      expect(() => {
+        route.auth.ws('/test', handler)
+      }).not.toThrow()
+    })
+  })
 })

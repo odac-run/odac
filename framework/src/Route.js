@@ -549,6 +549,12 @@ class Route {
     const wrappedHandler = async (ws, Candy) => {
       Candy.ws = ws
 
+      ws.on('close', () => {
+        if (Candy.cleanup && typeof Candy.cleanup === 'function') {
+          Candy.cleanup()
+        }
+      })
+
       if (requireAuth) {
         const isAuthenticated = await Candy.Auth.check()
         if (!isAuthenticated) {

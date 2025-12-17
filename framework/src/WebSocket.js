@@ -230,6 +230,7 @@ class WebSocketClient {
 
   close(code = 1000, reason = '') {
     if (this.#closed) return
+    this.#closed = true
 
     const reasonBuffer = Buffer.from(reason)
     const payload = Buffer.alloc(2 + reasonBuffer.length)
@@ -238,7 +239,13 @@ class WebSocketClient {
 
     this.#sendFrame(OPCODE.CLOSE, payload)
     this.#socket.end()
-    this.#closed = true
+
+    for (const room of this.#rooms) {
+      this.#server.leaveRoom(this.#id, room)
+    }
+
+    this.#emit('close')
+    this.#server.removeClient(this.#id)
   }
 
   join(room) {

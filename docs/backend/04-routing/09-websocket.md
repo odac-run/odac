@@ -222,6 +222,40 @@ Candy.ws.data.username = 'john'
 Candy.ws.data.joinedAt = Date.now()
 ```
 
+## Intervals and Timeouts
+
+Use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions. They are automatically cleaned up when the WebSocket connection closes:
+
+```javascript
+Candy.Route.ws('/live-updates', Candy => {
+  Candy.setInterval(() => {
+    Candy.ws.send({
+      type: 'update',
+      timestamp: Date.now()
+    })
+  }, 1000)
+
+  Candy.setTimeout(() => {
+    Candy.ws.send({type: 'delayed-message'})
+  }, 5000)
+})
+```
+
+**Why use Candy.setInterval/setTimeout?**
+- Prevents memory leaks by auto-cleanup on disconnect
+- No need to manually track and clear intervals
+- Works seamlessly with WebSocket lifecycle
+
+**Manual cleanup (if needed):**
+
+```javascript
+const intervalId = Candy.setInterval(() => {}, 1000)
+Candy.clearInterval(intervalId)
+
+const timeoutId = Candy.setTimeout(() => {}, 5000)
+Candy.clearTimeout(timeoutId)
+```
+
 ## Real-Time Notifications Example
 
 ```javascript
