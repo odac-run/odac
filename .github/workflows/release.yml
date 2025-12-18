@@ -1,12 +1,13 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-          - 'CHANGELOG.md'
-          - 'package.json'
+  # Temporarily disabled for framework separation
+  # push:
+  #   branches:
+  #     - main
+  #   paths-ignore:
+  #         - 'CHANGELOG.md'
+  #         - 'package.json'
   workflow_dispatch:
 
 jobs:
