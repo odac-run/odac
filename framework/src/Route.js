@@ -119,7 +119,7 @@ class Route {
     let url = Odac.Request.url.split('?')[0]
     if (url.endsWith('/')) url = url.slice(0, -1)
 
-    if (url.startsWith('/_candy/')) {
+    if (url.startsWith('/_odac/')) {
       Odac.Request.route = '_odac_internal'
     }
 
@@ -329,7 +329,7 @@ class Route {
 
     this.set(
       'POST',
-      '/_candy/register',
+      '/_odac/register',
       async Odac => {
         const csrfToken = await Odac.request('_token')
         if (!csrfToken || !Odac.token(csrfToken)) {
@@ -342,7 +342,7 @@ class Route {
 
     this.set(
       'POST',
-      '/_candy/login',
+      '/_odac/login',
       async Odac => {
         const csrfToken = await Odac.request('_token')
         if (!csrfToken || !Odac.token(csrfToken)) {
@@ -355,7 +355,7 @@ class Route {
 
     this.set(
       ['POST', 'GET', 'PUT', 'PATCH', 'DELETE'],
-      '/_candy/form',
+      '/_odac/form',
       async Odac => {
         const csrfToken = await Odac.request('_token')
         if (!csrfToken || !Odac.token(csrfToken)) {
@@ -461,8 +461,8 @@ class Route {
 
   page(path, file) {
     if (typeof file === 'object' && !Array.isArray(file)) {
-      this.set('page', path, _candy => {
-        _candy.View.set(file)
+      this.set('page', path, _odac => {
+        _odac.View.set(file)
         return
       })
       return this
@@ -483,13 +483,13 @@ class Route {
 
   authPage(path, authFile, file) {
     if (typeof authFile === 'object' && !Array.isArray(authFile)) {
-      this.set('#page', path, _candy => {
-        _candy.View.set(authFile)
+      this.set('#page', path, _odac => {
+        _odac.View.set(authFile)
         return
       })
       if (typeof file === 'object' && !Array.isArray(file)) {
-        this.set('page', path, _candy => {
-          _candy.View.set(file)
+        this.set('page', path, _odac => {
+          _odac.View.set(file)
           return
         })
       }
@@ -498,8 +498,8 @@ class Route {
     if (authFile) this.set('#page', path, authFile)
     if (file) {
       if (typeof file === 'object' && !Array.isArray(file)) {
-        this.set('page', path, _candy => {
-          _candy.View.set(file)
+        this.set('page', path, _odac => {
+          _odac.View.set(file)
           return
         })
       } else {
@@ -566,14 +566,14 @@ class Route {
       if (token) {
         const wsToken = Odac.Request._wsHeaders ? Odac.Request._wsHeaders['sec-websocket-protocol'] : null
         const tokens = wsToken ? wsToken.split(', ') : []
-        const candyToken = tokens.find(t => t.startsWith('odac-token-'))
+        const odacToken = tokens.find(t => t.startsWith('odac-token-'))
 
-        if (!candyToken) {
+        if (!odacToken) {
           ws.close(4002, 'Missing token')
           return
         }
 
-        const tokenValue = candyToken.replace('odac-token-', '')
+        const tokenValue = odacToken.replace('odac-token-', '')
         if (!Odac.token(tokenValue)) {
           ws.close(4002, 'Invalid token')
           return
