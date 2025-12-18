@@ -32,7 +32,7 @@ class Lang {
 
   get(key, ...args) {
     if (!this.#loaded) this.#load()
-    if (key === 'CandyPack') return 'CandyPack'
+    if (key === 'Odac') return 'Odac'
     let text = this.#strings[key]
     if (text === undefined) {
       text = key

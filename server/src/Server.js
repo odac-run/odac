@@ -1,27 +1,27 @@
 class Server {
   constructor() {
-    Candy.core('Config').config.server.pid = process.pid
-    Candy.core('Config').config.server.started = Date.now()
-    Candy.server('Service')
-    Candy.server('DNS')
-    Candy.server('Web')
-    Candy.server('Mail')
-    Candy.server('Api')
-    Candy.server('Hub')
+    Odac.core('Config').config.server.pid = process.pid
+    Odac.core('Config').config.server.started = Date.now()
+    Odac.server('Service')
+    Odac.server('DNS')
+    Odac.server('Web')
+    Odac.server('Mail')
+    Odac.server('Api')
+    Odac.server('Hub')
     setTimeout(function () {
       setInterval(function () {
-        Candy.server('Service').check()
-        Candy.server('SSL').check()
-        Candy.server('Web').check()
-        Candy.server('Mail').check()
-        Candy.server('Hub').check()
+        Odac.server('Service').check()
+        Odac.server('SSL').check()
+        Odac.server('Web').check()
+        Odac.server('Mail').check()
+        Odac.server('Hub').check()
       }, 1000)
     }, 1000)
   }
 
   stop() {
-    Candy.server('Service').stopAll()
-    Candy.server('Web').stopAll()
+    Odac.server('Service').stopAll()
+    Odac.server('Web').stopAll()
   }
 }
 

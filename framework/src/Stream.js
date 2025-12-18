@@ -3,12 +3,12 @@ class Stream {
   #req
   #res
   #closed = false
-  #candy
+  #odac
 
-  constructor(req, res, input, candy) {
+  constructor(req, res, input, odac) {
     this.#req = req
     this.#res = res
-    this.#candy = candy
+    this.#odac = odac
     this.#init()
     this.#handleInput(input)
   }
@@ -132,8 +132,8 @@ class Stream {
     if (!this.#res.writableEnded) {
       this.#res.end()
     }
-    if (this.#candy && typeof this.#candy.cleanup === 'function') {
-      this.#candy.cleanup()
+    if (this.#odac && typeof this.#odac.cleanup === 'function') {
+      this.#odac.cleanup()
     }
   }
 

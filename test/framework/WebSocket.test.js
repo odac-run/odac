@@ -70,31 +70,31 @@ describe('Route WebSocket Integration', () => {
   const Route = require('../../framework/src/Route.js')
 
   beforeEach(() => {
-    global.Candy = {
+    global.Odac = {
       Route: new Route()
     }
   })
 
   it('should support ws() method', () => {
-    expect(typeof Candy.Route.ws).toBe('function')
+    expect(typeof Odac.Route.ws).toBe('function')
   })
 
   it('should support auth.ws() method', () => {
-    expect(typeof Candy.Route.auth.ws).toBe('function')
+    expect(typeof Odac.Route.auth.ws).toBe('function')
   })
 
   it('should support middleware with ws()', () => {
-    const chain = Candy.Route.use('test-middleware')
+    const chain = Odac.Route.use('test-middleware')
     expect(typeof chain.ws).toBe('function')
   })
 
   it('should support middleware with auth.ws()', () => {
-    const chain = Candy.Route.use('test-middleware')
+    const chain = Odac.Route.use('test-middleware')
     expect(typeof chain.auth.ws).toBe('function')
   })
 
   it('should support auth.use() with ws()', () => {
-    const chain = Candy.Route.auth.use('test-middleware')
+    const chain = Odac.Route.auth.use('test-middleware')
     expect(typeof chain.ws).toBe('function')
   })
 })

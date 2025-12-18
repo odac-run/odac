@@ -3,13 +3,13 @@
 ## Directory Organization
 
 ```
-├── bin/              # Executable binaries (candy, candypack)
+├── bin/              # Executable binaries (odac)
 ├── cli/              # Command-line interface
 │   └── src/          # CLI implementation (Cli.js, Connector.js, Monitor.js)
 ├── core/             # Core dependency injection system
 ├── framework/        # Web framework implementation
 │   ├── src/          # Framework modules (Auth, Route, Server, etc.)
-│   └── web/          # Client-side JavaScript (candy.js)
+│   └── web/          # Client-side JavaScript (odac.js)
 ├── server/           # Server infrastructure
 │   └── src/          # Server modules (DNS, SSL, Mail, Web, etc.)
 ├── watchdog/         # Process monitoring system
@@ -30,26 +30,26 @@
 
 ### Dependency Injection (Core)
 
-- **Global Candy**: Singleton registry pattern via `global.Candy`
+- **Global Odac**: Singleton registry pattern via `global.Odac`
 - **Module Loading**: Dynamic require with `core()`, `cli()`, `server()`, `watchdog()` methods
 - **Singleton Management**: Automatic instantiation and caching
 
 ### Framework Pattern
 
-- **Request Lifecycle**: Each request gets a fresh Candy instance with req/res context
+- **Request Lifecycle**: Each request gets a fresh Odac instance with req/res context
 - **Controller Pattern**: Simple function exports in `controller/` directories
 - **Helper Functions**: Global shortcuts (`__()`, `abort()`, `return()`, etc.)
 
 ### File Naming Conventions
 
-- **PascalCase**: Class files and main modules (e.g., `Candy.js`, `Server.js`)
+- **PascalCase**: Class files and main modules (e.g., `Odac.js`, `Server.js`)
 - **camelCase**: Utility functions and instances
 - **lowercase**: Entry points (`index.js`)
 
 ### Module Structure
 
 - Each module can have an optional `init()` method for setup
-- Framework modules receive Candy instance for request context
+- Framework modules receive Odac instance for request context
 - Server modules are typically singletons for infrastructure
 
 ### Web Template System
@@ -71,7 +71,7 @@
 - **Structure**: Documentation is organized into THREE sections only:
   - `docs/server/` - Server infrastructure documentation (CLI, DNS, SSL, Mail)
   - `docs/backend/` - Backend framework documentation (Controllers, Routing, Auth, Database)
-  - `docs/frontend/` - Frontend documentation (candy.js, AJAX navigation, Forms)
+  - `docs/frontend/` - Frontend documentation (odac.js, AJAX navigation, Forms)
 - **IMPORTANT**: There is NO `docs/framework/` directory - backend docs go in `docs/backend/`
 - **File Organization**: Each section has folders with numbered prefixes (01-overview, 02-structure, etc.)
 - **Navigation**: The index.json file defines the title and hierarchy shown in documentation site

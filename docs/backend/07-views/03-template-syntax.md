@@ -1,8 +1,8 @@
 ## 🔧 Template Syntax Overview
 
-CandyPack uses a powerful template engine to create dynamic content in view files. The engine provides a clean, HTML-like syntax for displaying variables, conditionals, loops, translations, and more.
+Odac uses a powerful template engine to create dynamic content in view files. The engine provides a clean, HTML-like syntax for displaying variables, conditionals, loops, translations, and more.
 
-> **Note:** CandyPack also supports legacy syntax (`{{ }}`, `{!! !!}`, `{{-- --}}`) for backward compatibility, but the new `<candy>` tag syntax is recommended for all new projects.
+> **Note:** Odac also supports legacy syntax (`{{ }}`, `{!! !!}`, `{{-- --}}`) for backward compatibility, but the new `<odac>` tag syntax is recommended for all new projects.
 
 ### Quick Reference
 
@@ -10,17 +10,17 @@ This page provides a quick overview of all available template features. For deta
 
 ### Variables (Controller Data)
 
-Display data passed from controllers using `Candy.set()`:
+Display data passed from controllers using `Odac.set()`:
 
 ```html
 <!-- HTML-safe output -->
-<candy var="username" />
+<odac var="username" />
 
 <!-- Raw HTML output -->
-<candy var="htmlContent" raw />
+<odac var="htmlContent" raw />
 
 <!-- String literals -->
-<candy>Hello World</candy>
+<odac>Hello World</odac>
 ```
 
 **[→ Learn more about Variables](./03-variables.md)**
@@ -32,11 +32,11 @@ Access URL query parameters directly:
 ```html
 <!-- Get query parameter from URL -->
 <!-- URL: /search?q=laptop -->
-<candy get="q" />
+<odac get="q" />
 <!-- Output: laptop -->
 ```
 
-**Note:** `<candy get>` is for URL parameters. For controller data, use `<candy var>`.
+**Note:** `<odac get>` is for URL parameters. For controller data, use `<odac var>`.
 
 **[→ Learn more about Request Data](./04-request-data.md)**
 
@@ -46,13 +46,13 @@ Create multi-language applications:
 
 ```html
 <!-- Basic translation -->
-<candy translate>Welcome</candy>
+<odac translate>Welcome</odac>
 
 <!-- With placeholders -->
-<candy translate>Hello <candy var="user.name" /></candy>
+<odac translate>Hello <odac var="user.name" /></odac>
 
 <!-- With HTML preserved -->
-<candy translate raw>Click <a href="/help">here</a></candy>
+<odac translate raw>Click <a href="/help">here</a></odac>
 ```
 
 **[→ Learn more about Translations](./07-translations.md)**
@@ -62,12 +62,12 @@ Create multi-language applications:
 Two types of comments for different purposes:
 
 ```html
-<!--candy Backend comment (not rendered) -->
+<!--odac Backend comment (not rendered) -->
 
-<!--candy
+<!--odac
   Multi-line backend comment
   Won't appear in output
-candy-->
+odac-->
 
 <!-- Regular HTML comment (rendered) -->
 ```
@@ -79,13 +79,13 @@ candy-->
 Show or hide content based on conditions:
 
 ```html
-<candy:if condition="user.isAdmin">
+<odac:if condition="user.isAdmin">
   <p>Admin panel</p>
-<candy:elseif condition="user.isModerator">
+<odac:elseif condition="user.isModerator">
   <p>Moderator panel</p>
-<candy:else>
+<odac:else>
   <p>User panel</p>
-</candy:if>
+</odac:if>
 ```
 
 **[→ Learn more about Conditionals](./05-conditionals.md)**
@@ -96,18 +96,18 @@ Iterate over arrays and objects:
 
 ```html
 <!-- For loop -->
-<candy:for in="users" key="index" value="user">
-  <div><candy var="user.name" /></div>
-</candy:for>
+<odac:for in="users" key="index" value="user">
+  <div><odac var="user.name" /></div>
+</odac:for>
 
 <!-- While loop -->
-<candy:while condition="counter < 10">
-  <p><candy var="counter" /></p>
-</candy:while>
+<odac:while condition="counter < 10">
+  <p><odac var="counter" /></p>
+</odac:while>
 
 <!-- Loop control -->
-<candy:break />
-<candy:continue />
+<odac:break />
+<odac:continue />
 ```
 
 **[→ Learn more about Loops](./06-loops.md)**
@@ -117,54 +117,54 @@ Iterate over arrays and objects:
 Execute JavaScript on the server during template rendering:
 
 ```html
-<script:candy>
+<script:odac>
   // Runs on SERVER before HTML is sent
   let total = 0;
   for (let item of cart) {
     total += item.price * item.quantity;
   }
-</script:candy>
+</script:odac>
 
-<p>Total: $<candy var="total" /></p>
+<p>Total: $<odac var="total" /></p>
 ```
 
 **[→ Learn more about Backend JavaScript](./08-backend-javascript.md)**
 
-### Accessing the Candy Object
+### Accessing the Odac Object
 
-Full access to the Candy object in templates:
+Full access to the Odac object in templates:
 
 ```html
-<candy:if condition="Candy.Auth.check()">
-  <p>User: <candy var="Candy.Auth.user().name" /></p>
-</candy:if>
+<odac:if condition="Odac.Auth.check()">
+  <p>User: <odac var="Odac.Auth.user().name" /></p>
+</odac:if>
 
-<p>URL: <candy var="Candy.Request.url" /></p>
+<p>URL: <odac var="Odac.Request.url" /></p>
 ```
 
 ### Complete Syntax Reference
 
 | Feature | Syntax | Documentation |
 |---------|--------|---------------|
-| Variable (Controller) | `<candy var="x" />` | [Variables](./03-variables.md) |
-| Raw HTML | `<candy var="x" raw />` | [Variables](./03-variables.md) |
-| String | `<candy>text</candy>` | [Variables](./03-variables.md) |
-| Query Parameter | `<candy get="key" />` | [Request Data](./04-request-data.md) |
-| Translation | `<candy translate>key</candy>` | [Translations](./07-translations.md) |
-| Translation Raw | `<candy translate raw>key</candy>` | [Translations](./07-translations.md) |
-| If | `<candy:if condition="x">` | [Conditionals](./05-conditionals.md) |
-| Elseif | `<candy:elseif condition="x">` | [Conditionals](./05-conditionals.md) |
-| Else | `<candy:else>` | [Conditionals](./05-conditionals.md) |
-| For | `<candy:for in="x" value="item">` | [Loops](./06-loops.md) |
-| While | `<candy:while condition="x">` | [Loops](./06-loops.md) |
-| Break | `<candy:break />` | [Loops](./06-loops.md) |
-| Continue | `<candy:continue />` | [Loops](./06-loops.md) |
-| JavaScript | `<script:candy>...</script:candy>` | [Backend JavaScript](./08-backend-javascript.md) |
-| Comment | `<!--candy ... candy-->` | [Comments](./09-comments.md) |
+| Variable (Controller) | `<odac var="x" />` | [Variables](./03-variables.md) |
+| Raw HTML | `<odac var="x" raw />` | [Variables](./03-variables.md) |
+| String | `<odac>text</odac>` | [Variables](./03-variables.md) |
+| Query Parameter | `<odac get="key" />` | [Request Data](./04-request-data.md) |
+| Translation | `<odac translate>key</odac>` | [Translations](./07-translations.md) |
+| Translation Raw | `<odac translate raw>key</odac>` | [Translations](./07-translations.md) |
+| If | `<odac:if condition="x">` | [Conditionals](./05-conditionals.md) |
+| Elseif | `<odac:elseif condition="x">` | [Conditionals](./05-conditionals.md) |
+| Else | `<odac:else>` | [Conditionals](./05-conditionals.md) |
+| For | `<odac:for in="x" value="item">` | [Loops](./06-loops.md) |
+| While | `<odac:while condition="x">` | [Loops](./06-loops.md) |
+| Break | `<odac:break />` | [Loops](./06-loops.md) |
+| Continue | `<odac:continue />` | [Loops](./06-loops.md) |
+| JavaScript | `<script:odac>...</script:odac>` | [Backend JavaScript](./08-backend-javascript.md) |
+| Comment | `<!--odac ... odac-->` | [Comments](./09-comments.md) |
 
 ### Legacy Syntax
 
-CandyPack also supports legacy syntax for backward compatibility:
+Odac also supports legacy syntax for backward compatibility:
 
 ```html
 <!-- Variable output -->
@@ -177,5 +177,5 @@ CandyPack also supports legacy syntax for backward compatibility:
 {{-- This is a comment --}}
 ```
 
-**Note:** The new `<candy>` tag syntax is recommended for all new projects.
+**Note:** The new `<odac>` tag syntax is recommended for all new projects.
 

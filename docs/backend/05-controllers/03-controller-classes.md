@@ -4,25 +4,25 @@ While simple function exports work great for basic controllers, you can also org
 
 #### Creating a Controller Class
 
-A controller class receives the `Candy` object in its constructor, giving you access to all services throughout your class methods:
+A controller class receives the `Odac` object in its constructor, giving you access to all services throughout your class methods:
 
 ```javascript
 // controller/User.js
 class User {
-  constructor(Candy) {
-    this.Candy = Candy
+  constructor(Odac) {
+    this.Odac = Odac
   }
 
   async getProfile() {
-    const user = await this.Candy.Auth.user()
-    return this.Candy.return({
+    const user = await this.Odac.Auth.user()
+    return this.Odac.return({
       success: true,
       user: user
     })
   }
 
   async updateProfile() {
-    const validator = this.Candy.validator()
+    const validator = this.Odac.validator()
     validator.post('name').required().min(3)
     validator.post('email').required().email()
 
@@ -30,17 +30,17 @@ class User {
       return validator.result()
     }
 
-    const name = await this.Candy.request('name')
-    const email = await this.Candy.request('email')
+    const name = await this.Odac.request('name')
+    const email = await this.Odac.request('email')
 
     // Update user in database
-    await this.Candy.Mysql.query('UPDATE users SET name = ?, email = ? WHERE id = ?', [
+    await this.Odac.Mysql.query('UPDATE users SET name = ?, email = ? WHERE id = ?', [
       name,
       email,
-      this.Candy.Auth.user().id
+      this.Odac.Auth.user().id
     ])
 
-    return this.Candy.return({
+    return this.Odac.return({
       success: true,
       message: 'Profile updated successfully'
     })
@@ -56,23 +56,23 @@ Once you've created a controller class, you can use it in your routes just like 
 
 ```javascript
 // route/www.js
-Candy.Route.buff = 'www'
+Odac.Route.buff = 'www'
 
 // Access class methods using dot notation
-Candy.Route.get('/profile', 'User.getProfile')
-Candy.Route.post('/profile/update', 'User.updateProfile')
+Odac.Route.get('/profile', 'User.getProfile')
+Odac.Route.post('/profile/update', 'User.updateProfile')
 ```
 
 #### Accessing Classes in Controllers
 
-Controller classes are automatically instantiated for each request and attached to the `Candy` object. You can access them from any controller:
+Controller classes are automatically instantiated for each request and attached to the `Odac` object. You can access them from any controller:
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Access your User class
-  const profile = await Candy.User.getProfile()
+  const profile = await Odac.User.getProfile()
   
-  return Candy.return(profile)
+  return Odac.return(profile)
 }
 ```
 
@@ -81,7 +81,7 @@ module.exports = async function (Candy) {
 - **Organization**: Group related methods together
 - **Reusability**: Share logic between different routes
 - **Maintainability**: Easier to manage complex controllers
-- **Context**: The `Candy` object is always available via `this.Candy`
+- **Context**: The `Odac` object is always available via `this.Odac`
 
 #### Class vs Function Controllers
 

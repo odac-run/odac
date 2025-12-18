@@ -1,4 +1,4 @@
-const {log} = Candy.core('Log', false).init('Firewall')
+const {log} = Odac.core('Log', false).init('Firewall')
 
 /**
  * Firewall class to handle IP blocking and rate limiting.
@@ -19,8 +19,8 @@ class Firewall {
    * Load configuration from the global Config module.
    */
   load() {
-    // Load configuration from Candy.core('Config').config
-    const config = Candy.core('Config').config.firewall || {}
+    // Load configuration from Odac.core('Config').config
+    const config = Odac.core('Config').config.firewall || {}
 
     this.#config = {
       enabled: config.enabled !== false,
@@ -156,10 +156,10 @@ class Firewall {
 
   #save() {
     // Update the global config
-    if (!Candy.core('Config').config.firewall) Candy.core('Config').config.firewall = {}
+    if (!Odac.core('Config').config.firewall) Odac.core('Config').config.firewall = {}
 
-    Candy.core('Config').config.firewall.blacklist = Array.from(this.#config.blacklist)
-    Candy.core('Config').config.firewall.whitelist = Array.from(this.#config.whitelist)
+    Odac.core('Config').config.firewall.blacklist = Array.from(this.#config.blacklist)
+    Odac.core('Config').config.firewall.whitelist = Array.from(this.#config.whitelist)
     // Config module handles saving automatically when properties change if using Proxy,
     // but here we are modifying the object structure.
     // Assuming Config module watches for changes or we need to trigger save.

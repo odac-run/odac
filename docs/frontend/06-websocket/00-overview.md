@@ -1,12 +1,12 @@
 # WebSocket Overview
 
-CandyPack provides built-in WebSocket support with automatic reconnection and cross-tab sharing capabilities.
+Odac provides built-in WebSocket support with automatic reconnection and cross-tab sharing capabilities.
 
 ## Quick Start
 
 **Backend (route/main.js):**
 ```javascript
-Candy.Route.ws('/chat', (ws, Candy) => {
+odac.Route.ws('/chat', (ws, Odac) => {
   ws.on('message', data => {
     ws.broadcast(data)
   })
@@ -15,7 +15,7 @@ Candy.Route.ws('/chat', (ws, Candy) => {
 
 **Frontend:**
 ```javascript
-const ws = Candy.ws('/chat')
+const ws = Odac.ws('/chat')
 ws.on('message', data => console.log(data))
 ws.send({message: 'Hello!'})
 ```
@@ -32,7 +32,7 @@ Share a single WebSocket connection across multiple browser tabs using SharedWor
 Group clients into rooms for targeted broadcasting.
 
 ### 🔐 Authentication
-Full access to Candy context for authentication and authorization.
+Full access to Odac context for authentication and authorization.
 
 ### 📦 JSON Auto-Parsing
 Automatically parses JSON messages on both client and server.
@@ -44,7 +44,7 @@ Support for dynamic route parameters like `/room/{id}`.
 
 ```
 Browser Tab 1 ─┐
-Browser Tab 2 ─┼─> SharedWorker ─> WebSocket ─> CandyPack Server ─> Your Handler
+Browser Tab 2 ─┼─> SharedWorker ─> WebSocket ─> Odac Server ─> Your Handler
 Browser Tab 3 ─┘
 ```
 

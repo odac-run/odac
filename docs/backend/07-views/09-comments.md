@@ -1,6 +1,6 @@
 ## 💬 Comments in Views
 
-CandyPack supports two types of comments in view files: backend comments (not rendered) and regular HTML comments (rendered).
+Odac supports two types of comments in view files: backend comments (not rendered) and regular HTML comments (rendered).
 
 ### Backend Comments (Not Rendered)
 
@@ -9,18 +9,18 @@ Backend comments are removed during template rendering and never appear in the H
 #### Single-Line Backend Comments
 
 ```html
-<!--candy This is a backend comment -->
+<!--odac This is a backend comment -->
 <p>This will be rendered</p>
 ```
 
 #### Multi-Line Backend Comments
 
 ```html
-<!--candy
+<!--odac
   This is a multi-line backend comment
   It can span multiple lines
   None of this will appear in the output
-candy-->
+odac-->
 
 <div class="content">
   <p>This will be rendered</p>
@@ -43,50 +43,50 @@ Standard HTML comments are preserved and sent to the browser:
 
 **Development Notes:**
 ```html
-<!--candy TODO: Add pagination here -->
-<!--candy FIXME: This needs optimization -->
-<!--candy NOTE: This section is for admin users only -->
+<!--odac TODO: Add pagination here -->
+<!--odac FIXME: This needs optimization -->
+<!--odac NOTE: This section is for admin users only -->
 ```
 
 **Sensitive Information:**
 ```html
-<!--candy 
+<!--odac 
   Database query returns: id, name, email, password_hash
   We only display: name, email
-candy-->
+odac-->
 
-<candy:for in="users" value="user">
-  <p><candy var="user.name" /> - <candy var="user.email" /></p>
-</candy:for>
+<odac:for in="users" value="user">
+  <p><odac var="user.name" /> - <odac var="user.email" /></p>
+</odac:for>
 ```
 
 **Debugging Information:**
 ```html
-<!--candy Debug: user object structure -->
-<!--candy { id: 1, name: "John", role: "admin" } -->
+<!--odac Debug: user object structure -->
+<!--odac { id: 1, name: "John", role: "admin" } -->
 
-<candy:if condition="user.role === 'admin'">
+<odac:if condition="user.role === 'admin'">
   <div class="admin-panel">Admin content</div>
-</candy:if>
+</odac:if>
 ```
 
 **Temporary Code:**
 ```html
-<!--candy
+<!--odac
   Old implementation - keeping for reference
   <div class="old-layout">
-    <candy:for in="items" value="item">
-      <p><candy var="item.name" /></p>
-    </candy:for>
+    <odac:for in="items" value="item">
+      <p><odac var="item.name" /></p>
+    </odac:for>
   </div>
-candy-->
+odac-->
 
 <div class="new-layout">
-  <candy:for in="items" value="item">
+  <odac:for in="items" value="item">
     <div class="item-card">
-      <h3><candy var="item.name" /></h3>
+      <h3><odac var="item.name" /></h3>
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
@@ -135,18 +135,18 @@ candy-->
 #### Documenting Complex Logic
 
 ```html
-<!--candy
+<!--odac
   This section displays products based on user role:
   - Admin: sees all products including inactive
   - Regular user: sees only active products
   - Guest: sees only featured products
-candy-->
+odac-->
 
-<script:candy>
+<script:odac>
   let visibleProducts;
   
-  if (Candy.Auth.check()) {
-    const user = Candy.Auth.user();
+  if (Odac.Auth.check()) {
+    const user = Odac.Auth.user();
     if (user.role === 'admin') {
       visibleProducts = products;
     } else {
@@ -155,52 +155,52 @@ candy-->
   } else {
     visibleProducts = products.filter(p => p.featured);
   }
-</script:candy>
+</script:odac>
 
-<candy:for in="visibleProducts" value="product">
+<odac:for in="visibleProducts" value="product">
   <div class="product">
-    <h3><candy var="product.name" /></h3>
+    <h3><odac var="product.name" /></h3>
   </div>
-</candy:for>
+</odac:for>
 ```
 
 #### Marking Sections for Developers
 
 ```html
 <div class="dashboard">
-  <!--candy START: User Statistics Section -->
+  <!--odac START: User Statistics Section -->
   <div class="stats">
     <h2>Statistics</h2>
-    <p>Total Users: <candy var="stats.totalUsers" /></p>
-    <p>Active Users: <candy var="stats.activeUsers" /></p>
+    <p>Total Users: <odac var="stats.totalUsers" /></p>
+    <p>Active Users: <odac var="stats.activeUsers" /></p>
   </div>
-  <!--candy END: User Statistics Section -->
+  <!--odac END: User Statistics Section -->
   
-  <!--candy START: Recent Activity Section -->
+  <!--odac START: Recent Activity Section -->
   <div class="activity">
     <h2>Recent Activity</h2>
-    <candy:for in="activities" value="activity">
-      <p><candy var="activity.description" /></p>
-    </candy:for>
+    <odac:for in="activities" value="activity">
+      <p><odac var="activity.description" /></p>
+    </odac:for>
   </div>
-  <!--candy END: Recent Activity Section -->
+  <!--odac END: Recent Activity Section -->
 </div>
 ```
 
 #### Explaining Template Variables
 
 ```html
-<!--candy
+<!--odac
   Available variables from controller:
   - user: Current user object { id, name, email, role }
   - posts: Array of post objects
   - categories: Array of category objects
   - settings: Site settings object
-candy-->
+odac-->
 
 <div class="profile">
-  <h1><candy var="user.name" /></h1>
-  <p><candy var="user.email" /></p>
+  <h1><odac var="user.name" /></h1>
+  <p><odac var="user.email" /></p>
 </div>
 ```
 
@@ -208,31 +208,31 @@ candy-->
 
 ```html
 <div class="products">
-  <candy:for in="products" value="product">
+  <odac:for in="products" value="product">
     <div class="product-card">
-      <h3><candy var="product.name" /></h3>
-      <p>$<candy var="product.price" /></p>
+      <h3><odac var="product.name" /></h3>
+      <p>$<odac var="product.price" /></p>
       
-      <!--candy Temporarily disabled - waiting for API
+      <!--odac Temporarily disabled - waiting for API
       <div class="reviews">
-        <candy var="product.averageRating" /> stars
+        <odac var="product.averageRating" /> stars
       </div>
-      candy-->
+      odac-->
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
 #### Version History
 
 ```html
-<!--candy
+<!--odac
   Version History:
   v1.0 - Initial implementation
   v1.1 - Added sorting functionality
   v1.2 - Added filtering by category
   v2.0 - Complete redesign with new layout
-candy-->
+odac-->
 
 <div class="product-list">
   <!-- Product list implementation -->
@@ -249,19 +249,19 @@ candy-->
 
 **Good:**
 ```html
-<!--candy This query is cached for 5 minutes -->
-<candy:for in="products" value="product">
-  <div><candy var="product.name" /></div>
-</candy:for>
+<!--odac This query is cached for 5 minutes -->
+<odac:for in="products" value="product">
+  <div><odac var="product.name" /></div>
+</odac:for>
 ```
 
 **Avoid:**
 ```html
-<!--candy Loop through products -->
-<candy:for in="products" value="product">
-  <!--candy Display product name -->
-  <div><candy var="product.name" /></div>
-</candy:for>
+<!--odac Loop through products -->
+<odac:for in="products" value="product">
+  <!--odac Display product name -->
+  <div><odac var="product.name" /></div>
+</odac:for>
 ```
 
 ### Security Considerations
@@ -273,9 +273,9 @@ candy-->
 <!-- Database password: secret123 -->
 <!-- API key: abc123xyz -->
 
-<!--candy GOOD: Not visible in output -->
-<!--candy Database password: secret123 -->
-<!--candy API key: abc123xyz -->
+<!--odac GOOD: Not visible in output -->
+<!--odac Database password: secret123 -->
+<!--odac API key: abc123xyz -->
 ```
 
 **Be careful with user data:**
@@ -284,14 +284,14 @@ candy-->
 <!-- BAD: Exposes user data -->
 <!-- User ID: 12345, Email: user@example.com -->
 
-<!--candy GOOD: Hidden from output -->
-<!--candy User ID: 12345, Email: user@example.com -->
+<!--odac GOOD: Hidden from output -->
+<!--odac User ID: 12345, Email: user@example.com -->
 ```
 
 ### Comment Syntax Summary
 
 | Type | Syntax | Rendered | Use Case |
 |------|--------|----------|----------|
-| Backend Single-Line | `<!--candy comment -->` | No | Development notes, TODOs |
-| Backend Multi-Line | `<!--candy ... candy-->` | No | Detailed explanations, disabled code |
+| Backend Single-Line | `<!--odac comment -->` | No | Development notes, TODOs |
+| Backend Multi-Line | `<!--odac ... odac-->` | No | Detailed explanations, disabled code |
 | HTML Comment | `<!-- comment -->` | Yes | Section markers, browser hacks |

@@ -1,17 +1,17 @@
 # Cron Jobs
 
-The CandyPack framework provides a built-in cron system for running automated tasks. This system checks every minute and executes jobs based on specified conditions.
+The Odac framework provides a built-in cron system for running automated tasks. This system checks every minute and executes jobs based on specified conditions.
 
 ## Basic Usage
 
-Use the `Candy.Route.cron()` method to define cron jobs:
+Use the `Odac.Route.cron()` method to define cron jobs:
 
 ```javascript
 // With controller file
-Candy.Route.cron('backup').everyDay(1) // Runs every day
+Odac.Route.cron('backup').everyDay(1) // Runs every day
 
 // With direct function
-Candy.Route.cron(() => {
+Odac.Route.cron(() => {
   console.log('Task executed!')
 }).everyHour(2) // Runs every 2 hours
 ```
@@ -37,7 +37,7 @@ module.exports = () => {
 }
 
 // Usage
-Candy.Route.cron('admin.cleanup').everyDay(1)
+Odac.Route.cron('admin.cleanup').everyDay(1)
 ```
 
 ## Direct Function Usage
@@ -46,10 +46,10 @@ You can also define cron jobs with inline functions:
 
 ```javascript
 // Simple inline function
-Candy.Route.cron(() => console.log('Simple task running')).everyMinute(5)
+Odac.Route.cron(() => console.log('Simple task running')).everyMinute(5)
 
 // Async function
-Candy.Route.cron(async () => {
+Odac.Route.cron(async () => {
   const data = await fetchSomeData()
   console.log('Async task completed', data)
 }).everyHour(1)
@@ -60,7 +60,7 @@ const cleanupTask = (directory) => {
   // Cleanup logic...
 }
 
-Candy.Route.cron(() => cleanupTask('/tmp')).everyDay(1)
+Odac.Route.cron(() => cleanupTask('/tmp')).everyDay(1)
 ```
 
 ## Time Conditions
@@ -68,7 +68,7 @@ Candy.Route.cron(() => cleanupTask('/tmp')).everyDay(1)
 ### Specific Time Values
 
 ```javascript
-Candy.Route.cron('task')
+Odac.Route.cron('task')
 
 // Minute (0-59)
 .minute(30) // At 30th minute
@@ -95,7 +95,7 @@ Candy.Route.cron('task')
 ### Periodic Execution
 
 ```javascript
-Candy.Route.cron('periodic')
+Odac.Route.cron('periodic')
 
 // Every N minutes
 .everyMinute(5) // Every 5 minutes
@@ -122,18 +122,18 @@ You can combine multiple conditions:
 
 ```javascript
 // Every day at 14:30
-Candy.Route.cron('daily-report')
+Odac.Route.cron('daily-report')
   .hour(14)
   .minute(30)
 
 // Mondays at 09:00
-Candy.Route.cron('weekly-task')
+Odac.Route.cron('weekly-task')
   .weekDay(1)
   .hour(9)
   .minute(0)
 
 // First day of every month at midnight
-Candy.Route.cron('monthly-cleanup')
+Odac.Route.cron('monthly-cleanup')
   .day(1)
   .hour(0)
   .minute(0)

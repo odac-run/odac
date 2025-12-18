@@ -1,13 +1,13 @@
 ## ✅ The `Validator` Service
 
-The Validator service provides a fluent, chainable API for validating user input. It's automatically available in your controllers through `Candy.Validator`.
+The Validator service provides a fluent, chainable API for validating user input. It's automatically available in your controllers through `Odac.Validator`.
 
 #### Basic Usage
 
 The validator uses a method-chaining pattern:
 
 ```javascript
-const validator = Candy.Validator
+const validator = Odac.Validator
 validator.post('email').check('required|email').message('Valid email required')
 validator.post('password').check('required|minlen:8').message('Password must be at least 8 characters')
 
@@ -82,8 +82,8 @@ Use `!` prefix to invert any rule: `!required`, `!email`, etc.
 #### Example: User Registration
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator.post('username').check('required|username|minlen:4|maxlen:20').message('Username must be 4-20 alphanumeric characters')
   validator.post('email').check('required|email').message('Valid email address required')
@@ -101,8 +101,8 @@ module.exports = async function (Candy) {
 #### Example: Login with Brute Force Protection
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator.post('email').check('required|email').message('Email required')
   validator.post('password').check('required').message('Password required')
@@ -119,8 +119,8 @@ module.exports = async function (Candy) {
 #### Example: Custom Variable Validation
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
   const customValue = calculateSomething()
 
   validator.var('calculated_value', customValue).check('numeric|min:100|max:1000').message('Value must be between 100 and 1000')
@@ -138,8 +138,8 @@ module.exports = async function (Candy) {
 You can chain multiple `check()` calls for the same field, each with its own specific error message. The validator will return the first error it encounters:
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator
     .post('password')
@@ -160,8 +160,8 @@ module.exports = async function (Candy) {
 #### Example: Complex Form Validation
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator
     .post('username')
@@ -203,8 +203,8 @@ module.exports = async function (Candy) {
 #### Example: Date Range Validation
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator
     .post('start_date')
@@ -229,10 +229,10 @@ module.exports = async function (Candy) {
 #### Example: Conditional Validation with Custom Variables
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
-  const userRole = Candy.Auth.user('role')
-  const userCredits = Candy.Auth.user('credits') || 0
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
+  const userRole = Odac.Auth.user('role')
+  const userCredits = Odac.Auth.user('credits') || 0
 
   validator.post('title').check('required').message('Title is required')
   validator.post('content').check('required').message('Content is required')
@@ -263,8 +263,8 @@ module.exports = async function (Candy) {
 #### Example: User Authentication Validation
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator
     .post('current_password')
@@ -290,9 +290,9 @@ module.exports = async function (Candy) {
 You can use boolean values directly in `check()` for custom validation logic:
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
-  const userId = await Candy.request('user_id')
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
+  const userId = await Odac.request('user_id')
   
   const isOwner = await checkIfUserOwnsResource(userId)
   const hasPermission = await checkUserPermission('edit')
@@ -323,8 +323,8 @@ module.exports = async function (Candy) {
 #### Example: Chained Validation (Single Statement)
 
 ```javascript
-module.exports = async function (Candy) {
-  return await Candy.Validator
+module.exports = async function (Odac) {
+  return await Odac.Validator
     .post('email').check('required').message('Email required').check('email').message('Invalid email')
     .post('password').check('required').message('Password required').check('minlen:8').message('Min 8 chars')
     .post('age').check('required').message('Age required').check('numeric').message('Must be number').check('min:18').message('Must be 18+')
@@ -335,8 +335,8 @@ module.exports = async function (Candy) {
 #### Example: Admin-Only Action with User Check
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   validator
     .var('auth_check', null)
@@ -359,39 +359,39 @@ module.exports = async function (Candy) {
 
 #### Frontend Integration
 
-When using `Candy.form()` on the frontend, validation errors are automatically displayed:
+When using `Odac.form()` on the frontend, validation errors are automatically displayed:
 
 **Automatic Error Display:**
-- Each field's error message appears below the input with attribute `[candy-form-error="fieldname"]`
-- Invalid inputs get the `_candy_error` CSS class automatically
+- Each field's error message appears below the input with attribute `[odac-form-error="fieldname"]`
+- Invalid inputs get the `_odac_error` CSS class automatically
 - Errors fade out when the user focuses on the input
 
 **Success Messages:**
-- Success messages appear in elements with `[candy-form-success]` attribute
+- Success messages appear in elements with `[odac-form-success]` attribute
 - Automatically fades in when validation passes
 
 **Auto-Redirect:**
-- If you pass a URL as the second parameter to `Candy.form()`, successful submissions automatically redirect:
+- If you pass a URL as the second parameter to `Odac.form()`, successful submissions automatically redirect:
   ```javascript
-  Candy.form('myForm', '/dashboard') // Redirects to /dashboard on success
+  Odac.form('myForm', '/dashboard') // Redirects to /dashboard on success
   ```
 
 **Example HTML:**
 ```html
-<form candy-form="register" action="/api/register" method="POST">
+<form odac-form="register" action="/api/register" method="POST">
   <input type="email" name="email" placeholder="Email">
-  <span candy-form-error="email"></span>
+  <span odac-form-error="email"></span>
   
   <input type="password" name="password" placeholder="Password">
-  <span candy-form-error="password"></span>
+  <span odac-form-error="password"></span>
   
   <button type="submit">Register</button>
   
-  <span candy-form-success></span>
+  <span odac-form-success></span>
 </form>
 
 <script>
-  Candy.form('register', '/dashboard') // Auto-redirect on success
+  Odac.form('register', '/dashboard') // Auto-redirect on success
 </script>
 ```
 

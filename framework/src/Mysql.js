@@ -59,8 +59,8 @@ class Mysql {
 
   async #define(table) {
     return new Promise(resolve => {
-      if (!Candy.Mysql.db[this.#database]) Candy.Mysql.db[this.#database] = {}
-      this.#table[table] = Candy.Mysql.db[this.#database][table]
+      if (!Odac.Mysql.db[this.#database]) Odac.Mysql.db[this.#database] = {}
+      this.#table[table] = Odac.Mysql.db[this.#database][table]
       if (this.#table[table]) {
         this.#defining = false
         return resolve(true)
@@ -81,7 +81,7 @@ class Mysql {
         }
         if (!this.#table[table]) this.#table[table] = {}
         this.#table[table].columns = columns
-        Candy.Mysql.db[this.#database][table] = this.#table[table]
+        Odac.Mysql.db[this.#database][table] = this.#table[table]
         this.#defining = false
         return resolve(true)
       })
@@ -98,11 +98,11 @@ class Mysql {
   }
 
   #error(err, query) {
-    err = 'CandyPack Mysql Error: ' + (err?.message ?? 'Unknown error').trim() + '\n'
+    err = 'Odac Mysql Error: ' + (err?.message ?? 'Unknown error').trim() + '\n'
     if (query) err += 'Query: ' + query + '\n'
     while (this.#stack.length > 0) {
       let line = this.#stack.shift().replace('at', '')
-      if (line.includes('/node_modules/candypack/framework/src/')) break
+      if (line.includes('/node_modules/odac/framework/src/')) break
       else if (!line.includes('(node:')) err += line + '\n'
     }
     console.error(err)
@@ -163,7 +163,7 @@ class Mysql {
     //   $md5_query = md5($query);
     //   $md5_table = md5($this->arr['table']);
     //   $file = "cache/mysql/".md5(Mysql::$name)."/$md5_table"."_$md5_query";
-    //   $cache = Candy::storage($file)->get('cache');
+    //   $cache = Odac::storage($file)->get('cache');
     //   if(isset($cache->date) && ($cache->date >= (time() - $this->arr['cache']))) return $cache->data;
     // }
     let query = this.query('get')
@@ -182,7 +182,7 @@ class Mysql {
     // if(isset($cache)){
     //   $cache->data = $data;
     //   $cache->date = time();
-    //   Candy::storage($file)->set('cache', $cache);
+    //   Odac::storage($file)->set('cache', $cache);
     // }
     return data
   }
@@ -244,7 +244,7 @@ class Mysql {
     //         $md5_query = md5($query);
     //         $md5_table = md5($this->arr['table']);
     //         $file = "cache/mysql/".md5(Mysql::$name)."/$md5_table"."_$md5_query"."_r";
-    //         $cache = Candy::storage($file)->get('cache');
+    //         $cache = Odac::storage($file)->get('cache');
     //         if(isset($cache->date) && ($cache->date >= (time() - $this->arr['cache']))) return $cache->data;
     //       }
     let query = this.query('get')
@@ -254,7 +254,7 @@ class Mysql {
     //       if(isset($cache)){
     //         $cache->data = $rows;
     //         $cache->date = time();
-    //         Candy::storage($file)->set('cache', $cache);
+    //         Odac::storage($file)->set('cache', $cache);
     //       }
     return rows
   }
@@ -263,7 +263,7 @@ class Mysql {
     return new Promise(resolve => {
       if (!query) return resolve(false)
       if (!this.#conn) return resolve(false)
-      if (this.#conn.state == 'disconnected') Candy.Mysql.init()
+      if (this.#conn.state == 'disconnected') Odac.Mysql.init()
       const args = params ? [query, params] : [query]
       args.push((err, result) => {
         if (err) return resolve(this.#error(err, query))
@@ -407,33 +407,33 @@ class Mysql {
           break
         } else if (!this.#arr.select) {
           continue
-        } else if (Candy.Var(this.#arr.select).contains(' AS "' + col + '"')) {
+        } else if (Odac.Var(this.#arr.select).contains(' AS "' + col + '"')) {
           // $exp = explode(' ,',explode(" AS \"$col\"",$this->arr['select'])[0]);
-          //       $real_col = explode('.',Candy::var(trim(end($exp)))->clear('`'));
+          //       $real_col = explode('.',Odac::var(trim(end($exp)))->clear('`'));
           //       $real_table = trim($real_col[0]);
           //       $real_col = trim($real_col[1]);
           //       $this->types[$col] = $this->types[$col] = $this->table[$real_table]['columns'][$real_col]['Type'] ?? $this->types[$col];
           break
-        } else if (Candy.Var(this.#arr.select).containsAny(' `' + col + '`', ' `' + key + '`.`' + col + '`')) {
+        } else if (Odac.Var(this.#arr.select).containsAny(' `' + col + '`', ' `' + key + '`.`' + col + '`')) {
           this.types[col] = this.#table[key].columns[col].Type ?? this.types[col]
         }
       }
     }
     if (action == 'decode') {
-      if (Candy.Var(this.types[col]).isBegin('tinyint(1)')) value = value ? true : false
-      else if (Candy.Var(this.types[col]).isBegin('int')) value = parseInt(value)
-      else if (Candy.Var(this.types[col]).isBegin('double')) value = parseFloat(value)
-      else if (Candy.Var(this.types[col]).isBegin('float')) value = parseFloat(value)
-      else if (Candy.Var(this.types[col]).isBegin('boolean')) value = parseInt(value)
-      else if (Candy.Var(this.types[col]).isBegin('json')) value = JSON.parse(value)
+      if (Odac.Var(this.types[col]).isBegin('tinyint(1)')) value = value ? true : false
+      else if (Odac.Var(this.types[col]).isBegin('int')) value = parseInt(value)
+      else if (Odac.Var(this.types[col]).isBegin('double')) value = parseFloat(value)
+      else if (Odac.Var(this.types[col]).isBegin('float')) value = parseFloat(value)
+      else if (Odac.Var(this.types[col]).isBegin('boolean')) value = parseInt(value)
+      else if (Odac.Var(this.types[col]).isBegin('json')) value = JSON.parse(value)
     } else if (!(value instanceof Raw)) {
-      if (Candy.Var(this.types[col]).isBegin('tinyint(1)')) value = parseInt(value)
-      else if (Candy.Var(this.types[col]).isBegin('int')) value = parseInt(value)
-      else if (Candy.Var(this.types[col]).isBegin('double')) value = parseFloat(value)
-      else if (Candy.Var(this.types[col]).isBegin('float')) value = parseFloat(value)
-      else if (Candy.Var(this.types[col]).isBegin('boolean')) value = parseInt(value)
-      else if (Candy.Var(this.types[col]).isBegin('json')) value = JSON.stringify(value)
-      else if (Candy.Var(this.types[col]).isBegin('date', 'datetime', 'timestamp')) value = Candy.Var(value).date('Y-m-d H:i:s')
+      if (Odac.Var(this.types[col]).isBegin('tinyint(1)')) value = parseInt(value)
+      else if (Odac.Var(this.types[col]).isBegin('int')) value = parseInt(value)
+      else if (Odac.Var(this.types[col]).isBegin('double')) value = parseFloat(value)
+      else if (Odac.Var(this.types[col]).isBegin('float')) value = parseFloat(value)
+      else if (Odac.Var(this.types[col]).isBegin('boolean')) value = parseInt(value)
+      else if (Odac.Var(this.types[col]).isBegin('json')) value = JSON.stringify(value)
+      else if (Odac.Var(this.types[col]).isBegin('date', 'datetime', 'timestamp')) value = Odac.Var(value).date('Y-m-d H:i:s')
     }
     return value
   }
@@ -513,22 +513,22 @@ module.exports = {
   db: {},
   init: function () {
     return new Promise(resolve => {
-      if (!Candy.Config.database) return resolve(false)
-      let multiple = typeof Candy.Config.database[Object.keys(Candy.Config.database)[0]] === 'object'
-      let dbs = multiple ? Candy.Config.database : {default: Candy.Config.database}
+      if (!Odac.Config.database) return resolve(false)
+      let multiple = typeof Odac.Config.database[Object.keys(Odac.Config.database)[0]] === 'object'
+      let dbs = multiple ? Odac.Config.database : {default: Odac.Config.database}
       for (let key of Object.keys(dbs)) {
         let db = dbs[key]
         if (db.type && db.type != 'mysql') continue
-        Candy.Mysql.conn[key] = mysql.createConnection({
+        Odac.Mysql.conn[key] = mysql.createConnection({
           host: db.host ?? '127.0.0.1',
           user: db.user,
           password: db.password,
           database: db.database,
           stringifyObjects: true
         })
-        Candy.Mysql.conn[key].connect(err => {
+        Odac.Mysql.conn[key].connect(err => {
           if (err) {
-            console.error(`CandyPack Mysql Error: Failed to connect to database '${key}'`)
+            console.error(`Odac Mysql Error: Failed to connect to database '${key}'`)
             console.error(`Host: ${db.host ?? '127.0.0.1'}`)
             console.error(`User: ${db.user}`)
             console.error(`Database: ${db.database}`)
@@ -536,16 +536,16 @@ module.exports = {
             return resolve(false)
           }
         })
-        Candy.Mysql.conn[key].query('SHOW TABLES', (err, result) => {
+        Odac.Mysql.conn[key].query('SHOW TABLES', (err, result) => {
           if (err) {
-            console.error(`CandyPack Mysql Error: Failed to query tables from database '${key}'`)
+            console.error(`Odac Mysql Error: Failed to query tables from database '${key}'`)
             console.error(`Error: ${err.message}`)
             return resolve(false)
           }
           for (let table of result)
             for (let key of Object.keys(table)) {
               let t = () => {
-                new Mysql(table[key], Candy.Mysql.conn['default'])
+                new Mysql(table[key], Odac.Mysql.conn['default'])
               }
               t()
             }
@@ -555,16 +555,16 @@ module.exports = {
     })
   },
   database: function (name) {
-    if (!Candy.Mysql.conn[name]) return null
-    return new Mysql(name, Candy.Mysql.conn[name])
+    if (!Odac.Mysql.conn[name]) return null
+    return new Mysql(name, Odac.Mysql.conn[name])
   },
   run: function (query, params) {
-    if (!Candy.Mysql.conn['default']) return Promise.resolve(false)
-    return new Mysql(null, Candy.Mysql.conn['default']).run(query, params)
+    if (!Odac.Mysql.conn['default']) return Promise.resolve(false)
+    return new Mysql(null, Odac.Mysql.conn['default']).run(query, params)
   },
   table: function (name) {
-    if (!Candy.Mysql.conn['default']) return null
-    return new Mysql(name, Candy.Mysql.conn['default'])
+    if (!Odac.Mysql.conn['default']) return null
+    return new Mysql(name, Odac.Mysql.conn['default'])
   },
   raw: function (query) {
     if (typeof query !== 'string') {

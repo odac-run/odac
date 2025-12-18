@@ -178,7 +178,7 @@ class EarlyHints {
         res.writeEarlyHints({link: links})
       }
 
-      res.setHeader('X-Candy-Early-Hints', JSON.stringify(links))
+      res.setHeader('X-Odac-Early-Hints', JSON.stringify(links))
 
       return true
     } catch {

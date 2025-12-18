@@ -9,7 +9,7 @@
 const createMockWebsiteConfig = (domain = 'example.com', overrides = {}) => {
   return {
     domain,
-    path: `/var/candypack/${domain}`,
+    path: `/var/odac/${domain}`,
     subdomain: ['www'],
     cert: {
       ssl: {

@@ -1,6 +1,6 @@
 ## 🔌 Database Connection
 
-CandyPack automatically connects to your MySQL database when you provide the configuration.
+Odac automatically connects to your MySQL database when you provide the configuration.
 
 ### Configuration
 
@@ -44,10 +44,10 @@ Access different databases:
 
 ```javascript
 // Default database
-const users = await Candy.Mysql.table('users').get()
+const users = await Odac.Mysql.table('users').get()
 
 // Specific database
-const stats = await Candy.Mysql.database('analytics').table('stats').get()
+const stats = await Odac.Mysql.database('analytics').table('stats').get()
 ```
 
 ### Environment Variables
@@ -86,14 +86,14 @@ Available configuration options:
 
 ### Automatic Connection
 
-The connection is established automatically when your application starts. You don't need to write any connection code - just use `Candy.Mysql` in your controllers.
+The connection is established automatically when your application starts. You don't need to write any connection code - just use `Odac.Mysql` in your controllers.
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Connection is already established
-  const users = await Candy.Mysql.table('users').get()
+  const users = await Odac.Mysql.table('users').get()
   
-  Candy.set('users', users)
-  Candy.View.set({ skeleton: 'main', content: 'users' })
+  Odac.set('users', users)
+  Odac.View.set({ skeleton: 'main', content: 'users' })
 }
 ```

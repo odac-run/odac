@@ -1,6 +1,6 @@
 # AJAX Navigation Configuration
 
-Learn how to configure and customize AJAX navigation in your CandyPack application.
+Learn how to configure and customize AJAX navigation in your Odac application.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ Before configuring AJAX navigation, ensure your skeleton template is properly se
 The simplest way to enable AJAX navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: 'main'  // Update <main> element
 })
 ```
@@ -33,7 +33,7 @@ Candy.action({
 All available options:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     // Which links to intercept
     links: 'a[href^="/"]',  // Default: all internal links
@@ -129,7 +129,7 @@ The keys (content, header, etc.) must match the view parts defined in your contr
 
 ```javascript
 // In controller
-Candy.View.set({
+odac.View.set({
   header: 'main',
   content: 'about',
   sidebar: 'main'
@@ -170,7 +170,7 @@ navigate: {
 Run code for specific pages:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => console.log('Navigated to:', page)
@@ -192,7 +192,7 @@ Candy.action({
 ### Disable Completely
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: false  // No AJAX navigation
 })
 ```
@@ -217,16 +217,16 @@ Candy.action({
 In your controller, send data to the client:
 
 ```javascript
-module.exports = function(Candy) {
+module.exports = function(Odac) {
   // Set variables for AJAX responses
-  Candy.set({
+  odac.set({
     title: 'About Page',
     user: {name: 'John', role: 'admin'},
     stats: {views: 1234}
   }, true)  // true = include in AJAX
   
-  Candy.View.skeleton('main')
-  Candy.View.set({
+  odac.View.skeleton('main')
+  odac.View.set({
     header: 'main',
     content: 'about',
     footer: 'main'
@@ -256,7 +256,7 @@ navigate: {
 Show a loading spinner during navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => {
@@ -290,7 +290,7 @@ Animated progress bar:
 ```javascript
 let progressBar = document.getElementById('progress')
 
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: () => {
@@ -316,7 +316,7 @@ Candy.action({
 Confirm before navigating:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main'
   },
@@ -360,7 +360,7 @@ Candy.action({
 
 ### Variables Not Available
 
-- Confirm `Candy.set(data, true)` has `true` parameter
+- Confirm `Odac.set(data, true)` has `true` parameter
 - Check variables are set before `View.print()`
 
 ## Next Steps

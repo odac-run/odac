@@ -37,17 +37,17 @@ class Mail {
     return new Promise(resolve => {
       if (!fs.existsSync(__dir + '/view/mail/' + this.#template + '.html')) return console.log('Template not found') && false
       if (!this.#from || !this.#subject || !this.#to) return console.log('From, Subject and To fields are required') && false
-      if (!Candy.Var(this.#from.email).is('email')) return console.log('From field is not a valid e-mail address') && false
-      if (!Candy.Var(this.#to.value[0].address).is('email')) return console.log('To field is not a valid e-mail address') && false
+      if (!Odac.Var(this.#from.email).is('email')) return console.log('From field is not a valid e-mail address') && false
+      if (!Odac.Var(this.#to.value[0].address).is('email')) return console.log('To field is not a valid e-mail address') && false
       if (!this.#header['From']) this.#header['From'] = `${this.#from.name} <${this.#from.email}>`
       if (!this.#header['To']) this.#header['To'] = this.#to
       if (!this.#header['Subject']) this.#header['Subject'] = this.#subject
-      if (!this.#header['Message-ID']) this.#header['Message-ID'] = `<${crypto.randomBytes(16).toString('hex')}-${Date.now()}@candypack>`
+      if (!this.#header['Message-ID']) this.#header['Message-ID'] = `<${crypto.randomBytes(16).toString('hex')}-${Date.now()}@odac>`
       if (!this.#header['Content-Transfer-Encoding']) this.#header['Content-Transfer-Encoding'] = 'quoted-printable'
       if (!this.#header['Date']) this.#header['Date'] = new Date().toUTCString()
       if (!this.#header['Content-Type'])
         this.#header['Content-Type'] = 'multipart/alternative; boundary="----=' + crypto.randomBytes(32).toString('hex') + '"'
-      if (!this.#header['X-Mailer']) this.#header['X-Mailer'] = 'CandyPack'
+      if (!this.#header['X-Mailer']) this.#header['X-Mailer'] = 'Odac'
       if (!this.#header['MIME-Version']) this.#header['MIME-Version'] = '1.0'
       let content = fs.readFileSync(__dir + '/view/mail/' + this.#template + '.html').toString()
       for (const iterator of Object.keys(data)) content = content.replace(new RegExp(`{${iterator}}`, 'g'), data[iterator])
@@ -67,7 +67,7 @@ class Mail {
               }
             ]
           },
-          {headers: {Authorization: Candy.Config.system.api.auth}}
+          {headers: {Authorization: Odac.Config.system.api.auth}}
         )
         .then(response => {
           resolve(response.data)

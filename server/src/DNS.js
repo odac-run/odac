@@ -1,4 +1,4 @@
-const {log, error} = Candy.core('Log', false).init('DNS')
+const {log, error} = Odac.core('Log', false).init('DNS')
 
 const axios = require('axios')
 const dns = require('native-dns')
@@ -19,13 +19,13 @@ class DNS {
   delete(...args) {
     for (let obj of args) {
       let domain = obj.name
-      while (!Candy.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
-      if (!Candy.core('Config').config.websites[domain]) continue
+      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
+      if (!Odac.core('Config').config.websites[domain]) continue
       if (!obj.type) continue
       let type = obj.type.toUpperCase()
       if (!this.#types.includes(type)) continue
-      if (!Candy.core('Config').config.websites[domain].DNS || !Candy.core('Config').config.websites[domain].DNS[type]) continue
-      Candy.core('Config').config.websites[domain].DNS[type] = Candy.core('Config').config.websites[domain].DNS[type].filter(
+      if (!Odac.core('Config').config.websites[domain].DNS || !Odac.core('Config').config.websites[domain].DNS[type]) continue
+      Odac.core('Config').config.websites[domain].DNS[type] = Odac.core('Config').config.websites[domain].DNS[type].filter(
         record => !(record.name === obj.name && (!obj.value || record.value === obj.value))
       )
     }
@@ -54,7 +54,7 @@ class DNS {
         const response = await axios.get(service, {
           timeout: 5000,
           headers: {
-            'User-Agent': 'CandyPack-DNS/1.0'
+            'User-Agent': 'Odac-DNS/1.0'
           }
         })
 
@@ -95,7 +95,7 @@ class DNS {
   }
 
   #publish() {
-    if (this.#loaded || !Object.keys(Candy.core('Config').config.websites ?? {}).length) return
+    if (this.#loaded || !Object.keys(Odac.core('Config').config.websites ?? {}).length) return
     this.#loaded = true
 
     // Set up request handlers
@@ -333,7 +333,7 @@ class DNS {
 
       // Create or update resolved.conf to disable DNS stub
       const resolvedConfDir = '/etc/systemd/resolved.conf.d'
-      const resolvedConfFile = `${resolvedConfDir}/candypack-dns.conf`
+      const resolvedConfFile = `${resolvedConfDir}/odac-dns.conf`
 
       try {
         // Ensure directory exists
@@ -516,8 +516,8 @@ FallbackDNS=1.1.1.1 1.0.0.1
   #setupSystemDNSForInternet() {
     try {
       // Configure system to use public DNS for internet access
-      const resolvConf = `# CandyPack DNS Configuration
-# CandyPack handles local domains on port 53
+      const resolvConf = `# Odac DNS Configuration
+# Odac handles local domains on port 53
 # Public DNS servers handle all internet domains
 
 nameserver 1.1.1.1
@@ -527,21 +527,21 @@ nameserver 8.8.4.4
 
 # Cloudflare DNS (1.1.1.1) - Fast and privacy-focused
 # Google DNS (8.8.8.8) - Reliable fallback
-# Original configuration backed up to /etc/resolv.conf.candypack.backup
+# Original configuration backed up to /etc/resolv.conf.odac.backup
 `
 
       // Backup original resolv.conf
-      execSync('sudo cp /etc/resolv.conf /etc/resolv.conf.candypack.backup 2>/dev/null || true', {timeout: 5000})
+      execSync('sudo cp /etc/resolv.conf /etc/resolv.conf.odac.backup 2>/dev/null || true', {timeout: 5000})
 
       // Update resolv.conf with public DNS servers
       execSync(`echo '${resolvConf}' | sudo tee /etc/resolv.conf`, {timeout: 5000})
       log('Configured system to use public DNS servers for internet access')
-      log('Cloudflare DNS (1.1.1.1) and Google DNS (8.8.8.8) will handle non-CandyPack domains')
+      log('Cloudflare DNS (1.1.1.1) and Google DNS (8.8.8.8) will handle non-Odac domains')
 
       // Set up restoration on exit
       process.on('exit', () => {
         try {
-          execSync('sudo mv /etc/resolv.conf.candypack.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
+          execSync('sudo mv /etc/resolv.conf.odac.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
         } catch {
           // Silent fail on exit
         }
@@ -554,9 +554,9 @@ nameserver 8.8.4.4
   #updateSystemDNSConfig(port) {
     try {
       // Use reliable public DNS servers for internet access
-      // CandyPack DNS only handles local domains, everything else goes to public DNS
-      const resolvConf = `# CandyPack DNS Configuration
-# Local domains handled by CandyPack DNS on port ${port}
+      // Odac DNS only handles local domains, everything else goes to public DNS
+      const resolvConf = `# Odac DNS Configuration
+# Local domains handled by Odac DNS on port ${port}
 # All other domains handled by reliable public DNS servers
 
 nameserver 1.1.1.1
@@ -566,21 +566,21 @@ nameserver 8.8.4.4
 
 # Cloudflare DNS (1.1.1.1) - Fast and privacy-focused
 # Google DNS (8.8.8.8) - Reliable fallback
-# Original configuration backed up to /etc/resolv.conf.candypack.backup
+# Original configuration backed up to /etc/resolv.conf.odac.backup
 `
 
       // Backup original resolv.conf
-      execSync('sudo cp /etc/resolv.conf /etc/resolv.conf.candypack.backup 2>/dev/null || true', {timeout: 5000})
+      execSync('sudo cp /etc/resolv.conf /etc/resolv.conf.odac.backup 2>/dev/null || true', {timeout: 5000})
 
       // Update resolv.conf with public DNS servers
       execSync(`echo '${resolvConf}' | sudo tee /etc/resolv.conf`, {timeout: 5000})
       log('Updated /etc/resolv.conf to use reliable public DNS servers (1.1.1.1, 8.8.8.8)')
-      log('CandyPack domains will be handled locally, all other domains via public DNS')
+      log('Odac domains will be handled locally, all other domains via public DNS')
 
       // Set up restoration on exit
       process.on('exit', () => {
         try {
-          execSync('sudo mv /etc/resolv.conf.candypack.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
+          execSync('sudo mv /etc/resolv.conf.odac.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
         } catch {
           // Silent fail on exit
         }
@@ -626,17 +626,17 @@ nameserver 8.8.4.4
       response.question[0].name = questionName
 
       let domain = questionName
-      while (!Candy.core('Config').config.websites[domain] && domain.includes('.')) {
+      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) {
         domain = domain.split('.').slice(1).join('.')
       }
 
-      if (!Candy.core('Config').config.websites[domain] || !Candy.core('Config').config.websites[domain].DNS) {
+      if (!Odac.core('Config').config.websites[domain] || !Odac.core('Config').config.websites[domain].DNS) {
         // For unknown domains, send proper NXDOMAIN response instead of empty response
         response.header.rcode = dns.consts.NAME_TO_RCODE.NXDOMAIN
         return response.send()
       }
 
-      const dnsRecords = Candy.core('Config').config.websites[domain].DNS
+      const dnsRecords = Odac.core('Config').config.websites[domain].DNS
 
       // Only process records relevant to the question type for better performance
       switch (questionType) {
@@ -888,20 +888,20 @@ nameserver 8.8.4.4
     let domains = []
     for (let obj of args) {
       let domain = obj.name
-      while (!Candy.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
-      if (!Candy.core('Config').config.websites[domain]) continue
+      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
+      if (!Odac.core('Config').config.websites[domain]) continue
       if (!obj.type) continue
       let type = obj.type.toUpperCase()
       delete obj.type
       if (!this.#types.includes(type)) continue
-      if (!Candy.core('Config').config.websites[domain].DNS) Candy.core('Config').config.websites[domain].DNS = {}
-      if (!Candy.core('Config').config.websites[domain].DNS[type]) Candy.core('Config').config.websites[domain].DNS[type] = []
+      if (!Odac.core('Config').config.websites[domain].DNS) Odac.core('Config').config.websites[domain].DNS = {}
+      if (!Odac.core('Config').config.websites[domain].DNS[type]) Odac.core('Config').config.websites[domain].DNS[type] = []
       if (obj.unique !== false) {
-        Candy.core('Config').config.websites[domain].DNS[type] = Candy.core('Config').config.websites[domain].DNS[type].filter(
+        Odac.core('Config').config.websites[domain].DNS[type] = Odac.core('Config').config.websites[domain].DNS[type].filter(
           record => record.name !== obj.name
         )
       }
-      Candy.core('Config').config.websites[domain].DNS[type].push(obj)
+      Odac.core('Config').config.websites[domain].DNS[type].push(obj)
       domains.push(domain)
     }
     let date = new Date()
@@ -910,7 +910,7 @@ nameserver 8.8.4.4
       .slice(0, 10)
     for (let domain of domains) {
       // Add SOA record
-      Candy.core('Config').config.websites[domain].DNS.SOA = [
+      Odac.core('Config').config.websites[domain].DNS.SOA = [
         {
           name: domain,
           value: 'ns1.' + domain + ' hostmaster.' + domain + ' ' + date + ' 3600 600 604800 3600'
@@ -918,8 +918,8 @@ nameserver 8.8.4.4
       ]
 
       // Add default CAA records for Let's Encrypt SSL certificates
-      if (!Candy.core('Config').config.websites[domain].DNS.CAA) {
-        Candy.core('Config').config.websites[domain].DNS.CAA = [
+      if (!Odac.core('Config').config.websites[domain].DNS.CAA) {
+        Odac.core('Config').config.websites[domain].DNS.CAA = [
           {
             name: domain,
             value: '0 issue letsencrypt.org',

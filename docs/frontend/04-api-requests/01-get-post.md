@@ -1,13 +1,13 @@
-# API Requests with candy.js
+# API Requests with odac.js
 
-Learn how to make GET and POST requests to your API endpoints using candy.js.
+Learn how to make GET and POST requests to your API endpoints using odac.js.
 
 ## GET Requests
 
 ### Basic GET Request
 
 ```javascript
-Candy.get('/api/data', function(response) {
+odac.get('/api/data', function(response) {
   console.log('Data:', response)
 })
 ```
@@ -16,7 +16,7 @@ Candy.get('/api/data', function(response) {
 
 ```javascript
 const userId = 123
-Candy.get(`/api/users/${userId}`, function(user) {
+odac.get(`/api/users/${userId}`, function(user) {
   console.log('User:', user.name)
   console.log('Email:', user.email)
 })
@@ -25,7 +25,7 @@ Candy.get(`/api/users/${userId}`, function(user) {
 ### Error Handling
 
 ```javascript
-Candy.get('/api/data', function(response) {
+odac.get('/api/data', function(response) {
   if (response.error) {
     console.error('Error:', response.error)
     return
@@ -40,10 +40,10 @@ Candy.get('/api/data', function(response) {
 
 ### Using Forms
 
-The recommended way to make POST requests is using `Candy.form()`:
+The recommended way to make POST requests is using `Odac.form()`:
 
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   if (data.result.success) {
     console.log('Success!')
   }
@@ -58,12 +58,12 @@ For custom POST requests without forms, use the internal AJAX method:
 
 ```javascript
 // Note: This is an advanced pattern
-// For most cases, use Candy.form() instead
+// For most cases, use odac.form() instead
 
 const formData = new FormData()
 formData.append('name', 'John')
 formData.append('email', 'john@example.com')
-formData.append('_token', Candy.token())
+formData.append('_token', odac.token())
 
 fetch('/api/submit', {
   method: 'POST',
@@ -79,16 +79,16 @@ fetch('/api/submit', {
 
 ### Automatic Token Management
 
-candy.js automatically handles CSRF tokens:
+odac.js automatically handles CSRF tokens:
 
 ```javascript
 // Token is automatically included
-Candy.get('/api/data', function(response) {
+odac.get('/api/data', function(response) {
   // ...
 })
 
 // Token is automatically included in forms
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   // ...
 })
 ```
@@ -98,7 +98,7 @@ Candy.form('#my-form', function(data) {
 If you need the token manually:
 
 ```javascript
-const token = Candy.token()
+const token = odac.token()
 console.log('Current token:', token)
 ```
 
@@ -108,7 +108,7 @@ console.log('Current token:', token)
 
 ```javascript
 // Get user profile
-Candy.get('/api/profile', function(profile) {
+odac.get('/api/profile', function(profile) {
   document.querySelector('#username').textContent = profile.name
   document.querySelector('#email').textContent = profile.email
 })
@@ -118,7 +118,7 @@ Candy.get('/api/profile', function(profile) {
 
 ```javascript
 // Get products
-Candy.get('/api/products', function(products) {
+odac.get('/api/products', function(products) {
   const container = document.querySelector('#products')
   
   products.forEach(product => {
@@ -143,7 +143,7 @@ searchInput.addEventListener('input', function() {
   
   if (query.length < 3) return
   
-  Candy.get(`/api/search?q=${encodeURIComponent(query)}`, function(results) {
+  odac.get(`/api/search?q=${encodeURIComponent(query)}`, function(results) {
     displayResults(results)
   })
 })
@@ -172,7 +172,7 @@ document.querySelector('#autocomplete').addEventListener('input', function() {
   debounceTimer = setTimeout(() => {
     if (value.length < 2) return
     
-    Candy.get(`/api/autocomplete?q=${value}`, function(suggestions) {
+    odac.get(`/api/autocomplete?q=${value}`, function(suggestions) {
       showSuggestions(suggestions)
     })
   }, 300)
@@ -200,7 +200,7 @@ function loadMore() {
   loading = true
   page++
   
-  Candy.get(`/api/posts?page=${page}`, function(posts) {
+  odac.get(`/api/posts?page=${page}`, function(posts) {
     posts.forEach(post => {
       appendPost(post)
     })
@@ -214,7 +214,7 @@ function loadMore() {
 ```javascript
 // Poll for updates every 30 seconds
 setInterval(function() {
-  Candy.get('/api/notifications', function(notifications) {
+  odac.get('/api/notifications', function(notifications) {
     updateNotificationBadge(notifications.count)
   })
 }, 30000)
@@ -226,7 +226,7 @@ setInterval(function() {
 
 ```javascript
 // controller/get/users.js
-module.exports = function(Candy) {
+module.exports = function(Odac) {
   // Get all users
   const users = [
     {id: 1, name: 'John', email: 'john@example.com'},
@@ -239,21 +239,21 @@ module.exports = function(Candy) {
 
 ```javascript
 // route/www.js
-Candy.Route.get('/api/users', 'users')
+odac.Route.get('/api/users', 'users')
 ```
 
 ### GET with Parameters
 
 ```javascript
 // controller/get/user.js
-module.exports = async function(Candy) {
-  const userId = Candy.Request.data.url.id
+module.exports = async function(Odac) {
+  const userId = odac.Request.data.url.id
   
   // Fetch user from database
   const user = await getUserById(userId)
   
   if (!user) {
-    Candy.Request.status(404)
+    odac.Request.status(404)
     return {error: 'User not found'}
   }
   
@@ -263,16 +263,16 @@ module.exports = async function(Candy) {
 
 ```javascript
 // route/www.js
-Candy.Route.get('/api/users/{id}', 'user')
+odac.Route.get('/api/users/{id}', 'user')
 ```
 
 ### POST Endpoint
 
 ```javascript
 // controller/post/create.js
-module.exports = async function(Candy) {
-  const name = await Candy.Request.request('name')
-  const email = await Candy.Request.request('email')
+module.exports = async function(Odac) {
+  const name = await odac.Request.request('name')
+  const email = await odac.Request.request('email')
   
   // Validation
   if (!name || !email) {
@@ -300,7 +300,7 @@ module.exports = async function(Candy) {
 
 ```javascript
 // route/www.js
-Candy.Route.post('/api/users/create', 'create')
+odac.Route.post('/api/users/create', 'create')
 ```
 
 ## Response Format
@@ -357,7 +357,7 @@ function getCached(url, callback) {
     return
   }
   
-  Candy.get(url, function(data) {
+  odac.get(url, function(data) {
     cache[url] = data
     callback(data)
   })
@@ -386,7 +386,7 @@ function processQueue() {
   processing = true
   const {url, callback} = requestQueue.shift()
   
-  Candy.get(url, function(data) {
+  odac.get(url, function(data) {
     callback(data)
     processing = false
     processQueue()
@@ -403,7 +403,7 @@ function getWithRetry(url, callback, maxRetries = 3) {
   function attempt() {
     attempts++
     
-    Candy.get(url, function(data) {
+    odac.get(url, function(data) {
       if (data.error && attempts < maxRetries) {
         setTimeout(attempt, 1000 * attempts)
       } else {
@@ -440,4 +440,4 @@ function getWithRetry(url, callback, maxRetries = 3) {
 
 - Learn about [Form Handling](../03-forms/01-form-handling.md)
 - Explore [AJAX Navigation](../02-ajax-navigation/01-quick-start.md)
-- Check [candy.js Overview](../01-overview/01-introduction.md)
+- Check [odac.js Overview](../01-overview/01-introduction.md)

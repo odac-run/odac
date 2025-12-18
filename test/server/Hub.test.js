@@ -1,16 +1,16 @@
 const mockLog = jest.fn()
 const mockError = jest.fn()
 
-const {mockCandy} = require('./__mocks__/globalCandy')
+const {mockOdac} = require('./__mocks__/globalOdac')
 
-mockCandy.setMock('core', 'Log', {
+mockOdac.setMock('core', 'Log', {
   init: jest.fn().mockReturnValue({
     log: mockLog,
     error: mockError
   })
 })
 
-global.Candy = mockCandy
+global.Odac = mockOdac
 
 jest.mock('axios')
 const axios = require('axios')
@@ -32,7 +32,7 @@ describe('Hub', () => {
     jest.clearAllMocks()
     jest.clearAllTimers()
 
-    mockCandy.setMock('core', 'Config', {
+    mockOdac.setMock('core', 'Config', {
       config: {
         hub: null,
         server: {started: Date.now()},
@@ -42,7 +42,7 @@ describe('Hub', () => {
       }
     })
 
-    mockCandy.setMock('server', 'Api', {
+    mockOdac.setMock('server', 'Api', {
       result: jest.fn((success, message) => ({success, message}))
     })
 
@@ -93,7 +93,7 @@ describe('Hub', () => {
     })
 
     it('should skip API call when counter is not 0', async () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
           server: {started: Date.now()}
@@ -106,7 +106,7 @@ describe('Hub', () => {
     })
 
     it('should skip API call when websocket is connected', async () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
           server: {started: Date.now()}
@@ -126,7 +126,7 @@ describe('Hub', () => {
     })
 
     it('should return early if no hub config', async () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {hub: null}
       })
 
@@ -135,7 +135,7 @@ describe('Hub', () => {
     })
 
     it('should return early if no token', async () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {hub: {}}
       })
 
@@ -146,7 +146,7 @@ describe('Hub', () => {
     it('should send status to hub when counter is 0', async () => {
       jest.useRealTimers()
 
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
           server: {started: Date.now()}
@@ -172,7 +172,7 @@ describe('Hub', () => {
     it('should handle authentication failure', async () => {
       jest.useRealTimers()
 
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'invalid-token', secret: 'test-secret'},
           server: {started: Date.now()}
@@ -202,7 +202,7 @@ describe('Hub', () => {
         hub: {token: 'invalid-token', secret: 'test-secret'},
         server: {started: Date.now()}
       }
-      mockCandy.setMock('core', 'Config', {config})
+      mockOdac.setMock('core', 'Config', {config})
 
       axios.post.mockResolvedValue({
         data: {
@@ -223,7 +223,7 @@ describe('Hub', () => {
     it('should handle check errors gracefully', async () => {
       jest.useRealTimers()
 
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
           server: {started: Date.now()}
@@ -255,7 +255,7 @@ describe('Hub', () => {
       }
 
       const mockApiResult = {success: true, message: 'Authentication successful'}
-      mockCandy.setMock('server', 'Api', {
+      mockOdac.setMock('server', 'Api', {
         result: jest.fn(() => mockApiResult)
       })
 
@@ -265,7 +265,7 @@ describe('Hub', () => {
 
       expect(axios.post).toHaveBeenCalled()
       expect(result).toEqual(mockApiResult)
-      expect(mockCandy.core('Config').config.hub).toEqual({
+      expect(mockOdac.core('Config').config.hub).toEqual({
         token: 'new-token',
         secret: 'new-secret'
       })
@@ -273,7 +273,7 @@ describe('Hub', () => {
 
     it('should handle authentication failure', async () => {
       const mockApiResult = {success: false, message: 'Authentication failed'}
-      mockCandy.setMock('server', 'Api', {
+      mockOdac.setMock('server', 'Api', {
         result: jest.fn(() => mockApiResult)
       })
 
@@ -320,7 +320,7 @@ describe('Hub', () => {
     })
 
     it('should get services info', () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           websites: {
             'example.com': {},
@@ -344,7 +344,7 @@ describe('Hub', () => {
     })
 
     it('should handle missing services config', () => {
-      mockCandy.setMock('core', 'Config', {config: {}})
+      mockOdac.setMock('core', 'Config', {config: {}})
 
       const services = Hub.getServicesInfo()
 
@@ -389,7 +389,7 @@ describe('Hub', () => {
 
   describe('request signing', () => {
     it('should sign request with secret', () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'token', secret: 'test-secret'}
         }
@@ -403,7 +403,7 @@ describe('Hub', () => {
     })
 
     it('should return null without secret', () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {hub: {token: 'token'}}
       })
 
@@ -428,7 +428,7 @@ describe('Hub', () => {
     })
 
     it('should include authorization header when token exists', async () => {
-      mockCandy.setMock('core', 'Config', {
+      mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'}
         }

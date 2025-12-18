@@ -245,7 +245,7 @@ describe('EarlyHints', () => {
 
       const result = earlyHints.send(mockRes, resources)
       expect(result).toBe(true)
-      expect(mockRes.setHeader).toHaveBeenCalledWith('X-Candy-Early-Hints', JSON.stringify(['</css/main.css>; rel=preload; as=style']))
+      expect(mockRes.setHeader).toHaveBeenCalledWith('X-Odac-Early-Hints', JSON.stringify(['</css/main.css>; rel=preload; as=style']))
     })
 
     it('should send early hints successfully', () => {
@@ -262,7 +262,7 @@ describe('EarlyHints', () => {
       expect(mockRes.writeEarlyHints).toHaveBeenCalledWith({
         link: ['</css/main.css>; rel=preload; as=style']
       })
-      expect(mockRes.setHeader).toHaveBeenCalledWith('X-Candy-Early-Hints', JSON.stringify(['</css/main.css>; rel=preload; as=style']))
+      expect(mockRes.setHeader).toHaveBeenCalledWith('X-Odac-Early-Hints', JSON.stringify(['</css/main.css>; rel=preload; as=style']))
     })
 
     it('should handle writeEarlyHints errors gracefully', () => {

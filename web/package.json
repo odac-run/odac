@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "description": "Website for {{domain_original}}",
   "scripts": {
-    "start": "candy framework run",
+    "start": "odac framework run",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "candypack": "*"
+    "odac": "*"
   },
   "keywords": [
-    "candypack",
+    "odac",
     "website"
   ],
   "author": "",

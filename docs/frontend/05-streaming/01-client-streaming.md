@@ -1,12 +1,12 @@
 # Client-Side Streaming
 
-CandyPack provides a simple client-side API for consuming Server-Sent Events (SSE) streams.
+Odac provides a simple client-side API for consuming Server-Sent Events (SSE) streams.
 
 ### Basic Usage
 
 ```javascript
 // Simple callback
-Candy.listen('/events', (data) => {
+odac.listen('/events', (data) => {
   console.log('Received:', data)
 })
 ```
@@ -14,7 +14,7 @@ Candy.listen('/events', (data) => {
 ### With Options
 
 ```javascript
-const stream = Candy.listen('/events', 
+const stream = odac.listen('/events', 
   (data) => {
     console.log('Message:', data)
   },
@@ -34,7 +34,7 @@ stream.close()
 
 ```javascript
 // Server sends: data: {"message": "Hello"}\n\n
-Candy.listen('/events', (data) => {
+odac.listen('/events', (data) => {
   console.log(data.message) // "Hello"
 })
 ```
@@ -47,8 +47,8 @@ Candy.listen('/events', (data) => {
 
 ```javascript
 // Server
-Candy.Route.get('/dashboard/stats', async (Candy) => {
-  Candy.stream((send) => {
+odac.Route.get('/dashboard/stats', async (Odac) => {
+  odac.stream((send) => {
     const interval = setInterval(async () => {
       const stats = await getServerStats()
       send(stats)
@@ -62,7 +62,7 @@ Candy.Route.get('/dashboard/stats', async (Candy) => {
 })
 
 // Client
-Candy.listen('/dashboard/stats', (stats) => {
+odac.listen('/dashboard/stats', (stats) => {
   document.getElementById('cpu').textContent = stats.cpu + '%'
   document.getElementById('memory').textContent = stats.memory + 'MB'
 })
@@ -72,16 +72,16 @@ Candy.listen('/dashboard/stats', (stats) => {
 
 ```javascript
 // Server
-Candy.Route.get('/notifications', async (Candy) => {
-  const userId = await Candy.request('userId')
+odac.Route.get('/notifications', async (Odac) => {
+  const userId = await odac.request('userId')
   
-  Candy.stream((send) => {
+  odac.stream((send) => {
     global.notificationStreams[userId] = { send }
   })
 })
 
 // Client
-Candy.listen('/notifications', (notification) => {
+odac.listen('/notifications', (notification) => {
   showToast(notification.message)
 })
 ```
@@ -90,8 +90,8 @@ Candy.listen('/notifications', (notification) => {
 
 ```javascript
 // Server
-Candy.Route.get('/build/logs', async (Candy) => {
-  Candy.stream(async function* () {
+odac.Route.get('/build/logs', async (Odac) => {
+  odac.stream(async function* () {
     for await (const log of getBuildLogs()) {
       yield { timestamp: Date.now(), message: log }
     }
@@ -100,7 +100,7 @@ Candy.Route.get('/build/logs', async (Candy) => {
 
 // Client
 const logs = []
-Candy.listen('/build/logs', (log) => {
+odac.listen('/build/logs', (log) => {
   logs.push(log)
   updateLogsUI(logs)
 })
@@ -108,7 +108,7 @@ Candy.listen('/build/logs', (log) => {
 
 ## API Reference
 
-### Candy.listen(url, onMessage, options)
+### odac.listen(url, onMessage, options)
 
 **Parameters:**
 - `url` (string): Stream endpoint URL

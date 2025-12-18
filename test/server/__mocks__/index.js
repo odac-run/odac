@@ -14,7 +14,7 @@ const os = require('./os')
 const path = require('./path')
 
 // Import test utilities
-const {mockCandy, mockLangGet, MockCandyPack} = require('./globalCandy')
+const {mockCandy, mockLangGet, MockOdac} = require('./globalCandy')
 const testFactories = require('./testFactories')
 const testHelpers = require('./testHelpers')
 
@@ -34,11 +34,11 @@ const setupNodeMocks = () => {
 }
 
 /**
- * Setup global mocks (Candy and __ function)
+ * Setup global mocks (Odac and __ function)
  * Call this in beforeEach to set up global mocks
  */
 const setupGlobalMocks = () => {
-  global.Candy = mockCandy
+  global.Odac = mockCandy
   global.__ = mockLangGet
 
   // Clear all previous mock calls
@@ -66,7 +66,7 @@ const cleanupAllMocks = () => {
   path.__resetMocks()
 
   // Reset global references
-  delete global.Candy
+  delete global.Odac
   delete global.__
 }
 
@@ -93,7 +93,7 @@ const createTestEnvironment = () => {
 
     // Global mocks
     global: {
-      Candy: mockCandy,
+      Odac: mockCandy,
       __: mockLangGet
     },
 
@@ -233,7 +233,7 @@ module.exports = {
   // Global mocks
   mockCandy,
   mockLangGet,
-  MockCandyPack,
+  MockOdac,
 
   // Test utilities
   testFactories,

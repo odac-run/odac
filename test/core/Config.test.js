@@ -5,8 +5,8 @@ const os = require('os')
 jest.mock('fs')
 jest.mock('os')
 
-// Mock global Candy object
-global.Candy = {
+// Mock global Odac object
+global.Odac = {
   core: jest.fn(name => {
     if (name === 'Log') {
       return {
@@ -109,7 +109,7 @@ describe('Config', () => {
     global.setInterval = jest.fn().mockReturnValue({unref: jest.fn()})
 
     // Set default process.mainModule
-    process.mainModule = {path: '/mock/node_modules/candypack/bin'}
+    process.mainModule = {path: '/mock/node_modules/odac/bin'}
   })
 
   afterEach(() => {
@@ -125,7 +125,7 @@ describe('Config', () => {
       config = new ConfigClass()
       config.init()
 
-      expect(mockFs.mkdirSync).toHaveBeenCalledWith('/home/user/.candypack')
+      expect(mockFs.mkdirSync).toHaveBeenCalledWith('/home/user/.odac')
     })
 
     it('should handle missing config file during init', () => {
@@ -150,7 +150,7 @@ describe('Config', () => {
       config = new ConfigClass()
       config.init()
 
-      expect(mockFs.readFileSync).toHaveBeenCalledWith('/home/user/.candypack/config.json', 'utf8')
+      expect(mockFs.readFileSync).toHaveBeenCalledWith('/home/user/.odac/config.json', 'utf8')
       expect(config.config.server.pid).toBe(123)
     })
 
@@ -166,7 +166,7 @@ describe('Config', () => {
       expect(config.config.server.arch).toBe('x64')
     })
 
-    it('should setup auto-save interval when not in candypack bin', () => {
+    it('should setup auto-save interval when not in odac bin', () => {
       process.mainModule = {path: '/mock/project'}
       mockFs.existsSync.mockReturnValue(true)
       mockFs.readFileSync.mockReturnValue(createValidConfig())
@@ -178,8 +178,8 @@ describe('Config', () => {
       expect(global.setInterval).toHaveBeenCalledWith(expect.any(Function), 500)
     })
 
-    it('should not setup auto-save interval when in candypack bin', () => {
-      process.mainModule = {path: '/mock/node_modules/candypack/bin'}
+    it('should not setup auto-save interval when in odac bin', () => {
+      process.mainModule = {path: '/mock/node_modules/odac/bin'}
       mockFs.existsSync.mockReturnValue(true)
       mockFs.readFileSync.mockReturnValue(createValidConfig())
 
@@ -244,7 +244,7 @@ describe('Config', () => {
       config = new ConfigClass()
       config.init()
 
-      expect(console.log).toHaveBeenCalledWith('Error reading config file:', '/home/user/.candypack/config.json')
+      expect(console.log).toHaveBeenCalledWith('Error reading config file:', '/home/user/.odac/config.json')
     })
 
     it.skip('should handle corrupted JSON file', () => {
@@ -258,7 +258,7 @@ describe('Config', () => {
         config.init()
       }).not.toThrow()
 
-      expect(console.log).toHaveBeenCalledWith('Error parsing config file:', '/home/user/.candypack/config.json')
+      expect(console.log).toHaveBeenCalledWith('Error parsing config file:', '/home/user/.odac/config.json')
 
       // Should still initialize with default server config
       expect(config.config.server).toBeDefined()
@@ -363,7 +363,7 @@ describe('Config', () => {
       config.force()
 
       expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/config.json',
+        '/home/user/.odac/config.json',
         expect.stringContaining('"testSave": "value"'),
         'utf8'
       )
@@ -377,7 +377,7 @@ describe('Config', () => {
       jest.advanceTimersByTime(5000)
 
       expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/.bak/config.json.bak',
+        '/home/user/.odac/.bak/config.json.bak',
         expect.stringContaining('"testBackup": "value"'),
         'utf8'
       )
@@ -387,14 +387,14 @@ describe('Config', () => {
       config.config = {}
       config.force()
 
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.candypack/config.json', '{}', 'utf8')
+      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.odac/config.json', '{}', 'utf8')
     })
 
     it.skip('should handle null config during save', () => {
       config.config = null
       config.force()
 
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.candypack/config.json', 'null', 'utf8')
+      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.odac/config.json', 'null', 'utf8')
     })
 
     it('should respect changed flag when saving', () => {
@@ -415,7 +415,7 @@ describe('Config', () => {
       config.config = {a: 1}
       config.force()
 
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.candypack/config.json', expect.stringContaining('"a": 1'), 'utf8')
+      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.odac/config.json', expect.stringContaining('"a": 1'), 'utf8')
     })
 
     it.skip('should handle writeFileSync errors during save', () => {
@@ -605,7 +605,7 @@ describe('Config', () => {
       intervalCallback()
 
       expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/config.json',
+        '/home/user/.odac/config.json',
         expect.stringContaining('"autoSaveTest": "value"'),
         'utf8'
       )
@@ -637,7 +637,7 @@ describe('Config', () => {
       // Should only save once despite multiple changes
       expect(mockFs.writeFileSync).toHaveBeenCalledTimes(1)
       expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/config.json',
+        '/home/user/.odac/config.json',
         expect.stringContaining('"change1": "value1"'),
         'utf8'
       )
@@ -678,7 +678,7 @@ describe('Config', () => {
       config.config = {a: 1}
       config.force()
 
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.candypack/config.json', expect.any(String), 'utf8')
+      expect(mockFs.writeFileSync).toHaveBeenCalledWith('/home/user/.odac/config.json', expect.any(String), 'utf8')
     })
 
     it('should handle backup creation timeout', () => {
@@ -691,7 +691,7 @@ describe('Config', () => {
       jest.advanceTimersByTime(5000)
 
       expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/.bak/config.json.bak',
+        '/home/user/.odac/.bak/config.json.bak',
         expect.stringContaining('"backupTest": "value"'),
         'utf8'
       )
@@ -722,7 +722,7 @@ describe('Config', () => {
 
       config.init()
 
-      expect(console.log).toHaveBeenCalledWith('Error reading config file:', '/home/user/.candypack/config.json')
+      expect(console.log).toHaveBeenCalledWith('Error reading config file:', '/home/user/.odac/config.json')
     })
   })
 
@@ -735,8 +735,8 @@ describe('Config', () => {
     describe('format detection', () => {
       it('should detect modular format when config directory exists', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           return false
         })
         mockFs.readFileSync.mockReturnValue(JSON.stringify({server: {}}))
@@ -750,9 +750,9 @@ describe('Config', () => {
 
       it('should detect single-file format when only config.json exists', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return false
-          if (path === '/home/user/.candypack/config.json') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return false
+          if (path === '/home/user/.odac/config.json') return true
           return false
         })
         mockFs.readFileSync.mockReturnValue(createValidConfig())
@@ -766,7 +766,7 @@ describe('Config', () => {
 
       it('should detect new installation when neither exists', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return false
+          if (path === '/home/user/.odac') return false
           return false
         })
 
@@ -782,8 +782,8 @@ describe('Config', () => {
     describe('modular loading', () => {
       it('should load all module files correctly', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/config/server.json')) return true
           if (path.includes('/config/web.json')) return true
           return false
@@ -809,8 +809,8 @@ describe('Config', () => {
 
       it('should handle missing module files gracefully', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           return false
         })
 
@@ -823,8 +823,8 @@ describe('Config', () => {
 
       it('should recover from corrupted module file using backup', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/config/server.json')) return true
           if (path.includes('/.bak/server.json.bak')) return true
           return false
@@ -854,8 +854,8 @@ describe('Config', () => {
 
       it('should handle empty module file', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/config/server.json')) return true
           return false
         })
@@ -876,9 +876,9 @@ describe('Config', () => {
     describe('migration from single-file to modular', () => {
       it('should migrate single-file config to modular format', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config.json') return true
-          if (path === '/home/user/.candypack/config') return false
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config.json') return true
+          if (path === '/home/user/.odac/config') return false
           if (path.includes('.pre-modular')) return false
           return false
         })
@@ -891,13 +891,13 @@ describe('Config', () => {
 
         let configDirCreated = false
         mockFs.mkdirSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack/config') {
+          if (path === '/home/user/.odac/config') {
             configDirCreated = true
           }
         })
 
         mockFs.readFileSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack/config.json') {
+          if (path === '/home/user/.odac/config.json') {
             return JSON.stringify(singleFileConfig)
           }
           if (configDirCreated && path.includes('/config/')) {
@@ -913,30 +913,27 @@ describe('Config', () => {
         config = new ConfigClass()
         config.init()
 
-        expect(mockFs.mkdirSync).toHaveBeenCalledWith('/home/user/.candypack/config', {recursive: true})
-        expect(mockFs.copyFileSync).toHaveBeenCalledWith(
-          '/home/user/.candypack/config.json',
-          '/home/user/.candypack/config.json.pre-modular'
-        )
+        expect(mockFs.mkdirSync).toHaveBeenCalledWith('/home/user/.odac/config', {recursive: true})
+        expect(mockFs.copyFileSync).toHaveBeenCalledWith('/home/user/.odac/config.json', '/home/user/.odac/config.json.pre-modular')
       })
 
       it('should rollback migration on failure', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config.json') return true
-          if (path === '/home/user/.candypack/config') return false
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config.json') return true
+          if (path === '/home/user/.odac/config') return false
           return false
         })
 
         mockFs.readFileSync.mockReturnValue(createValidConfig())
 
         mockFs.mkdirSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack/config') {
+          if (path === '/home/user/.odac/config') {
             // Simulate successful directory creation
             mockFs.existsSync.mockImplementation(p => {
               if (p === path) return true
-              if (p === '/home/user/.candypack') return true
-              if (p === '/home/user/.candypack/config.json') return true
+              if (p === '/home/user/.odac') return true
+              if (p === '/home/user/.odac/config.json') return true
               return false
             })
           }
@@ -950,15 +947,15 @@ describe('Config', () => {
         config = new ConfigClass()
         config.init()
 
-        expect(mockFs.rmSync).toHaveBeenCalledWith('/home/user/.candypack/config', {recursive: true, force: true})
+        expect(mockFs.rmSync).toHaveBeenCalledWith('/home/user/.odac/config', {recursive: true, force: true})
         expect(config.config.server).toBeDefined()
       })
 
       it('should handle migration with permission errors', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config.json') return true
-          if (path === '/home/user/.candypack/config') return false
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config.json') return true
+          if (path === '/home/user/.odac/config') return false
           return false
         })
 
@@ -979,9 +976,9 @@ describe('Config', () => {
 
       it('should use rmSync with recursive and force options during rollback', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config.json') return true
-          if (path === '/home/user/.candypack/config') return false
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config.json') return true
+          if (path === '/home/user/.odac/config') return false
           return false
         })
 
@@ -989,12 +986,12 @@ describe('Config', () => {
 
         let configDirCreated = false
         mockFs.mkdirSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack/config') {
+          if (path === '/home/user/.odac/config') {
             configDirCreated = true
             mockFs.existsSync.mockImplementation(p => {
               if (p === path) return configDirCreated
-              if (p === '/home/user/.candypack') return true
-              if (p === '/home/user/.candypack/config.json') return true
+              if (p === '/home/user/.odac') return true
+              if (p === '/home/user/.odac/config.json') return true
               return false
             })
           }
@@ -1008,7 +1005,7 @@ describe('Config', () => {
         config = new ConfigClass()
         config.init()
 
-        expect(mockFs.rmSync).toHaveBeenCalledWith('/home/user/.candypack/config', {
+        expect(mockFs.rmSync).toHaveBeenCalledWith('/home/user/.odac/config', {
           recursive: true,
           force: true
         })
@@ -1016,20 +1013,20 @@ describe('Config', () => {
 
       it('should handle rmSync errors gracefully during rollback', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config.json') return true
-          if (path === '/home/user/.candypack/config') return false
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config.json') return true
+          if (path === '/home/user/.odac/config') return false
           return false
         })
 
         mockFs.readFileSync.mockReturnValue(createValidConfig())
 
         mockFs.mkdirSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack/config') {
+          if (path === '/home/user/.odac/config') {
             mockFs.existsSync.mockImplementation(p => {
               if (p === path) return true
-              if (p === '/home/user/.candypack') return true
-              if (p === '/home/user/.candypack/config.json') return true
+              if (p === '/home/user/.odac') return true
+              if (p === '/home/user/.odac/config.json') return true
               return false
             })
           }
@@ -1061,8 +1058,8 @@ describe('Config', () => {
 
       it('should save only changed modules', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           return false
         })
 
@@ -1089,8 +1086,8 @@ describe('Config', () => {
 
       it('should use atomic writes for module files', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/.bak')) return true
           return false
         })
@@ -1115,8 +1112,8 @@ describe('Config', () => {
 
       it('should create backups before overwriting module files', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/config/server.json')) return true
           return false
         })
@@ -1138,8 +1135,8 @@ describe('Config', () => {
 
       it('should fallback to single-file on modular save failure', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           return false
         })
 
@@ -1228,8 +1225,8 @@ describe('Config', () => {
 
       it('should write to temp file first', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           return false
         })
 
@@ -1250,8 +1247,8 @@ describe('Config', () => {
 
       it('should cleanup temp file on write failure', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('.tmp')) return true
           return false
         })
@@ -1280,8 +1277,8 @@ describe('Config', () => {
 
       it('should handle ENOSPC error gracefully', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           return false
         })
 
@@ -1386,8 +1383,8 @@ describe('Config', () => {
     describe('corruption recovery', () => {
       it('should create .corrupted backup when recovering from corruption', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/config/dns.json')) return true
           if (path.includes('/.bak/dns.json.bak')) return true
           return false
@@ -1413,8 +1410,8 @@ describe('Config', () => {
 
       it('should handle both main and backup being corrupted', () => {
         mockFs.existsSync.mockImplementation(path => {
-          if (path === '/home/user/.candypack') return true
-          if (path === '/home/user/.candypack/config') return true
+          if (path === '/home/user/.odac') return true
+          if (path === '/home/user/.odac/config') return true
           if (path.includes('/config/mail.json')) return true
           if (path.includes('/.bak/mail.json.bak')) return true
           return false

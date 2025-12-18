@@ -17,7 +17,7 @@ You don't need to do anything - it just works!
 
 ### Automatic Resource Detection
 
-When your application starts, CandyPack scans your `view/` and `skeleton/` directories and builds a manifest of critical resources:
+When your application starts, Odac scans your `view/` and `skeleton/` directories and builds a manifest of critical resources:
 
 ```html
 <!-- skeleton/main.html -->
@@ -139,7 +139,7 @@ If you want to prevent specific resources from being preloaded, use the `defer` 
 
 The `defer` attribute works consistently for both CSS and JavaScript:
 - **For JS**: Browser's native defer behavior (execute after DOM is ready)
-- **For CSS**: CandyPack-specific (exclude from Early Hints, but still loads normally)
+- **For CSS**: Odac-specific (exclude from Early Hints, but still loads normally)
 
 This is useful for:
 - Non-critical styles (animations, print styles)
@@ -199,9 +199,9 @@ At startup, the framework builds an in-memory manifest:
 
 ### Proxy Integration
 
-CandyPack's architecture uses a proxy layer. Early Hints are:
+Odac's architecture uses a proxy layer. Early Hints are:
 1. Generated in the framework
-2. Sent via `X-Candy-Early-Hints` header to proxy
+2. Sent via `X-Odac-Early-Hints` header to proxy
 3. Forwarded to client as `103 Early Hints` by proxy
 
 This ensures Early Hints work correctly in the multi-domain hosting environment.

@@ -12,10 +12,10 @@ const resetFileSystem = () => {
   mockDirectories.clear()
 
   // Add some default directories
-  mockDirectories.add('/var/candypack')
+  mockDirectories.add('/var/odac')
   mockDirectories.add('/etc/ssl/private')
   mockDirectories.add('/etc/ssl/certs')
-  mockDirectories.add('/home/user/.candypack')
+  mockDirectories.add('/home/user/.odac')
 }
 
 // Initialize with default state

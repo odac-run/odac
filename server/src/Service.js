@@ -1,4 +1,4 @@
-const {log, error} = Candy.core('Log', false).init('Service')
+const {log, error} = Odac.core('Log', false).init('Service')
 
 const childProcess = require('child_process')
 const fs = require('fs')
@@ -16,7 +16,7 @@ class Service {
 
   #get(id) {
     if (!this.#loaded && this.#services.length == 0) {
-      this.#services = Candy.core('Config').config.services ?? []
+      this.#services = Odac.core('Config').config.services ?? []
       this.#loaded = true
     }
     for (const service of this.#services) {
@@ -36,7 +36,7 @@ class Service {
     }
     this.#services.push(service)
     this.#services[service.id] = service
-    Candy.core('Config').config.services = this.#services
+    Odac.core('Config').config.services = this.#services
     return true
   }
 
@@ -53,11 +53,11 @@ class Service {
       return false
     }
     this.#services[index] = service
-    Candy.core('Config').config.services = this.#services
+    Odac.core('Config').config.services = this.#services
   }
 
   async check() {
-    this.#services = Candy.core('Config').config.services ?? []
+    this.#services = Odac.core('Config').config.services ?? []
     for (const service of this.#services) {
       if (service.active) {
         if (!service.pid) {
@@ -65,18 +65,18 @@ class Service {
         } else {
           if (!this.#watcher[service.pid]) {
             log('Service %s (PID %s) is not running. Restarting...', service.name, service.pid)
-            Candy.core('Process').stop(service.pid)
+            Odac.core('Process').stop(service.pid)
             this.#run(service.id)
             this.#set(service.id, 'pid', null)
           }
         }
       }
       if (this.#logs[service.id])
-        fs.writeFile(os.homedir() + '/.candypack/logs/' + service.name + '.log', this.#logs[service.id], 'utf8', function (err) {
+        fs.writeFile(os.homedir() + '/.odac/logs/' + service.name + '.log', this.#logs[service.id], 'utf8', function (err) {
           if (err) error(err)
         })
       if (this.#errs[service.id])
-        fs.writeFile(os.homedir() + '/.candypack/logs/' + service.name + '.err.log', this.#errs[service.id], 'utf8', function (err) {
+        fs.writeFile(os.homedir() + '/.odac/logs/' + service.name + '.err.log', this.#errs[service.id], 'utf8', function (err) {
           if (err) error(err)
         })
     }
@@ -88,10 +88,10 @@ class Service {
       if (service) {
         this.stop(service.id)
         this.#services = this.#services.filter(s => s.id != service.id)
-        Candy.core('Config').config.services = this.#services
-        return resolve(Candy.server('Api').result(true, __('Service %s deleted successfully.', service.name)))
+        Odac.core('Config').config.services = this.#services
+        return resolve(Odac.server('Api').result(true, __('Service %s deleted successfully.', service.name)))
       } else {
-        return resolve(Candy.server('Api').result(false, __('Service %s not found.', id)))
+        return resolve(Odac.server('Api').result(false, __('Service %s not found.', id)))
       }
     })
   }
@@ -176,9 +176,9 @@ class Service {
 
   async init() {
     log('Initializing services...')
-    this.#services = Candy.core('Config').config.services ?? []
+    this.#services = Odac.core('Config').config.services ?? []
     for (const service of this.#services) {
-      fs.readFile(os.homedir() + '/.candypack/logs/' + service.name + '.log', 'utf8', (err, data) => {
+      fs.readFile(os.homedir() + '/.odac/logs/' + service.name + '.log', 'utf8', (err, data) => {
         if (!err) this.#logs[service.id] = data.toString()
       })
     }
@@ -192,15 +192,15 @@ class Service {
         if (fs.existsSync(file)) {
           if (!this.#get(file)) {
             this.#add(file)
-            return resolve(Candy.server('Api').result(true, __('Service %s added successfully.', file)))
+            return resolve(Odac.server('Api').result(true, __('Service %s added successfully.', file)))
           } else {
-            return resolve(Candy.server('Api').result(false, __('Service %s already exists.', file)))
+            return resolve(Odac.server('Api').result(false, __('Service %s already exists.', file)))
           }
         } else {
-          return resolve(Candy.server('Api').result(false, __('Service file %s not found.', file)))
+          return resolve(Odac.server('Api').result(false, __('Service file %s not found.', file)))
         }
       } else {
-        return resolve(Candy.server('Api').result(false, __('Service file not specified.')))
+        return resolve(Odac.server('Api').result(false, __('Service file not specified.')))
       }
     })
   }
@@ -209,7 +209,7 @@ class Service {
     let service = this.#get(id)
     if (service) {
       if (service.pid) {
-        Candy.core('Process').stop(service.pid)
+        Odac.core('Process').stop(service.pid)
         this.#set(id, 'pid', null)
         this.#set(id, 'started', null)
         this.#set(id, 'active', false)
@@ -222,7 +222,7 @@ class Service {
   }
 
   async status() {
-    let services = Candy.core('Config').config.services ?? []
+    let services = Odac.core('Config').config.services ?? []
     for (const service of services) {
       if (service.status == 'running') {
         var uptime = Date.now() - service.started

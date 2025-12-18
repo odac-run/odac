@@ -7,11 +7,11 @@ import prettierConfig from 'eslint-config-prettier'
 export default defineConfig([
   {
     files: ['core/**/*.js', 'watchdog/**/*.js', 'server/**/*.js', 'cli/**/*.js'],
-    ignores: ['server/src/Candy.js'],
+    ignores: ['server/src/Odac.js'],
     languageOptions: {
       globals: {
         ...globals.node,
-        Candy: 'readonly',
+        Odac: 'readonly',
         __: 'readonly'
       },
       sourceType: 'script'
@@ -27,7 +27,7 @@ export default defineConfig([
     }
   },
   {
-    files: ['server/src/Candy.js'],
+    files: ['server/src/Odac.js'],
     languageOptions: {
       globals: {
         ...globals.node,
@@ -52,7 +52,7 @@ export default defineConfig([
     languageOptions: {
       globals: {
         ...globals.node,
-        Candy: 'readonly',
+        Odac: 'readonly',
         __dir: 'readonly'
       },
       sourceType: 'script'
@@ -84,7 +84,7 @@ export default defineConfig([
     languageOptions: {
       globals: {
         ...globals.node,
-        Candy: 'readonly'
+        Odac: 'readonly'
       },
       sourceType: 'script'
     },
@@ -103,7 +103,7 @@ export default defineConfig([
     languageOptions: {
       globals: {
         ...globals.browser,
-        Candy: 'readonly'
+        odac: 'readonly'
       },
       sourceType: 'script'
     },

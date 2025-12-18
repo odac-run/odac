@@ -19,7 +19,7 @@ Shared WebSocket allows multiple browser tabs to share a single WebSocket connec
 ## Basic Usage
 
 ```javascript
-const ws = Candy.ws('/chat', {shared: true})
+const ws = Odac.ws('/chat', {shared: true})
 
 ws.on('message', data => {
   console.log('Message received in this tab:', data)
@@ -32,7 +32,7 @@ ws.send({message: 'Hello from this tab'})
 
 ```javascript
 // All tabs share the same notification connection
-const notifications = Candy.ws('/notifications', {
+const notifications = Odac.ws('/notifications', {
   shared: true,
   autoReconnect: true
 })
@@ -58,7 +58,7 @@ function showNotification(title, message) {
 
 ```javascript
 // Shared chat connection across all tabs
-const chat = Candy.ws('/chat/room/general', {shared: true})
+const chat = Odac.ws('/chat/room/general', {shared: true})
 
 chat.on('message', data => {
   if (data.type === 'message') {
@@ -86,7 +86,7 @@ Shared WebSocket uses the SharedWorker API:
 **Automatic Fallback:**
 ```javascript
 // If SharedWorker is not available, automatically falls back to regular WebSocket
-const ws = Candy.ws('/chat', {shared: true})
+const ws = Odac.ws('/chat', {shared: true})
 // Works in all browsers, shared only where supported
 ```
 
@@ -96,11 +96,11 @@ The shared connection automatically manages its lifecycle:
 
 ```javascript
 // Tab 1 opens
-const ws1 = Candy.ws('/chat', {shared: true})
+const ws1 = Odac.ws('/chat', {shared: true})
 // Connection established
 
 // Tab 2 opens
-const ws2 = Candy.ws('/chat', {shared: true})
+const ws2 = Odac.ws('/chat', {shared: true})
 // Reuses existing connection
 
 // Tab 1 closes
@@ -141,9 +141,9 @@ const ws2 = Candy.ws('/chat', {shared: true})
 Check if SharedWorker is being used:
 
 ```javascript
-const ws = Candy.ws('/chat', {shared: true})
+const ws = Odac.ws('/chat', {shared: true})
 
 // In Chrome DevTools:
 // chrome://inspect/#workers
-// You'll see "candy-ws-/chat" if shared
+// You'll see "odac-ws-/chat" if shared
 ```

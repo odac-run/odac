@@ -5,7 +5,7 @@ describe('Route', () => {
 
   beforeEach(() => {
     route = new Route()
-    global.Candy = {
+    global.Odac = {
       Route: {},
       Config: {}
     }
@@ -13,13 +13,13 @@ describe('Route', () => {
   })
 
   afterEach(() => {
-    delete global.Candy
+    delete global.Odac
     delete global.__dir
   })
 
   describe('check - token request', () => {
     it('should handle token request with undefined route gracefully', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -28,33 +28,34 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
-          })
+          }),
+          abort: jest.fn()
         },
         token: jest.fn(() => 'test-token')
       }
 
       route.routes = {}
 
-      const result = await route.check(mockCandy)
+      const result = await route.check(mockOdac)
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token')
       expect(result.page).toBeUndefined()
-      expect(mockCandy.Request.header).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'http://example.com')
-      expect(mockCandy.Request.header).toHaveBeenCalledWith('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+      expect(mockOdac.Request.header).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'http://example.com')
+      expect(mockOdac.Request.header).toHaveBeenCalledWith('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
     })
 
     it('should handle token request with route but no page defined', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -63,16 +64,17 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'https://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
-          })
+          }),
+          abort: jest.fn()
         },
         token: jest.fn(() => 'test-token-2')
       }
@@ -81,7 +83,7 @@ describe('Route', () => {
         test_route: {}
       }
 
-      const result = await route.check(mockCandy)
+      const result = await route.check(mockOdac)
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token-2')
@@ -89,7 +91,7 @@ describe('Route', () => {
     })
 
     it('should handle token request with route and page but no url match', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -98,16 +100,17 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
-          })
+          }),
+          abort: jest.fn()
         },
         token: jest.fn(() => 'test-token-3')
       }
@@ -120,7 +123,7 @@ describe('Route', () => {
         }
       }
 
-      const result = await route.check(mockCandy)
+      const result = await route.check(mockOdac)
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token-3')
@@ -128,7 +131,7 @@ describe('Route', () => {
     })
 
     it('should not return token when referer does not match', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -137,14 +140,14 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://malicious.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
           }),
           abort: jest.fn()
@@ -159,13 +162,13 @@ describe('Route', () => {
         }
       }
 
-      await route.check(mockCandy)
+      await route.check(mockOdac)
 
-      expect(mockCandy.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
+      expect(mockOdac.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
     })
 
     it('should not return token when client cookie does not match', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -174,14 +177,14 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'different-client'
+            if (key === 'odac_client') return 'different-client'
             return null
           }),
           abort: jest.fn()
@@ -196,15 +199,15 @@ describe('Route', () => {
         }
       }
 
-      await route.check(mockCandy)
+      await route.check(mockOdac)
 
-      expect(mockCandy.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
+      expect(mockOdac.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
     })
   })
 
   describe('set', () => {
     it('should register a route with function handler', () => {
-      global.Candy.Route.buff = 'test_route'
+      global.Odac.Route.buff = 'test_route'
       const handler = jest.fn()
 
       route.set('get', '/test', handler)
@@ -217,7 +220,7 @@ describe('Route', () => {
     })
 
     it('should handle array of methods', () => {
-      global.Candy.Route.buff = 'test_route'
+      global.Odac.Route.buff = 'test_route'
       const handler = jest.fn()
 
       route.set(['get', 'post'], '/test', handler)
@@ -227,7 +230,7 @@ describe('Route', () => {
     })
 
     it('should strip trailing slash from url', () => {
-      global.Candy.Route.buff = 'test_route'
+      global.Odac.Route.buff = 'test_route'
       const handler = jest.fn()
 
       route.set('get', '/test/', handler)

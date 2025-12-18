@@ -88,8 +88,8 @@ describe('WebProxy', () => {
       expect(options.headers).toMatchObject({
         host: 'example.com',
         'user-agent': 'test-agent',
-        'x-candy-connection-remoteaddress': '192.168.1.100',
-        'x-candy-connection-ssl': 'true'
+        'x-odac-connection-remoteaddress': '192.168.1.100',
+        'x-odac-connection-ssl': 'true'
       })
     })
 
@@ -238,7 +238,7 @@ describe('WebProxy', () => {
         statusCode: 200,
         headers: {
           'content-type': 'text/html',
-          'x-candy-early-hints': JSON.stringify(['</style.css>; rel=preload; as=style'])
+          'x-odac-early-hints': JSON.stringify(['</style.css>; rel=preload; as=style'])
         },
         pipe: jest.fn()
       }
@@ -261,7 +261,7 @@ describe('WebProxy', () => {
         })
 
         const headers = mockRes.writeHead.mock.calls[0][1]
-        expect(headers).not.toHaveProperty('x-candy-early-hints')
+        expect(headers).not.toHaveProperty('x-odac-early-hints')
         done()
       }, 10)
     })
@@ -271,7 +271,7 @@ describe('WebProxy', () => {
         statusCode: 200,
         headers: {
           'content-type': 'text/html',
-          'x-candy-early-hints': 'invalid-json'
+          'x-odac-early-hints': 'invalid-json'
         },
         pipe: jest.fn()
       }
@@ -391,7 +391,7 @@ describe('WebProxy', () => {
       proxy.http2(mockReq, mockRes, mockWebsite, 'example.com')
 
       const options = http.request.mock.calls[0][0]
-      expect(options.headers['x-candy-connection-remoteaddress']).toBe('')
+      expect(options.headers['x-odac-connection-remoteaddress']).toBe('')
     })
   })
 })

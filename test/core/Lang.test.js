@@ -28,9 +28,9 @@ describe('Lang', () => {
     console.error = originalConsoleError
   })
 
-  it("should return 'CandyPack' for the 'CandyPack' key", () => {
+  it("should return 'Odac' for the 'Odac' key", () => {
     const lang = new Lang()
-    expect(lang.get('CandyPack')).toBe('CandyPack')
+    expect(lang.get('Odac')).toBe('Odac')
   })
 
   it('should return the translation for an existing key', () => {

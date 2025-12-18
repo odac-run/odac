@@ -1,9 +1,9 @@
 /**
- * Comprehensive mock for the global Candy object used in server tests
+ * Comprehensive mock for the global Odac object used in server tests
  * Provides mocked implementations of core(), server(), cli(), and watchdog() methods
  */
 
-class MockCandyPack {
+class MockOdac {
   constructor() {
     this._registry = new Map()
     this._singletons = new Map()
@@ -215,13 +215,13 @@ class MockCandyPack {
 }
 
 // Create the global mock instance
-const mockCandy = new MockCandyPack()
+const mockOdac = new MockOdac()
 
 // Mock the global __ function
 const mockLangGet = jest.fn(key => key)
 
 module.exports = {
-  mockCandy,
+  mockOdac,
   mockLangGet,
-  MockCandyPack
+  MockOdac
 }

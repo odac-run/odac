@@ -3,15 +3,15 @@ const nodeCrypto = require('crypto')
 class Form {
   static FORM_TYPES = ['register', 'login', 'form']
 
-  static parse(content, Candy) {
+  static parse(content, Odac) {
     for (const type of this.FORM_TYPES) {
-      content = this.parseFormType(content, Candy, type)
+      content = this.parseFormType(content, Odac, type)
     }
     return content
   }
 
-  static parseFormType(content, Candy, type) {
-    const regex = new RegExp(`<candy:${type}[\\s\\S]*?<\\/candy:${type}>`, 'g')
+  static parseFormType(content, Odac, type) {
+    const regex = new RegExp(`<odac:${type}[\\s\\S]*?<\\/odac:${type}>`, 'g')
     const matches = content.match(regex)
     if (!matches) return content
 
@@ -19,7 +19,7 @@ class Form {
       const formToken = nodeCrypto.randomBytes(32).toString('hex')
       const formConfig = this.extractConfig(match, formToken, type)
 
-      this.storeConfig(formToken, formConfig, Candy, type)
+      this.storeConfig(formToken, formConfig, Odac, type)
 
       const generatedForm = this.generateForm(match, formConfig, formToken, type)
       content = content.replace(match, generatedForm)
@@ -38,13 +38,13 @@ class Form {
     }
   }
 
-  static storeConfig(token, config, Candy, type) {
+  static storeConfig(token, config, Odac, type) {
     if (type === 'register') {
-      this.storeRegisterConfig(token, config, Candy)
+      this.storeRegisterConfig(token, config, Odac)
     } else if (type === 'login') {
-      this.storeLoginConfig(token, config, Candy)
+      this.storeLoginConfig(token, config, Odac)
     } else if (type === 'form') {
-      this.storeFormConfig(token, config, Candy)
+      this.storeFormConfig(token, config, Odac)
     }
   }
 
@@ -69,7 +69,7 @@ class Form {
       sets: []
     }
 
-    const registerMatch = html.match(/<candy:register([^>]*)>/)
+    const registerMatch = html.match(/<odac:register([^>]*)>/)
     if (!registerMatch) return config
 
     const registerTag = registerMatch[0]
@@ -79,7 +79,7 @@ class Form {
     if (redirectMatch) config.redirect = redirectMatch[1]
     if (autologinMatch) config.autologin = autologinMatch[1] !== 'false'
 
-    const submitMatch = html.match(/<candy:submit([^>/]*)(?:\/?>|>(.*?)<\/candy:submit>)/)
+    const submitMatch = html.match(/<odac:submit([^>/]*)(?:\/?>|>(.*?)<\/odac:submit>)/)
     if (submitMatch) {
       const submitTag = submitMatch[1]
       const textMatch = submitTag.match(/text=["']([^"']+)["']/)
@@ -97,7 +97,7 @@ class Form {
       if (idMatch) config.submitId = idMatch[1]
     }
 
-    const fieldMatches = html.match(/<candy:field[\s\S]*?<\/candy:field>/g)
+    const fieldMatches = html.match(/<odac:field[\s\S]*?<\/odac:field>/g)
     if (fieldMatches) {
       for (const fieldHtml of fieldMatches) {
         const field = this.parseField(fieldHtml)
@@ -105,7 +105,7 @@ class Form {
       }
     }
 
-    const setMatches = html.match(/<candy:set[^>]*\/?>/g)
+    const setMatches = html.match(/<odac:set[^>]*\/?>/g)
     if (setMatches) {
       for (const setTag of setMatches) {
         const set = this.parseSet(setTag)
@@ -117,7 +117,7 @@ class Form {
   }
 
   static parseField(html) {
-    const fieldTagMatch = html.match(/<candy:field([^>]*?)(?:\/>|>)/)
+    const fieldTagMatch = html.match(/<odac:field([^>]*?)(?:\/>|>)/)
     if (!fieldTagMatch) return null
 
     const fieldTag = fieldTagMatch[0]
@@ -152,7 +152,7 @@ class Form {
     if (uniqueMatch) field.unique = uniqueMatch[1] !== 'false'
     if (skipMatch) field.skip = skipMatch[1] !== 'false'
 
-    const validateMatches = html.match(/<candy:validate[^>]*>/g)
+    const validateMatches = html.match(/<odac:validate[^>]*>/g)
     if (validateMatches) {
       for (const validateTag of validateMatches) {
         const ruleMatch = validateTag.match(/rule=["']([^"']+)["']/)
@@ -195,36 +195,36 @@ class Form {
     return set
   }
 
-  static storeRegisterConfig(token, config, Candy) {
-    if (!Candy.View) Candy.View = {}
-    if (!Candy.View.registerForms) Candy.View.registerForms = {}
+  static storeRegisterConfig(token, config, Odac) {
+    if (!Odac.View) Odac.View = {}
+    if (!Odac.View.registerForms) Odac.View.registerForms = {}
 
     const formData = {
       config: config,
       created: Date.now(),
       expires: Date.now() + 30 * 60 * 1000,
-      sessionId: Candy.Request.session('_client'),
-      userAgent: Candy.Request.header('user-agent'),
-      ip: Candy.Request.ip
+      sessionId: Odac.Request.session('_client'),
+      userAgent: Odac.Request.header('user-agent'),
+      ip: Odac.Request.ip
     }
 
-    Candy.View.registerForms[token] = formData
-    Candy.Request.session(`_register_form_${token}`, formData)
+    Odac.View.registerForms[token] = formData
+    Odac.Request.session(`_register_form_${token}`, formData)
   }
 
   static generateRegisterForm(originalHtml, config, formToken) {
     const submitText = config.submitText || 'Register'
     const submitLoading = config.submitLoading || 'Processing...'
 
-    let innerContent = originalHtml.replace(/<candy:register[^>]*>/, '').replace(/<\/candy:register>/, '')
+    let innerContent = originalHtml.replace(/<odac:register[^>]*>/, '').replace(/<\/odac:register>/, '')
 
-    innerContent = innerContent.replace(/<candy:field[\s\S]*?<\/candy:field>/g, fieldMatch => {
+    innerContent = innerContent.replace(/<odac:field[\s\S]*?<\/odac:field>/g, fieldMatch => {
       const field = this.parseField(fieldMatch)
       if (!field) return fieldMatch
       return this.generateFieldHtml(field)
     })
 
-    const submitMatch = innerContent.match(/<candy:submit[\s\S]*?(?:<\/candy:submit>|\/?>)/)
+    const submitMatch = innerContent.match(/<odac:submit[\s\S]*?(?:<\/odac:submit>|\/?>)/)
     if (submitMatch) {
       let submitAttrs = `type="submit" data-submit-text="${submitText}" data-loading-text="${submitLoading}"`
       if (config.submitClass) submitAttrs += ` class="${config.submitClass}"`
@@ -234,12 +234,12 @@ class Form {
       innerContent = innerContent.replace(submitMatch[0], submitButton)
     }
 
-    innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
+    innerContent = innerContent.replace(/<odac:set[^>]*\/?>/g, '')
 
-    let html = `<form class="candy-register-form" data-candy-register="${formToken}" method="POST" action="/_candy/register" novalidate>\n`
-    html += `  <input type="hidden" name="_candy_register_token" value="${formToken}">\n`
+    let html = `<form class="odac-register-form" data-odac-register="${formToken}" method="POST" action="/_odac/register" novalidate>\n`
+    html += `  <input type="hidden" name="_odac_register_token" value="${formToken}">\n`
     html += innerContent
-    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `\n  <span class="odac-form-success" style="display:none;"></span>\n`
     html += `</form>`
 
     return html
@@ -249,12 +249,12 @@ class Form {
     let html = ''
 
     if (field.label && field.type !== 'checkbox') {
-      const fieldId = field.id || `candy-${field.name}`
+      const fieldId = field.id || `odac-${field.name}`
       html += `<label for="${fieldId}">${field.label}</label>\n`
     }
 
     const classAttr = field.class ? ` class="${field.class}"` : ''
-    const idAttr = field.id ? ` id="${field.id}"` : ` id="candy-${field.name}"`
+    const idAttr = field.id ? ` id="${field.id}"` : ` id="odac-${field.name}"`
 
     if (field.type === 'checkbox') {
       const attrs = this.buildHtml5Attributes(field)
@@ -375,7 +375,7 @@ class Form {
       fields: []
     }
 
-    const loginMatch = html.match(/<candy:login([^>]*)>/)
+    const loginMatch = html.match(/<odac:login([^>]*)>/)
     if (!loginMatch) return config
 
     const loginTag = loginMatch[0]
@@ -383,7 +383,7 @@ class Form {
 
     if (redirectMatch) config.redirect = redirectMatch[1]
 
-    const submitMatch = html.match(/<candy:submit([^>/]*)(?:\/?>|>(.*?)<\/candy:submit>)/)
+    const submitMatch = html.match(/<odac:submit([^>/]*)(?:\/?>|>(.*?)<\/odac:submit>)/)
     if (submitMatch) {
       const submitTag = submitMatch[1]
       const textMatch = submitTag.match(/text=["']([^"']+)["']/)
@@ -401,7 +401,7 @@ class Form {
       if (idMatch) config.submitId = idMatch[1]
     }
 
-    const fieldMatches = html.match(/<candy:field[\s\S]*?<\/candy:field>/g)
+    const fieldMatches = html.match(/<odac:field[\s\S]*?<\/odac:field>/g)
     if (fieldMatches) {
       for (const fieldHtml of fieldMatches) {
         const field = this.parseField(fieldHtml)
@@ -412,36 +412,36 @@ class Form {
     return config
   }
 
-  static storeLoginConfig(token, config, Candy) {
-    if (!Candy.View) Candy.View = {}
-    if (!Candy.View.loginForms) Candy.View.loginForms = {}
+  static storeLoginConfig(token, config, Odac) {
+    if (!Odac.View) Odac.View = {}
+    if (!Odac.View.loginForms) Odac.View.loginForms = {}
 
     const formData = {
       config: config,
       created: Date.now(),
       expires: Date.now() + 30 * 60 * 1000,
-      sessionId: Candy.Request.session('_client'),
-      userAgent: Candy.Request.header('user-agent'),
-      ip: Candy.Request.ip
+      sessionId: Odac.Request.session('_client'),
+      userAgent: Odac.Request.header('user-agent'),
+      ip: Odac.Request.ip
     }
 
-    Candy.View.loginForms[token] = formData
-    Candy.Request.session(`_login_form_${token}`, formData)
+    Odac.View.loginForms[token] = formData
+    Odac.Request.session(`_login_form_${token}`, formData)
   }
 
   static generateLoginForm(originalHtml, config, formToken) {
     const submitText = config.submitText || 'Login'
     const submitLoading = config.submitLoading || 'Logging in...'
 
-    let innerContent = originalHtml.replace(/<candy:login[^>]*>/, '').replace(/<\/candy:login>/, '')
+    let innerContent = originalHtml.replace(/<odac:login[^>]*>/, '').replace(/<\/odac:login>/, '')
 
-    innerContent = innerContent.replace(/<candy:field[\s\S]*?<\/candy:field>/g, fieldMatch => {
+    innerContent = innerContent.replace(/<odac:field[\s\S]*?<\/odac:field>/g, fieldMatch => {
       const field = this.parseField(fieldMatch)
       if (!field) return fieldMatch
       return this.generateFieldHtml(field)
     })
 
-    const submitMatch = innerContent.match(/<candy:submit[\s\S]*?(?:<\/candy:submit>|\/?>)/)
+    const submitMatch = innerContent.match(/<odac:submit[\s\S]*?(?:<\/odac:submit>|\/?>)/)
     if (submitMatch) {
       let submitAttrs = `type="submit" data-submit-text="${submitText}" data-loading-text="${submitLoading}"`
       if (config.submitClass) submitAttrs += ` class="${config.submitClass}"`
@@ -451,10 +451,10 @@ class Form {
       innerContent = innerContent.replace(submitMatch[0], submitButton)
     }
 
-    let html = `<form class="candy-login-form" data-candy-login="${formToken}" method="POST" action="/_candy/login" novalidate>\n`
-    html += `  <input type="hidden" name="_candy_login_token" value="${formToken}">\n`
+    let html = `<form class="odac-login-form" data-odac-login="${formToken}" method="POST" action="/_odac/login" novalidate>\n`
+    html += `  <input type="hidden" name="_odac_login_token" value="${formToken}">\n`
     html += innerContent
-    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `\n  <span class="odac-form-success" style="display:none;"></span>\n`
     html += `</form>`
 
     return html
@@ -476,7 +476,7 @@ class Form {
       successMessage: null
     }
 
-    const formMatch = html.match(/<candy:form([^>]*)>/)
+    const formMatch = html.match(/<odac:form([^>]*)>/)
     if (!formMatch) return config
 
     const formTag = formMatch[0]
@@ -501,7 +501,7 @@ class Form {
     if (redirectMatch) config.redirect = redirectMatch
     if (successMatch) config.successMessage = successMatch
 
-    const submitMatch = html.match(/<candy:submit([^>/]*)(?:\/?>|>(.*?)<\/candy:submit>)/)
+    const submitMatch = html.match(/<odac:submit([^>/]*)(?:\/?>|>(.*?)<\/odac:submit>)/)
     if (submitMatch) {
       const submitTag = submitMatch[1]
       const textMatch = submitTag.match(/text=["']([^"']+)["']/)
@@ -519,7 +519,7 @@ class Form {
       if (idMatch) config.submitId = idMatch[1]
     }
 
-    const fieldMatches = html.match(/<candy:field[\s\S]*?<\/candy:field>/g)
+    const fieldMatches = html.match(/<odac:field[\s\S]*?<\/odac:field>/g)
     if (fieldMatches) {
       for (const fieldHtml of fieldMatches) {
         const field = this.parseField(fieldHtml)
@@ -527,7 +527,7 @@ class Form {
       }
     }
 
-    const setMatches = html.match(/<candy:set[^>]*\/?>/g)
+    const setMatches = html.match(/<odac:set[^>]*\/?>/g)
     if (setMatches) {
       for (const setTag of setMatches) {
         const set = this.parseSet(setTag)
@@ -538,32 +538,32 @@ class Form {
     return config
   }
 
-  static storeFormConfig(token, config, Candy) {
-    if (!Candy.View) Candy.View = {}
-    if (!Candy.View.customForms) Candy.View.customForms = {}
+  static storeFormConfig(token, config, Odac) {
+    if (!Odac.View) Odac.View = {}
+    if (!Odac.View.customForms) Odac.View.customForms = {}
 
     const formData = {
       config: config,
       created: Date.now(),
       expires: Date.now() + 30 * 60 * 1000,
-      sessionId: Candy.Request.session('_client'),
-      userAgent: Candy.Request.header('user-agent'),
-      ip: Candy.Request.ip
+      sessionId: Odac.Request.session('_client'),
+      userAgent: Odac.Request.header('user-agent'),
+      ip: Odac.Request.ip
     }
 
-    Candy.View.customForms[token] = formData
-    Candy.Request.session(`_custom_form_${token}`, formData)
+    Odac.View.customForms[token] = formData
+    Odac.Request.session(`_custom_form_${token}`, formData)
   }
 
   static generateCustomForm(originalHtml, config, formToken) {
     const submitText = config.submitText || 'Submit'
     const submitLoading = config.submitLoading || 'Processing...'
-    const action = config.action || '/_candy/form'
+    const action = config.action || '/_odac/form'
     const method = config.method || 'POST'
 
-    let innerContent = originalHtml.replace(/<candy:form[^>]*>/, '').replace(/<\/candy:form>/, '')
+    let innerContent = originalHtml.replace(/<odac:form[^>]*>/, '').replace(/<\/odac:form>/, '')
 
-    innerContent = innerContent.replace(/<candy:field[\s\S]*?<\/candy:field>/g, fieldMatch => {
+    innerContent = innerContent.replace(/<odac:field[\s\S]*?<\/odac:field>/g, fieldMatch => {
       const field = this.parseField(fieldMatch)
       if (!field) return fieldMatch
       return this.generateFieldHtml(field)
@@ -572,7 +572,7 @@ class Form {
     const escapeHtml = str =>
       String(str).replace(/[&<>"']/g, m => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[m])
 
-    const submitMatch = innerContent.match(/<candy:submit[\s\S]*?(?:<\/candy:submit>|\/?>)/)
+    const submitMatch = innerContent.match(/<odac:submit[\s\S]*?(?:<\/odac:submit>|\/?>)/)
     if (submitMatch) {
       let submitAttrs = `type="submit" data-submit-text="${escapeHtml(submitText)}" data-loading-text="${escapeHtml(submitLoading)}"`
       if (config.submitClass) submitAttrs += ` class="${escapeHtml(config.submitClass)}"`
@@ -582,15 +582,15 @@ class Form {
       innerContent = innerContent.replace(submitMatch[0], submitButton)
     }
 
-    innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
+    innerContent = innerContent.replace(/<odac:set[^>]*\/?>/g, '')
 
-    let formAttrs = `class="candy-custom-form${config.class ? ' ' + escapeHtml(config.class) : ''}" data-candy-form="${escapeHtml(formToken)}" method="${escapeHtml(method)}" action="${escapeHtml(action)}" novalidate`
+    let formAttrs = `class="odac-custom-form${config.class ? ' ' + escapeHtml(config.class) : ''}" data-odac-form="${escapeHtml(formToken)}" method="${escapeHtml(method)}" action="${escapeHtml(action)}" novalidate`
     if (config.id) formAttrs += ` id="${escapeHtml(config.id)}"`
 
     let html = `<form ${formAttrs}>\n`
-    html += `  <input type="hidden" name="_candy_form_token" value="${escapeHtml(formToken)}">\n`
+    html += `  <input type="hidden" name="_odac_form_token" value="${escapeHtml(formToken)}">\n`
     html += innerContent
-    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `\n  <span class="odac-form-success" style="display:none;"></span>\n`
     html += `</form>`
 
     return html
