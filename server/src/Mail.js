@@ -235,9 +235,17 @@ class Mail {
         parser(stream, {}, async (err, parsed) => {
           if (err) return error(err)
           // log('ON DATA:', session);
+          if (!parsed.to?.value?.[0]?.address) {
+            error('Missing recipient address')
+            return callback(new Error('Invalid recipient'))
+          }
           if (!parsed.to.value[0].address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
             error('Invalid recipient:', parsed.to.value[0].address)
             return callback(new Error('Invalid recipient'))
+          }
+          if (!parsed.from?.value?.[0]?.address) {
+            error('Missing sender address')
+            return callback(new Error('Invalid sender'))
           }
           if (!parsed.from.value[0].address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
             error('Invalid sender:', parsed.from.value[0].address)
