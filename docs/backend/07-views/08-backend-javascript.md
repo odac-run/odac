@@ -40,12 +40,12 @@ You have access to all variables set in the controller:
 ```javascript
 // Controller
 module.exports = async function(Odac) {
-  Candy.set('products', [
+  Odac.set('products', [
     { name: 'Laptop', price: 999, quantity: 2 },
     { name: 'Mouse', price: 29, quantity: 5 }
   ])
   
-  Candy.View.skeleton('main').set('content', 'cart')
+  Odac.View.skeleton('main').set('content', 'cart')
 }
 ```
 
@@ -76,10 +76,10 @@ Full access to the Candy object and all its methods:
 
 ```html
 <script:candy>
-  const isLoggedIn = Candy.Auth.check();
-  const currentUser = isLoggedIn ? Candy.Auth.user() : null;
-  const requestMethod = Candy.Request.method;
-  const currentUrl = Candy.Request.url;
+  const isLoggedIn = Odac.Auth.check();
+  const currentUser = isLoggedIn ? Odac.Auth.user() : null;
+  const requestMethod = Odac.Request.method;
+  const currentUrl = Odac.Request.url;
 </script:candy>
 
 <odac:if condition="isLoggedIn">
@@ -237,7 +237,7 @@ Full access to the Candy object and all its methods:
 ```html
 <script:candy>
   const itemsPerPage = 10;
-  const currentPage = parseInt(Candy.Request.get('page')) || 1;
+  const currentPage = parseInt(Odac.Request.get('page')) || 1;
   const totalItems = products.length;
   const totalPages = Math.ceil(totalItems / itemsPerPage);
   
@@ -274,7 +274,7 @@ Full access to the Candy object and all its methods:
 
 ```html
 <script:candy>
-  const user = Candy.Auth.check() ? Candy.Auth.user() : null;
+  const user = Odac.Auth.check() ? Odac.Auth.user() : null;
   
   const canEdit = user && (
     user.role === 'admin' || 
@@ -379,7 +379,7 @@ You can use multiple `<script:candy>` blocks in the same view:
 ```html
 <script:candy>
   // Don't do this - should be in controller
-  const users = await Candy.Mysql.query('SELECT * FROM users');
+  const users = await Odac.Mysql.query('SELECT * FROM users');
   const apiData = await fetch('https://api.example.com/data');
 </script:candy>
 ```

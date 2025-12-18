@@ -6,7 +6,7 @@ For simple pages that don't require complex logic in a controller, you can rende
 This defines a page and immediately tells it which view components to render.
 
 ```javascript
-Candy.Route.page("/users", {
+Odac.Route.page("/users", {
     skeleton: "dashboard",
     header: "dashboard.main",
     sidebar: "dashboard.main",
@@ -20,7 +20,7 @@ This example tells Odac to render the `/users` page by assembling a view from mu
 
 ```javascript
 // Frontend
-Candy.action({
+Odac.action({
   page: {
     users: function() {
       console.log('Users page loaded')
@@ -34,7 +34,7 @@ Similar to `page()`, but requires authentication. Only authenticated users can a
 
 ```javascript
 // Only authenticated users can see the dashboard
-Candy.Route.auth.page('/', {
+Odac.Route.auth.page('/', {
     skeleton: 'main', 
     content: 'dashboard'
 });

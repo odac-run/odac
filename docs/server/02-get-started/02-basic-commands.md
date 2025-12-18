@@ -3,7 +3,7 @@
 These are the most common commands for interacting with the Odac server.
 
 ### Check Status
-To see the current status of the Odac server, including uptime and the number of running services, simply run the `candy` command with no arguments:
+To see the current status of the Odac server, including uptime and the number of running services, simply run the `odac` command with no arguments:
 ```bash
 odac
 ```

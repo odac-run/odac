@@ -212,7 +212,7 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
     <p class="out-of-stock">
       <odac translate>Out of stock</odac>
     </p>
-  </candy:if>
+  </odac:if>
   
   <button>
     <odac translate>Add to Cart</odac>
@@ -241,13 +241,13 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
   <div class="error-box">
     <odac:if condition="errors.email">
       <p><odac translate>Invalid email address</odac></p>
-    </candy:if>
+    </odac:if>
     
     <odac:if condition="errors.password">
       <p><odac translate>Password must be at least 8 characters</odac></p>
-    </candy:if>
+    </odac:if>
   </div>
-</candy:if>
+</odac:if>
 ```
 
 #### Rich Text with HTML
@@ -278,17 +278,17 @@ The language is typically set based on user preference or browser settings. You 
 // Controller
 module.exports = async function(Odac) {
   // Set language from user preference
-  const userLang = Candy.Auth.check() 
-    ? Candy.Auth.user().language 
+  const userLang = Odac.Auth.check() 
+    ? Odac.Auth.user().language 
     : 'en'
   
-  Candy.Lang.setLanguage(userLang)
+  Odac.Lang.setLanguage(userLang)
   
   // Or from query parameter
-  const lang = Candy.Request.get('lang') || 'en'
-  Candy.Lang.setLanguage(lang)
+  const lang = Odac.Request.get('lang') || 'en'
+  Odac.Lang.setLanguage(lang)
   
-  Candy.View.skeleton('main').set('content', 'home')
+  Odac.View.skeleton('main').set('content', 'home')
 }
 ```
 
@@ -298,10 +298,10 @@ You can also use translations in your controllers:
 
 ```javascript
 module.exports = async function(Odac) {
-  const message = Candy.__('Welcome back, %s!', user.name)
+  const message = Odac.__('Welcome back, %s!', user.name)
   
-  Candy.set('message', message)
-  Candy.View.skeleton('main').set('content', 'dashboard')
+  Odac.set('message', message)
+  Odac.View.skeleton('main').set('content', 'dashboard')
 }
 ```
 
@@ -342,15 +342,15 @@ module.exports = async function(Odac) {
   <odac translate><odac var="count" /> item</odac>
 <odac:else>
   <odac translate><odac var="count" /> items</odac>
-</candy:if>
+</odac:if>
 ```
 
 #### Date Formatting
 
 ```javascript
 // Controller
-const formattedDate = new Date(date).toLocaleDateString(Candy.Lang.current())
-Candy.set('date', formattedDate)
+const formattedDate = new Date(date).toLocaleDateString(Odac.Lang.current())
+Odac.set('date', formattedDate)
 ```
 
 ```html

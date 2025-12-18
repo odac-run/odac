@@ -20,7 +20,7 @@ module.exports = function (Odac) {
 
 #### The Helper Functions: More Control
 
-Need a bit more control? The `Candy` object has your back.
+Need a bit more control? The `Odac` object has your back.
 
 *   `Odac.return(data)`: Does the same thing as a direct return, but you can call it from anywhere in your function. It stops everything and sends the response immediately.
 *   `Odac.direct(url)`: Need to send the user to a different page? This function performs a redirect, telling the user's browser to go to a new URL.
@@ -29,12 +29,12 @@ Need a bit more control? The `Candy` object has your back.
 ```javascript
 module.exports = function (Odac) {
   // If the user isn't logged in...
-  if (!Candy.Auth.isLogin()) {
+  if (!Odac.Auth.isLogin()) {
     // ...send them to the login page!
-    return Candy.direct('/login');
+    return Odac.direct('/login');
   }
 
   // Otherwise, give them their data.
-  Candy.return({ data: 'here is your secret stuff' });
+  Odac.return({ data: 'here is your secret stuff' });
 }
 ```

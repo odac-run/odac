@@ -81,7 +81,7 @@ Conditions use standard JavaScript expressions:
 </candy:if>
 
 <!-- Method calls -->
-<odac:if condition="Candy.Auth.check()">
+<odac:if condition="Odac.Auth.check()">
   Logged in
 </candy:if>
 ```
@@ -92,7 +92,7 @@ Conditions use standard JavaScript expressions:
 
 ```html
 <nav>
-  <odac:if condition="Candy.Auth.check()">
+  <odac:if condition="Odac.Auth.check()">
     <a href="/profile">Profile</a>
     <a href="/settings">Settings</a>
     <a href="/logout">Logout</a>
@@ -271,7 +271,7 @@ Conditions use standard JavaScript expressions:
 **Good:**
 ```javascript
 // Controller
-Candy.set('canEdit', user.isAdmin || user.id === post.authorId)
+Odac.set('canEdit', user.isAdmin || user.id === post.authorId)
 ```
 
 ```html

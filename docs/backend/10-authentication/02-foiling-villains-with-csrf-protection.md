@@ -33,20 +33,20 @@ If they don't match, it's a trap!
 ```javascript
 module.exports = function (Odac) {
     // Get a token and pass it to the view
-    const token = Candy.Token.get();
-    return Candy.View.render('your_form_view', { csrfToken: token });
+    const token = Odac.Token.get();
+    return Odac.View.render('your_form_view', { csrfToken: token });
 }
 ```
 
 **3. Your controller that handles the form submission:**
 ```javascript
 module.exports = function (Odac) {
-    const submittedToken = Candy.Request.post.csrf_token;
+    const submittedToken = Odac.Request.post.csrf_token;
 
     // Check the token!
-    if (!Candy.Token.check(submittedToken)) {
+    if (!Odac.Token.check(submittedToken)) {
         // If it's bad, stop right here.
-        return Candy.return('Invalid CSRF Token!').status(403);
+        return Odac.return('Invalid CSRF Token!').status(403);
     }
 
     // If we get here, the token was good!

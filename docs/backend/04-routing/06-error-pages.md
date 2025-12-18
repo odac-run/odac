@@ -10,13 +10,13 @@ Maps HTTP error status codes to custom controller handlers. This allows you to c
 
 ```javascript
 // Custom 404 Not Found page
-Candy.Route.error(404, 'errors/not-found');
+Odac.Route.error(404, 'errors/not-found');
 
 // Custom 500 Internal Server Error page
-Candy.Route.error(500, 'errors/server-error');
+Odac.Route.error(500, 'errors/server-error');
 
 // Custom 403 Forbidden page
-Candy.Route.error(403, 'errors/forbidden');
+Odac.Route.error(403, 'errors/forbidden');
 ```
 
 #### Common Error Status Codes
@@ -34,8 +34,8 @@ Create error controllers in your `controller/errors/` directory:
 ```javascript
 // controller/errors/not-found.js
 module.exports = function() {
-    Candy.response.status(404);
-    return Candy.view('errors/404', {
+    Odac.response.status(404);
+    return Odac.view('errors/404', {
         title: 'Page Not Found',
         message: 'The page you are looking for could not be found.'
     });
@@ -45,8 +45,8 @@ module.exports = function() {
 ```javascript
 // controller/errors/server-error.js
 module.exports = function() {
-    Candy.response.status(500);
-    return Candy.view('errors/500', {
+    Odac.response.status(500);
+    return Odac.view('errors/500', {
         title: 'Server Error',
         message: 'Something went wrong on our end. Please try again later.'
     });
@@ -90,10 +90,10 @@ Error controllers receive the same Candy context as regular controllers, allowin
 // controller/errors/server-error.js
 module.exports = function() {
     // Log the error for debugging
-    console.error('Server error occurred:', Candy.request.url);
+    console.error('Server error occurred:', Odac.request.url);
     
-    Candy.response.status(500);
-    return Candy.view('errors/500', {
+    Odac.response.status(500);
+    return Odac.view('errors/500', {
         title: 'Oops! Something went wrong',
         supportEmail: 'support@yoursite.com'
     });

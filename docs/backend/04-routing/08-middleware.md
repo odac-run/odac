@@ -9,8 +9,8 @@ Create middleware files in the `middleware/` directory:
 ```javascript
 // middleware/auth.js
 module.exports = async (Odac) => {
-  if (!await Candy.Auth.check()) {
-    return Candy.direct('/login')  // Redirect to login
+  if (!await Odac.Auth.check()) {
+    return Odac.direct('/login')  // Redirect to login
   }
   // No return = continue to next middleware or controller
 }
@@ -26,14 +26,14 @@ module.exports = async (Odac) => {
 
 #### Single Route
 ```javascript
-Candy.Route
+Odac.Route
   .use('logger')
   .page('/contact', 'contact')
 ```
 
 #### Multiple Routes
 ```javascript
-Candy.Route
+Odac.Route
   .use('cors')
   .page('/api/users', 'api.users')
   .page('/api/posts', 'api.posts')
@@ -42,7 +42,7 @@ Candy.Route
 
 #### Multiple Middlewares
 ```javascript
-Candy.Route
+Odac.Route
   .use('cors', 'rateLimit')
   .post('/api/upload', 'api.upload')
 ```
@@ -53,7 +53,7 @@ Candy.Route
 
 ```javascript
 // Admin-only routes (requires login + admin role)
-Candy.Route.auth
+Odac.Route.auth
   .use('admin')
   .page('/admin/dashboard', 'admin.dashboard')
   .page('/admin/users', 'admin.users')
@@ -62,7 +62,7 @@ Candy.Route.auth
 
 ```javascript
 // Premium user routes (requires login + premium subscription)
-Candy.Route.auth
+Odac.Route.auth
   .use('premium')
   .page('/premium/content', 'premium.content')
   .page('/premium/downloads', 'premium.downloads')
@@ -70,7 +70,7 @@ Candy.Route.auth
 
 ```javascript
 // Multiple middlewares with auth
-Candy.Route.auth
+Odac.Route.auth
   .use('verified', 'rateLimit')
   .post('/api/sensitive', 'api.sensitive')
 ```
@@ -81,8 +81,8 @@ Candy.Route.auth
 ```javascript
 // middleware/auth.js
 module.exports = async (Odac) => {
-  if (!await Candy.Auth.check()) {
-    return Candy.direct('/login')
+  if (!await Odac.Auth.check()) {
+    return Odac.direct('/login')
   }
 }
 ```
@@ -91,7 +91,7 @@ module.exports = async (Odac) => {
 ```javascript
 // middleware/admin.js
 module.exports = async (Odac) => {
-  const user = await Candy.Auth.user()
+  const user = await Odac.Auth.user()
   if (!user || user.role !== 'admin') {
     return false  // 403 Forbidden
   }
@@ -102,8 +102,8 @@ module.exports = async (Odac) => {
 ```javascript
 // middleware/cors.js
 module.exports = async (Odac) => {
-  Candy.Request.header('Access-Control-Allow-Origin', '*')
-  Candy.Request.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE')
+  Odac.Request.header('Access-Control-Allow-Origin', '*')
+  Odac.Request.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE')
 }
 ```
 
@@ -114,7 +114,7 @@ const requests = new Map()
 let lastCleanup = Date.now()
 
 module.exports = async (Odac) => {
-  const ip = Candy.Request.ip
+  const ip = Odac.Request.ip
   const now = Date.now()
   const limit = 100
   const window = 60000
@@ -138,7 +138,7 @@ module.exports = async (Odac) => {
   const userRequests = requests.get(ip).filter(time => now - time < window)
   
   if (userRequests.length >= limit) {
-    return Candy.abort(429, 'Too many requests')
+    return Odac.abort(429, 'Too many requests')
   }
   
   userRequests.push(now)
@@ -152,12 +152,12 @@ module.exports = async (Odac) => {
 ```javascript
 // middleware/premium.js
 module.exports = async (Odac) => {
-  const user = await Candy.Auth.user()
+  const user = await Odac.Auth.user()
   
   if (!user.isPremium) {
-    return Candy.View.render('premium/upgrade', {
+    return Odac.View.render('premium/upgrade', {
       user: user,
-      currentPage: Candy.Request.url
+      currentPage: Odac.Request.url
     })
   }
 }
@@ -167,13 +167,13 @@ module.exports = async (Odac) => {
 ```javascript
 // middleware/logger.js
 module.exports = async (Odac) => {
-  console.log(`${Candy.Request.method} ${Candy.Request.url}`)
+  console.log(`${Odac.Request.method} ${Odac.Request.url}`)
 }
 ```
 
 #### Inline Middleware
 ```javascript
-Candy.Route
+Odac.Route
   .use(async (Odac) => {
     console.log('Custom middleware')
   })
@@ -186,23 +186,23 @@ Candy.Route
 // route/www.js
 
 // Public routes
-Candy.Route.page('/', 'index')
-Candy.Route.page('/about', 'about')
+Odac.Route.page('/', 'index')
+Odac.Route.page('/about', 'about')
 
 // API routes with CORS
-Candy.Route
+Odac.Route
   .use('cors', 'rateLimit')
   .get('/api/public', 'api.public')
   .post('/api/contact', 'api.contact')
 
 // User routes (requires login)
-Candy.Route.auth
+Odac.Route.auth
   .page('/profile', 'profile')
   .page('/settings', 'settings')
   .post('/api/update', 'update')
 
 // Admin routes (requires login + admin role)
-Candy.Route.auth
+Odac.Route.auth
   .use('admin')
   .page('/admin', 'admin.index')
   .page('/admin/users', 'admin.users')

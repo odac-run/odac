@@ -16,11 +16,11 @@ Backend comments are removed during template rendering and never appear in the H
 #### Multi-Line Backend Comments
 
 ```html
-<!--candy
+<!--odac
   This is a multi-line backend comment
   It can span multiple lines
   None of this will appear in the output
-candy-->
+odac-->
 
 <div class="content">
   <p>This will be rendered</p>
@@ -53,11 +53,11 @@ Standard HTML comments are preserved and sent to the browser:
 <!--odac 
   Database query returns: id, name, email, password_hash
   We only display: name, email
-candy-->
+odac-->
 
 <odac:for in="users" value="user">
   <p><odac var="user.name" /> - <odac var="user.email" /></p>
-</candy:for>
+</odac:for>
 ```
 
 **Debugging Information:**
@@ -67,26 +67,26 @@ candy-->
 
 <odac:if condition="user.role === 'admin'">
   <div class="admin-panel">Admin content</div>
-</candy:if>
+</odac:if>
 ```
 
 **Temporary Code:**
 ```html
-<!--candy
+<!--odac
   Old implementation - keeping for reference
   <div class="old-layout">
     <odac:for in="items" value="item">
       <p><odac var="item.name" /></p>
-    </candy:for>
+    </odac:for>
   </div>
-candy-->
+odac-->
 
 <div class="new-layout">
   <odac:for in="items" value="item">
     <div class="item-card">
       <h3><odac var="item.name" /></h3>
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
@@ -135,18 +135,18 @@ candy-->
 #### Documenting Complex Logic
 
 ```html
-<!--candy
+<!--odac
   This section displays products based on user role:
   - Admin: sees all products including inactive
   - Regular user: sees only active products
   - Guest: sees only featured products
-candy-->
+odac-->
 
 <script:candy>
   let visibleProducts;
   
-  if (Candy.Auth.check()) {
-    const user = Candy.Auth.user();
+  if (Odac.Auth.check()) {
+    const user = Odac.Auth.user();
     if (user.role === 'admin') {
       visibleProducts = products;
     } else {
@@ -161,7 +161,7 @@ candy-->
   <div class="product">
     <h3><odac var="product.name" /></h3>
   </div>
-</candy:for>
+</odac:for>
 ```
 
 #### Marking Sections for Developers
@@ -181,7 +181,7 @@ candy-->
     <h2>Recent Activity</h2>
     <odac:for in="activities" value="activity">
       <p><odac var="activity.description" /></p>
-    </candy:for>
+    </odac:for>
   </div>
   <!--odac END: Recent Activity Section -->
 </div>
@@ -190,13 +190,13 @@ candy-->
 #### Explaining Template Variables
 
 ```html
-<!--candy
+<!--odac
   Available variables from controller:
   - user: Current user object { id, name, email, role }
   - posts: Array of post objects
   - categories: Array of category objects
   - settings: Site settings object
-candy-->
+odac-->
 
 <div class="profile">
   <h1><odac var="user.name" /></h1>
@@ -217,22 +217,22 @@ candy-->
       <div class="reviews">
         <odac var="product.averageRating" /> stars
       </div>
-      candy-->
+      odac-->
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
 #### Version History
 
 ```html
-<!--candy
+<!--odac
   Version History:
   v1.0 - Initial implementation
   v1.1 - Added sorting functionality
   v1.2 - Added filtering by category
   v2.0 - Complete redesign with new layout
-candy-->
+odac-->
 
 <div class="product-list">
   <!-- Product list implementation -->
@@ -252,7 +252,7 @@ candy-->
 <!--odac This query is cached for 5 minutes -->
 <odac:for in="products" value="product">
   <div><odac var="product.name" /></div>
-</candy:for>
+</odac:for>
 ```
 
 **Avoid:**
@@ -261,7 +261,7 @@ candy-->
 <odac:for in="products" value="product">
   <!--odac Display product name -->
   <div><odac var="product.name" /></div>
-</candy:for>
+</odac:for>
 ```
 
 ### Security Considerations
@@ -293,5 +293,5 @@ candy-->
 | Type | Syntax | Rendered | Use Case |
 |------|--------|----------|----------|
 | Backend Single-Line | `<!--odac comment -->` | No | Development notes, TODOs |
-| Backend Multi-Line | `<!--odac ... candy-->` | No | Detailed explanations, disabled code |
+| Backend Multi-Line | `<!--odac ... odac-->` | No | Detailed explanations, disabled code |
 | HTML Comment | `<!-- comment -->` | Yes | Section markers, browser hacks |

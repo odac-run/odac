@@ -18,7 +18,7 @@ Let's imagine you have a controller that handles a contact form on your website.
 
 ```javascript
 module.exports = async function (Odac) {
-  const { recipient, subject, message } = Candy.Request.post;
+  const { recipient, subject, message } = Odac.Request.post;
 
   // It's always a good idea to check your data first!
   if (!recipient || !subject || !message) {
@@ -27,7 +27,7 @@ module.exports = async function (Odac) {
 
   try {
     // Let's try to send the email
-    await Candy.Mail.send(recipient, subject, `<p>${message}</p>`);
+    await Odac.Mail.send(recipient, subject, `<p>${message}</p>`);
 
     // If we get here, it worked!
     return { success: true, message: 'Email sent successfully!' };

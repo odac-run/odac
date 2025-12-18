@@ -10,10 +10,10 @@ Use `Odac.set()` in your controller to pass data to views:
 // Controller: controller/profile.js
 module.exports = async function(Odac) {
   // Set single variable
-  Candy.set('username', 'John Doe')
+  Odac.set('username', 'John Doe')
   
   // Set multiple variables at once
-  Candy.set({
+  Odac.set({
     user: {
       name: 'John Doe',
       email: 'john@example.com',
@@ -22,7 +22,7 @@ module.exports = async function(Odac) {
     pageTitle: 'User Profile'
   })
   
-  Candy.View.skeleton('main').set('content', 'profile')
+  Odac.View.skeleton('main').set('content', 'profile')
 }
 ```
 
@@ -43,7 +43,7 @@ This automatically:
 **Example:**
 ```javascript
 // Controller
-Candy.set('message', 'Hello\nWorld')
+Odac.set('message', 'Hello\nWorld')
 ```
 
 ```html
@@ -66,7 +66,7 @@ When you need to display HTML content without escaping:
 **Example:**
 ```javascript
 // Controller
-Candy.set('content', '<strong>Bold text</strong>')
+Odac.set('content', '<strong>Bold text</strong>')
 ```
 
 ```html
@@ -81,7 +81,7 @@ You can access nested object properties using dot notation:
 
 ```javascript
 // Controller
-Candy.set('user', {
+Odac.set('user', {
   name: 'John',
   profile: {
     email: 'john@example.com',
@@ -112,22 +112,22 @@ This is useful when you want consistent syntax throughout your templates.
 
 ### Accessing the Candy Object
 
-You have full access to the `Candy` object within templates:
+You have full access to the `Odac` object within templates:
 
 ```html
 <!-- Authentication -->
-<odac:if condition="Candy.Auth.check()">
-  <p>User ID: <odac var="Candy.Auth.user().id" /></p>
-  <p>Email: <odac var="Candy.Auth.user().email" /></p>
+<odac:if condition="Odac.Auth.check()">
+  <p>User ID: <odac var="Odac.Auth.user().id" /></p>
+  <p>Email: <odac var="Odac.Auth.user().email" /></p>
 </candy:if>
 
 <!-- Request Information -->
-<p>Method: <odac var="Candy.Request.method" /></p>
-<p>URL: <odac var="Candy.Request.url" /></p>
-<p>IP: <odac var="Candy.Request.ip" /></p>
+<p>Method: <odac var="Odac.Request.method" /></p>
+<p>URL: <odac var="Odac.Request.url" /></p>
+<p>IP: <odac var="Odac.Request.ip" /></p>
 
 <!-- Configuration -->
-<odac:if condition="Candy.Config.debug">
+<odac:if condition="Odac.Config.debug">
   <div class="debug-info">Debug mode enabled</div>
 </candy:if>
 ```
@@ -140,20 +140,20 @@ You have full access to the `Candy` object within templates:
 // Controller: controller/profile.js
 module.exports = async function(Odac) {
   // Fetch user from database
-  const userId = Candy.Request.get('id')
-  const user = await Candy.Mysql.table('users')
+  const userId = Odac.Request.get('id')
+  const user = await Odac.Mysql.table('users')
     .where('id', userId)
     .first()
   
   // Pass to view
-  Candy.set('user', {
+  Odac.set('user', {
     name: user.name,
     email: user.email,
     bio: user.bio,
     isVerified: user.verified
   })
   
-  Candy.View.skeleton('main').set('content', 'profile')
+  Odac.View.skeleton('main').set('content', 'profile')
 }
 ```
 
@@ -178,8 +178,8 @@ module.exports = async function(Odac) {
 ```javascript
 // Controller: controller/product.js
 module.exports = async function(Odac) {
-  const productId = Candy.Request.get('id')
-  const product = await Candy.Mysql.table('products')
+  const productId = Odac.Request.get('id')
+  const product = await Odac.Mysql.table('products')
     .where('id', productId)
     .first()
   
@@ -187,13 +187,13 @@ module.exports = async function(Odac) {
   const hasDiscount = product.discount > 0
   const finalPrice = product.price * (1 - product.discount / 100)
   
-  Candy.set({
+  Odac.set({
     product: product,
     hasDiscount: hasDiscount,
     finalPrice: finalPrice
   })
   
-  Candy.View.skeleton('main').set('content', 'product')
+  Odac.View.skeleton('main').set('content', 'product')
 }
 ```
 
@@ -221,16 +221,16 @@ module.exports = async function(Odac) {
 ```javascript
 // Controller: controller/products.js
 module.exports = async function(Odac) {
-  const products = await Candy.Mysql.table('products')
+  const products = await Odac.Mysql.table('products')
     .where('active', true)
     .get()
   
-  Candy.set({
+  Odac.set({
     products: products,
     totalProducts: products.length
   })
   
-  Candy.View.skeleton('main').set('content', 'products')
+  Odac.View.skeleton('main').set('content', 'products')
 }
 ```
 
@@ -250,7 +250,7 @@ module.exports = async function(Odac) {
 
 ### Best Practices
 
-1. **Always use Candy.set()**: Pass all data through `Odac.set()` for consistency
+1. **Always use Odac.set()**: Pass all data through `Odac.set()` for consistency
 2. **Set data before rendering**: All `Odac.set()` calls should come before `Odac.View.set()`
 3. **Compute in controller**: Do calculations in the controller, not in views
 4. **Use descriptive names**: `pageTitle`, `userProfile` instead of `title`, `data`
@@ -259,10 +259,10 @@ module.exports = async function(Odac) {
 **Good:**
 ```javascript
 // Controller
-const user = await Candy.Mysql.table('users').first()
+const user = await Odac.Mysql.table('users').first()
 const isAdmin = user.role === 'admin'
 
-Candy.set({
+Odac.set({
   user: user,
   isAdmin: isAdmin
 })
@@ -283,18 +283,18 @@ Always handle cases where data might not exist:
 ```javascript
 // Controller
 module.exports = async function(Odac) {
-  const productId = Candy.Request.get('id')
-  const product = await Candy.Mysql.table('products')
+  const productId = Odac.Request.get('id')
+  const product = await Odac.Mysql.table('products')
     .where('id', productId)
     .first()
   
   if (!product) {
-    Candy.set('error', 'Product not found')
+    Odac.set('error', 'Product not found')
   } else {
-    Candy.set('product', product)
+    Odac.set('product', product)
   }
   
-  Candy.View.skeleton('main').set('content', 'product')
+  Odac.View.skeleton('main').set('content', 'product')
 }
 ```
 

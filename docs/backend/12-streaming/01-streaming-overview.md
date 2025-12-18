@@ -8,8 +8,8 @@ Odac provides a unified streaming API that automatically handles Server-Sent Eve
 
 ```javascript
 // route/www.js
-Candy.Route.get('/hello', async (Odac) => {
-  Candy.stream('Hello World')
+Odac.Route.get('/hello', async (Odac) => {
+  Odac.stream('Hello World')
 })
 ```
 
@@ -17,11 +17,11 @@ Candy.Route.get('/hello', async (Odac) => {
 
 ```javascript
 // route/www.js
-Candy.Route.get('/hello', 'hello')
+Odac.Route.get('/hello', 'hello')
 
 // controller/hello/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream('Hello World')
+  Odac.stream('Hello World')
 }
 ```
 
@@ -30,7 +30,7 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream({ message: 'Hello', time: Date.now() })
+  Odac.stream({ message: 'Hello', time: Date.now() })
 }
 ```
 
@@ -41,11 +41,11 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream((send) => {
+  Odac.stream((send) => {
     send({ type: 'connected' })
     
-    // Use Candy.setInterval for automatic cleanup
-    Candy.setInterval(() => {
+    // Use Odac.setInterval for automatic cleanup
+    Odac.setInterval(() => {
       send({ time: Date.now() })
     }, 1000)
   })
@@ -59,7 +59,7 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream((send, close) => {
+  Odac.stream((send, close) => {
     send({ type: 'connected' })
     
     const interval = setInterval(() => {
@@ -81,7 +81,7 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream([1, 2, 3, 4, 5])
+  Odac.stream([1, 2, 3, 4, 5])
 }
 ```
 
@@ -90,8 +90,8 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/users/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream(async function* () {
-    const users = await Candy.Mysql.table('users').get()
+  Odac.stream(async function* () {
+    const users = await Odac.Mysql.table('users').get()
     
     for (const user of users) {
       yield user
@@ -105,7 +105,7 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/app/get/index.js
 module.exports = async (Odac) => {
-  Candy.stream(
+  Odac.stream(
     fetch('https://api.example.com/data')
       .then(r => r.json())
   )
@@ -118,7 +118,7 @@ module.exports = async (Odac) => {
 // controller/file/get/index.js
 module.exports = async (Odac) => {
   const fs = require('fs')
-  Candy.stream(fs.createReadStream('large-file.txt'))
+  Odac.stream(fs.createReadStream('large-file.txt'))
 }
 ```
 
@@ -129,11 +129,11 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/monitor/get/index.js
 module.exports = async (Odac) => {
-  return Candy.stream((send) => {
+  return Odac.stream((send) => {
     send({ type: 'connected' })
     
-    // Use Candy.setInterval for automatic cleanup
-    Candy.setInterval(() => {
+    // Use Odac.setInterval for automatic cleanup
+    Odac.setInterval(() => {
       send({ time: Date.now() })
     }, 1000)
   })
@@ -147,7 +147,7 @@ module.exports = async (Odac) => {
 ```javascript
 // controller/data/get/fetch.js
 module.exports = async (Odac) => {
-  const stream = Candy.stream()
+  const stream = Odac.stream()
   
   try {
     const data = await fetchData()
@@ -164,11 +164,11 @@ module.exports = async (Odac) => {
 
 ```javascript
 // route/www.js
-Candy.Route.get('/logs', 'logs')
+Odac.Route.get('/logs', 'logs')
 
 // controller/logs/get/index.js
 module.exports = async (Odac) => {
-  return Candy.stream(async function* () {
+  return Odac.stream(async function* () {
     const logStream = await getDeploymentLogs()
     
     for await (const log of logStream) {
@@ -185,16 +185,16 @@ module.exports = async (Odac) => {
 
 ```javascript
 // route/www.js
-Candy.Route.get('/posts', 'posts')
+Odac.Route.get('/posts', 'posts')
 
 // controller/posts/get/index.js
 module.exports = async (Odac) => {
-  return Candy.stream(async function* () {
+  return Odac.stream(async function* () {
     let page = 1
     let hasMore = true
     
     while (hasMore) {
-      const posts = await Candy.Mysql.table('posts')
+      const posts = await Odac.Mysql.table('posts')
         .limit(10)
         .offset((page - 1) * 10)
         .get()
@@ -283,13 +283,13 @@ Odac automatically manages timers and intervals in streaming contexts:
 
 ```javascript
 module.exports = async (Odac) => {
-  return Candy.stream((send) => {
+  return Odac.stream((send) => {
     // ✅ Automatically cleaned up when connection closes
-    Candy.setInterval(() => {
+    Odac.setInterval(() => {
       send({ time: Date.now() })
     }, 1000)
     
-    Candy.setTimeout(() => {
+    Odac.setTimeout(() => {
       send({ type: 'delayed' })
     }, 5000)
   })
@@ -303,17 +303,17 @@ module.exports = async (Odac) => {
 
 **Manual cleanup (if needed):**
 ```javascript
-const intervalId = Candy.setInterval(() => { ... }, 1000)
-Candy.clearInterval(intervalId)
+const intervalId = Odac.setInterval(() => { ... }, 1000)
+Odac.clearInterval(intervalId)
 
-const timeoutId = Candy.setTimeout(() => { ... }, 5000)
-Candy.clearTimeout(timeoutId)
+const timeoutId = Odac.setTimeout(() => { ... }, 5000)
+Odac.clearTimeout(timeoutId)
 ```
 
 ## Best Practices
 
 1. **Use Candy timers:** Always use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions
-2. **Return the stream:** Always `return Candy.stream(...)` from your controller
+2. **Return the stream:** Always `return Odac.stream(...)` from your controller
 3. **Throttle messages:** Don't send too frequently (use intervals)
 4. **Handle errors:** Use try-catch for async operations
 5. **Test reconnection:** Ensure your app handles connection drops
@@ -323,7 +323,7 @@ Candy.clearTimeout(timeoutId)
 **Connection drops immediately:**
 - Check if you're calling `Odac.return()` or `res.end()`
 - Don't use both streaming and regular responses
-- Make sure to `return Candy.stream(...)`
+- Make sure to `return Odac.stream(...)`
 
 **Messages not received:**
 - Verify JSON format

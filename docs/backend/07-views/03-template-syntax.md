@@ -135,11 +135,11 @@ Execute JavaScript on the server during template rendering:
 Full access to the Candy object in templates:
 
 ```html
-<odac:if condition="Candy.Auth.check()">
-  <p>User: <odac var="Candy.Auth.user().name" /></p>
+<odac:if condition="Odac.Auth.check()">
+  <p>User: <odac var="Odac.Auth.user().name" /></p>
 </candy:if>
 
-<p>URL: <odac var="Candy.Request.url" /></p>
+<p>URL: <odac var="Odac.Request.url" /></p>
 ```
 
 ### Complete Syntax Reference

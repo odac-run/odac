@@ -1,7 +1,7 @@
 const nodeCrypto = require('crypto')
 
-class CandyRequest {
-  #candy
+class OdacRequest {
+  #odac
   #complete = false
   #cookies = {received: [], sent: []}
   data = {post: {}, get: {}, url: {}}
@@ -20,7 +20,7 @@ class CandyRequest {
     this.id = id
     this.req = req
     this.res = res
-    this.#candy = candy
+    this.#odac = candy
     this.method = req.method.toLowerCase()
     this.url = req.url
     this.host = req.headers.host
@@ -51,7 +51,7 @@ class CandyRequest {
     this.status(code)
     let result = {401: 'Unauthorized', 404: 'Not Found', 408: 'Request Timeout'}[code] ?? null
     if (Odac.Route.routes[this.route].error && Odac.Route.routes[this.route].error[code])
-      result = await Odac.Route.routes[this.route].error[code].cache(this.#candy)
+      result = await Odac.Route.routes[this.route].error[code].cache(this.#odac)
     this.end(result)
   }
 
@@ -300,4 +300,4 @@ class CandyRequest {
   }
 }
 
-module.exports = CandyRequest
+module.exports = OdacRequest

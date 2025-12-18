@@ -5,7 +5,7 @@ odac.js provides a simple WebSocket client with automatic reconnection and cross
 ## Basic Usage
 
 ```javascript
-const ws = Candy.ws('/chat')
+const ws = Odac.ws('/chat')
 
 ws.on('open', () => {
   console.log('Connected!')
@@ -21,7 +21,7 @@ ws.send({type: 'hello', message: 'Hi there!'})
 ## Configuration Options
 
 ```javascript
-const ws = Candy.ws('/chat', {
+const ws = Odac.ws('/chat', {
   autoReconnect: true,        // Auto-reconnect on disconnect (default: true)
   reconnectDelay: 3000,       // Delay between reconnect attempts (default: 3000ms)
   maxReconnectAttempts: 10,   // Max reconnect attempts (default: 10)
@@ -36,7 +36,7 @@ By default, odac.js automatically sends a CSRF token during the WebSocket handsh
 
 **Disable token (for public WebSockets):**
 ```javascript
-const ws = Candy.ws('/public', {token: false})
+const ws = Odac.ws('/public', {token: false})
 ```
 
 **How it works:**
@@ -50,7 +50,7 @@ const ws = Candy.ws('/public', {token: false})
 Enable `shared: true` to share a single WebSocket connection across all browser tabs:
 
 ```javascript
-const ws = Candy.ws('/chat', {shared: true})
+const ws = Odac.ws('/chat', {shared: true})
 ```
 
 **Benefits:**
@@ -66,13 +66,13 @@ const ws = Candy.ws('/chat', {shared: true})
 **Example:**
 ```javascript
 // Tab 1
-const ws = Candy.ws('/notifications', {shared: true})
+const ws = Odac.ws('/notifications', {shared: true})
 ws.on('message', data => {
   console.log('Notification:', data)
 })
 
 // Tab 2 (same connection)
-const ws2 = Candy.ws('/notifications', {shared: true})
+const ws2 = Odac.ws('/notifications', {shared: true})
 ws2.on('message', data => {
   console.log('Same notification:', data)
 })
@@ -122,7 +122,7 @@ ws.off('message')           // Remove all message handlers
 ## Example: Chat Application
 
 ```javascript
-const ws = Candy.ws('/chat')
+const ws = Odac.ws('/chat')
 const messages = document.getElementById('messages')
 const input = document.getElementById('input')
 

@@ -1,6 +1,6 @@
-## 🤝 Your trusty `Candy` Assistant
+## 🤝 Your trusty `Odac` Assistant
 
-Remember the `Candy` object? It's your best friend inside a controller. It's passed to your controller function and gives you all the tools you need for the current request.
+Remember the `Odac` object? It's your best friend inside a controller. It's passed to your controller function and gives you all the tools you need for the current request.
 
 #### Awesome Services at Your Fingertips
 
@@ -27,7 +27,7 @@ Always use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functi
 ```javascript
 module.exports = async (Odac) => {
   // ✅ Good - automatically cleaned up
-  Candy.setInterval(() => {
+  Odac.setInterval(() => {
     // This stops when request ends
   }, 1000)
   
@@ -38,4 +38,4 @@ module.exports = async (Odac) => {
 }
 ```
 
-With controllers and the `Candy` object, you have everything you need to start building powerful application logic!
+With controllers and the `Odac` object, you have everything you need to start building powerful application logic!

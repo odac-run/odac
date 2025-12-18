@@ -1,6 +1,6 @@
-## 🧰 What's in the `Candy` box?
+## 🧰 What's in the `Odac` box?
 
-Your `Candy` assistant comes with a bunch of handy services:
+Your `Odac` assistant comes with a bunch of handy services:
 
 *   `Request`: All the details about the user's incoming request.
 *   `View`: A tool to render your beautiful HTML pages.

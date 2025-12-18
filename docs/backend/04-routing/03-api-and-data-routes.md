@@ -8,7 +8,7 @@ Defines a route that responds to `GET` requests. This is ideal for API endpoints
 ```javascript
 // An API endpoint at GET /api/users/123
 // We disable the token check as this is a public API.
-Candy.Route.get('/api/users/{id}', 'api/users.get', { token: false });
+Odac.Route.get('/api/users/{id}', 'api/users.get', { token: false });
 ```
 
 #### `post(path, controller, options)`
@@ -16,5 +16,5 @@ Defines a route that responds to `POST` requests, typically used for form submis
 
 ```javascript
 // A form that posts data to /login
-Candy.Route.post('/login', 'auth.login');
+Odac.Route.post('/login', 'auth.login');
 ```

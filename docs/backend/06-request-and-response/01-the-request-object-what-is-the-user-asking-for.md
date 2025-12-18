@@ -4,15 +4,15 @@ The `Odac.Request` object contains information about the user's incoming request
 
 ### Getting Request Parameters
 
-#### Using Candy.request() (Recommended)
+#### Using Odac.request() (Recommended)
 
 The easiest way to get request parameters is using `Odac.request()`:
 
 ```javascript
 module.exports = async function (Odac) {
   // Get parameter from GET or POST automatically
-  const userName = await Candy.request('name')
-  const userId = await Candy.request('id')
+  const userName = await Odac.request('name')
+  const userId = await Odac.request('id')
   
   return `Hello ${userName}!`
 }
@@ -23,10 +23,10 @@ module.exports = async function (Odac) {
 ```javascript
 module.exports = async function (Odac) {
   // Get from GET parameters only
-  const searchQuery = await Candy.request('q', 'GET')
+  const searchQuery = await Odac.request('q', 'GET')
   
   // Get from POST parameters only
-  const formName = await Candy.request('name', 'POST')
+  const formName = await Odac.request('name', 'POST')
   
   return `Searching for: ${searchQuery}`
 }
@@ -39,10 +39,10 @@ You can also access request data directly:
 ```javascript
 module.exports = function (Odac) {
   // GET parameters (URL query string like ?id=123)
-  const userId = Candy.Request.get('id')
+  const userId = Odac.Request.get('id')
   
   // POST parameters (form data)
-  const userName = Candy.Request.post('name')
+  const userName = Odac.Request.post('name')
   
   return `User: ${userName}`
 }
@@ -60,8 +60,8 @@ module.exports = function (Odac) {
 
 ```javascript
 module.exports = function (Odac) {
-  const userAgent = Candy.Request.header('user-agent')
-  const contentType = Candy.Request.header('content-type')
+  const userAgent = Odac.Request.header('user-agent')
+  const contentType = Odac.Request.header('content-type')
   
   return `Browser: ${userAgent}`
 }
@@ -72,23 +72,23 @@ module.exports = function (Odac) {
 ```javascript
 module.exports = async function (Odac) {
   // Get request parameters
-  const productId = await Candy.request('id')
-  const quantity = await Candy.request('quantity') || 1
+  const productId = await Odac.request('id')
+  const quantity = await Odac.request('quantity') || 1
   
   // Check request method
-  if (Candy.Request.method === 'POST') {
+  if (Odac.Request.method === 'POST') {
     // Handle form submission
     const result = await processOrder(productId, quantity)
     return { success: true, orderId: result.id }
   }
   
   // Show product page
-  Candy.set({
+  Odac.set({
     productId: productId,
     quantity: quantity
   })
   
-  Candy.View.set({
+  Odac.View.set({
     skeleton: 'main',
     content: 'product.detail'
   })

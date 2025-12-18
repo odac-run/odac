@@ -32,7 +32,7 @@ Actions are the fundamental building block of `odac.js`. An action is a collecti
 The `Odac.action()` method is the most important method in the framework. It allows you to register event handlers and lifecycle callbacks.
 
 ```javascript
-Candy.action({
+Odac.action({
     // Fired once on DOMContentLoaded
     start: function() {
         console.log('Candy.js started!');

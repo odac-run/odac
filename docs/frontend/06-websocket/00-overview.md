@@ -15,7 +15,7 @@ Candy.Route.ws('/chat', (ws, Candy) => {
 
 **Frontend:**
 ```javascript
-const ws = Candy.ws('/chat')
+const ws = Odac.ws('/chat')
 ws.on('message', data => console.log(data))
 ws.send({message: 'Hello!'})
 ```

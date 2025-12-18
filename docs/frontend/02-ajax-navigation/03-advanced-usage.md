@@ -58,7 +58,7 @@ setTimeout(() => {
 Update different parts of your page simultaneously:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: {
       content: 'main',
@@ -100,7 +100,7 @@ let appState = {
   filters: {}
 }
 
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -121,7 +121,7 @@ Candy.action({
 Persist state across page reloads:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -148,7 +148,7 @@ Candy.action({
 Add custom animations:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -170,7 +170,7 @@ Candy.action({
 Smooth page transitions:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -209,7 +209,7 @@ main.page-enter-active {
 Automatically scroll to top on navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -229,7 +229,7 @@ Remember scroll position:
 ```javascript
 let scrollPositions = {}
 
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -256,7 +256,7 @@ Candy.action({
 Scroll to specific element after navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -333,7 +333,7 @@ Prevent rapid navigation:
 ```javascript
 let navigationTimeout
 
-Candy.action({
+Odac.action({
   click: {
     'a[href^="/"]': function(e) {
       clearTimeout(navigationTimeout)
@@ -353,7 +353,7 @@ Prefetch pages on hover:
 ```javascript
 let prefetchCache = {}
 
-Candy.action({
+Odac.action({
   mouseover: {
     'a[href^="/"]': function() {
       const url = this.getAttribute('href')
@@ -381,7 +381,7 @@ Candy.action({
 Track page views:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -407,7 +407,7 @@ Candy.action({
 Redux/Vuex integration:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -430,7 +430,7 @@ Test navigation logic:
 ```javascript
 describe('Navigation', () => {
   it('should update active nav on page change', () => {
-    Candy.action({
+    Odac.action({
       navigate: {
         update: 'main',
         on: (page) => {
@@ -463,7 +463,7 @@ describe('Navigation', () => {
 ### Dashboard Navigation
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     links: '.sidebar a, .breadcrumb a',
     update: {
@@ -482,7 +482,7 @@ Candy.action({
 ### E-commerce
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: {
       content: 'main',
@@ -499,7 +499,7 @@ Candy.action({
 ### Blog
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => {

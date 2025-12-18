@@ -24,7 +24,7 @@ The most common way to iterate over arrays and objects:
 
 ```javascript
 // Controller
-Candy.set('products', [
+Odac.set('products', [
   { name: 'Laptop', price: 999 },
   { name: 'Mouse', price: 29 },
   { name: 'Keyboard', price: 79 }
@@ -48,7 +48,7 @@ Candy.set('products', [
 
 ```javascript
 // Controller
-Candy.set('settings', {
+Odac.set('settings', {
   theme: 'dark',
   language: 'en',
   notifications: true
@@ -305,7 +305,7 @@ Skip to the next iteration:
 ```html
 <script:candy>
   const itemsPerPage = 10;
-  const currentPage = parseInt(Candy.Request.get('page')) || 1;
+  const currentPage = parseInt(Odac.Request.get('page')) || 1;
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   let index = startIndex;
@@ -332,7 +332,7 @@ Skip to the next iteration:
 **Good:**
 ```javascript
 // Controller - prepare data
-Candy.set('activeUsers', users.filter(u => u.isActive))
+Odac.set('activeUsers', users.filter(u => u.isActive))
 ```
 
 ```html

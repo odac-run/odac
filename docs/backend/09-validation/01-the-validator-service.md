@@ -7,7 +7,7 @@ The Validator service provides a fluent, chainable API for validating user input
 The validator uses a method-chaining pattern:
 
 ```javascript
-const validator = Candy.Validator
+const validator = Odac.Validator
 validator.post('email').check('required|email').message('Valid email required')
 validator.post('password').check('required|minlen:8').message('Password must be at least 8 characters')
 
@@ -83,7 +83,7 @@ Use `!` prefix to invert any rule: `!required`, `!email`, etc.
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator.post('username').check('required|username|minlen:4|maxlen:20').message('Username must be 4-20 alphanumeric characters')
   validator.post('email').check('required|email').message('Valid email address required')
@@ -102,7 +102,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator.post('email').check('required|email').message('Email required')
   validator.post('password').check('required').message('Password required')
@@ -120,7 +120,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
   const customValue = calculateSomething()
 
   validator.var('calculated_value', customValue).check('numeric|min:100|max:1000').message('Value must be between 100 and 1000')
@@ -139,7 +139,7 @@ You can chain multiple `check()` calls for the same field, each with its own spe
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator
     .post('password')
@@ -161,7 +161,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator
     .post('username')
@@ -204,7 +204,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator
     .post('start_date')
@@ -230,9 +230,9 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
-  const userRole = Candy.Auth.user('role')
-  const userCredits = Candy.Auth.user('credits') || 0
+  const validator = Odac.Validator
+  const userRole = Odac.Auth.user('role')
+  const userCredits = Odac.Auth.user('credits') || 0
 
   validator.post('title').check('required').message('Title is required')
   validator.post('content').check('required').message('Content is required')
@@ -264,7 +264,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator
     .post('current_password')
@@ -291,8 +291,8 @@ You can use boolean values directly in `check()` for custom validation logic:
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
-  const userId = await Candy.request('user_id')
+  const validator = Odac.Validator
+  const userId = await Odac.request('user_id')
   
   const isOwner = await checkIfUserOwnsResource(userId)
   const hasPermission = await checkUserPermission('edit')
@@ -324,7 +324,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  return await Candy.Validator
+  return await Odac.Validator
     .post('email').check('required').message('Email required').check('email').message('Invalid email')
     .post('password').check('required').message('Password required').check('minlen:8').message('Min 8 chars')
     .post('age').check('required').message('Age required').check('numeric').message('Must be number').check('min:18').message('Must be 18+')
@@ -336,7 +336,7 @@ module.exports = async function (Odac) {
 
 ```javascript
 module.exports = async function (Odac) {
-  const validator = Candy.Validator
+  const validator = Odac.Validator
 
   validator
     .var('auth_check', null)
@@ -373,7 +373,7 @@ When using `Odac.form()` on the frontend, validation errors are automatically di
 **Auto-Redirect:**
 - If you pass a URL as the second parameter to `Odac.form()`, successful submissions automatically redirect:
   ```javascript
-  Candy.form('myForm', '/dashboard') // Redirects to /dashboard on success
+  Odac.form('myForm', '/dashboard') // Redirects to /dashboard on success
   ```
 
 **Example HTML:**
@@ -391,7 +391,7 @@ When using `Odac.form()` on the frontend, validation errors are automatically di
 </form>
 
 <script>
-  Candy.form('register', '/dashboard') // Auto-redirect on success
+  Odac.form('register', '/dashboard') // Auto-redirect on success
 </script>
 ```
 

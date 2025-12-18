@@ -23,7 +23,7 @@ Before configuring AJAX navigation, ensure your skeleton template is properly se
 The simplest way to enable AJAX navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: 'main'  // Update <main> element
 })
 ```
@@ -33,7 +33,7 @@ Candy.action({
 All available options:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     // Which links to intercept
     links: 'a[href^="/"]',  // Default: all internal links
@@ -170,7 +170,7 @@ navigate: {
 Run code for specific pages:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => console.log('Navigated to:', page)
@@ -192,7 +192,7 @@ Candy.action({
 ### Disable Completely
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: false  // No AJAX navigation
 })
 ```
@@ -256,7 +256,7 @@ navigate: {
 Show a loading spinner during navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => {
@@ -290,7 +290,7 @@ Animated progress bar:
 ```javascript
 let progressBar = document.getElementById('progress')
 
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: () => {
@@ -316,7 +316,7 @@ Candy.action({
 Confirm before navigating:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main'
   },

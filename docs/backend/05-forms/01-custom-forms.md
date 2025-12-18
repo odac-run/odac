@@ -210,7 +210,7 @@ Handle form submission in your controller:
 module.exports = {
   submit: Candy => {
     // Access validated form data
-    const data = Candy.formData
+    const data = Odac.formData
     
     // data contains all field values
     console.log(data.email, data.message)
@@ -218,7 +218,7 @@ module.exports = {
     // Process the data (save to database, send email, etc.)
     
     // Return success response
-    return Candy.return({
+    return Odac.return({
       result: {
         success: true,
         message: 'Form submitted successfully!',
@@ -236,11 +236,11 @@ Return validation errors:
 ```javascript
 module.exports = {
   submit: Candy => {
-    const data = Candy.formData
+    const data = Odac.formData
     
     // Custom validation
     if (data.email.includes('spam')) {
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
         errors: {
           email: 'This email is not allowed'
@@ -248,7 +248,7 @@ module.exports = {
       })
     }
     
-    return Candy.return({
+    return Odac.return({
       result: {success: true, message: 'Success!'}
     })
   }
@@ -294,7 +294,7 @@ CREATE TABLE `waitlist` (
 ### Route (route/www.js)
 
 ```javascript
-Candy.Route.page('/waitlist', 'waitlist')
+Odac.Route.page('/waitlist', 'waitlist')
 ```
 
 That's it! No controller needed. The form will:
@@ -339,21 +339,21 @@ That's it! No controller needed. The form will:
 ```javascript
 module.exports = {
   index: Candy => {
-    Candy.View.skeleton('default')
-    Candy.View.set({content: 'contact'})
-    Candy.View.print()
+    Odac.View.skeleton('default')
+    Odac.View.set({content: 'contact'})
+    Odac.View.print()
   },
 
   submit: Candy => {
-    const data = Candy.formData
+    const data = Odac.formData
     
     // Save to database
-    // await Candy.Mysql.query('INSERT INTO contacts SET ?', data)
+    // await Odac.Mysql.query('INSERT INTO contacts SET ?', data)
     
     // Send email notification
-    // await Candy.Mail().to('admin@example.com').subject('New Contact').send(data.message)
+    // await Odac.Mail().to('admin@example.com').subject('New Contact').send(data.message)
     
-    return Candy.return({
+    return Odac.return({
       result: {
         success: true,
         message: 'Thank you! We will get back to you soon.',
@@ -367,8 +367,8 @@ module.exports = {
 ### Route (route/www.js)
 
 ```javascript
-Candy.Route.page('/contact', 'contact')
-Candy.Route.post('/contact/submit', 'contact.submit')
+Odac.Route.page('/contact', 'contact')
+Odac.Route.post('/contact/submit', 'contact.submit')
 ```
 
 ## Features

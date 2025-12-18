@@ -67,9 +67,9 @@ CREATE TABLE `waitlist` (
 **controller/waitlist.js**
 ```javascript
 module.exports = Candy => {
-  Candy.View.skeleton('default')
-  Candy.View.set({content: 'waitlist'})
-  Candy.View.print()
+  Odac.View.skeleton('default')
+  Odac.View.set({content: 'waitlist'})
+  Odac.View.print()
 }
 ```
 
@@ -77,7 +77,7 @@ module.exports = Candy => {
 
 **route/www.js**
 ```javascript
-Candy.Route.page('/waitlist', 'waitlist')
+Odac.Route.page('/waitlist', 'waitlist')
 ```
 
 Done! No form submission handler needed.
@@ -262,30 +262,30 @@ You can add custom logic by specifying a custom `action` attribute. When you do 
 // <odac:form action="/contact/submit" table="contacts">
 
 // In your controller:
-Candy.Route.post('/contact/submit', async Candy => {
-  // Candy.formData contains validated form data
-  // Candy.formConfig contains form configuration
+Odac.Route.post('/contact/submit', async Candy => {
+  // Odac.formData contains validated form data
+  // Odac.formConfig contains form configuration
   
   // Perform custom logic (send email, call API, etc.)
-  await sendEmail(Candy.formData.email, 'Thank you!')
+  await sendEmail(Odac.formData.email, 'Thank you!')
   
   // Manually insert to database if needed
-  await Candy.Mysql.query('INSERT INTO contacts SET ?', Candy.formData)
+  await Odac.Mysql.query('INSERT INTO contacts SET ?', Odac.formData)
   
-  return Candy.return({
+  return Odac.return({
     result: {success: true, message: 'Message sent!'}
   })
 })
-  const data = Candy.formData
+  const data = Odac.formData
   
   // Send welcome email
-  Candy.Mail()
+  Odac.Mail()
     .to(data.email)
     .subject('Welcome!')
     .send('Thanks for joining!')
   
   // Return custom response
-  return Candy.return({
+  return Odac.return({
     result: {
       success: true,
       message: 'Check your email!'

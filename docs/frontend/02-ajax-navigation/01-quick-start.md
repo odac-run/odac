@@ -19,7 +19,7 @@ Odac framework includes a built-in AJAX navigation system that enables smooth, s
 Just enable navigation - it automatically handles all internal links:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: 'main'  // Update <main> element on navigation
 })
 ```
@@ -31,7 +31,7 @@ That's it! All links starting with `/` will now load via AJAX.
 Add a callback for post-navigation actions:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -47,7 +47,7 @@ Candy.action({
 Full control over navigation behavior:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     links: 'a[href^="/"]',  // Which links to intercept
     update: {                // Which elements to update
@@ -186,13 +186,13 @@ module.exports = function (Odac) {
 
 ## API Reference
 
-### Candy.action({ navigate: ... })
+### Odac.action({ navigate: ... })
 
 Initialize AJAX navigation using the action system.
 
 #### Minimal Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: 'main'  // Just specify element to update
 })
 ```
@@ -201,7 +201,7 @@ Candy.action({
 
 #### Medium Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',           // Element to update
     on: function(page, vars) { // Callback after navigation
@@ -213,7 +213,7 @@ Candy.action({
 
 #### Advanced Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     links: 'a[href^="/"]',    // Which links to intercept
     update: {                  // Multiple elements to update
@@ -232,12 +232,12 @@ Candy.action({
 
 #### Boolean Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: true   // Enable with all defaults
 })
 
 // Or disable completely
-Candy.action({
+Odac.action({
   navigate: false  // Disable AJAX navigation
 })
 ```
@@ -323,7 +323,7 @@ Candy.load('/about', function(page, variables) {
 Run code when specific pages load. The page identifier is based on the controller name or view name:
 
 ```javascript
-Candy.action({
+Odac.action({
   page: {
     // Runs when controller/page/index.js is used
     index: function(variables) {
@@ -364,7 +364,7 @@ Candy.set({
 Access in client:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -388,15 +388,15 @@ Candy.action({
 ### Minimal Example
 ```javascript
 // Just enable AJAX navigation
-Candy.action({
+Odac.action({
   navigate: 'main'
 })
 ```
 
 ### Real-World Example
 ```javascript
-// app.js - Everything in one Candy.action() call
-Candy.action({
+// app.js - Everything in one Odac.action() call
+Odac.action({
   // AJAX Navigation - automatically handles all internal links
   navigate: {
     update: 'main',
@@ -449,7 +449,7 @@ Candy.action({
 
 ### Advanced Multi-Section Example
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: {
       content: 'main',
@@ -473,7 +473,7 @@ Candy.action({
 
 ### Disable Completely
 ```javascript
-Candy.action({
+Odac.action({
   navigate: false  // Disable AJAX navigation entirely
 })
 ```
@@ -505,7 +505,7 @@ Candy.action({
 ### 1. Use Minimal Configuration
 ```javascript
 // Simple and effective
-Candy.action({
+Odac.action({
   navigate: 'main'
 })
 ```
@@ -524,7 +524,7 @@ Candy.action({
 
 ### 3. Handle Loading States
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => {
@@ -582,7 +582,7 @@ This is usually caused by mismatched keys between your skeleton, controller, and
 
 3. **Frontend** (`public/assets/js/app.js`):
    ```javascript
-   Candy.action({
+   Odac.action({
      navigate: {
        update: {
          header: 'header',  // Targets <header> tag

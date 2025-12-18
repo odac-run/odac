@@ -25,29 +25,29 @@ When you call this, `Auth` creates a secure session for the user.
 ```javascript
 // Controller for your login form
 module.exports = async function (Odac) {
-    const { username, password } = Candy.Request.post;
+    const { username, password } = Odac.Request.post;
 
     // IMPORTANT: You need to write your own code to find the user in your database!
     const user = await yourDatabase.findUser(username, password);
 
     if (user) {
         // User is valid! Log them in.
-        Candy.Auth.login(user.id, { username: user.username });
-        return Candy.direct('/dashboard'); // Send them to their dashboard
+        Odac.Auth.login(user.id, { username: user.username });
+        return Odac.direct('/dashboard'); // Send them to their dashboard
     } else {
         // Bad credentials, send them back to the login page
-        return Candy.direct('/login?error=1');
+        return Odac.direct('/login?error=1');
     }
 }
 
 // A protected dashboard page
 module.exports = function (Odac) {
     // If they're not logged in, kick them back to the login page.
-    if (!Candy.Auth.isLogin()) {
-        return Candy.direct('/login');
+    if (!Odac.Auth.isLogin()) {
+        return Odac.direct('/login');
     }
 
-    const username = Candy.Auth.get('username');
+    const username = Odac.Auth.get('username');
     return `Welcome back, ${username}!`;
 }
 ```

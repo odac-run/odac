@@ -4,14 +4,14 @@
  * This controller renders the home page using Odac's skeleton-based view system.
  * The skeleton provides the layout (header, nav, footer) and the view provides the content.
  *
- * For AJAX requests (candy-link navigation), only the content is returned.
+ * For AJAX requests (odac-link navigation), only the content is returned.
  * For full page loads, skeleton + content is returned.
  *
  * This page demonstrates:
  * - Modern, responsive design
- * - candy.js AJAX form handling
- * - candy.js GET requests
- * - Dynamic page loading with candy-link
+ * - odac.js AJAX form handling
+ * - odac.js GET requests
+ * - Dynamic page loading with odac-link
  */
 
 module.exports = function (Odac) {

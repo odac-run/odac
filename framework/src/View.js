@@ -213,7 +213,7 @@ class View {
     this.#odac.Request.end(result)
   }
 
-  #parseCandyTag(content) {
+  #parseOdacTag(content) {
     // Parse backend comments
     // Multi-line: <!--odac ... odac-->
     // Single-line: <!--odac ... -->
@@ -222,8 +222,8 @@ class View {
     })
 
     // Parse <script:odac> tags (IDE-friendly JavaScript with backend execution)
-    content = content.replace(/<script:odac([^>]*)>([\s\S]*?)<\/script:candy>/g, (fullMatch, attributes, jsContent) => {
-      return `<odac:js>${jsContent}</candy:js>`
+    content = content.replace(/<script:odac([^>]*)>([\s\S]*?)<\/script:odac>/g, (fullMatch, attributes, jsContent) => {
+      return `<odac:js>${jsContent}</odac:js>`
     })
 
     content = content.replace(/<odac:else\s*\/>/g, '<odac:else>')
@@ -257,7 +257,7 @@ class View {
     let maxDepth = 10
     while (depth < maxDepth && content.includes('<odac')) {
       const before = content
-      content = content.replace(/<odac([^>]*)>((?:(?!<odac)[\s\S])*?)<\/candy>/g, (fullMatch, attributes, innerContent) => {
+      content = content.replace(/<odac([^>]*)>((?:(?!<odac)[\s\S])*?)<\/odac>/g, (fullMatch, attributes, innerContent) => {
         attributes = attributes.trim()
         innerContent = innerContent.trim()
 
@@ -325,13 +325,13 @@ class View {
       content = Form.parse(content, this.#odac)
 
       const jsBlocks = []
-      content = content.replace(/<script:odac([^>]*)>([\s\S]*?)<\/script:candy>/g, (match, attrs, jsContent) => {
+      content = content.replace(/<script:odac([^>]*)>([\s\S]*?)<\/script:odac>/g, (match, attrs, jsContent) => {
         const placeholder = `___ODAC_JS_BLOCK_${jsBlocks.length}___`
         jsBlocks.push(jsContent)
         return `<script:odac${attrs}>${placeholder}</script:odac>`
       })
 
-      content = this.#parseCandyTag(content)
+      content = this.#parseOdacTag(content)
       content = content.replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
 
       jsBlocks.forEach((jsContent, index) => {
@@ -401,10 +401,7 @@ class View {
             result = result.replace(match, fun + match.substring(key.length, match.length - func.close.length) + func.end)
           } else {
             result = result.replace(match, (func.replace ? `<${[func.replace, att].join(' ')}>` : '') + '`; ' + fun + ' html += `')
-            result = result.replace(
-              `</candy:${key}>`,
-              '`; ' + (func.end ?? '}') + ' html += `' + (func.replace ? `</${func.replace}>` : '')
-            )
+            result = result.replace(`</odac:${key}>`, '`; ' + (func.end ?? '}') + ' html += `' + (func.replace ? `</${func.replace}>` : ''))
           }
         }
       }

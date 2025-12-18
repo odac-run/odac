@@ -7,7 +7,7 @@ Defines a page route that requires authentication.
 
 ```javascript
 // Only authenticated users can access the dashboard
-Candy.Route.auth.page('/dashboard', 'dashboard.index');
+Odac.Route.auth.page('/dashboard', 'dashboard.index');
 ```
 
 #### `auth.page(path, viewConfig)`
@@ -15,7 +15,7 @@ Defines a controller-less page route that requires authentication.
 
 ```javascript
 // Only authenticated users can see this view
-Candy.Route.auth.page('/profile', {
+Odac.Route.auth.page('/profile', {
   skeleton: 'main',
   head: 'profile.head',
   content: 'profile',
@@ -28,7 +28,7 @@ Defines a GET route that requires authentication.
 
 ```javascript
 // API endpoint for authenticated users only
-Candy.Route.auth.get('/api/user/profile', 'api.user.profile');
+Odac.Route.auth.get('/api/user/profile', 'api.user.profile');
 ```
 
 #### `auth.post(path, controller, options)`
@@ -36,7 +36,7 @@ Defines a POST route that requires authentication.
 
 ```javascript
 // Only authenticated users can update their profile
-Candy.Route.auth.post('/api/user/update', 'api.user.update');
+Odac.Route.auth.post('/api/user/update', 'api.user.update');
 ```
 
 #### CSRF Token Protection
@@ -44,5 +44,5 @@ By default, all POST and GET routes have CSRF token protection enabled. You can 
 
 ```javascript
 // Disable CSRF token check for this route
-Candy.Route.auth.post('/api/webhook', 'api.webhook', {token: false});
+Odac.Route.auth.post('/api/webhook', 'api.webhook', {token: false});
 ```

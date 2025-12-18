@@ -1,4 +1,4 @@
-class candy {
+class Odac {
   actions = {}
   #data = null
   fn = {}
@@ -52,7 +52,7 @@ class candy {
         }
 
         document.dispatchEvent(
-          new CustomEvent('candy:ajaxSuccess', {
+          new CustomEvent('odac:ajaxSuccess', {
             detail: {response: responseData, status: xhr.statusText, xhr, requestUrl: url}
           })
         )
@@ -355,13 +355,13 @@ class candy {
 
       let actions = this.actions
       if (
-        actions.candy &&
-        actions.candy.form &&
-        actions.candy.form.input &&
-        actions.candy.form.input.class &&
-        actions.candy.form.input.class.invalid
+        actions.odac &&
+        actions.odac.form &&
+        actions.odac.form.input &&
+        actions.odac.form.input.class &&
+        actions.odac.form.input.class.invalid
       ) {
-        const invalidClass = actions.candy.form.input.class.invalid
+        const invalidClass = actions.odac.form.input.class.invalid
         formElement
           .querySelectorAll(`select.${invalidClass},input.${invalidClass},textarea.${invalidClass}`)
           .forEach(el => el.classList.remove(invalidClass))
@@ -541,7 +541,7 @@ class candy {
 
   token() {
     if (!this.#token.listener) {
-      document.addEventListener('candy:ajaxSuccess', event => {
+      document.addEventListener('odac:ajaxSuccess', event => {
         const {detail} = event
         const {xhr, requestUrl} = detail
         if (requestUrl.includes('://')) return false
@@ -902,7 +902,7 @@ class candy {
 
   #createSharedWebSocket(path, options) {
     const workerUrl = this.#createWorkerBlob()
-    const worker = new SharedWorker(workerUrl, `candy-ws-${path}`)
+    const worker = new SharedWorker(workerUrl, `odac-ws-${path}`)
     const handlers = {}
     let isConnected = false
 
@@ -1064,7 +1064,7 @@ class candy {
   }
 }
 
-window.Odac = new candy()
+window.Odac = new Odac()
 
 // Auto-initialize navigation from data-odac-navigate attribute
 ;(function initAutoNavigate() {
@@ -1086,14 +1086,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const formTypes = ['register', 'login']
 
   formTypes.forEach(type => {
-    const forms = document.querySelectorAll(`form.candy-${type}-form[data-odac-${type}]`)
+    const forms = document.querySelectorAll(`form.odac-${type}-form[data-odac-${type}]`)
     forms.forEach(form => {
       const token = form.getAttribute(`data-odac-${type}`)
       window.Odac.form({form: `form[data-odac-${type}="${token}"]`})
     })
   })
 
-  const customForms = document.querySelectorAll('form.candy-custom-form[data-odac-form]')
+  const customForms = document.querySelectorAll('form.odac-custom-form[data-odac-form]')
   customForms.forEach(form => {
     const token = form.getAttribute('data-odac-form')
     window.Odac.form({form: `form[data-odac-form="${token}"]`})

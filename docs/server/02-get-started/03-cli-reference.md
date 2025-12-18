@@ -39,7 +39,7 @@ odac auth --key your-auth-key
 
 ### Basic Server Commands
 
-#### `candy` (no arguments)
+#### `odac` (no arguments)
 Display server status, uptime, and statistics.
 
 #### `odac restart`

@@ -1,7 +1,7 @@
 // ============================================
 // Page Routes
 // ============================================
-// Page routes render HTML views and support AJAX loading via candy.js
+// Page routes render HTML views and support AJAX loading via odac.js
 // Controllers are located in controller/page/ directory
 
 // Home page - displays welcome message, features, and interactive demos

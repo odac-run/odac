@@ -617,7 +617,7 @@ You can define custom callbacks for computed values:
 
 ```javascript
 // In your page controller or global script
-Candy.fn.generateReferralCode = async (Odac) => {
+Odac.fn.generateReferralCode = async (Odac) => {
   return Math.random().toString(36).substring(2, 10).toUpperCase()
 }
 ```

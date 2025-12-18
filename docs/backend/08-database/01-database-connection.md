@@ -44,10 +44,10 @@ Access different databases:
 
 ```javascript
 // Default database
-const users = await Candy.Mysql.table('users').get()
+const users = await Odac.Mysql.table('users').get()
 
 // Specific database
-const stats = await Candy.Mysql.database('analytics').table('stats').get()
+const stats = await Odac.Mysql.database('analytics').table('stats').get()
 ```
 
 ### Environment Variables
@@ -91,9 +91,9 @@ The connection is established automatically when your application starts. You do
 ```javascript
 module.exports = async function (Odac) {
   // Connection is already established
-  const users = await Candy.Mysql.table('users').get()
+  const users = await Odac.Mysql.table('users').get()
   
-  Candy.set('users', users)
-  Candy.View.set({ skeleton: 'main', content: 'users' })
+  Odac.set('users', users)
+  Odac.View.set({ skeleton: 'main', content: 'users' })
 }
 ```

@@ -86,16 +86,16 @@
         <div class="step-number">2</div>
         <h3 class="step-title">Add Routes</h3>
         <p class="step-description">Define new pages in <code>route/www.js</code>. Map URLs to controllers:</p>
-        <pre class="code-snippet"><code>Candy.Route.page('/my-page', 'page.mypage')</code></pre>
+        <pre class="code-snippet"><code>Odac.Route.page('/my-page', 'page.mypage')</code></pre>
       </div>
 
       <div class="quickstart-step">
         <div class="step-number">3</div>
         <h3 class="step-title">Create Controllers</h3>
         <p class="step-description">Add logic in <code>controller/page/mypage.js</code>:</p>
-        <pre class="code-snippet"><code>module.exports = function(Candy) {
-  Candy.View.skeleton('main')
-  Candy.View.set({
+        <pre class="code-snippet"><code>module.exports = function(Odac) {
+  Odac.View.skeleton('main')
+  Odac.View.set({
     header: 'main',
     content: 'mypage',
     footer: 'main'
