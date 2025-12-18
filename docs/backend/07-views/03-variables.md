@@ -119,7 +119,7 @@ You have full access to the `Odac` object within templates:
 <odac:if condition="Odac.Auth.check()">
   <p>User ID: <odac var="Odac.Auth.user().id" /></p>
   <p>Email: <odac var="Odac.Auth.user().email" /></p>
-</candy:if>
+</odac:if>
 
 <!-- Request Information -->
 <p>Method: <odac var="Odac.Request.method" /></p>
@@ -129,7 +129,7 @@ You have full access to the `Odac` object within templates:
 <!-- Configuration -->
 <odac:if condition="Odac.Config.debug">
   <div class="debug-info">Debug mode enabled</div>
-</candy:if>
+</odac:if>
 ```
 
 ### Practical Examples
@@ -165,7 +165,7 @@ module.exports = async function(Odac) {
   
   <odac:if condition="user.isVerified">
     <span class="badge">✓ Verified</span>
-  </candy:if>
+  </odac:if>
   
   <div class="bio">
     <odac var="user.bio" raw />
@@ -208,7 +208,7 @@ module.exports = async function(Odac) {
     <span class="discount">-<odac var="product.discount" />%</span>
   <odac:else>
     <p class="price">$<odac var="product.price" /></p>
-  </candy:if>
+  </odac:if>
   
   <div class="description">
     <odac var="product.description" />
@@ -244,7 +244,7 @@ module.exports = async function(Odac) {
       <h3><odac var="product.name" /></h3>
       <p>$<odac var="product.price" /></p>
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
@@ -273,7 +273,7 @@ Odac.set({
 <!-- Don't do complex logic in views -->
 <odac:if condition="user.role === 'admin' && user.verified && !user.banned">
   ...
-</candy:if>
+</odac:if>
 ```
 
 ### Error Handling
@@ -308,7 +308,7 @@ module.exports = async function(Odac) {
   <div class="product">
     <h1><odac var="product.name" /></h1>
   </div>
-</candy:if>
+</odac:if>
 ```
 
 ### Legacy Syntax (Backward Compatibility)

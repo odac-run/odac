@@ -1,10 +1,10 @@
 # Frontend Javascript Framework: odac.js
 
-`odac.js` is a lightweight frontend JavaScript framework designed to simplify interactions with the backend, handle forms, and manage page-specific logic within the Odac ecosystem. It provides a set of tools for event handling, AJAX requests, and more, all accessible through the global `Candy` object.
+`odac.js` is a lightweight frontend JavaScript framework designed to simplify interactions with the backend, handle forms, and manage page-specific logic within the Odac ecosystem. It provides a set of tools for event handling, AJAX requests, and more, all accessible through the global `odac` object.
 
-## The Global `Candy` Object
+## The Global `odac` Object
 
-After including `odac.js` in your page, you will have access to a global `Candy` object. This object is the main entry point for all the features of the framework.
+After including `odac.js` in your page, you will have access to a global `odac` object. This object is the main entry point for all the features of the framework.
 
 ## Core Concepts
 
@@ -35,7 +35,7 @@ The `Odac.action()` method is the most important method in the framework. It all
 Odac.action({
     // Fired once on DOMContentLoaded
     start: function() {
-        console.log('Candy.js started!');
+        console.log('odac.js started!');
     },
 
     // Fired on every page load
@@ -88,13 +88,13 @@ Odac.action({
 
 ```javascript
 // Basic usage
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
     // This callback is executed on success
     console.log('Form submitted successfully!', data);
 });
 
 // With options
-Candy.form({
+odac.form({
     form: '#my-form',
     messages: ['success', 'error'], // Show both success and error messages
     loading: function(percent) {
@@ -119,7 +119,7 @@ To display validation errors, you can add elements with the `odac-form-error` at
 For simple GET requests, you can use the `Odac.get()` method.
 
 ```javascript
-Candy.get('/api/users', function(data) {
+odac.get('/api/users', function(data) {
     console.log('Users:', data);
 });
 ```
@@ -136,11 +136,11 @@ Candy.get('/api/users', function(data) {
 -   **`Odac.storage()`**: A wrapper for `localStorage`.
     ```javascript
     // Set a value
-    Candy.storage('my-key', 'my-value');
+    odac.storage('my-key', 'my-value');
 
     // Get a value
-    let value = Candy.storage('my-key');
+    let value = odac.storage('my-key');
 
     // Remove a value
-    Candy.storage('my-key', null);
+    odac.storage('my-key', null);
     ```

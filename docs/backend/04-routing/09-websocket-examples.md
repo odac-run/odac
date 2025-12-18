@@ -8,7 +8,7 @@ Simple echo server that sends back received messages:
 
 ```javascript
 // route/websocket.js
-Odac.Route.ws('/echo', Candy => {
+Odac.Route.ws('/echo', Odac => {
   Odac.ws.send({type: 'welcome', message: 'Connected!'})
 
   Odac.ws.on('message', data => {
@@ -29,7 +29,7 @@ ws.send({message: 'Hello!'})
 ### Using auth.ws() (Recommended)
 
 ```javascript
-Odac.Route.auth.ws('/chat', async Candy => {
+Odac.Route.auth.ws('/chat', async Odac => {
   const user = await Odac.Auth.user()
 
   Odac.ws.join('general')
@@ -60,7 +60,7 @@ Odac.Route.auth.ws('/chat', async Candy => {
 ### Manual Authentication Check
 
 ```javascript
-Odac.Route.ws('/chat', async Candy => {
+Odac.Route.ws('/chat', async Odac => {
   const user = await Odac.Auth.user()
   
   if (!user) {
@@ -111,7 +111,7 @@ chat.send({text: 'Hello everyone!'})
 Dynamic rooms using URL parameters:
 
 ```javascript
-Odac.Route.ws('/room/{roomId}', async Candy => {
+Odac.Route.ws('/room/{roomId}', async Odac => {
   const {roomId} = Odac.Request.data.url
   const user = await Odac.Auth.user()
 
@@ -151,7 +151,7 @@ room.send({text: 'Hi from gaming room!'})
 User-specific notification system:
 
 ```javascript
-Odac.Route.ws('/notifications', async Candy => {
+Odac.Route.ws('/notifications', async Odac => {
   const user = await Odac.Auth.user()
 
   if (!user) {
@@ -197,7 +197,7 @@ notifications.on('message', data => {
 Broadcast messages to all connected clients:
 
 ```javascript
-Odac.Route.ws('/broadcast', Candy => {
+Odac.Route.ws('/broadcast', Odac => {
   Odac.ws.on('message', data => {
     if (data.type === 'broadcast') {
       Odac.ws.broadcast({
@@ -232,7 +232,7 @@ broadcast.send({
 Real-time data updates for dashboards:
 
 ```javascript
-Odac.Route.ws('/dashboard', async Candy => {
+Odac.Route.ws('/dashboard', async Odac => {
   const user = await Odac.Auth.user()
 
   if (!user || !user.isAdmin) {
@@ -273,7 +273,7 @@ Use middleware for rate limiting, authentication, or custom logic:
 // middleware/rate-limit.js
 const connections = new Map()
 
-module.exports = async Candy => {
+module.exports = async Odac => {
   const ip = Odac.Request.ip
   const now = Date.now()
   
@@ -289,7 +289,7 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Odac.Route.use('rate-limit').ws('/chat', Candy => {
+Odac.Route.use('rate-limit').ws('/chat', Odac => {
   Odac.ws.send({type: 'connected'})
 })
 ```
@@ -297,7 +297,7 @@ Odac.Route.use('rate-limit').ws('/chat', Candy => {
 **Multiple Middleware:**
 
 ```javascript
-Odac.Route.use('auth', 'rate-limit', 'log-connection').ws('/secure', Candy => {
+Odac.Route.use('auth', 'rate-limit', 'log-connection').ws('/secure', Odac => {
   Odac.ws.send({type: 'authenticated'})
 })
 ```
@@ -307,7 +307,7 @@ Odac.Route.use('auth', 'rate-limit', 'log-connection').ws('/secure', Candy => {
 Simple multiplayer game state synchronization:
 
 ```javascript
-Odac.Route.ws('/game/{gameId}', async Candy => {
+Odac.Route.ws('/game/{gameId}', async Odac => {
   const {gameId} = Odac.Request.data.url
   const user = await Odac.Auth.user()
 

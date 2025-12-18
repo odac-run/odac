@@ -14,7 +14,7 @@ Learn how to handle forms with automatic AJAX submission, CSRF protection, and v
 ```
 
 ```javascript
-Candy.form('#contact-form', function(data) {
+odac.form('#contact-form', function(data) {
   if (data.result.success) {
     alert('Form submitted successfully!')
   }
@@ -35,7 +35,7 @@ That's it! odac.js handles:
 ### Basic Usage
 
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   console.log('Response:', data)
 })
 ```
@@ -43,7 +43,7 @@ Candy.form('#my-form', function(data) {
 ### With Options
 
 ```javascript
-Candy.form({
+odac.form({
   form: '#my-form',
   messages: true,  // Show error/success messages
   loading: function(percent) {
@@ -59,7 +59,7 @@ Candy.form({
 ### Redirect After Submit
 
 ```javascript
-Candy.form('#my-form', '/success-page')
+odac.form('#my-form', '/success-page')
 // Redirects to /success-page on success
 ```
 
@@ -85,7 +85,7 @@ If you want to control where errors appear, add error elements manually:
 ### Custom Error Display
 
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   if (!data.result.success) {
     // Custom error handling
     Object.entries(data.errors).forEach(([field, message]) => {
@@ -137,7 +137,7 @@ If you want to control where success messages appear, add a success element manu
 ### Custom Success Message
 
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   if (data.result.success) {
     document.querySelector('#custom-message').innerHTML = 
       'Thank you! Your form has been submitted.'
@@ -157,7 +157,7 @@ Candy.form('#my-form', function(data) {
 ```
 
 ```javascript
-Candy.form('#upload-form', function(data) {
+odac.form('#upload-form', function(data) {
   if (data.result.success) {
     console.log('File uploaded:', data.result.filename)
   }
@@ -167,7 +167,7 @@ Candy.form('#upload-form', function(data) {
 ### Upload Progress
 
 ```javascript
-Candy.form({
+odac.form({
   form: '#upload-form',
   loading: function(percent) {
     document.querySelector('#progress').style.width = percent + '%'
@@ -189,7 +189,7 @@ Candy.form({
 ### Disable Messages
 
 ```javascript
-Candy.form({
+odac.form({
   form: '#my-form',
   messages: false  // Don't show automatic messages
 }, function(data) {
@@ -200,7 +200,7 @@ Candy.form({
 ### Disable Specific Messages
 
 ```javascript
-Candy.form({
+odac.form({
   form: '#my-form',
   messages: ['error']  // Only show errors, not success
 }, function(data) {
@@ -211,7 +211,7 @@ Candy.form({
 ### Form Reset
 
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   if (data.result.success) {
     // Reset the form
     document.querySelector('#my-form').reset()
@@ -229,7 +229,7 @@ document.querySelector('#my-form').addEventListener('submit', function(e) {
   }
 })
 
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   console.log('Submitted!')
 })
 ```
@@ -241,8 +241,8 @@ Candy.form('#my-form', function(data) {
 ```javascript
 // controller/post/contact.js
 module.exports = async function(Odac) {
-  const email = await Candy.Request.request('email')
-  const message = await Candy.Request.request('message')
+  const email = await odac.Request.request('email')
+  const message = await odac.Request.request('message')
   
   // Validation
   const errors = {}
@@ -272,7 +272,7 @@ module.exports = async function(Odac) {
 
 ```javascript
 // route/www.js
-Candy.Route.post('/api/contact', 'contact')
+odac.Route.post('/api/contact', 'contact')
 ```
 
 ## Validation
@@ -293,7 +293,7 @@ Always validate on the server:
 
 ```javascript
 module.exports = async function(Odac) {
-  const email = await Candy.Request.request('email')
+  const email = await odac.Request.request('email')
   
   const errors = {}
   
@@ -336,7 +336,7 @@ module.exports = async function(Odac) {
 **Note:** Error and success elements are auto-generated. Add them manually only if you need custom positioning or styling.
 
 ```javascript
-Candy.form('#contact-form', function(data) {
+odac.form('#contact-form', function(data) {
   if (data.result.success) {
     document.querySelector('#contact-form').reset()
   }
@@ -354,7 +354,7 @@ Candy.form('#contact-form', function(data) {
 ```
 
 ```javascript
-Candy.form('#login-form', function(data) {
+odac.form('#login-form', function(data) {
   if (data.result.success) {
     // Redirect to dashboard
     window.location.href = '/dashboard'

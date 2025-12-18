@@ -41,7 +41,7 @@ const ws = Odac.ws('/public', {token: false})
 
 **How it works:**
 1. Client calls `Odac.token()` to get current CSRF token
-2. Token is sent as `candy-token-{token}` in WebSocket protocol header
+2. Token is sent as `odac-token-{token}` in WebSocket protocol header
 3. Server validates token before accepting connection
 4. If invalid, connection closes with code `4002`
 

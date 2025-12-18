@@ -5,13 +5,13 @@ Backend JavaScript allows you to execute JavaScript code during template renderi
 ### Basic Usage
 
 ```html
-<script:candy>
+<script:odac>
   // This runs on the SERVER during template rendering
   let total = 0;
   for (let item of cart) {
     total += item.price * item.quantity;
   }
-</script:candy>
+</script:odac>
 
 <p>Total: $<odac var="total" /></p>
 ```
@@ -51,7 +51,7 @@ module.exports = async function(Odac) {
 
 ```html
 <!-- View -->
-<script:candy>
+<script:odac>
   let total = 0;
   let itemCount = 0;
   
@@ -61,7 +61,7 @@ module.exports = async function(Odac) {
   }
   
   const avgPrice = total / itemCount;
-</script:candy>
+</script:odac>
 
 <div class="cart-summary">
   <p>Total Items: <odac var="itemCount" /></p>
@@ -75,16 +75,16 @@ module.exports = async function(Odac) {
 Full access to the Odac object and all its methods:
 
 ```html
-<script:candy>
+<script:odac>
   const isLoggedIn = Odac.Auth.check();
   const currentUser = isLoggedIn ? Odac.Auth.user() : null;
   const requestMethod = Odac.Request.method;
   const currentUrl = Odac.Request.url;
-</script:candy>
+</script:odac>
 
 <odac:if condition="isLoggedIn">
   <p>Welcome, <odac var="currentUser.name" />!</p>
-</candy:if>
+</odac:if>
 ```
 
 ### Practical Examples
@@ -92,7 +92,7 @@ Full access to the Odac object and all its methods:
 #### Shopping Cart Calculations
 
 ```html
-<script:candy>
+<script:odac>
   let subtotal = 0;
   let totalItems = 0;
   
@@ -104,7 +104,7 @@ Full access to the Odac object and all its methods:
   const tax = subtotal * 0.18; // 18% tax
   const shipping = subtotal > 100 ? 0 : 10;
   const total = subtotal + tax + shipping;
-</script:candy>
+</script:odac>
 
 <div class="cart-summary">
   <h3>Order Summary</h3>
@@ -115,7 +115,7 @@ Full access to the Odac object and all its methods:
       <span class="free">FREE</span>
     <odac:else>
       $<odac var="shipping.toFixed(2)" />
-    </candy:if>
+    </odac:if>
   </p>
   <hr>
   <p class="total">Total: $<odac var="total.toFixed(2)" /></p>
@@ -125,7 +125,7 @@ Full access to the Odac object and all its methods:
 #### Filtering and Sorting
 
 ```html
-<script:candy>
+<script:odac>
   // Filter active products
   const activeProducts = products.filter(p => p.isActive && p.stock > 0);
   
@@ -139,7 +139,7 @@ Full access to the Odac object and all its methods:
   const avgPrice = activeProducts.reduce((sum, p) => sum + p.price, 0) / activeProducts.length;
   const maxPrice = Math.max(...activeProducts.map(p => p.price));
   const minPrice = Math.min(...activeProducts.map(p => p.price));
-</script:candy>
+</script:odac>
 
 <div class="products-section">
   <h2>Featured Products</h2>
@@ -153,16 +153,16 @@ Full access to the Odac object and all its methods:
       
       <odac:if condition="product.price < avgPrice">
         <span class="badge">Great Deal!</span>
-      </candy:if>
+      </odac:if>
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
 #### Date and Time Formatting
 
 ```html
-<script:candy>
+<script:odac>
   const now = new Date();
   const postDate = new Date(post.createdAt);
   
@@ -188,7 +188,7 @@ Full access to the Odac object and all its methods:
     month: 'long',
     day: 'numeric'
   });
-</script:candy>
+</script:odac>
 
 <div class="post">
   <h2><odac var="post.title" /></h2>
@@ -201,7 +201,7 @@ Full access to the Odac object and all its methods:
 #### Grouping Data
 
 ```html
-<script:candy>
+<script:odac>
   // Group products by category
   const grouped = {};
   for (let product of products) {
@@ -213,7 +213,7 @@ Full access to the Odac object and all its methods:
   
   // Sort categories
   const categories = Object.keys(grouped).sort();
-</script:candy>
+</script:odac>
 
 <div class="products-by-category">
   <odac:for in="categories" value="category">
@@ -226,16 +226,16 @@ Full access to the Odac object and all its methods:
           <h3><odac var="product.name" /></h3>
           <p>$<odac var="product.price" /></p>
         </div>
-      </candy:for>
+      </odac:for>
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 ```
 
 #### Pagination Logic
 
 ```html
-<script:candy>
+<script:odac>
   const itemsPerPage = 10;
   const currentPage = parseInt(Odac.Request.get('page')) || 1;
   const totalItems = products.length;
@@ -247,33 +247,33 @@ Full access to the Odac object and all its methods:
   
   const hasPrevious = currentPage > 1;
   const hasNext = currentPage < totalPages;
-</script:candy>
+</script:odac>
 
 <div class="products">
   <odac:for in="currentItems" value="product">
     <div class="product">
       <h3><odac var="product.name" /></h3>
     </div>
-  </candy:for>
+  </odac:for>
 </div>
 
 <div class="pagination">
   <odac:if condition="hasPrevious">
     <a href="?page=<odac var="currentPage - 1" />">Previous</a>
-  </candy:if>
+  </odac:if>
   
   <span>Page <odac var="currentPage" /> of <odac var="totalPages" /></span>
   
   <odac:if condition="hasNext">
     <a href="?page=<odac var="currentPage + 1" />">Next</a>
-  </candy:if>
+  </odac:if>
 </div>
 ```
 
 #### Complex Conditional Logic
 
 ```html
-<script:candy>
+<script:odac>
   const user = Odac.Auth.check() ? Odac.Auth.user() : null;
   
   const canEdit = user && (
@@ -286,7 +286,7 @@ Full access to the Odac object and all its methods:
   const canComment = user && !user.isBanned && post.commentsEnabled;
   
   const showActions = canEdit || canDelete || canComment;
-</script:candy>
+</script:odac>
 
 <div class="post">
   <h2><odac var="post.title" /></h2>
@@ -296,48 +296,48 @@ Full access to the Odac object and all its methods:
     <div class="actions">
       <odac:if condition="canEdit">
         <a href="/posts/<odac var="post.id" />/edit">Edit</a>
-      </candy:if>
+      </odac:if>
       
       <odac:if condition="canDelete">
         <a href="/posts/<odac var="post.id" />/delete">Delete</a>
-      </candy:if>
+      </odac:if>
       
       <odac:if condition="canComment">
         <a href="#comments">Add Comment</a>
-      </candy:if>
+      </odac:if>
     </div>
-  </candy:if>
+  </odac:if>
 </div>
 ```
 
 ### Multiple Script Blocks
 
-You can use multiple `<script:candy>` blocks in the same view:
+You can use multiple `<script:odac>` blocks in the same view:
 
 ```html
-<script:candy>
+<script:odac>
   let total = 0;
-</script:candy>
+</script:odac>
 
 <odac:for in="items" value="item">
   <div><odac var="item.name" /></div>
   
-  <script:candy>
+  <script:odac>
     total += item.price;
-  </script:candy>
-</candy:for>
+  </script:odac>
+</odac:for>
 
 <p>Total: $<odac var="total" /></p>
 ```
 
 ### Comparison with Client-Side JavaScript
 
-**Backend JavaScript (`<script:candy>`):**
+**Backend JavaScript (`<script:odac>`):**
 ```html
-<script:candy>
+<script:odac>
   // Runs on SERVER during rendering
   const total = products.reduce((sum, p) => sum + p.price, 0);
-</script:candy>
+</script:odac>
 <p>Total: $<odac var="total" /></p>
 ```
 
@@ -369,19 +369,19 @@ You can use multiple `<script:candy>` blocks in the same view:
 
 **Good:**
 ```html
-<script:candy>
+<script:odac>
   const discountedPrice = product.price * (1 - product.discount / 100);
   const savings = product.price - discountedPrice;
-</script:candy>
+</script:odac>
 ```
 
 **Avoid:**
 ```html
-<script:candy>
+<script:odac>
   // Don't do this - should be in controller
   const users = await Odac.Mysql.query('SELECT * FROM users');
   const apiData = await fetch('https://api.example.com/data');
-</script:candy>
+</script:odac>
 ```
 
 ### Common Use Cases

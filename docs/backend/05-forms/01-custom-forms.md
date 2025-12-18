@@ -8,10 +8,10 @@ Odac provides an automatic form system with built-in validation, CSRF protection
 <odac:form action="/contact/submit" method="POST">
   <odac:field name="email" type="email" label="Email">
     <odac:validate rule="required|email" message="Valid email required"/>
-  </candy:field>
+  </odac:field>
   
   <odac:submit text="Send" loading="Sending..."/>
-</candy:form>
+</odac:form>
 ```
 
 ## Form Attributes
@@ -30,12 +30,12 @@ Odac provides an automatic form system with built-in validation, CSRF protection
 <!-- With custom controller -->
 <odac:form action="/api/save" method="POST" class="my-form" id="contact-form">
   <!-- fields here -->
-</candy:form>
+</odac:form>
 
 <!-- With automatic DB insert -->
 <odac:form table="waitlist" redirect="/" success="Thank you for joining!">
   <!-- fields here -->
-</candy:form>
+</odac:form>
 ```
 
 ## Field Types
@@ -51,58 +51,58 @@ Supports all standard HTML input types:
   <odac:validate rule="minlen:3" message="Username must be at least 3 characters"/>
   <odac:validate rule="maxlen:20" message="Username cannot exceed 20 characters"/>
   <odac:validate rule="alphanumeric" message="Username can only contain letters and numbers"/>
-</candy:field>
+</odac:field>
 
 <!-- Email input -->
 <odac:field name="email" type="email" label="Email Address" placeholder="your@email.com">
   <odac:validate rule="required" message="Email address is required"/>
   <odac:validate rule="email" message="Please enter a valid email address"/>
   <odac:validate rule="maxlen:100" message="Email is too long"/>
-</candy:field>
+</odac:field>
 
 <!-- Password input with strong validation -->
 <odac:field name="password" type="password" label="Password">
   <odac:validate rule="required" message="Password is required"/>
   <odac:validate rule="minlen:8" message="Password must be at least 8 characters long"/>
   <odac:validate rule="maxlen:50" message="Password is too long"/>
-</candy:field>
+</odac:field>
 
 <!-- Textarea with character limits -->
 <odac:field name="message" type="textarea" label="Your Message" placeholder="Tell us what you think...">
   <odac:validate rule="required" message="Please enter your message"/>
   <odac:validate rule="minlen:10" message="Message must be at least 10 characters"/>
   <odac:validate rule="maxlen:500" message="Message cannot exceed 500 characters"/>
-</candy:field>
+</odac:field>
 
 <!-- Checkbox for terms acceptance -->
 <odac:field name="agree" type="checkbox" label="I agree to the Terms of Service and Privacy Policy">
   <odac:validate rule="accepted" message="You must accept the terms to continue"/>
-</candy:field>
+</odac:field>
 
 <!-- Number input with range -->
 <odac:field name="age" type="number" label="Your Age">
   <odac:validate rule="required" message="Age is required"/>
   <odac:validate rule="min:18" message="You must be at least 18 years old"/>
   <odac:validate rule="max:120" message="Please enter a valid age"/>
-</candy:field>
+</odac:field>
 
 <!-- Phone number -->
 <odac:field name="phone" type="text" label="Phone Number" placeholder="+1 (555) 123-4567">
   <odac:validate rule="required" message="Phone number is required"/>
   <odac:validate rule="minlen:10" message="Phone number must be at least 10 digits"/>
-</candy:field>
+</odac:field>
 
 <!-- URL input -->
 <odac:field name="website" type="url" label="Website" placeholder="https://example.com">
   <odac:validate rule="url" message="Please enter a valid URL"/>
-</candy:field>
+</odac:field>
 
 <!-- Name with alpha validation -->
 <odac:field name="full_name" type="text" label="Full Name" placeholder="John Doe">
   <odac:validate rule="required" message="Full name is required"/>
   <odac:validate rule="minlen:2" message="Name must be at least 2 characters"/>
   <odac:validate rule="maxlen:50" message="Name is too long"/>
-</candy:field>
+</odac:field>
 ```
 
 ### Field Attributes
@@ -123,7 +123,7 @@ Add validation rules to fields:
 ```html
 <odac:field name="username" type="text">
   <odac:validate rule="required|minlen:3|maxlen:20" message="Username must be 3-20 characters"/>
-</candy:field>
+</odac:field>
 ```
 
 ### Available Rules
@@ -208,7 +208,7 @@ Handle form submission in your controller:
 
 ```javascript
 module.exports = {
-  submit: Candy => {
+  submit: Odac => {
     // Access validated form data
     const data = Odac.formData
     
@@ -235,7 +235,7 @@ Return validation errors:
 
 ```javascript
 module.exports = {
-  submit: Candy => {
+  submit: Odac => {
     const data = Odac.formData
     
     // Custom validation
@@ -265,17 +265,17 @@ Forms can automatically insert data into database without writing a controller:
 <odac:form table="waitlist" redirect="/" success="Thank you for joining!">
   <odac:field name="email" type="email" label="Email">
     <odac:validate rule="required|email|unique" message="Valid email required"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="name" type="text" label="Name">
     <odac:validate rule="required|minlen:2" message="Name required"/>
-  </candy:field>
+  </odac:field>
   
   <odac:set name="created_at" compute="now"/>
   <odac:set name="ip" compute="ip"/>
   
   <odac:submit text="Join Waitlist" loading="Joining..."/>
-</candy:form>
+</odac:form>
 ```
 
 ### Database Table
@@ -315,22 +315,22 @@ That's it! No controller needed. The form will:
   <odac:form action="/contact/submit" method="POST" class="contact-form">
     <odac:field name="name" type="text" label="Your Name" placeholder="Enter your name">
       <odac:validate rule="required|minlen:3" message="Name must be at least 3 characters"/>
-    </candy:field>
+    </odac:field>
     
     <odac:field name="email" type="email" label="Email" placeholder="your@email.com">
       <odac:validate rule="required|email" message="Please enter a valid email"/>
-    </candy:field>
+    </odac:field>
     
     <odac:field name="subject" type="text" label="Subject" placeholder="What is this about?">
       <odac:validate rule="required|minlen:5" message="Subject must be at least 5 characters"/>
-    </candy:field>
+    </odac:field>
     
     <odac:field name="message" type="textarea" label="Message" placeholder="Your message...">
       <odac:validate rule="required|minlen:10" message="Message must be at least 10 characters"/>
-    </candy:field>
+    </odac:field>
     
     <odac:submit text="Send Message" loading="Sending..." class="btn btn-primary"/>
-  </candy:form>
+  </odac:form>
 </div>
 ```
 
@@ -338,13 +338,13 @@ That's it! No controller needed. The form will:
 
 ```javascript
 module.exports = {
-  index: Candy => {
+  index: Odac => {
     Odac.View.skeleton('default')
     Odac.View.set({content: 'contact'})
     Odac.View.print()
   },
 
-  submit: Candy => {
+  submit: Odac => {
     const data = Odac.formData
     
     // Save to database

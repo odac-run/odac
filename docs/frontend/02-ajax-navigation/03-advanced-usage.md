@@ -6,31 +6,31 @@ Advanced techniques and patterns for AJAX navigation in Odac.
 
 ## Programmatic Navigation
 
-### Using Candy.load()
+### Using odac.load()
 
 Navigate programmatically from your code:
 
 ```javascript
 // Basic usage
-Candy.load('/about')
+odac.load('/about')
 
 // With callback
-Candy.load('/about', function(page, variables) {
+odac.load('/about', function(page, variables) {
   console.log('Loaded:', page)
   console.log('Data:', variables)
 })
 
 // Without updating history
-Candy.load('/about', callback, false)
+odac.load('/about', callback, false)
 ```
 
 ### Use Cases
 
 **Redirect after form submission:**
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   if (data.result.success) {
-    Candy.load('/success')
+    odac.load('/success')
   }
 })
 ```
@@ -38,16 +38,16 @@ Candy.form('#my-form', function(data) {
 **Conditional navigation:**
 ```javascript
 if (user.isLoggedIn) {
-  Candy.load('/dashboard')
+  odac.load('/dashboard')
 } else {
-  Candy.load('/login')
+  odac.load('/login')
 }
 ```
 
 **Timed navigation:**
 ```javascript
 setTimeout(() => {
-  Candy.load('/next-page')
+  odac.load('/next-page')
 }, 3000)
 ```
 
@@ -76,8 +76,8 @@ Define all parts in your controller:
 
 ```javascript
 module.exports = function(Odac) {
-  Candy.View.skeleton('main')
-  Candy.View.set({
+  odac.View.skeleton('main')
+  odac.View.set({
     header: 'main',
     content: 'dashboard',
     sidebar: 'dashboard',
@@ -282,10 +282,10 @@ Odac.action({
 Gracefully handle navigation errors:
 
 ```javascript
-// Override Candy.load to add error handling
-const originalLoad = Candy.load.bind(Odac)
+// Override odac.load to add error handling
+const originalLoad = odac.load.bind(Odac)
 
-Candy.load = function(url, callback, push) {
+odac.load = function(url, callback, push) {
   try {
     originalLoad(url, function(page, variables) {
       if (callback) callback(page, variables)
@@ -308,7 +308,7 @@ function loadWithRetry(url, maxRetries = 3) {
   
   function attempt() {
     attempts++
-    Candy.load(url, 
+    odac.load(url, 
       (page, vars) => {
         console.log('Success after', attempts, 'attempts')
       },
@@ -440,7 +440,7 @@ describe('Navigation', () => {
     })
     
     // Simulate navigation
-    Candy.load('/about')
+    odac.load('/about')
     
     // Assert
     expect(document.querySelector('.nav-link.active').href)

@@ -129,7 +129,7 @@ The keys (content, header, etc.) must match the view parts defined in your contr
 
 ```javascript
 // In controller
-Candy.View.set({
+odac.View.set({
   header: 'main',
   content: 'about',
   sidebar: 'main'
@@ -219,14 +219,14 @@ In your controller, send data to the client:
 ```javascript
 module.exports = function(Odac) {
   // Set variables for AJAX responses
-  Candy.set({
+  odac.set({
     title: 'About Page',
     user: {name: 'John', role: 'admin'},
     stats: {views: 1234}
   }, true)  // true = include in AJAX
   
-  Candy.View.skeleton('main')
-  Candy.View.set({
+  odac.View.skeleton('main')
+  odac.View.set({
     header: 'main',
     content: 'about',
     footer: 'main'

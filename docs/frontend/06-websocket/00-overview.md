@@ -6,7 +6,7 @@ Odac provides built-in WebSocket support with automatic reconnection and cross-t
 
 **Backend (route/main.js):**
 ```javascript
-Candy.Route.ws('/chat', (ws, Candy) => {
+odac.Route.ws('/chat', (ws, Odac) => {
   ws.on('message', data => {
     ws.broadcast(data)
   })
@@ -32,7 +32,7 @@ Share a single WebSocket connection across multiple browser tabs using SharedWor
 Group clients into rooms for targeted broadcasting.
 
 ### 🔐 Authentication
-Full access to Candy context for authentication and authorization.
+Full access to Odac context for authentication and authorization.
 
 ### 📦 JSON Auto-Parsing
 Automatically parses JSON messages on both client and server.

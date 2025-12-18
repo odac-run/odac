@@ -8,10 +8,10 @@ Forms can automatically insert data into your database without writing any contr
 <odac:form table="waitlist">
   <odac:field name="email" type="email" label="Email">
     <odac:validate rule="required|email|unique"/>
-  </candy:field>
+  </odac:field>
   
   <odac:submit text="Join"/>
-</candy:form>
+</odac:form>
 ```
 
 That's it! The form will automatically:
@@ -47,18 +47,18 @@ CREATE TABLE `waitlist` (
   <odac:form table="waitlist" redirect="/" success="Thank you for joining!">
     <odac:field name="email" type="email" label="Email" placeholder="your@email.com">
       <odac:validate rule="required|email|unique" message="Please enter a valid email"/>
-    </candy:field>
+    </odac:field>
     
     <odac:field name="name" type="text" label="Name" placeholder="Your name">
       <odac:validate rule="required|minlen:2" message="Name is required"/>
-    </candy:field>
+    </odac:field>
     
     <odac:set name="created_at" compute="now"/>
     <odac:set name="ip" compute="ip"/>
     <odac:set name="user_agent" compute="user_agent"/>
     
     <odac:submit text="Join Waitlist" loading="Joining..." class="btn btn-primary"/>
-  </candy:form>
+  </odac:form>
 </div>
 ```
 
@@ -66,7 +66,7 @@ CREATE TABLE `waitlist` (
 
 **controller/waitlist.js**
 ```javascript
-module.exports = Candy => {
+module.exports = Odac => {
   Odac.View.skeleton('default')
   Odac.View.set({content: 'waitlist'})
   Odac.View.print()
@@ -112,7 +112,7 @@ Use `unique` rule to prevent duplicate entries:
 ```html
 <odac:field name="email" type="email">
   <odac:validate rule="required|email|unique" message="This email is already registered"/>
-</candy:field>
+</odac:field>
 ```
 
 The system will:
@@ -165,13 +165,13 @@ Only set if field is empty:
 <odac:form table="newsletter" success="Thanks for subscribing!">
   <odac:field name="email" type="email">
     <odac:validate rule="required|email|unique"/>
-  </candy:field>
+  </odac:field>
   
   <odac:set name="subscribed_at" compute="now"/>
   <odac:set name="status" value="active"/>
   
   <odac:submit text="Subscribe"/>
-</candy:form>
+</odac:form>
 ```
 
 ### Feedback Form
@@ -180,17 +180,17 @@ Only set if field is empty:
 <odac:form table="feedback" redirect="/" success="Thank you for your feedback!">
   <odac:field name="rating" type="number" label="Rating (1-5)">
     <odac:validate rule="required|min:1|max:5"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="comment" type="textarea" label="Comment">
     <odac:validate rule="required|minlen:10"/>
-  </candy:field>
+  </odac:field>
   
   <odac:set name="created_at" compute="now"/>
   <odac:set name="ip" compute="ip"/>
   
   <odac:submit text="Submit Feedback"/>
-</candy:form>
+</odac:form>
 ```
 
 ### Beta Access Request
@@ -199,21 +199,21 @@ Only set if field is empty:
 <odac:form table="beta_requests" success="You're on the list!">
   <odac:field name="email" type="email">
     <odac:validate rule="required|email|unique"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="company" type="text">
     <odac:validate rule="required"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="use_case" type="textarea">
     <odac:validate rule="required|minlen:20"/>
-  </candy:field>
+  </odac:field>
   
   <odac:set name="requested_at" compute="now"/>
   <odac:set name="status" value="pending"/>
   
   <odac:submit text="Request Access"/>
-</candy:form>
+</odac:form>
 ```
 
 ## Error Handling
@@ -262,7 +262,7 @@ You can add custom logic by specifying a custom `action` attribute. When you do 
 // <odac:form action="/contact/submit" table="contacts">
 
 // In your controller:
-Odac.Route.post('/contact/submit', async Candy => {
+Odac.Route.post('/contact/submit', async Odac => {
   // Odac.formData contains validated form data
   // Odac.formConfig contains form configuration
   

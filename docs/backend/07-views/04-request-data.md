@@ -96,7 +96,7 @@ module.exports = async function(Odac) {
     <h3><odac var="product.name" /></h3>
     <p><odac var="product.price" /></p>
   </div>
-</candy:for>
+</odac:for>
 ```
 
 ### Accessing Request Object
@@ -136,27 +136,27 @@ You can access the full Request object through the Odac object:
 <!-- Display search query if exists -->
 <odac:if condition="Odac.Request.get('q')">
   <p>Showing results for: "<odac get="q" />"</p>
-</candy:if>
+</odac:if>
 ```
 
 #### Pagination
 
 ```html
-<script:candy>
+<script:odac>
   const currentPage = parseInt(Odac.Request.get('page')) || 1
   const totalPages = 10
-</script:candy>
+</script:odac>
 
 <div class="pagination">
   <odac:if condition="currentPage > 1">
     <a href="?page=<odac var="currentPage - 1" />">Previous</a>
-  </candy:if>
+  </odac:if>
   
   <span>Page <odac var="currentPage" /> of <odac var="totalPages" /></span>
   
   <odac:if condition="currentPage < totalPages">
     <a href="?page=<odac var="currentPage + 1" />">Next</a>
-  </candy:if>
+  </odac:if>
 </div>
 ```
 
@@ -168,19 +168,19 @@ You can access the full Request object through the Odac object:
 <form action="/products" method="GET">
   <select name="category">
     <option value="">All Categories</option>
-    <option value="electronics" <odac:if condition="Odac.Request.get('category') === 'electronics'">selected</candy:if>>
+    <option value="electronics" <odac:if condition="Odac.Request.get('category') === 'electronics'">selected</odac:if>>
       Electronics
     </option>
-    <option value="clothing" <odac:if condition="Odac.Request.get('category') === 'clothing'">selected</candy:if>>
+    <option value="clothing" <odac:if condition="Odac.Request.get('category') === 'clothing'">selected</odac:if>>
       Clothing
     </option>
   </select>
   
   <select name="sort">
-    <option value="name" <odac:if condition="Odac.Request.get('sort') === 'name'">selected</candy:if>>
+    <option value="name" <odac:if condition="Odac.Request.get('sort') === 'name'">selected</odac:if>>
       Name
     </option>
-    <option value="price" <odac:if condition="Odac.Request.get('sort') === 'price'">selected</candy:if>>
+    <option value="price" <odac:if condition="Odac.Request.get('sort') === 'price'">selected</odac:if>>
       Price
     </option>
   </select>
@@ -193,13 +193,13 @@ You can access the full Request object through the Odac object:
 
 ```html
 <nav>
-  <a href="/" class="<odac:if condition="Odac.Request.url === '/'">active</candy:if>">
+  <a href="/" class="<odac:if condition="Odac.Request.url === '/'">active</odac:if>">
     Home
   </a>
-  <a href="/products" class="<odac:if condition="Odac.Request.url.startsWith('/products')">active</candy:if>">
+  <a href="/products" class="<odac:if condition="Odac.Request.url.startsWith('/products')">active</odac:if>">
     Products
   </a>
-  <a href="/about" class="<odac:if condition="Odac.Request.url === '/about'">active</candy:if>">
+  <a href="/about" class="<odac:if condition="Odac.Request.url === '/about'">active</odac:if>">
     About
   </a>
 </nav>
@@ -227,5 +227,5 @@ Odac.set('limit', limit)
 <!-- Don't do complex logic in views -->
 <odac:if condition="parseInt(Odac.Request.get('page')) > 0 && parseInt(Odac.Request.get('page')) < 100">
   ...
-</candy:if>
+</odac:if>
 ```

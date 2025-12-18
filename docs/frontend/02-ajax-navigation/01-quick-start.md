@@ -125,17 +125,17 @@ Controllers automatically support AJAX loading. Use `Odac.View.skeleton()` to sp
 ```javascript
 module.exports = function (Odac) {
   // Define the skeleton template
-  Candy.View.skeleton('main')
+  odac.View.skeleton('main')
   
   // Set view parts - lowercase keys map to UPPERCASE placeholders
-  Candy.View.set({
+  odac.View.set({
     header: 'main',      // Loads view/header/main.html into {{ HEADER }}
     content: 'about',    // Loads view/content/about.html into {{ CONTENT }}
     footer: 'main'       // Loads view/footer/main.html into {{ FOOTER }}
   })
   
   // Optional: Send variables to frontend (AJAX only)
-  Candy.set({
+  odac.set({
     pageTitle: 'About',
     data: {foo: 'bar'}
   }, true) // true = include in AJAX responses
@@ -296,13 +296,13 @@ Both methods work automatically - no additional configuration needed!
   }
   ```
 
-### Candy.loader(selector, elements, callback)
+### odac.loader(selector, elements, callback)
 
 Low-level method for direct initialization (not recommended for new code).
 
 **Parameters:** Same as navigate configuration, but as separate arguments.
 
-### Candy.load(url, callback, push)
+### odac.load(url, callback, push)
 
 Programmatically load a page via AJAX.
 
@@ -313,7 +313,7 @@ Programmatically load a page via AJAX.
 
 **Example:**
 ```javascript
-Candy.load('/about', function(page, variables) {
+odac.load('/about', function(page, variables) {
   console.log('Loaded:', page)
 })
 ```
@@ -355,7 +355,7 @@ Send data from server to client in AJAX responses:
 
 ```javascript
 // In controller
-Candy.set({
+odac.set({
   user: {name: 'John', role: 'admin'},
   stats: {views: 1234}
 }, true) // true = include in AJAX
@@ -401,12 +401,12 @@ Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
-      Candy.fn.updateActiveNav(window.location.pathname)
+      odac.fn.updateActiveNav(window.location.pathname)
       console.log('Navigated to:', page)
     }
   },
   
-  // Custom functions (accessible as Candy.fn.functionName)
+  // Custom functions (accessible as odac.fn.functionName)
   function: {
     updateActiveNav: function(url) {
       document.querySelectorAll('nav a').forEach(link => {
@@ -418,14 +418,14 @@ Odac.action({
   // App initialization
   load: function() {
     console.log('App initialized')
-    Candy.fn.updateActiveNav(window.location.pathname)
+    odac.fn.updateActiveNav(window.location.pathname)
   },
   
   // Page-specific code
   page: {
     index: function(variables) {
       // Home page specific code
-      Candy.form('#contact-form', function(data) {
+      odac.form('#contact-form', function(data) {
         if (data.result.success) {
           alert('Message sent!')
         }
@@ -441,7 +441,7 @@ Odac.action({
   // Event handlers
   click: {
     '#refresh-btn': function() {
-      Candy.load(window.location.pathname)
+      odac.load(window.location.pathname)
     }
   }
 })
@@ -573,8 +573,8 @@ This is usually caused by mismatched keys between your skeleton, controller, and
 
 2. **Controller** (`controller/page/about.js`):
    ```javascript
-   Candy.View.skeleton('main')
-   Candy.View.set({
+   odac.View.skeleton('main')
+   odac.View.set({
      header: 'main',    // Lowercase → {{ HEADER }}
      content: 'about'   // Lowercase → {{ CONTENT }}
    })

@@ -8,7 +8,7 @@ WebSocket routes are defined in your route files (e.g., `route/www.js` or `route
 
 ```javascript
 // route/websocket.js
-Odac.Route.ws('/chat', Candy => {
+Odac.Route.ws('/chat', Odac => {
   Odac.ws.send({type: 'welcome', message: 'Connected!'})
 
   Odac.ws.on('message', data => {
@@ -32,7 +32,7 @@ By default, WebSocket routes require a valid CSRF token (like `Route.get()` and 
 
 **Disable token requirement:**
 ```javascript
-Odac.Route.ws('/public', Candy => {
+Odac.Route.ws('/public', Odac => {
   Odac.ws.send({type: 'public'})
 }, {token: false})
 ```
@@ -78,7 +78,7 @@ Odac.ws.id                // Unique client ID
 Group clients into rooms for targeted broadcasting:
 
 ```javascript
-Odac.Route.ws('/game', Candy => {
+Odac.Route.ws('/game', Odac => {
   const roomId = Odac.Request.data.url.room || 'lobby'
   
   Odac.ws.join(roomId)
@@ -111,7 +111,7 @@ Odac.ws.to('room-name').send({type: 'update', data: {}})
 WebSocket routes support dynamic parameters:
 
 ```javascript
-Odac.Route.ws('/room/{roomId}/user/{userId}', Candy => {
+Odac.Route.ws('/room/{roomId}/user/{userId}', Odac => {
   const {roomId, userId} = Odac.Request.data.url
   
   Odac.ws.join(roomId)
@@ -124,7 +124,7 @@ Odac.Route.ws('/room/{roomId}/user/{userId}', Candy => {
 ### Manual Authentication Check
 
 ```javascript
-Odac.Route.ws('/secure', async Candy => {
+Odac.Route.ws('/secure', async Odac => {
   const isAuthenticated = await Odac.Auth.check()
   
   if (!isAuthenticated) {
@@ -142,7 +142,7 @@ Odac.Route.ws('/secure', async Candy => {
 Automatically requires authentication (also requires token by default):
 
 ```javascript
-Odac.Route.auth.ws('/secure', async Candy => {
+Odac.Route.auth.ws('/secure', async Odac => {
   const user = await Odac.Auth.user()
   Odac.ws.data.user = user
   
@@ -182,7 +182,7 @@ WebSocket routes support middleware just like HTTP routes:
 
 ```javascript
 // Define middleware
-Odac.Route.use('auth-check', 'rate-limit').ws('/chat', Candy => {
+Odac.Route.use('auth-check', 'rate-limit').ws('/chat', Odac => {
   Odac.ws.send({type: 'welcome'})
 })
 ```
@@ -196,7 +196,7 @@ Odac.Route.use('auth-check', 'rate-limit').ws('/chat', Candy => {
 
 ```javascript
 // middleware/websocket-auth.js
-module.exports = async Candy => {
+module.exports = async Odac => {
   const token = Odac.Request.header('Authorization')
   if (!token) return false
   
@@ -208,7 +208,7 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Odac.Route.use('websocket-auth').ws('/secure', Candy => {
+Odac.Route.use('websocket-auth').ws('/secure', Odac => {
   Odac.ws.send({type: 'authenticated'})
 })
 ```
@@ -227,7 +227,7 @@ Odac.ws.data.joinedAt = Date.now()
 Use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions. They are automatically cleaned up when the WebSocket connection closes:
 
 ```javascript
-Odac.Route.ws('/live-updates', Candy => {
+Odac.Route.ws('/live-updates', Odac => {
   Odac.setInterval(() => {
     Odac.ws.send({
       type: 'update',
@@ -259,7 +259,7 @@ Odac.clearTimeout(timeoutId)
 ## Real-Time Notifications Example
 
 ```javascript
-Odac.Route.ws('/notifications', async Candy => {
+Odac.Route.ws('/notifications', async Odac => {
   const user = await Odac.Auth.user()
   if (!user) {
     Odac.ws.close(4001, 'Unauthorized')

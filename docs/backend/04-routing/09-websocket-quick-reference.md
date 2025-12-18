@@ -6,7 +6,7 @@ Quick reference for Odac WebSocket API.
 
 ### Route Definition
 ```javascript
-Odac.Route.ws('/path', Candy => {
+Odac.Route.ws('/path', Odac => {
   // Handler - WebSocket client accessible via Odac.ws
 })
 ```
@@ -105,12 +105,12 @@ const ws = Odac.ws('/path', options)
 ### Echo Server
 ```javascript
 // With token (default)
-Odac.Route.ws('/echo', Candy => {
+Odac.Route.ws('/echo', Odac => {
   Odac.ws.on('message', data => Odac.ws.send(data))
 })
 
 // Public (no token)
-Odac.Route.ws('/public-echo', Candy => {
+Odac.Route.ws('/public-echo', Odac => {
   Odac.ws.on('message', data => Odac.ws.send(data))
 }, {token: false})
 ```
@@ -118,13 +118,13 @@ Odac.Route.ws('/public-echo', Candy => {
 ### Authenticated Route
 ```javascript
 // Using auth.ws() (recommended)
-Odac.Route.auth.ws('/secure', async Candy => {
+Odac.Route.auth.ws('/secure', async Odac => {
   const user = await Odac.Auth.user()
   // Handle connection
 })
 
 // Manual check
-Odac.Route.ws('/secure', async Candy => {
+Odac.Route.ws('/secure', async Odac => {
   if (!await Odac.Auth.check()) {
     return Odac.ws.close(4001, 'Unauthorized')
   }
@@ -134,14 +134,14 @@ Odac.Route.ws('/secure', async Candy => {
 
 ### With Middleware
 ```javascript
-Odac.Route.use('auth', 'rate-limit').ws('/chat', Candy => {
+Odac.Route.use('auth', 'rate-limit').ws('/chat', Odac => {
   Odac.ws.send({type: 'welcome'})
 })
 ```
 
 ### Room Broadcasting
 ```javascript
-Odac.Route.ws('/chat', Candy => {
+Odac.Route.ws('/chat', Odac => {
   Odac.ws.join('room-1')
   Odac.ws.on('message', data => {
     Odac.ws.to('room-1').send(data)
@@ -151,7 +151,7 @@ Odac.Route.ws('/chat', Candy => {
 
 ### URL Parameters
 ```javascript
-Odac.Route.ws('/room/{id}', Candy => {
+Odac.Route.ws('/room/{id}', Odac => {
   const {id} = Odac.Request.data.url
   Odac.ws.join(id)
 })

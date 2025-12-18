@@ -7,7 +7,7 @@ Conditionals allow you to show or hide content based on conditions. This is esse
 ```html
 <odac:if condition="user.isAdmin">
   <p>Welcome to the admin panel!</p>
-</candy:if>
+</odac:if>
 ```
 
 The content inside the tag is only rendered if the condition is true.
@@ -19,7 +19,7 @@ The content inside the tag is only rendered if the condition is true.
   <p>Welcome back, <odac var="user.name" />!</p>
 <odac:else>
   <p>Please log in to continue.</p>
-</candy:if>
+</odac:if>
 ```
 
 ### If-ElseIf-Else Structure
@@ -41,7 +41,7 @@ The content inside the tag is only rendered if the condition is true.
   <div class="user-panel">
     <p>You have regular user privileges</p>
   </div>
-</candy:if>
+</odac:if>
 ```
 
 ### Condition Syntax
@@ -50,40 +50,40 @@ Conditions use standard JavaScript expressions:
 
 ```html
 <!-- Equality -->
-<odac:if condition="status === 'active'">Active</candy:if>
+<odac:if condition="status === 'active'">Active</odac:if>
 
 <!-- Comparison -->
-<odac:if condition="age >= 18">Adult</candy:if>
-<odac:if condition="price < 100">Affordable</candy:if>
+<odac:if condition="age >= 18">Adult</odac:if>
+<odac:if condition="price < 100">Affordable</odac:if>
 
 <!-- Logical operators -->
 <odac:if condition="user.isVerified && user.isPremium">
   Premium Verified User
-</candy:if>
+</odac:if>
 
 <odac:if condition="role === 'admin' || role === 'moderator'">
   Staff Member
-</candy:if>
+</odac:if>
 
 <!-- Negation -->
 <odac:if condition="!user.isBanned">
   Welcome!
-</candy:if>
+</odac:if>
 
 <!-- Existence check -->
 <odac:if condition="user">
   User exists
-</candy:if>
+</odac:if>
 
 <!-- Array/String length -->
 <odac:if condition="items.length > 0">
   You have items
-</candy:if>
+</odac:if>
 
 <!-- Method calls -->
 <odac:if condition="Odac.Auth.check()">
   Logged in
-</candy:if>
+</odac:if>
 ```
 
 ### Practical Examples
@@ -99,7 +99,7 @@ Conditions use standard JavaScript expressions:
   <odac:else>
     <a href="/login">Login</a>
     <a href="/register">Register</a>
-  </candy:if>
+  </odac:if>
 </nav>
 ```
 
@@ -119,7 +119,7 @@ Conditions use standard JavaScript expressions:
   <odac:else>
     <span class="badge out-of-stock">Out of Stock</span>
     <button disabled>Notify Me</button>
-  </candy:if>
+  </odac:if>
 </div>
 ```
 
@@ -136,7 +136,7 @@ Conditions use standard JavaScript expressions:
       <a href="/admin/settings">System Settings</a>
       <a href="/admin/logs">View Logs</a>
     </div>
-  </candy:if>
+  </odac:if>
   
   <odac:if condition="user.role === 'admin' || user.role === 'moderator'">
     <div class="moderation-section">
@@ -144,7 +144,7 @@ Conditions use standard JavaScript expressions:
       <a href="/moderate/posts">Review Posts</a>
       <a href="/moderate/reports">Handle Reports</a>
     </div>
-  </candy:if>
+  </odac:if>
   
   <div class="user-section">
     <h2>Your Content</h2>
@@ -164,7 +164,7 @@ Conditions use standard JavaScript expressions:
     
     <odac:if condition="errors && errors.email">
       <span class="error"><odac var="errors.email" /></span>
-    </candy:if>
+    </odac:if>
   </div>
   
   <div class="form-group">
@@ -173,14 +173,14 @@ Conditions use standard JavaScript expressions:
     
     <odac:if condition="errors && errors.password">
       <span class="error"><odac var="errors.password" /></span>
-    </candy:if>
+    </odac:if>
   </div>
   
   <odac:if condition="success">
     <div class="success-message">
       <odac var="success" />
     </div>
-  </candy:if>
+  </odac:if>
   
   <button type="submit">Submit</button>
 </form>
@@ -189,16 +189,16 @@ Conditions use standard JavaScript expressions:
 #### Conditional CSS Classes
 
 ```html
-<div class="user-card <odac:if condition="user.isPremium">premium</candy:if> <odac:if condition="user.isVerified">verified</candy:if>">
+<div class="user-card <odac:if condition="user.isPremium">premium</odac:if> <odac:if condition="user.isVerified">verified</odac:if>">
   <h3><odac var="user.name" /></h3>
   
   <odac:if condition="user.isPremium">
     <span class="badge">⭐ Premium</span>
-  </candy:if>
+  </odac:if>
   
   <odac:if condition="user.isVerified">
     <span class="badge">✓ Verified</span>
-  </candy:if>
+  </odac:if>
 </div>
 ```
 
@@ -218,46 +218,46 @@ Conditions use standard JavaScript expressions:
           <p>Your subscription has expired. Please renew to continue.</p>
           <a href="/renew">Renew Now</a>
         </div>
-      </candy:if>
+      </odac:if>
     <odac:else>
       <div class="upgrade-notice">
         <p>Upgrade to premium for exclusive content!</p>
         <a href="/upgrade">Upgrade Now</a>
       </div>
-    </candy:if>
+    </odac:if>
   <odac:else>
     <div class="inactive-notice">
       <p>Your account is inactive. Please contact support.</p>
     </div>
-  </candy:if>
+  </odac:if>
 <odac:else>
   <div class="login-notice">
     <p>Please log in to view this content.</p>
     <a href="/login">Login</a>
   </div>
-</candy:if>
+</odac:if>
 ```
 
 #### Conditional Attributes
 
 ```html
 <!-- Disabled button -->
-<button <odac:if condition="!canSubmit">disabled</candy:if>>
+<button <odac:if condition="!canSubmit">disabled</odac:if>>
   Submit
 </button>
 
 <!-- Selected option -->
 <select name="country">
-  <option value="tr" <odac:if condition="country === 'tr'">selected</candy:if>>Turkey</option>
-  <option value="us" <odac:if condition="country === 'us'">selected</candy:if>>USA</option>
-  <option value="uk" <odac:if condition="country === 'uk'">selected</candy:if>>UK</option>
+  <option value="tr" <odac:if condition="country === 'tr'">selected</odac:if>>Turkey</option>
+  <option value="us" <odac:if condition="country === 'us'">selected</odac:if>>USA</option>
+  <option value="uk" <odac:if condition="country === 'uk'">selected</odac:if>>UK</option>
 </select>
 
 <!-- Checked checkbox -->
 <input 
   type="checkbox" 
   name="terms" 
-  <odac:if condition="termsAccepted">checked</candy:if>
+  <odac:if condition="termsAccepted">checked</odac:if>
 >
 ```
 
@@ -278,7 +278,7 @@ Odac.set('canEdit', user.isAdmin || user.id === post.authorId)
 <!-- View -->
 <odac:if condition="canEdit">
   <button>Edit</button>
-</candy:if>
+</odac:if>
 ```
 
 **Avoid:**
@@ -286,5 +286,5 @@ Odac.set('canEdit', user.isAdmin || user.id === post.authorId)
 <!-- Too complex for a view -->
 <odac:if condition="(user && user.role === 'admin') || (user && post && user.id === post.authorId && !post.isLocked)">
   <button>Edit</button>
-</candy:if>
+</odac:if>
 ```

@@ -25,14 +25,14 @@ That's all you need! The `auth` configuration is optional.
 <odac:login redirect="/dashboard">
   <odac:field name="email" type="email" placeholder="Email">
     <odac:validate rule="required|email" message="Please enter a valid email"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required" message="Password is required"/>
-  </candy:field>
+  </odac:field>
   
-  <odac:submit>Login</candy:submit>
-</candy:login>
+  <odac:submit>Login</odac:submit>
+</odac:login>
 ```
 
 That's it! No JavaScript, no controller code needed. The form automatically:
@@ -71,7 +71,7 @@ Main form container with configuration options:
 <odac:login 
   redirect="/dashboard">    <!-- Redirect URL after successful login -->
   <!-- fields here -->
-</candy:login>
+</odac:login>
 ```
 
 **Attributes:**
@@ -93,7 +93,7 @@ Defines an input field with validation rules:
   id="email-field">         <!-- HTML ID (optional) -->
   
   <odac:validate rule="required|email" message="Valid email required"/>
-</candy:field>
+</odac:field>
 ```
 
 **Attributes:**
@@ -156,7 +156,7 @@ You can add multiple `<odac:validate>` tags for different error messages:
 <odac:field name="email" type="email">
   <odac:validate rule="required" message="Email is required"/>
   <odac:validate rule="email" message="Please enter a valid email address"/>
-</candy:field>
+</odac:field>
 ```
 
 Or combine rules in a single tag:
@@ -166,7 +166,7 @@ Or combine rules in a single tag:
   <odac:validate 
     rule="required|email" 
     message="Please enter a valid email address"/>
-</candy:field>
+</odac:field>
 ```
 
 ## Message Placeholders
@@ -178,7 +178,7 @@ Use placeholders in error messages for dynamic values:
   <odac:validate 
     rule="minlen:4" 
     message="Username '{value}' is too short. Minimum {min} characters required"/>
-</candy:field>
+</odac:field>
 ```
 
 **Available Placeholders:**
@@ -201,13 +201,13 @@ Defines the submit button:
   loading="Logging in..."         <!-- Loading state text -->
   class="btn btn-primary"         <!-- CSS class -->
   id="login-button">              <!-- HTML ID -->
-</candy:submit>
+</odac:submit>
 ```
 
 Or use content as button text:
 
 ```html
-<odac:submit>Login</candy:submit>
+<odac:submit>Login</odac:submit>
 ```
 
 ## Complete Examples
@@ -221,17 +221,17 @@ Or use content as button text:
   <odac:field name="email" type="email" placeholder="Email Address">
     <odac:validate rule="required" message="Email is required"/>
     <odac:validate rule="email" message="Please enter a valid email address"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Password Field -->
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required" message="Password is required"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Submit Button -->
   <odac:submit text="Login" loading="Logging in..."/>
   
-</candy:login>
+</odac:login>
 ```
 
 ### Login with Username
@@ -243,17 +243,17 @@ Or use content as button text:
   <odac:field name="username" type="text" placeholder="Username">
     <odac:validate rule="required" message="Username is required"/>
     <odac:validate rule="minlen:4" message="Username must be at least {min} characters"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Password Field -->
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required" message="Password is required"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Submit Button -->
-  <odac:submit>Login</candy:submit>
+  <odac:submit>Login</odac:submit>
   
-</candy:login>
+</odac:login>
 ```
 
 ### Login with Remember Me
@@ -264,21 +264,21 @@ Or use content as button text:
   <!-- Email Field -->
   <odac:field name="email" type="email" placeholder="Email">
     <odac:validate rule="required|email" message="Please enter a valid email"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Password Field -->
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required" message="Password is required"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Remember Me Checkbox -->
   <odac:field name="remember" type="checkbox" label="Remember me">
-  </candy:field>
+  </odac:field>
   
   <!-- Submit Button -->
-  <odac:submit>Login</candy:submit>
+  <odac:submit>Login</odac:submit>
   
-</candy:login>
+</odac:login>
 ```
 
 ### Styled Login Form
@@ -296,7 +296,7 @@ Or use content as button text:
         placeholder="Email Address"
         class="form-control">
         <odac:validate rule="required|email" message="Please enter a valid email"/>
-      </candy:field>
+      </odac:field>
       <span class="odac-form-error" odac-form-error="email"></span>
     </div>
     
@@ -307,20 +307,20 @@ Or use content as button text:
         placeholder="Password"
         class="form-control">
         <odac:validate rule="required" message="Password is required"/>
-      </candy:field>
+      </odac:field>
       <span class="odac-form-error" odac-form-error="password"></span>
     </div>
     
     <div class="form-group">
       <odac:field name="remember" type="checkbox" label="Remember me" class="form-check-input">
-      </candy:field>
+      </odac:field>
     </div>
     
     <odac:submit class="btn btn-primary btn-block" text="Login" loading="Logging in..."/>
     
     <span class="odac-form-error" odac-form-error="_odac_form"></span>
     
-  </candy:login>
+  </odac:login>
   
   <p class="text-center mt-3">
     <a href="/forgot-password">Forgot password?</a>
@@ -358,7 +358,7 @@ Odac automatically adds HTML5 validation attributes for better UX:
 <!-- This field -->
 <odac:field name="email" type="email">
   <odac:validate rule="required|email"/>
-</candy:field>
+</odac:field>
 
 <!-- Generates this HTML -->
 <input 
@@ -509,12 +509,12 @@ The login form supports multiple authentication methods:
 <odac:login redirect="/dashboard">
   <odac:field name="email" type="email" placeholder="Email">
     <odac:validate rule="required|email"/>
-  </candy:field>
+  </odac:field>
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required"/>
-  </candy:field>
-  <odac:submit>Login</candy:submit>
-</candy:login>
+  </odac:field>
+  <odac:submit>Login</odac:submit>
+</odac:login>
 ```
 
 ### Username + Password
@@ -523,12 +523,12 @@ The login form supports multiple authentication methods:
 <odac:login redirect="/dashboard">
   <odac:field name="username" type="text" placeholder="Username">
     <odac:validate rule="required"/>
-  </candy:field>
+  </odac:field>
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required"/>
-  </candy:field>
-  <odac:submit>Login</candy:submit>
-</candy:login>
+  </odac:field>
+  <odac:submit>Login</odac:submit>
+</odac:login>
 ```
 
 ### Email or Username + Password
@@ -537,12 +537,12 @@ The login form supports multiple authentication methods:
 <odac:login redirect="/dashboard">
   <odac:field name="identifier" type="text" placeholder="Email or Username">
     <odac:validate rule="required"/>
-  </candy:field>
+  </odac:field>
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required"/>
-  </candy:field>
-  <odac:submit>Login</candy:submit>
-</candy:login>
+  </odac:field>
+  <odac:submit>Login</odac:submit>
+</odac:login>
 ```
 
 ## Best Practices

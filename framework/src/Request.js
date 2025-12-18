@@ -16,11 +16,11 @@ class OdacRequest {
   clientSkeleton = null
   page = null
 
-  constructor(id, req, res, candy) {
+  constructor(id, req, res, odac) {
     this.id = id
     this.req = req
     this.res = res
-    this.#odac = candy
+    this.#odac = odac
     this.method = req.method.toLowerCase()
     this.url = req.url
     this.host = req.headers.host

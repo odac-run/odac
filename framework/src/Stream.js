@@ -5,10 +5,10 @@ class Stream {
   #closed = false
   #odac
 
-  constructor(req, res, input, candy) {
+  constructor(req, res, input, odac) {
     this.#req = req
     this.#res = res
-    this.#odac = candy
+    this.#odac = odac
     this.#init()
     this.#handleInput(input)
   }

@@ -64,10 +64,10 @@ Two types of comments for different purposes:
 ```html
 <!--odac Backend comment (not rendered) -->
 
-<!--candy
+<!--odac
   Multi-line backend comment
   Won't appear in output
-candy-->
+odac-->
 
 <!-- Regular HTML comment (rendered) -->
 ```
@@ -85,7 +85,7 @@ Show or hide content based on conditions:
   <p>Moderator panel</p>
 <odac:else>
   <p>User panel</p>
-</candy:if>
+</odac:if>
 ```
 
 **[→ Learn more about Conditionals](./05-conditionals.md)**
@@ -98,12 +98,12 @@ Iterate over arrays and objects:
 <!-- For loop -->
 <odac:for in="users" key="index" value="user">
   <div><odac var="user.name" /></div>
-</candy:for>
+</odac:for>
 
 <!-- While loop -->
 <odac:while condition="counter < 10">
   <p><odac var="counter" /></p>
-</candy:while>
+</odac:while>
 
 <!-- Loop control -->
 <odac:break />
@@ -117,13 +117,13 @@ Iterate over arrays and objects:
 Execute JavaScript on the server during template rendering:
 
 ```html
-<script:candy>
+<script:odac>
   // Runs on SERVER before HTML is sent
   let total = 0;
   for (let item of cart) {
     total += item.price * item.quantity;
   }
-</script:candy>
+</script:odac>
 
 <p>Total: $<odac var="total" /></p>
 ```
@@ -137,7 +137,7 @@ Full access to the Odac object in templates:
 ```html
 <odac:if condition="Odac.Auth.check()">
   <p>User: <odac var="Odac.Auth.user().name" /></p>
-</candy:if>
+</odac:if>
 
 <p>URL: <odac var="Odac.Request.url" /></p>
 ```
@@ -159,8 +159,8 @@ Full access to the Odac object in templates:
 | While | `<odac:while condition="x">` | [Loops](./06-loops.md) |
 | Break | `<odac:break />` | [Loops](./06-loops.md) |
 | Continue | `<odac:continue />` | [Loops](./06-loops.md) |
-| JavaScript | `<script:candy>...</script:candy>` | [Backend JavaScript](./08-backend-javascript.md) |
-| Comment | `<!--odac ... candy-->` | [Comments](./09-comments.md) |
+| JavaScript | `<script:odac>...</script:odac>` | [Backend JavaScript](./08-backend-javascript.md) |
+| Comment | `<!--odac ... odac-->` | [Comments](./09-comments.md) |
 
 ### Legacy Syntax
 

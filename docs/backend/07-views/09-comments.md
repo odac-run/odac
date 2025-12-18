@@ -142,7 +142,7 @@ odac-->
   - Guest: sees only featured products
 odac-->
 
-<script:candy>
+<script:odac>
   let visibleProducts;
   
   if (Odac.Auth.check()) {
@@ -155,7 +155,7 @@ odac-->
   } else {
     visibleProducts = products.filter(p => p.featured);
   }
-</script:candy>
+</script:odac>
 
 <odac:for in="visibleProducts" value="product">
   <div class="product">

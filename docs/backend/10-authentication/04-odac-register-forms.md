@@ -25,18 +25,18 @@ That's all you need! The `auth` configuration is optional.
 <odac:register redirect="/dashboard">
   <odac:field name="email" type="email" placeholder="Email" unique>
     <odac:validate rule="required|email" message="Please enter a valid email"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="username" type="text" placeholder="Username" unique>
     <odac:validate rule="required|minlen:4" message="Username must be at least 4 characters"/>
-  </candy:field>
+  </odac:field>
   
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required|minlen:8" message="Password must be at least 8 characters"/>
-  </candy:field>
+  </odac:field>
   
-  <odac:submit>Create Account</candy:submit>
-</candy:register>
+  <odac:submit>Create Account</odac:submit>
+</odac:register>
 ```
 
 That's it! No JavaScript, no controller code, no SQL needed. The form automatically:
@@ -85,7 +85,7 @@ Main form container with configuration options:
   redirect="/dashboard"    <!-- Redirect URL after successful registration -->
   autologin="true">        <!-- Auto-login after registration (default: true) -->
   <!-- fields here -->
-</candy:register>
+</odac:register>
 ```
 
 **Attributes:**
@@ -107,7 +107,7 @@ Defines an input field with validation rules:
   unique>                   <!-- Check uniqueness in database -->
   
   <odac:validate rule="required|email" message="Valid email required"/>
-</candy:field>
+</odac:field>
 ```
 
 **Attributes:**
@@ -134,17 +134,17 @@ Use the `skip` attribute for fields that should be validated but not saved to th
 <!-- Password confirmation - validate but don't save -->
 <odac:field name="confirm_password" type="password" placeholder="Confirm Password" skip>
   <odac:validate rule="required|same:password" message="Passwords must match"/>
-</candy:field>
+</odac:field>
 
 <!-- Terms acceptance - validate but don't save -->
 <odac:field name="terms" type="checkbox" label="I accept the terms" skip>
   <odac:validate rule="accepted" message="You must accept the terms"/>
-</candy:field>
+</odac:field>
 
 <!-- Captcha verification - validate but don't save -->
 <odac:field name="captcha" type="text" placeholder="Enter captcha" skip>
   <odac:validate rule="required" message="Please complete the captcha"/>
-</candy:field>
+</odac:field>
 ```
 
 **Common Use Cases:**
@@ -219,7 +219,7 @@ You can add multiple `<odac:validate>` tags for different error messages:
   <odac:validate rule="maxlen:20" message="Username cannot exceed {max} characters"/>
   <odac:validate rule="alphanumeric" message="Username can only contain letters and numbers"/>
   <odac:validate rule="unique" message="Username '{value}' is already taken"/>
-</candy:field>
+</odac:field>
 ```
 
 Or combine rules in a single tag:
@@ -230,7 +230,7 @@ Or combine rules in a single tag:
     rule="required|minlen:4|maxlen:20|alphanumeric" 
     message="Username must be 4-20 alphanumeric characters"/>
   <odac:validate rule="unique" message="Username '{value}' is already taken"/>
-</candy:field>
+</odac:field>
 ```
 
 ## Message Placeholders
@@ -242,13 +242,13 @@ Use placeholders in error messages for dynamic values:
   <odac:validate 
     rule="minlen:4" 
     message="Username '{value}' is too short. Minimum {min} characters required"/>
-</candy:field>
+</odac:field>
 
 <odac:field name="age" type="number">
   <odac:validate 
     rule="min:18|max:120" 
     message="Age must be between {min} and {max} years"/>
-</candy:field>
+</odac:field>
 ```
 
 **Available Placeholders:**
@@ -271,7 +271,7 @@ Set values that are processed only on the backend (not visible in HTML):
   <!-- User input fields -->
   <odac:field name="email" type="email" unique>
     <odac:validate rule="required|email"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Backend-only values -->
   <odac:set name="role" value="user"/>
@@ -279,8 +279,8 @@ Set values that are processed only on the backend (not visible in HTML):
   <odac:set name="registered_at" compute="now"/>
   <odac:set name="ip_address" compute="ip"/>
   
-  <odac:submit>Register</candy:submit>
-</candy:register>
+  <odac:submit>Register</odac:submit>
+</odac:register>
 ```
 
 **Attributes:**
@@ -311,7 +311,7 @@ Use `if-empty` to set a default only if the user didn't provide a value:
 ```html
 <odac:field name="country" type="text" placeholder="Country (optional)">
   <!-- User can optionally fill this -->
-</candy:field>
+</odac:field>
 
 <odac:set name="country" value="TR" if-empty/>
 <!-- If user leaves it empty, set to "TR" -->
@@ -327,13 +327,13 @@ Defines the submit button:
 <odac:submit 
   text="Create Account"           <!-- Button text -->
   loading="Creating account...">  <!-- Loading state text -->
-</candy:submit>
+</odac:submit>
 ```
 
 Or use content as button text:
 
 ```html
-<odac:submit>Create Account</candy:submit>
+<odac:submit>Create Account</odac:submit>
 ```
 
 ## Complete Example
@@ -346,7 +346,7 @@ Or use content as button text:
     <odac:validate rule="required" message="Email is required"/>
     <odac:validate rule="email" message="Please enter a valid email address"/>
     <odac:validate rule="unique" message="The email '{value}' is already registered"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Username Field -->
   <odac:field name="username" type="text" placeholder="Username" unique>
@@ -355,38 +355,38 @@ Or use content as button text:
     <odac:validate rule="maxlen:20" message="Username cannot exceed {max} characters"/>
     <odac:validate rule="alphanumeric" message="Only letters and numbers allowed"/>
     <odac:validate rule="unique" message="Username '{value}' is already taken"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Password Field -->
   <odac:field name="password" type="password" placeholder="Password">
     <odac:validate rule="required" message="Password is required"/>
     <odac:validate rule="minlen:8" message="Password must be at least {min} characters"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Password Confirmation -->
   <odac:field name="password_confirm" type="password" placeholder="Confirm Password" skip>
     <odac:validate rule="required" message="Please confirm your password"/>
     <odac:validate rule="same:password" message="Passwords do not match"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Full Name -->
   <odac:field name="name" type="text" placeholder="Full Name">
     <odac:validate rule="required" message="Name is required"/>
     <odac:validate rule="alphaspace" message="Name can only contain letters and spaces"/>
     <odac:validate rule="minlen:3" message="Name must be at least {min} characters"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Age -->
   <odac:field name="age" type="number" placeholder="Age">
     <odac:validate rule="required" message="Age is required"/>
     <odac:validate rule="min:18" message="You must be at least {min} years old"/>
     <odac:validate rule="max:120" message="Please enter a valid age"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Terms Checkbox -->
   <odac:field name="terms" type="checkbox" label="I agree to the terms and conditions" skip>
     <odac:validate rule="accepted" message="You must accept the terms to continue"/>
-  </candy:field>
+  </odac:field>
   
   <!-- Backend-only values -->
   <odac:set name="role" value="user"/>
@@ -398,7 +398,7 @@ Or use content as button text:
   <!-- Submit Button -->
   <odac:submit text="Create Account" loading="Creating your account..."/>
   
-</candy:register>
+</odac:register>
 ```
 
 ## Security Features
@@ -429,7 +429,7 @@ Fields marked with `unique` attribute are checked against the database:
 ```html
 <odac:field name="email" type="email" unique>
   <odac:validate rule="unique" message="Email already exists"/>
-</candy:field>
+</odac:field>
 ```
 
 The system automatically queries the auth table to check for duplicates.
@@ -442,7 +442,7 @@ Odac automatically adds HTML5 validation attributes for better UX:
 <!-- This field -->
 <odac:field name="username" type="text">
   <odac:validate rule="required|minlen:4|maxlen:20|alphanumeric"/>
-</candy:field>
+</odac:field>
 
 <!-- Generates this HTML -->
 <input 
@@ -600,7 +600,7 @@ Style error and success messages with CSS:
   border-radius: 0.25rem;
 }
 
-.candy-field {
+.odac-field {
   margin-bottom: 1rem;
 }
 
@@ -633,7 +633,7 @@ Disable auto-login and handle redirect manually:
 ```html
 <odac:register autologin="false">
   <!-- fields -->
-</candy:register>
+</odac:register>
 ```
 
 Then handle the response in JavaScript if needed (though not required for basic usage).
