@@ -23,7 +23,7 @@ const path = require('path')
 const tls = require('tls')
 
 // Import test utilities
-const {mockOdac, mockLangGet} = require('./__mocks__/globalOdac')
+const {mockOdac} = require('./__mocks__/globalOdac')
 const {createMockRequest, createMockResponse} = require('./__mocks__/testFactories')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
 
