@@ -262,7 +262,7 @@ class Cli {
           }
         }
       }
-      if (!status.auth) console.log(__('Login on %s to manage all your server operations.', '\x1b[95mhttps://odac.dev\x1b[0m'))
+      if (!status.auth) console.log(__('Login on %s to manage all your server operations.', '\x1b[95mhttps://odac.run\x1b[0m'))
       console.log()
       console.log(__('Commands:'))
       length = 0
