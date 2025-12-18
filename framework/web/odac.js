@@ -419,7 +419,10 @@ class Odac {
                 successEl.innerHTML = data.result.message
                 this.#fadeIn(successEl)
               } else {
-                formElement.insertAdjacentHTML('beforeend', `<span odac-form-success="${obj.form}">${data.result.message}</span>`)
+                const span = document.createElement('span')
+                span.setAttribute('odac-form-success', obj.form)
+                span.textContent = data.result.message
+                formElement.appendChild(span)
               }
             } else if (!data.result.success && data.errors) {
               Object.entries(data.errors).forEach(([name, message]) => {
