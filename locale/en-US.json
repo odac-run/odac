@@ -77,7 +77,7 @@
     "%s is a domain.": "%s is a domain.",
     "Enter the subdomain name (subdomain.example.com): ": "Enter the subdomain name (subdomain.example.com): ",
     "Enter your authentication key: ": "Enter your authentication key: ",
-    "Starting CandyPack Server...": "Starting CandyPack Server...",
+    "Starting Odac Server...": "Starting Odac Server...",
     "Logged in": "Logged in",
     "Authentication successful": "Authentication successful"
 }
