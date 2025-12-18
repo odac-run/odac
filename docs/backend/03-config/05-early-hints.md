@@ -201,7 +201,7 @@ At startup, the framework builds an in-memory manifest:
 
 Odac's architecture uses a proxy layer. Early Hints are:
 1. Generated in the framework
-2. Sent via `X-Candy-Early-Hints` header to proxy
+2. Sent via `X-Odac-Early-Hints` header to proxy
 3. Forwarded to client as `103 Early Hints` by proxy
 
 This ensures Early Hints work correctly in the multi-domain hosting environment.

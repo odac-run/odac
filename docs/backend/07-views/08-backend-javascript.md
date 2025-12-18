@@ -19,7 +19,7 @@ Backend JavaScript allows you to execute JavaScript code during template renderi
 ### Key Characteristics
 
 - ✅ Runs on the **server** during template rendering
-- ✅ Has access to all backend variables and Candy object
+- ✅ Has access to all backend variables and Odac object
 - ✅ Perfect for calculations, data manipulation, filtering
 - ✅ Full IDE syntax highlighting and autocomplete
 - ❌ Does NOT run in the browser
@@ -70,9 +70,9 @@ module.exports = async function(Odac) {
 </div>
 ```
 
-### Accessing the Candy Object
+### Accessing the Odac Object
 
-Full access to the Candy object and all its methods:
+Full access to the Odac object and all its methods:
 
 ```html
 <script:candy>

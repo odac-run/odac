@@ -130,9 +130,9 @@ Execute JavaScript on the server during template rendering:
 
 **[→ Learn more about Backend JavaScript](./08-backend-javascript.md)**
 
-### Accessing the Candy Object
+### Accessing the Odac Object
 
-Full access to the Candy object in templates:
+Full access to the Odac object in templates:
 
 ```html
 <odac:if condition="Odac.Auth.check()">

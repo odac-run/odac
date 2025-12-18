@@ -312,7 +312,7 @@ Odac.clearTimeout(timeoutId)
 
 ## Best Practices
 
-1. **Use Candy timers:** Always use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions
+1. **Use Odac timers:** Always use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions
 2. **Return the stream:** Always `return Odac.stream(...)` from your controller
 3. **Throttle messages:** Don't send too frequently (use intervals)
 4. **Handle errors:** Use try-catch for async operations

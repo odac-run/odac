@@ -101,7 +101,7 @@ module.exports = async function(Odac) {
 
 ### Accessing Request Object
 
-You can access the full Request object through the Candy object:
+You can access the full Request object through the Odac object:
 
 ```html
 <!-- Request method -->

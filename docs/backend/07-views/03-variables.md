@@ -110,7 +110,7 @@ Display static text directly:
 
 This is useful when you want consistent syntax throughout your templates.
 
-### Accessing the Candy Object
+### Accessing the Odac Object
 
 You have full access to the `Odac` object within templates:
 

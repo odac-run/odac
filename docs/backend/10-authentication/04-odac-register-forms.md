@@ -1,4 +1,4 @@
-# Candy Register Forms
+# Odac Register Forms
 
 The `<odac:register>` component provides a zero-configuration way to create secure registration forms. Simply write HTML, and Odac handles validation, security, database operations, and auto-login automatically.
 

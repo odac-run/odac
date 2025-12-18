@@ -1,4 +1,4 @@
-# Candy Login Forms
+# Odac Login Forms
 
 The `<odac:login>` component provides a zero-configuration way to create secure login forms. Simply write HTML, and Odac handles validation, security, authentication, and session management automatically.
 
@@ -591,6 +591,6 @@ The login form supports multiple authentication methods:
 
 ## Related Documentation
 
-- [Candy Register Forms](04-candy-register-forms.md) - Create registration forms
+- [Odac Register Forms](04-odac-register-forms.md) - Create registration forms
 - [Session Management](05-session-management.md) - Understanding sessions
 - [Authentication Overview](00-authentication-overview.md) - Auth system basics

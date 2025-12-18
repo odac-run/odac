@@ -10,7 +10,7 @@ A controller class receives the `Odac` object in its constructor, giving you acc
 // controller/User.js
 class User {
   constructor(Odac) {
-    this.Odac = Candy
+    this.Odac = Odac
   }
 
   async getProfile() {

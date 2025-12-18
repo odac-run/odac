@@ -78,7 +78,7 @@ If no custom error page is defined, Odac will fall back to its built-in error re
 
 #### Error Context
 
-Error controllers receive the same Candy context as regular controllers, allowing you to:
+Error controllers receive the same Odac context as regular controllers, allowing you to:
 
 - Access request information (`Odac.request`)
 - Use database connections (`Odac.db`)
