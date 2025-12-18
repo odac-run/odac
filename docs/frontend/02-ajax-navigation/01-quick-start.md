@@ -1,6 +1,6 @@
 # AJAX Navigation
 
-CandyPack framework includes a built-in AJAX navigation system that enables smooth, single-page application (SPA) style navigation without full page reloads.
+Odac framework includes a built-in AJAX navigation system that enables smooth, single-page application (SPA) style navigation without full page reloads.
 
 ## Features
 
@@ -19,7 +19,7 @@ CandyPack framework includes a built-in AJAX navigation system that enables smoo
 Just enable navigation - it automatically handles all internal links:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: 'main'  // Update <main> element on navigation
 })
 ```
@@ -31,7 +31,7 @@ That's it! All links starting with `/` will now load via AJAX.
 Add a callback for post-navigation actions:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -47,7 +47,7 @@ Candy.action({
 Full control over navigation behavior:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     links: 'a[href^="/"]',  // Which links to intercept
     update: {                // Which elements to update
@@ -94,7 +94,7 @@ Example `skeleton/main.html`:
 <html>
 <head>
   <title>My Site</title>
-  <script src="/assets/js/candy.js"></script>
+  <script src="/assets/js/odac.js"></script>
   <script src="/assets/js/app.js"></script>
 </head>
 <body>
@@ -120,22 +120,22 @@ Example `skeleton/main.html`:
 
 ### Controller Setup
 
-Controllers automatically support AJAX loading. Use `Candy.View.skeleton()` to specify which skeleton to use:
+Controllers automatically support AJAX loading. Use `Odac.View.skeleton()` to specify which skeleton to use:
 
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // Define the skeleton template
-  Candy.View.skeleton('main')
+  odac.View.skeleton('main')
   
   // Set view parts - lowercase keys map to UPPERCASE placeholders
-  Candy.View.set({
+  odac.View.set({
     header: 'main',      // Loads view/header/main.html into {{ HEADER }}
     content: 'about',    // Loads view/content/about.html into {{ CONTENT }}
     footer: 'main'       // Loads view/footer/main.html into {{ FOOTER }}
   })
   
   // Optional: Send variables to frontend (AJAX only)
-  Candy.set({
+  odac.set({
     pageTitle: 'About',
     data: {foo: 'bar'}
   }, true) // true = include in AJAX responses
@@ -159,8 +159,8 @@ module.exports = function (Candy) {
 
 1. User clicks `<a href="/about">`
 2. JavaScript intercepts click and sends AJAX request with:
-   - Header: `X-Candy: ajaxload`
-   - Header: `X-Candy-Load: content,header` (requested sections)
+   - Header: `X-Odac: ajaxload`
+   - Header: `X-Odac-Load: content,header` (requested sections)
 3. Server detects AJAX request and returns only requested sections as JSON:
    ```json
    {
@@ -179,20 +179,20 @@ module.exports = function (Candy) {
 6. Page-specific callbacks execute
 
 **Key Points:**
-- The `output` keys in the JSON response match the lowercase keys from `Candy.View.set()` in your controller
+- The `output` keys in the JSON response match the lowercase keys from `Odac.View.set()` in your controller
 - These keys correspond to UPPERCASE placeholders in your skeleton (e.g., `content` → `{{ CONTENT }}`)
 - Only the sections specified in `navigate.update` are sent and updated
 - Frontend selectors target the HTML tags wrapping the placeholders
 
 ## API Reference
 
-### Candy.action({ navigate: ... })
+### Odac.action({ navigate: ... })
 
 Initialize AJAX navigation using the action system.
 
 #### Minimal Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: 'main'  // Just specify element to update
 })
 ```
@@ -201,7 +201,7 @@ Candy.action({
 
 #### Medium Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',           // Element to update
     on: function(page, vars) { // Callback after navigation
@@ -213,7 +213,7 @@ Candy.action({
 
 #### Advanced Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     links: 'a[href^="/"]',    // Which links to intercept
     update: {                  // Multiple elements to update
@@ -232,12 +232,12 @@ Candy.action({
 
 #### Boolean Usage
 ```javascript
-Candy.action({
+Odac.action({
   navigate: true   // Enable with all defaults
 })
 
 // Or disable completely
-Candy.action({
+Odac.action({
   navigate: false  // Disable AJAX navigation
 })
 ```
@@ -296,13 +296,13 @@ Both methods work automatically - no additional configuration needed!
   }
   ```
 
-### Candy.loader(selector, elements, callback)
+### odac.loader(selector, elements, callback)
 
 Low-level method for direct initialization (not recommended for new code).
 
 **Parameters:** Same as navigate configuration, but as separate arguments.
 
-### Candy.load(url, callback, push)
+### odac.load(url, callback, push)
 
 Programmatically load a page via AJAX.
 
@@ -313,7 +313,7 @@ Programmatically load a page via AJAX.
 
 **Example:**
 ```javascript
-Candy.load('/about', function(page, variables) {
+odac.load('/about', function(page, variables) {
   console.log('Loaded:', page)
 })
 ```
@@ -323,7 +323,7 @@ Candy.load('/about', function(page, variables) {
 Run code when specific pages load. The page identifier is based on the controller name or view name:
 
 ```javascript
-Candy.action({
+Odac.action({
   page: {
     // Runs when controller/page/index.js is used
     index: function(variables) {
@@ -347,7 +347,7 @@ Candy.action({
 **Page Identifier Rules:**
 - **With controller**: Uses controller filename (e.g., `user.js` → `'user'`)
 - **With view object**: Uses `content` or `all` value (e.g., `{content: 'dashboard'}` → `'dashboard'`)
-- Accessible via `Candy.page()` or `document.documentElement.dataset.candyPage`
+- Accessible via `Odac.page()` or `document.documentElement.dataset.candyPage`
 
 ## Server Variables
 
@@ -355,7 +355,7 @@ Send data from server to client in AJAX responses:
 
 ```javascript
 // In controller
-Candy.set({
+odac.set({
   user: {name: 'John', role: 'admin'},
   stats: {views: 1234}
 }, true) // true = include in AJAX
@@ -364,7 +364,7 @@ Candy.set({
 Access in client:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -388,25 +388,25 @@ Candy.action({
 ### Minimal Example
 ```javascript
 // Just enable AJAX navigation
-Candy.action({
+Odac.action({
   navigate: 'main'
 })
 ```
 
 ### Real-World Example
 ```javascript
-// app.js - Everything in one Candy.action() call
-Candy.action({
+// app.js - Everything in one Odac.action() call
+Odac.action({
   // AJAX Navigation - automatically handles all internal links
   navigate: {
     update: 'main',
     on: function(page, variables) {
-      Candy.fn.updateActiveNav(window.location.pathname)
+      odac.fn.updateActiveNav(window.location.pathname)
       console.log('Navigated to:', page)
     }
   },
   
-  // Custom functions (accessible as Candy.fn.functionName)
+  // Custom functions (accessible as odac.fn.functionName)
   function: {
     updateActiveNav: function(url) {
       document.querySelectorAll('nav a').forEach(link => {
@@ -418,14 +418,14 @@ Candy.action({
   // App initialization
   load: function() {
     console.log('App initialized')
-    Candy.fn.updateActiveNav(window.location.pathname)
+    odac.fn.updateActiveNav(window.location.pathname)
   },
   
   // Page-specific code
   page: {
     index: function(variables) {
       // Home page specific code
-      Candy.form('#contact-form', function(data) {
+      odac.form('#contact-form', function(data) {
         if (data.result.success) {
           alert('Message sent!')
         }
@@ -441,7 +441,7 @@ Candy.action({
   // Event handlers
   click: {
     '#refresh-btn': function() {
-      Candy.load(window.location.pathname)
+      odac.load(window.location.pathname)
     }
   }
 })
@@ -449,7 +449,7 @@ Candy.action({
 
 ### Advanced Multi-Section Example
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: {
       content: 'main',
@@ -473,7 +473,7 @@ Candy.action({
 
 ### Disable Completely
 ```javascript
-Candy.action({
+Odac.action({
   navigate: false  // Disable AJAX navigation entirely
 })
 ```
@@ -505,7 +505,7 @@ Candy.action({
 ### 1. Use Minimal Configuration
 ```javascript
 // Simple and effective
-Candy.action({
+Odac.action({
   navigate: 'main'
 })
 ```
@@ -524,7 +524,7 @@ Candy.action({
 
 ### 3. Handle Loading States
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => {
@@ -546,7 +546,7 @@ Candy.action({
 ### Links not loading via AJAX
 
 - Check browser console for errors
-- Verify navigate is enabled in `Candy.action()`
+- Verify navigate is enabled in `Odac.action()`
 - Ensure links start with `/` for internal navigation
 
 ### Specific links should not use AJAX
@@ -573,8 +573,8 @@ This is usually caused by mismatched keys between your skeleton, controller, and
 
 2. **Controller** (`controller/page/about.js`):
    ```javascript
-   Candy.View.skeleton('main')
-   Candy.View.set({
+   odac.View.skeleton('main')
+   odac.View.set({
      header: 'main',    // Lowercase → {{ HEADER }}
      content: 'about'   // Lowercase → {{ CONTENT }}
    })
@@ -582,7 +582,7 @@ This is usually caused by mismatched keys between your skeleton, controller, and
 
 3. **Frontend** (`public/assets/js/app.js`):
    ```javascript
-   Candy.action({
+   Odac.action({
      navigate: {
        update: {
          header: 'header',  // Targets <header> tag
@@ -599,10 +599,10 @@ This is usually caused by mismatched keys between your skeleton, controller, and
 
 **Also verify:**
 - Element selectors match actual DOM elements (e.g., `'main'` matches `<main>`)
-- Skeleton template is defined with `Candy.View.skeleton('main')`
-- View parts are defined in controller with `Candy.View.set()`
+- Skeleton template is defined with `Odac.View.skeleton('main')`
+- View parts are defined in controller with `Odac.View.set()`
 
 ### Variables not available
 
-- Confirm `Candy.set(data, true)` has `true` as second parameter
+- Confirm `Odac.set(data, true)` has `true` as second parameter
 - Check that variables are set before `View.print()` is called

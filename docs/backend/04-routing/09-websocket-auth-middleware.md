@@ -9,10 +9,10 @@ Advanced authentication and middleware patterns for WebSocket routes.
 The simplest way to require authentication:
 
 ```javascript
-Candy.Route.auth.ws('/secure', async Candy => {
-  const user = await Candy.Auth.user()
+Odac.Route.auth.ws('/secure', async Odac => {
+  const user = await Odac.Auth.user()
   
-  Candy.ws.send({
+  Odac.ws.send({
     type: 'authenticated',
     user: user.name
   })
@@ -29,23 +29,23 @@ Candy.Route.auth.ws('/secure', async Candy => {
 For custom authentication logic:
 
 ```javascript
-Candy.Route.ws('/custom-auth', async Candy => {
-  const token = Candy.Request.header('Authorization')
+Odac.Route.ws('/custom-auth', async Odac => {
+  const token = Odac.Request.header('Authorization')
   
   if (!token) {
-    Candy.ws.close(4001, 'Missing token')
+    Odac.ws.close(4001, 'Missing token')
     return
   }
 
   const user = await validateCustomToken(token)
   
   if (!user) {
-    Candy.ws.close(4001, 'Invalid token')
+    Odac.ws.close(4001, 'Invalid token')
     return
   }
 
-  Candy.ws.data.user = user
-  Candy.ws.send({type: 'authenticated'})
+  Odac.ws.data.user = user
+  Odac.ws.send({type: 'authenticated'})
 })
 ```
 
@@ -54,8 +54,8 @@ Candy.Route.ws('/custom-auth', async Candy => {
 ### Basic Middleware
 
 ```javascript
-Candy.Route.use('rate-limit').ws('/chat', Candy => {
-  Candy.ws.send({type: 'connected'})
+Odac.Route.use('rate-limit').ws('/chat', Odac => {
+  Odac.ws.send({type: 'connected'})
 })
 ```
 
@@ -64,8 +64,8 @@ Candy.Route.use('rate-limit').ws('/chat', Candy => {
 Middleware runs in order:
 
 ```javascript
-Candy.Route.use('auth', 'rate-limit', 'log').ws('/chat', Candy => {
-  Candy.ws.send({type: 'ready'})
+Odac.Route.use('auth', 'rate-limit', 'log').ws('/chat', Odac => {
+  Odac.ws.send({type: 'ready'})
 })
 ```
 
@@ -78,8 +78,8 @@ const connections = new Map()
 const RATE_LIMIT = 5
 const WINDOW = 60000
 
-module.exports = async Candy => {
-  const ip = Candy.Request.ip
+module.exports = async Odac => {
+  const ip = Odac.Request.ip
   const now = Date.now()
   
   if (!connections.has(ip)) {
@@ -103,8 +103,8 @@ module.exports = async Candy => {
 **Usage:**
 
 ```javascript
-Candy.Route.use('websocket-rate-limit').ws('/chat', Candy => {
-  Candy.ws.send({type: 'connected'})
+Odac.Route.use('websocket-rate-limit').ws('/chat', Odac => {
+  Odac.ws.send({type: 'connected'})
 })
 ```
 
@@ -121,8 +121,8 @@ Candy.Route.use('websocket-rate-limit').ws('/chat', Candy => {
 **middleware/websocket-auth.js:**
 
 ```javascript
-module.exports = async Candy => {
-  const token = Candy.Request.header('X-WS-Token')
+module.exports = async Odac => {
+  const token = Odac.Request.header('X-WS-Token')
   
   if (!token) {
     console.log('WebSocket connection rejected: No token')
@@ -137,7 +137,7 @@ module.exports = async Candy => {
       return false
     }
     
-    Candy.Auth.setUser(user)
+    Odac.Auth.setUser(user)
     return true
     
   } catch (error) {
@@ -153,18 +153,18 @@ You can combine `auth.ws()` with middleware:
 
 ```javascript
 // This won't work - auth.ws() doesn't support chaining
-// Candy.Route.use('rate-limit').auth.ws('/chat', handler)
+// Odac.Route.use('rate-limit').auth.ws('/chat', handler)
 
 // Instead, use middleware that includes auth check
-Candy.Route.use('websocket-auth', 'rate-limit').ws('/chat', Candy => {
-  const user = Candy.Auth.user()
-  Candy.ws.send({user: user.name})
+Odac.Route.use('websocket-auth', 'rate-limit').ws('/chat', Odac => {
+  const user = Odac.Auth.user()
+  Odac.ws.send({user: user.name})
 })
 
 // Or use auth.ws() without middleware
-Candy.Route.auth.ws('/chat', Candy => {
-  const user = Candy.Auth.user()
-  Candy.ws.send({user: user.name})
+Odac.Route.auth.ws('/chat', Odac => {
+  const user = Odac.Auth.user()
+  Odac.ws.send({user: user.name})
 })
 ```
 
@@ -176,8 +176,8 @@ Candy.Route.auth.ws('/chat', Candy => {
 // middleware/chat-rate-limit.js
 const userMessages = new Map()
 
-module.exports = async Candy => {
-  const user = await Candy.Auth.user()
+module.exports = async Odac => {
+  const user = await Odac.Auth.user()
   if (!user) return false
   
   const userId = user.id
@@ -201,12 +201,12 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('chat-rate-limit').auth.ws('/chat', async Candy => {
-  const user = await Candy.Auth.user()
-  Candy.ws.join('general')
+Odac.Route.use('chat-rate-limit').auth.ws('/chat', async Odac => {
+  const user = await Odac.Auth.user()
+  Odac.ws.join('general')
   
-  Candy.ws.on('message', data => {
-    Candy.ws.to('general').send({
+  Odac.ws.on('message', data => {
+    Odac.ws.to('general').send({
       user: user.name,
       text: data.text
     })
@@ -218,8 +218,8 @@ Candy.Route.use('chat-rate-limit').auth.ws('/chat', async Candy => {
 
 ```javascript
 // middleware/admin-only.js
-module.exports = async Candy => {
-  const user = await Candy.Auth.user()
+module.exports = async Odac => {
+  const user = await Odac.Auth.user()
   
   if (!user || !user.isAdmin) {
     return false
@@ -229,16 +229,16 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('admin-only').ws('/admin-dashboard', Candy => {
+Odac.Route.use('admin-only').ws('/admin-dashboard', Odac => {
   const sendStats = async () => {
     const stats = await getSystemStats()
-    Candy.ws.send({type: 'stats', data: stats})
+    Odac.ws.send({type: 'stats', data: stats})
   }
   
   sendStats()
   const interval = setInterval(sendStats, 5000)
   
-  Candy.ws.on('close', () => clearInterval(interval))
+  Odac.ws.on('close', () => clearInterval(interval))
 })
 ```
 
@@ -248,8 +248,8 @@ Candy.Route.use('admin-only').ws('/admin-dashboard', Candy => {
 // middleware/ip-whitelist.js
 const ALLOWED_IPS = ['127.0.0.1', '192.168.1.100']
 
-module.exports = async Candy => {
-  const ip = Candy.Request.ip
+module.exports = async Odac => {
+  const ip = Odac.Request.ip
   
   if (!ALLOWED_IPS.includes(ip)) {
     console.log(`WebSocket connection rejected from ${ip}`)
@@ -260,8 +260,8 @@ module.exports = async Candy => {
 }
 
 // route/websocket.js
-Candy.Route.use('ip-whitelist').ws('/internal', Candy => {
-  Candy.ws.send({type: 'internal-access-granted'})
+Odac.Route.use('ip-whitelist').ws('/internal', Odac => {
+  Odac.ws.send({type: 'internal-access-granted'})
 })
 ```
 
@@ -270,7 +270,7 @@ Candy.Route.use('ip-whitelist').ws('/internal', Candy => {
 Middleware errors should be handled gracefully:
 
 ```javascript
-module.exports = async Candy => {
+module.exports = async Odac => {
   try {
     const result = await someAsyncOperation()
     return result.isValid

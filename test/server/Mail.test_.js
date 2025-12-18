@@ -108,19 +108,19 @@ describe('Mail Module', () => {
       result: jest.fn((success, data) => ({success, data}))
     }
 
-    // Setup global Candy mocks
-    global.Candy.setMock('core', 'Config', mockConfig)
-    global.Candy.setMock('server', 'DNS', mockDNS)
-    global.Candy.setMock('server', 'Api', mockApi)
-    global.Candy.setMock('server', 'Log', {
+    // Setup global Odac mocks
+    global.Odac.setMock('core', 'Config', mockConfig)
+    global.Odac.setMock('server', 'DNS', mockDNS)
+    global.Odac.setMock('server', 'Api', mockApi)
+    global.Odac.setMock('server', 'Log', {
       init: jest.fn().mockReturnValue({
         log: jest.fn(),
         error: jest.fn()
       })
     })
 
-    // Setup Candy.core mock
-    jest.spyOn(global.Candy, 'core').mockImplementation(name => {
+    // Setup Odac.core mock
+    jest.spyOn(global.Odac, 'core').mockImplementation(name => {
       if (name === 'Config') return mockConfig
       return {init: jest.fn()}
     })
@@ -225,7 +225,7 @@ describe('Mail Module', () => {
       Mail.check()
 
       // Assert
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/user/.candypack/cert/dkim', {recursive: true})
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/user/.odac/cert/dkim', {recursive: true})
     })
 
     test('should write DKIM private and public keys to files', () => {
@@ -234,11 +234,11 @@ describe('Mail Module', () => {
 
       // Assert
       expect(fs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/cert/dkim/example.com.key',
+        '/home/user/.odac/cert/dkim/example.com.key',
         '-----BEGIN PRIVATE KEY-----\nmock-private-key\n-----END PRIVATE KEY-----'
       )
       expect(fs.writeFileSync).toHaveBeenCalledWith(
-        '/home/user/.candypack/cert/dkim/example.com.pub',
+        '/home/user/.odac/cert/dkim/example.com.pub',
         '-----BEGIN PUBLIC KEY-----\nmock-public-key\n-----END PUBLIC KEY-----'
       )
     })
@@ -250,8 +250,8 @@ describe('Mail Module', () => {
       // Assert
       expect(mockConfig.config.websites['example.com'].cert).toEqual({
         dkim: {
-          private: '/home/user/.candypack/cert/dkim/example.com.key',
-          public: '/home/user/.candypack/cert/dkim/example.com.pub'
+          private: '/home/user/.odac/cert/dkim/example.com.key',
+          public: '/home/user/.odac/cert/dkim/example.com.pub'
         }
       })
     })
@@ -309,8 +309,8 @@ describe('Mail Module', () => {
 
       // Assert
       expect(forge.pki.rsa.generateKeyPair).toHaveBeenCalledTimes(2)
-      expect(fs.writeFileSync).toHaveBeenCalledWith('/home/user/.candypack/cert/dkim/example.com.key', expect.any(String))
-      expect(fs.writeFileSync).toHaveBeenCalledWith('/home/user/.candypack/cert/dkim/test.com.key', expect.any(String))
+      expect(fs.writeFileSync).toHaveBeenCalledWith('/home/user/.odac/cert/dkim/example.com.key', expect.any(String))
+      expect(fs.writeFileSync).toHaveBeenCalledWith('/home/user/.odac/cert/dkim/test.com.key', expect.any(String))
     })
   })
 
@@ -759,7 +759,7 @@ describe('Mail Module', () => {
         expect.objectContaining({
           logger: true,
           secure: false,
-          banner: 'CandyPack',
+          banner: 'Odac',
           size: 1024 * 1024 * 10,
           authOptional: true
         })
@@ -789,7 +789,7 @@ describe('Mail Module', () => {
         expect.objectContaining({
           logger: true,
           secure: false,
-          banner: 'CandyPack'
+          banner: 'Odac'
         })
       )
 
@@ -813,7 +813,7 @@ describe('Mail Module', () => {
       Mail.init()
 
       // Assert
-      expect(sqlite3.verbose().Database).toHaveBeenCalledWith('/home/user/.candypack/db/mail', expect.any(Function))
+      expect(sqlite3.verbose().Database).toHaveBeenCalledWith('/home/user/.odac/db/mail', expect.any(Function))
     })
 
     test('should create mail database tables on initialization', () => {
@@ -867,7 +867,7 @@ describe('Mail Module', () => {
 
       // Mock error logging
       const mockError = jest.fn()
-      global.Candy.setMock('server', 'Log', {
+      global.Odac.setMock('server', 'Log', {
         init: jest.fn().mockReturnValue({
           log: jest.fn(),
           error: mockError
@@ -893,7 +893,7 @@ describe('Mail Module', () => {
       Mail.init()
 
       // Assert
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/user/.candypack/db', {recursive: true})
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/user/.odac/db', {recursive: true})
     })
 
     test('should not initialize if no domains have MX records', () => {
@@ -918,7 +918,7 @@ describe('Mail Module', () => {
     test('should handle SMTP server errors', () => {
       // Arrange
       const mockError = jest.fn()
-      global.Candy.setMock('server', 'Log', {
+      global.Odac.setMock('server', 'Log', {
         init: jest.fn().mockReturnValue({
           log: mockError,
           error: jest.fn()

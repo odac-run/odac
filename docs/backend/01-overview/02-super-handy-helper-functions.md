@@ -1,6 +1,6 @@
 ## ✨ Super-Handy Helper Functions
 
-On top of that, `Candy` has some quick-and-easy helper functions:
+On top of that, `Odac` has some quick-and-easy helper functions:
 
 *   `return(data)`: Quickly send a response back to the user and you're done.
 *   `direct(url)`: Need to send the user to another page? This is your tool.
@@ -14,12 +14,12 @@ On top of that, `Candy` has some quick-and-easy helper functions:
 
 ### Memory-Safe Timers
 
-CandyPack provides memory-safe timer functions that automatically clean up when the request ends:
+Odac provides memory-safe timer functions that automatically clean up when the request ends:
 
 ```javascript
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   // ✅ Automatically cleaned up when request ends
-  Candy.setInterval(() => {
+  Odac.setInterval(() => {
     console.log('This will stop when the request ends')
   }, 1000)
   
@@ -30,7 +30,7 @@ module.exports = async (Candy) => {
 }
 ```
 
-**Why use Candy timers?**
+**Why use Odac timers?**
 - Prevents memory leaks
 - No orphaned intervals after request ends
 - Especially important for streaming/SSE endpoints

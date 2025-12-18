@@ -1,38 +1,38 @@
 # WebSocket Quick Reference
 
-Quick reference for CandyPack WebSocket API.
+Quick reference for Odac WebSocket API.
 
 ## Backend API
 
 ### Route Definition
 ```javascript
-Candy.Route.ws('/path', Candy => {
-  // Handler - WebSocket client accessible via Candy.ws
+Odac.Route.ws('/path', Odac => {
+  // Handler - WebSocket client accessible via Odac.ws
 })
 ```
 
-### WebSocket Client Methods (Candy.ws)
+### WebSocket Client Methods (Odac.ws)
 
 | Method | Description |
 |--------|-------------|
-| `Candy.ws.send(data)` | Send JSON data to client |
-| `Candy.ws.sendBinary(buffer)` | Send binary data |
-| `Candy.ws.close(code, reason)` | Close connection |
-| `Candy.ws.ping()` | Send ping frame |
-| `Candy.ws.join(room)` | Join a room |
-| `Candy.ws.leave(room)` | Leave a room |
-| `Candy.ws.to(room).send(data)` | Send to room |
-| `Candy.ws.broadcast(data)` | Send to all clients |
-| `Candy.ws.on(event, handler)` | Add event listener |
-| `Candy.ws.off(event, handler)` | Remove event listener |
+| `Odac.ws.send(data)` | Send JSON data to client |
+| `Odac.ws.sendBinary(buffer)` | Send binary data |
+| `Odac.ws.close(code, reason)` | Close connection |
+| `Odac.ws.ping()` | Send ping frame |
+| `Odac.ws.join(room)` | Join a room |
+| `Odac.ws.leave(room)` | Leave a room |
+| `Odac.ws.to(room).send(data)` | Send to room |
+| `Odac.ws.broadcast(data)` | Send to all clients |
+| `Odac.ws.on(event, handler)` | Add event listener |
+| `Odac.ws.off(event, handler)` | Remove event listener |
 
 ### WebSocket Client Properties
 
 | Property | Description |
 |----------|-------------|
-| `Candy.ws.id` | Unique client ID |
-| `Candy.ws.rooms` | Array of joined rooms |
-| `Candy.ws.data` | Custom data storage |
+| `Odac.ws.id` | Unique client ID |
+| `Odac.ws.rooms` | Array of joined rooms |
+| `Odac.ws.data` | Custom data storage |
 
 ### Events
 
@@ -47,16 +47,16 @@ Candy.Route.ws('/path', Candy => {
 
 | Method | Description |
 |--------|-------------|
-| `Candy.Route.wsServer.clients` | Map of all clients |
-| `Candy.Route.wsServer.clientCount` | Number of clients |
-| `Candy.Route.wsServer.toRoom(room, data)` | Send to room |
-| `Candy.Route.wsServer.broadcast(data)` | Broadcast to all |
+| `Odac.Route.wsServer.clients` | Map of all clients |
+| `Odac.Route.wsServer.clientCount` | Number of clients |
+| `Odac.Route.wsServer.toRoom(room, data)` | Send to room |
+| `Odac.Route.wsServer.broadcast(data)` | Broadcast to all |
 
 ## Frontend API
 
 ### Connection
 ```javascript
-const ws = Candy.ws('/path', options)
+const ws = Odac.ws('/path', options)
 ```
 
 ### Backend Options
@@ -105,28 +105,28 @@ const ws = Candy.ws('/path', options)
 ### Echo Server
 ```javascript
 // With token (default)
-Candy.Route.ws('/echo', Candy => {
-  Candy.ws.on('message', data => Candy.ws.send(data))
+Odac.Route.ws('/echo', Odac => {
+  Odac.ws.on('message', data => Odac.ws.send(data))
 })
 
 // Public (no token)
-Candy.Route.ws('/public-echo', Candy => {
-  Candy.ws.on('message', data => Candy.ws.send(data))
+Odac.Route.ws('/public-echo', Odac => {
+  Odac.ws.on('message', data => Odac.ws.send(data))
 }, {token: false})
 ```
 
 ### Authenticated Route
 ```javascript
 // Using auth.ws() (recommended)
-Candy.Route.auth.ws('/secure', async Candy => {
-  const user = await Candy.Auth.user()
+Odac.Route.auth.ws('/secure', async Odac => {
+  const user = await Odac.Auth.user()
   // Handle connection
 })
 
 // Manual check
-Candy.Route.ws('/secure', async Candy => {
-  if (!await Candy.Auth.check()) {
-    return Candy.ws.close(4001, 'Unauthorized')
+Odac.Route.ws('/secure', async Odac => {
+  if (!await Odac.Auth.check()) {
+    return Odac.ws.close(4001, 'Unauthorized')
   }
   // Handle connection
 })
@@ -134,32 +134,32 @@ Candy.Route.ws('/secure', async Candy => {
 
 ### With Middleware
 ```javascript
-Candy.Route.use('auth', 'rate-limit').ws('/chat', Candy => {
-  Candy.ws.send({type: 'welcome'})
+Odac.Route.use('auth', 'rate-limit').ws('/chat', Odac => {
+  Odac.ws.send({type: 'welcome'})
 })
 ```
 
 ### Room Broadcasting
 ```javascript
-Candy.Route.ws('/chat', Candy => {
-  Candy.ws.join('room-1')
-  Candy.ws.on('message', data => {
-    Candy.ws.to('room-1').send(data)
+Odac.Route.ws('/chat', Odac => {
+  Odac.ws.join('room-1')
+  Odac.ws.on('message', data => {
+    Odac.ws.to('room-1').send(data)
   })
 })
 ```
 
 ### URL Parameters
 ```javascript
-Candy.Route.ws('/room/{id}', Candy => {
-  const {id} = Candy.Request.data.url
-  Candy.ws.join(id)
+Odac.Route.ws('/room/{id}', Odac => {
+  const {id} = Odac.Request.data.url
+  Odac.ws.join(id)
 })
 ```
 
 ### Shared Connection (Client)
 ```javascript
-const ws = Candy.ws('/chat', {shared: true})
+const ws = Odac.ws('/chat', {shared: true})
 // All tabs share one connection
 ```
 
@@ -181,31 +181,31 @@ const ws = Candy.ws('/chat', {shared: true})
 
 1. **Always handle authentication**
    ```javascript
-   if (!await Candy.Auth.check()) {
-     return Candy.ws.close(4001, 'Unauthorized')
+   if (!await Odac.Auth.check()) {
+     return Odac.ws.close(4001, 'Unauthorized')
    }
    ```
 
 2. **Use rooms for targeted messaging**
    ```javascript
-   Candy.ws.join(`user-${userId}`)
+   Odac.ws.join(`user-${userId}`)
    ```
 
 3. **Clean up on close**
    ```javascript
-   Candy.ws.on('close', () => {
+   Odac.ws.on('close', () => {
      clearInterval(interval)
-     Candy.ws.leave('room')
+     Odac.ws.leave('room')
    })
    ```
 
 4. **Store per-connection data**
    ```javascript
-   Candy.ws.data.userId = user.id
-   Candy.ws.data.joinedAt = Date.now()
+   Odac.ws.data.userId = user.id
+   Odac.ws.data.joinedAt = Date.now()
    ```
 
 5. **Use shared connections for notifications**
    ```javascript
-   const ws = Candy.ws('/notifications', {shared: true})
+   const ws = Odac.ws('/notifications', {shared: true})
    ```

@@ -1,36 +1,36 @@
 # Advanced AJAX Navigation
 
-Advanced techniques and patterns for AJAX navigation in CandyPack.
+Advanced techniques and patterns for AJAX navigation in Odac.
 
 **Note:** All examples assume you have properly configured your skeleton template and controller. See the [Quick Start guide](01-quick-start.md#skeleton-structure-required) for setup instructions.
 
 ## Programmatic Navigation
 
-### Using Candy.load()
+### Using odac.load()
 
 Navigate programmatically from your code:
 
 ```javascript
 // Basic usage
-Candy.load('/about')
+odac.load('/about')
 
 // With callback
-Candy.load('/about', function(page, variables) {
+odac.load('/about', function(page, variables) {
   console.log('Loaded:', page)
   console.log('Data:', variables)
 })
 
 // Without updating history
-Candy.load('/about', callback, false)
+odac.load('/about', callback, false)
 ```
 
 ### Use Cases
 
 **Redirect after form submission:**
 ```javascript
-Candy.form('#my-form', function(data) {
+odac.form('#my-form', function(data) {
   if (data.result.success) {
-    Candy.load('/success')
+    odac.load('/success')
   }
 })
 ```
@@ -38,16 +38,16 @@ Candy.form('#my-form', function(data) {
 **Conditional navigation:**
 ```javascript
 if (user.isLoggedIn) {
-  Candy.load('/dashboard')
+  odac.load('/dashboard')
 } else {
-  Candy.load('/login')
+  odac.load('/login')
 }
 ```
 
 **Timed navigation:**
 ```javascript
 setTimeout(() => {
-  Candy.load('/next-page')
+  odac.load('/next-page')
 }, 3000)
 ```
 
@@ -58,7 +58,7 @@ setTimeout(() => {
 Update different parts of your page simultaneously:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: {
       content: 'main',
@@ -75,9 +75,9 @@ Candy.action({
 Define all parts in your controller:
 
 ```javascript
-module.exports = function(Candy) {
-  Candy.View.skeleton('main')
-  Candy.View.set({
+module.exports = function(Odac) {
+  odac.View.skeleton('main')
+  odac.View.set({
     header: 'main',
     content: 'dashboard',
     sidebar: 'dashboard',
@@ -100,7 +100,7 @@ let appState = {
   filters: {}
 }
 
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -121,7 +121,7 @@ Candy.action({
 Persist state across page reloads:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -148,7 +148,7 @@ Candy.action({
 Add custom animations:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -170,7 +170,7 @@ Candy.action({
 Smooth page transitions:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -209,7 +209,7 @@ main.page-enter-active {
 Automatically scroll to top on navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -229,7 +229,7 @@ Remember scroll position:
 ```javascript
 let scrollPositions = {}
 
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -256,7 +256,7 @@ Candy.action({
 Scroll to specific element after navigation:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -282,10 +282,10 @@ Candy.action({
 Gracefully handle navigation errors:
 
 ```javascript
-// Override Candy.load to add error handling
-const originalLoad = Candy.load.bind(Candy)
+// Override odac.load to add error handling
+const originalLoad = odac.load.bind(Odac)
 
-Candy.load = function(url, callback, push) {
+odac.load = function(url, callback, push) {
   try {
     originalLoad(url, function(page, variables) {
       if (callback) callback(page, variables)
@@ -308,7 +308,7 @@ function loadWithRetry(url, maxRetries = 3) {
   
   function attempt() {
     attempts++
-    Candy.load(url, 
+    odac.load(url, 
       (page, vars) => {
         console.log('Success after', attempts, 'attempts')
       },
@@ -333,7 +333,7 @@ Prevent rapid navigation:
 ```javascript
 let navigationTimeout
 
-Candy.action({
+Odac.action({
   click: {
     'a[href^="/"]': function(e) {
       clearTimeout(navigationTimeout)
@@ -353,7 +353,7 @@ Prefetch pages on hover:
 ```javascript
 let prefetchCache = {}
 
-Candy.action({
+Odac.action({
   mouseover: {
     'a[href^="/"]': function() {
       const url = this.getAttribute('href')
@@ -362,7 +362,7 @@ Candy.action({
         // Prefetch the page
         fetch(url, {
           headers: {
-            'X-Candy': 'prefetch'
+            'X-Odac': 'prefetch'
           }
         }).then(response => response.text())
           .then(html => {
@@ -381,7 +381,7 @@ Candy.action({
 Track page views:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -407,7 +407,7 @@ Candy.action({
 Redux/Vuex integration:
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: function(page, variables) {
@@ -430,7 +430,7 @@ Test navigation logic:
 ```javascript
 describe('Navigation', () => {
   it('should update active nav on page change', () => {
-    Candy.action({
+    Odac.action({
       navigate: {
         update: 'main',
         on: (page) => {
@@ -440,7 +440,7 @@ describe('Navigation', () => {
     })
     
     // Simulate navigation
-    Candy.load('/about')
+    odac.load('/about')
     
     // Assert
     expect(document.querySelector('.nav-link.active').href)
@@ -463,7 +463,7 @@ describe('Navigation', () => {
 ### Dashboard Navigation
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     links: '.sidebar a, .breadcrumb a',
     update: {
@@ -482,7 +482,7 @@ Candy.action({
 ### E-commerce
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: {
       content: 'main',
@@ -499,7 +499,7 @@ Candy.action({
 ### Blog
 
 ```javascript
-Candy.action({
+Odac.action({
   navigate: {
     update: 'main',
     on: (page, vars) => {
@@ -516,4 +516,4 @@ Candy.action({
 
 - Learn about [Form Handling](../03-forms/01-form-handling.md)
 - Explore [API Requests](../04-api-requests/01-get-post.md)
-- Check [candy.js Overview](../01-overview/01-introduction.md)
+- Check [odac.js Overview](../01-overview/01-introduction.md)

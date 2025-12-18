@@ -39,7 +39,7 @@ class Connector {
               this.lastProcess = payload.process
               process.stdout.write('\n')
             }
-            process.stdout.write(Candy.cli('Cli').icon(payload.status) + payload.message + '\r')
+            process.stdout.write(Odac.cli('Cli').icon(payload.status) + payload.message + '\r')
           } else {
             if (this.lastProcess) process.stdout.write('\n')
             if (payload.result) {
@@ -67,7 +67,7 @@ class Connector {
     this.#connect()
     this.socket.write(
       JSON.stringify({
-        auth: Candy.core('Config').config.api.auth,
+        auth: Odac.core('Config').config.api.auth,
         action: command.action,
         data: command.data
       })
@@ -76,8 +76,8 @@ class Connector {
 
   check() {
     return new Promise(resolve => {
-      if (!Candy.core('Config').config.server.watchdog) return resolve(false)
-      findProcess('pid', Candy.core('Config').config.server.watchdog)
+      if (!Odac.core('Config').config.server.watchdog) return resolve(false)
+      findProcess('pid', Odac.core('Config').config.server.watchdog)
         .then(list => {
           if (list.length > 0 && list[0].name == 'node') return resolve(true)
           return resolve(false)

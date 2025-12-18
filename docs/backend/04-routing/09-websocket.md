@@ -1,22 +1,22 @@
 # WebSocket Routes
 
-CandyPack provides built-in WebSocket support for real-time bidirectional communication.
+Odac provides built-in WebSocket support for real-time bidirectional communication.
 
 ## Route Definition
 
-WebSocket routes are defined in your route files (e.g., `route/www.js` or `route/websocket.js`) using `Candy.Route.ws()`:
+WebSocket routes are defined in your route files (e.g., `route/www.js` or `route/websocket.js`) using `Odac.Route.ws()`:
 
 ```javascript
 // route/websocket.js
-Candy.Route.ws('/chat', Candy => {
-  Candy.ws.send({type: 'welcome', message: 'Connected!'})
+Odac.Route.ws('/chat', Odac => {
+  Odac.ws.send({type: 'welcome', message: 'Connected!'})
 
-  Candy.ws.on('message', data => {
+  Odac.ws.on('message', data => {
     console.log('Received:', data)
-    Candy.ws.send({type: 'echo', data})
+    Odac.ws.send({type: 'echo', data})
   })
 
-  Candy.ws.on('close', () => {
+  Odac.ws.on('close', () => {
     console.log('Client disconnected')
   })
 })
@@ -24,7 +24,7 @@ Candy.Route.ws('/chat', Candy => {
 
 **Handler Signature:**
 
-The handler receives the `Candy` instance as the only parameter. The WebSocket client is accessible via `Candy.ws`, providing a consistent API with HTTP routes where everything is accessed through the `Candy` object.
+The handler receives the `Odac` instance as the only parameter. The WebSocket client is accessible via `Odac.ws`, providing a consistent API with HTTP routes where everything is accessed through the `Odac` object.
 
 **CSRF Token Protection:**
 
@@ -32,8 +32,8 @@ By default, WebSocket routes require a valid CSRF token (like `Route.get()` and 
 
 **Disable token requirement:**
 ```javascript
-Candy.Route.ws('/public', Candy => {
-  Candy.ws.send({type: 'public'})
+Odac.Route.ws('/public', Odac => {
+  Odac.ws.send({type: 'public'})
 }, {token: false})
 ```
 
@@ -45,32 +45,32 @@ web/
 │   └── websocket.js    # WebSocket routes (recommended)
 ```
 
-## WebSocket Client API (Candy.ws)
+## WebSocket Client API (Odac.ws)
 
-The WebSocket client is accessible via `Candy.ws` in your handler, providing a consistent API pattern with HTTP routes.
+The WebSocket client is accessible via `Odac.ws` in your handler, providing a consistent API pattern with HTTP routes.
 
 ### Sending Messages
 
 ```javascript
-Candy.ws.send({type: 'message', text: 'Hello'})  // JSON object
-Candy.ws.send('Plain text message')               // String
-Candy.ws.sendBinary(buffer)                       // Binary data
+Odac.ws.send({type: 'message', text: 'Hello'})  // JSON object
+Odac.ws.send('Plain text message')               // String
+Odac.ws.sendBinary(buffer)                       // Binary data
 ```
 
 ### Event Handlers
 
 ```javascript
-Candy.ws.on('message', data => {})  // Incoming message
-Candy.ws.on('close', () => {})      // Connection closed
-Candy.ws.on('error', err => {})     // Error occurred
+Odac.ws.on('message', data => {})  // Incoming message
+Odac.ws.on('close', () => {})      // Connection closed
+Odac.ws.on('error', err => {})     // Error occurred
 ```
 
 ### Connection Management
 
 ```javascript
-Candy.ws.close()           // Close connection
-Candy.ws.ping()            // Send ping frame
-Candy.ws.id                // Unique client ID
+Odac.ws.close()           // Close connection
+Odac.ws.ping()            // Send ping frame
+Odac.ws.id                // Unique client ID
 ```
 
 ## Rooms
@@ -78,20 +78,20 @@ Candy.ws.id                // Unique client ID
 Group clients into rooms for targeted broadcasting:
 
 ```javascript
-Candy.Route.ws('/game', Candy => {
-  const roomId = Candy.Request.data.url.room || 'lobby'
+Odac.Route.ws('/game', Odac => {
+  const roomId = Odac.Request.data.url.room || 'lobby'
   
-  Candy.ws.join(roomId)
+  Odac.ws.join(roomId)
   
-  Candy.ws.on('message', data => {
-    Candy.ws.to(roomId).send({
+  Odac.ws.on('message', data => {
+    Odac.ws.to(roomId).send({
       type: 'chat',
       message: data.message
     })
   })
 
-  Candy.ws.on('close', () => {
-    Candy.ws.leave(roomId)
+  Odac.ws.on('close', () => {
+    Odac.ws.leave(roomId)
   })
 })
 ```
@@ -100,10 +100,10 @@ Candy.Route.ws('/game', Candy => {
 
 ```javascript
 // Send to all clients except sender
-Candy.ws.broadcast({type: 'notification', text: 'New user joined'})
+Odac.ws.broadcast({type: 'notification', text: 'New user joined'})
 
 // Send to all clients in a room
-Candy.ws.to('room-name').send({type: 'update', data: {}})
+Odac.ws.to('room-name').send({type: 'update', data: {}})
 ```
 
 ## URL Parameters
@@ -111,11 +111,11 @@ Candy.ws.to('room-name').send({type: 'update', data: {}})
 WebSocket routes support dynamic parameters:
 
 ```javascript
-Candy.Route.ws('/room/{roomId}/user/{userId}', Candy => {
-  const {roomId, userId} = Candy.Request.data.url
+Odac.Route.ws('/room/{roomId}/user/{userId}', Odac => {
+  const {roomId, userId} = Odac.Request.data.url
   
-  Candy.ws.join(roomId)
-  Candy.ws.data.userId = userId
+  Odac.ws.join(roomId)
+  Odac.ws.data.userId = userId
 })
 ```
 
@@ -124,16 +124,16 @@ Candy.Route.ws('/room/{roomId}/user/{userId}', Candy => {
 ### Manual Authentication Check
 
 ```javascript
-Candy.Route.ws('/secure', async Candy => {
-  const isAuthenticated = await Candy.Auth.check()
+Odac.Route.ws('/secure', async Odac => {
+  const isAuthenticated = await Odac.Auth.check()
   
   if (!isAuthenticated) {
-    Candy.ws.close(4001, 'Unauthorized')
+    Odac.ws.close(4001, 'Unauthorized')
     return
   }
 
-  const user = await Candy.Auth.user()
-  Candy.ws.data.user = user
+  const user = await Odac.Auth.user()
+  Odac.ws.data.user = user
 })
 ```
 
@@ -142,11 +142,11 @@ Candy.Route.ws('/secure', async Candy => {
 Automatically requires authentication (also requires token by default):
 
 ```javascript
-Candy.Route.auth.ws('/secure', async Candy => {
-  const user = await Candy.Auth.user()
-  Candy.ws.data.user = user
+Odac.Route.auth.ws('/secure', async Odac => {
+  const user = await Odac.Auth.user()
+  Odac.ws.data.user = user
   
-  Candy.ws.send({
+  Odac.ws.send({
     type: 'welcome',
     user: user.name
   })
@@ -158,7 +158,7 @@ If the user is not authenticated, the connection is automatically closed with co
 ### Options
 
 ```javascript
-Candy.Route.ws('/path', handler, {
+Odac.Route.ws('/path', handler, {
   token: true  // Require CSRF token (default: true)
 })
 ```
@@ -167,13 +167,13 @@ Candy.Route.ws('/path', handler, {
 
 ```javascript
 // Public WebSocket (no token, no auth)
-Candy.Route.ws('/public', handler, {token: false})
+Odac.Route.ws('/public', handler, {token: false})
 
 // Token required, no auth (default)
-Candy.Route.ws('/chat', handler)
+Odac.Route.ws('/chat', handler)
 
 // Both token and auth required
-Candy.Route.auth.ws('/secure', handler)
+Odac.Route.auth.ws('/secure', handler)
 ```
 
 ## Middleware
@@ -182,8 +182,8 @@ WebSocket routes support middleware just like HTTP routes:
 
 ```javascript
 // Define middleware
-Candy.Route.use('auth-check', 'rate-limit').ws('/chat', Candy => {
-  Candy.ws.send({type: 'welcome'})
+Odac.Route.use('auth-check', 'rate-limit').ws('/chat', Odac => {
+  Odac.ws.send({type: 'welcome'})
 })
 ```
 
@@ -196,20 +196,20 @@ Candy.Route.use('auth-check', 'rate-limit').ws('/chat', Candy => {
 
 ```javascript
 // middleware/websocket-auth.js
-module.exports = async Candy => {
-  const token = Candy.Request.header('Authorization')
+module.exports = async Odac => {
+  const token = Odac.Request.header('Authorization')
   if (!token) return false
   
   const user = await validateToken(token)
   if (!user) return false
   
-  Candy.Auth.setUser(user)
+  Odac.Auth.setUser(user)
   return true
 }
 
 // route/websocket.js
-Candy.Route.use('websocket-auth').ws('/secure', Candy => {
-  Candy.ws.send({type: 'authenticated'})
+Odac.Route.use('websocket-auth').ws('/secure', Odac => {
+  Odac.ws.send({type: 'authenticated'})
 })
 ```
 
@@ -218,30 +218,30 @@ Candy.Route.use('websocket-auth').ws('/secure', Candy => {
 Store per-connection data:
 
 ```javascript
-Candy.ws.data.username = 'john'
-Candy.ws.data.joinedAt = Date.now()
+Odac.ws.data.username = 'john'
+Odac.ws.data.joinedAt = Date.now()
 ```
 
 ## Intervals and Timeouts
 
-Use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions. They are automatically cleaned up when the WebSocket connection closes:
+Use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions. They are automatically cleaned up when the WebSocket connection closes:
 
 ```javascript
-Candy.Route.ws('/live-updates', Candy => {
-  Candy.setInterval(() => {
-    Candy.ws.send({
+Odac.Route.ws('/live-updates', Odac => {
+  Odac.setInterval(() => {
+    Odac.ws.send({
       type: 'update',
       timestamp: Date.now()
     })
   }, 1000)
 
-  Candy.setTimeout(() => {
-    Candy.ws.send({type: 'delayed-message'})
+  Odac.setTimeout(() => {
+    Odac.ws.send({type: 'delayed-message'})
   }, 5000)
 })
 ```
 
-**Why use Candy.setInterval/setTimeout?**
+**Why use Odac.setInterval/setTimeout?**
 - Prevents memory leaks by auto-cleanup on disconnect
 - No need to manually track and clear intervals
 - Works seamlessly with WebSocket lifecycle
@@ -249,34 +249,34 @@ Candy.Route.ws('/live-updates', Candy => {
 **Manual cleanup (if needed):**
 
 ```javascript
-const intervalId = Candy.setInterval(() => {}, 1000)
-Candy.clearInterval(intervalId)
+const intervalId = Odac.setInterval(() => {}, 1000)
+Odac.clearInterval(intervalId)
 
-const timeoutId = Candy.setTimeout(() => {}, 5000)
-Candy.clearTimeout(timeoutId)
+const timeoutId = Odac.setTimeout(() => {}, 5000)
+Odac.clearTimeout(timeoutId)
 ```
 
 ## Real-Time Notifications Example
 
 ```javascript
-Candy.Route.ws('/notifications', async Candy => {
-  const user = await Candy.Auth.user()
+Odac.Route.ws('/notifications', async Odac => {
+  const user = await Odac.Auth.user()
   if (!user) {
-    Candy.ws.close(4001, 'Unauthorized')
+    Odac.ws.close(4001, 'Unauthorized')
     return
   }
 
-  Candy.ws.data.userId = user.id
-  Candy.ws.join(`user-${user.id}`)
+  Odac.ws.data.userId = user.id
+  Odac.ws.join(`user-${user.id}`)
 
-  Candy.ws.on('close', () => {
+  Odac.ws.on('close', () => {
     console.log(`User ${user.id} disconnected`)
   })
 })
 
 // Send notification to specific user from anywhere in your app
 function notifyUser(userId, message) {
-  const wsServer = Candy.Route.wsServer
+  const wsServer = Odac.Route.wsServer
   wsServer.toRoom(`user-${userId}`, {
     type: 'notification',
     message
@@ -290,7 +290,7 @@ Frontend clients can use shared connections across tabs:
 
 ```javascript
 // All browser tabs share one connection
-const ws = Candy.ws('/notifications', {shared: true})
+const ws = Odac.ws('/notifications', {shared: true})
 
 ws.on('message', data => {
   console.log('Notification:', data)

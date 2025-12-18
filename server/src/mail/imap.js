@@ -1,4 +1,4 @@
-const {log, error} = Candy.core('Log', false).init('Mail', 'IMAP')
+const {log, error} = Odac.core('Log', false).init('Mail', 'IMAP')
 
 // IMAP Constants
 const CONSTANTS = {

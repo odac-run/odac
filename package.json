@@ -1,7 +1,7 @@
 {
-  "name": "candypack",
-  "description": "🍭 Next-Gen Server & Framework: Web, DNS, Mail, SSL & Monitoring in one CLI.",
-  "homepage": "https://candypack.dev",
+  "name": "odac",
+  "description": "⚡ Next-Gen Server & Framework: Web, DNS, Mail, SSL & Monitoring in one CLI.",
+  "homepage": "https://odac.run",
   "author": {
     "name": "emre.red",
     "email": "mail@emre.red",
@@ -15,7 +15,7 @@
   "main": "framework/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CandyPack/CandyPack.git"
+    "url": "https://github.com/odac-run/odac.git"
   },
   "directories": {
     "bin": "./bin",
@@ -30,8 +30,7 @@
     "web": "./web"
   },
   "bin": {
-    "candy": "bin/candy",
-    "candypack": "bin/candypack"
+    "odac": "bin/odac"
   },
   "dependencies": {
     "acme-client": "^5.1.0",

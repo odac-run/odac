@@ -78,9 +78,9 @@ describe('Mail Module - Account Management Operations', () => {
       result: jest.fn((success, data) => ({success, data}))
     }
 
-    // Setup global Candy mocks
-    global.Candy.setMock('core', 'Config', mockConfig)
-    global.Candy.setMock('server', 'Api', mockApi)
+    // Setup global Odac mocks
+    global.Odac.setMock('core', 'Config', mockConfig)
+    global.Odac.setMock('server', 'Api', mockApi)
 
     // Setup bcrypt mock
     bcrypt.hash.mockImplementation((password, rounds, callback) => {

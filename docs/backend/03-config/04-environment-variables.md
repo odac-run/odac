@@ -1,6 +1,6 @@
 ## 🌍 Environment Variables
 
-CandyPack supports environment variables through `.env` files, making it easy to manage sensitive data and environment-specific settings.
+Odac supports environment variables through `.env` files, making it easy to manage sensitive data and environment-specific settings.
 
 ### Creating a .env File
 
@@ -65,13 +65,13 @@ Reference environment variables using `${VARIABLE_NAME}` syntax:
 
 You can access environment variables in your controllers in three ways:
 
-#### 1. Using Candy.env() (Recommended)
+#### 1. Using Odac.env() (Recommended)
 
 ```javascript
 module.exports = function() {
-  const apiKey = Candy.env('API_KEY')
-  const debug = Candy.env('DEBUG', 'false')
-  const port = Candy.env('PORT', '3000')
+  const apiKey = Odac.env('API_KEY')
+  const debug = Odac.env('DEBUG', 'false')
+  const port = Odac.env('PORT', '3000')
   
   if (debug === 'true') {
     console.log('Debug mode enabled')
@@ -91,12 +91,12 @@ module.exports = function() {
 }
 ```
 
-#### 3. From Candy.Config (if defined in config.json)
+#### 3. From Odac.Config (if defined in config.json)
 
 ```javascript
 module.exports = function() {
-  const dbHost = Candy.Config.mysql.host
-  const apiKey = Candy.Config.api.stripe.key
+  const dbHost = Odac.Config.mysql.host
+  const apiKey = Odac.Config.api.stripe.key
 }
 ```
 
@@ -107,15 +107,15 @@ module.exports = function() {
 ```javascript
 // controller/home.js
 module.exports = function() {
-  const betaEnabled = Candy.env('FEATURE_BETA', 'false') === 'true'
-  const maintenance = Candy.env('MAINTENANCE_MODE', 'false') === 'true'
+  const betaEnabled = Odac.env('FEATURE_BETA', 'false') === 'true'
+  const maintenance = Odac.env('MAINTENANCE_MODE', 'false') === 'true'
   
   if (maintenance) {
-    return Candy.abort(503)
+    return Odac.abort(503)
   }
   
-  Candy.set('betaEnabled', betaEnabled)
-  return Candy.View.render('home')
+  Odac.set('betaEnabled', betaEnabled)
+  return Odac.View.render('home')
 }
 ```
 
@@ -124,8 +124,8 @@ module.exports = function() {
 ```javascript
 // controller/payment.js
 module.exports = async function() {
-  const stripeKey = Candy.env('STRIPE_SECRET_KEY')
-  const webhookSecret = Candy.env('STRIPE_WEBHOOK_SECRET')
+  const stripeKey = Odac.env('STRIPE_SECRET_KEY')
+  const webhookSecret = Odac.env('STRIPE_WEBHOOK_SECRET')
   
   const stripe = require('stripe')(stripeKey)
   
@@ -138,16 +138,16 @@ module.exports = async function() {
 ```javascript
 // controller/contact.js
 module.exports = async function() {
-  const mail = Candy.Mail()
+  const mail = Odac.Mail()
   
-  mail.from(Candy.env('MAIL_FROM', 'noreply@example.com'))
-  mail.to(Candy.request('email'))
+  mail.from(Odac.env('MAIL_FROM', 'noreply@example.com'))
+  mail.to(Odac.request('email'))
   mail.subject('Thank you for contacting us')
   mail.html('<h1>We received your message!</h1>')
   
   await mail.send()
   
-  return Candy.return({ success: true })
+  return Odac.return({ success: true })
 }
 ```
 
@@ -224,4 +224,4 @@ MAIL_FROM='noreply@example.com'
 - Changes to `.env` require restarting the application
 - The `.env` file is **optional** - you can use direct values in `config.json` if preferred
 - Variables defined in `.env` are available throughout your entire application
-- If a variable is not found, `Candy.env()` returns the default value or `undefined`
+- If a variable is not found, `Odac.env()` returns the default value or `undefined`

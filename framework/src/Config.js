@@ -11,7 +11,7 @@ module.exports = {
     timeout: 10000
   },
   encrypt: {
-    key: 'candy'
+    key: 'odac'
   },
   earlyHints: {
     enabled: true,
@@ -21,7 +21,7 @@ module.exports = {
 
   init: function () {
     try {
-      this.system = JSON.parse(fs.readFileSync(os.homedir() + '/.candypack/config.json'))
+      this.system = JSON.parse(fs.readFileSync(os.homedir() + '/.odac/config.json'))
     } catch {
       this.system = {}
     }
@@ -43,7 +43,7 @@ module.exports = {
     if (typeof obj === 'string') {
       return obj.replace(/\$\{(\w+)\}/g, (_, key) => {
         // Special variables
-        if (key === 'candy') {
+        if (key === 'odac') {
           return __dirname.replace(/\/framework\/src$/, '')
         }
         // Environment variables

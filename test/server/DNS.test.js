@@ -22,8 +22,8 @@ describe('DNS Module', () => {
     setupGlobalMocks()
 
     // Set up the Log mock before requiring DNS
-    const {mockCandy} = require('./__mocks__/globalCandy')
-    mockCandy.setMock('core', 'Log', {
+    const {mockOdac} = require('./__mocks__/globalOdac')
+    mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError
@@ -75,7 +75,7 @@ describe('DNS Module', () => {
       }
     }
 
-    global.Candy.setMock('core', 'Config', mockConfig)
+    global.Odac.setMock('core', 'Config', mockConfig)
 
     // Clear module cache and require DNS
     jest.resetModules()
@@ -105,7 +105,7 @@ describe('DNS Module', () => {
       DNS.init()
 
       expect(axios.get).toHaveBeenCalledWith('https://curlmyip.org/', {
-        headers: {'User-Agent': 'CandyPack-DNS/1.0'},
+        headers: {'User-Agent': 'Odac-DNS/1.0'},
         timeout: 5000
       })
     })
@@ -1282,7 +1282,7 @@ describe('DNS Module', () => {
         }
       }
 
-      global.Candy.setMock('core', 'Config', mockConfig)
+      global.Odac.setMock('core', 'Config', mockConfig)
 
       jest.resetModules()
       DNS = require('../../server/src/DNS')
@@ -1416,8 +1416,8 @@ describe('port management and conflict resolution', () => {
     setupGlobalMocks()
 
     // Set up the Log mock before requiring DNS
-    const {mockCandy} = require('./__mocks__/globalCandy')
-    mockCandy.setMock('core', 'Log', {
+    const {mockOdac} = require('./__mocks__/globalOdac')
+    mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError
@@ -1452,7 +1452,7 @@ describe('port management and conflict resolution', () => {
       }
     }
 
-    global.Candy.setMock('core', 'Config', mockConfig)
+    global.Odac.setMock('core', 'Config', mockConfig)
   })
 
   afterEach(() => {
@@ -1742,8 +1742,8 @@ describe('alternative port and system DNS configuration', () => {
     setupGlobalMocks()
 
     // Set up the Log mock before requiring DNS
-    const {mockCandy} = require('./__mocks__/globalCandy')
-    mockCandy.setMock('core', 'Log', {
+    const {mockOdac} = require('./__mocks__/globalOdac')
+    mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError
@@ -1778,7 +1778,7 @@ describe('alternative port and system DNS configuration', () => {
       }
     }
 
-    global.Candy.setMock('core', 'Config', mockConfig)
+    global.Odac.setMock('core', 'Config', mockConfig)
   })
 
   afterEach(() => {

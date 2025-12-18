@@ -16,8 +16,8 @@ describe('Api', () => {
     setupGlobalMocks()
 
     // Set up the Log mock before requiring Api
-    const {mockCandy} = require('./__mocks__/globalCandy')
-    mockCandy.setMock('core', 'Log', {
+    const {mockOdac} = require('./__mocks__/globalOdac')
+    mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError
@@ -52,12 +52,12 @@ describe('Api', () => {
   describe('initialization', () => {
     it('should initialize api config if not exists', () => {
       // Clear the api config
-      global.Candy.core('Config').config.api = undefined
+      global.Odac.core('Config').config.api = undefined
 
       Api.init()
 
-      expect(global.Candy.core('Config').config.api).toBeDefined()
-      expect(global.Candy.core('Config').config.api.auth).toBeDefined()
+      expect(global.Odac.core('Config').config.api).toBeDefined()
+      expect(global.Odac.core('Config').config.api.auth).toBeDefined()
     })
 
     it('should create TCP server and set up handlers', () => {
@@ -300,7 +300,7 @@ describe('Api', () => {
       }
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'invalid.action',
         data: []
       })
@@ -318,7 +318,7 @@ describe('Api', () => {
       }
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         data: []
       })
 
@@ -335,11 +335,11 @@ describe('Api', () => {
       }
 
       // Mock the Mail service
-      const mockMailService = global.Candy.server('Mail')
+      const mockMailService = global.Odac.server('Mail')
       mockMailService.create.mockResolvedValue(Api.result(true, 'Account created'))
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'mail.create',
         data: ['test@example.com', 'password123']
       })
@@ -357,11 +357,11 @@ describe('Api', () => {
         return
       }
 
-      const mockServiceService = global.Candy.server('Service')
+      const mockServiceService = global.Odac.server('Service')
       mockServiceService.start.mockResolvedValue(Api.result(true, 'Service started'))
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'service.start',
         data: ['my-service.js']
       })
@@ -379,11 +379,11 @@ describe('Api', () => {
         return
       }
 
-      const mockServerService = global.Candy.server('Server')
+      const mockServerService = global.Odac.server('Server')
       mockServerService.stop.mockResolvedValue(Api.result(true, 'Server stopped'))
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'server.stop',
         data: []
       })
@@ -401,11 +401,11 @@ describe('Api', () => {
         return
       }
 
-      const mockMailService = global.Candy.server('Mail')
+      const mockMailService = global.Odac.server('Mail')
       mockMailService.create.mockRejectedValue(new Error('Database connection failed'))
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'mail.create',
         data: ['test@example.com', 'password123']
       })
@@ -423,11 +423,11 @@ describe('Api', () => {
         return
       }
 
-      const mockMailService = global.Candy.server('Mail')
+      const mockMailService = global.Odac.server('Mail')
       mockMailService.list.mockResolvedValue(Api.result(true, []))
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'mail.list'
         // No data parameter
       })
@@ -445,14 +445,14 @@ describe('Api', () => {
         return
       }
 
-      const mockMailService = global.Candy.server('Mail')
+      const mockMailService = global.Odac.server('Mail')
       mockMailService.delete.mockResolvedValue(Api.result(true, 'Deleted'))
       mockMailService.password.mockResolvedValue(Api.result(true, 'Password changed'))
       mockMailService.send.mockResolvedValue(Api.result(true, 'Email sent'))
 
       // Test mail.delete
       let payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'mail.delete',
         data: ['test@example.com']
       })
@@ -462,7 +462,7 @@ describe('Api', () => {
 
       // Test mail.password
       payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'mail.password',
         data: ['test@example.com', 'newpassword']
       })
@@ -472,7 +472,7 @@ describe('Api', () => {
 
       // Test mail.send
       payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'mail.send',
         data: ['test@example.com', 'Subject', 'Body']
       })
@@ -487,14 +487,14 @@ describe('Api', () => {
         return
       }
 
-      const mockSubdomainService = global.Candy.server('Subdomain')
+      const mockSubdomainService = global.Odac.server('Subdomain')
       mockSubdomainService.create.mockResolvedValue(Api.result(true, 'Created'))
       mockSubdomainService.delete.mockResolvedValue(Api.result(true, 'Deleted'))
       mockSubdomainService.list.mockResolvedValue(Api.result(true, ['www', 'api']))
 
       // Test subdomain.create
       let payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'subdomain.create',
         data: ['api.example.com']
       })
@@ -504,7 +504,7 @@ describe('Api', () => {
 
       // Test subdomain.delete
       payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'subdomain.delete',
         data: ['api.example.com']
       })
@@ -514,7 +514,7 @@ describe('Api', () => {
 
       // Test subdomain.list
       payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'subdomain.list',
         data: ['example.com']
       })
@@ -529,14 +529,14 @@ describe('Api', () => {
         return
       }
 
-      const mockWebService = global.Candy.server('Web')
+      const mockWebService = global.Odac.server('Web')
       mockWebService.create.mockResolvedValue(Api.result(true, 'Created'))
       mockWebService.delete.mockResolvedValue(Api.result(true, 'Deleted'))
       mockWebService.list.mockResolvedValue(Api.result(true, ['example.com']))
 
       // Test web.create
       let payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'web.create',
         data: ['example.com']
       })
@@ -546,7 +546,7 @@ describe('Api', () => {
 
       // Test web.delete
       payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'web.delete',
         data: ['example.com']
       })
@@ -556,7 +556,7 @@ describe('Api', () => {
 
       // Test web.list
       payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'web.list',
         data: []
       })
@@ -571,11 +571,11 @@ describe('Api', () => {
         return
       }
 
-      const mockSSLService = global.Candy.server('SSL')
+      const mockSSLService = global.Odac.server('SSL')
       mockSSLService.renew.mockResolvedValue(Api.result(true, 'SSL renewed'))
 
       const payload = JSON.stringify({
-        auth: global.Candy.core('Config').config.api.auth,
+        auth: global.Odac.core('Config').config.api.auth,
         action: 'ssl.renew',
         data: ['example.com']
       })

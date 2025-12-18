@@ -31,8 +31,8 @@ npm run test:watch    # Run tests in watch mode
 npm run release       # Semantic release (automated)
 
 # Installation
-curl -sL https://candypack.dev/install | bash  # Quick install
-npm install -g candypack                       # Manual install
+curl -sL https://odac.run/install | bash  # Quick install
+npm install -g odac                        # Manual install
 
 # Git Hooks & CI/CD
 # Pre-commit automatically runs:
@@ -52,17 +52,17 @@ npm install -g candypack                       # Manual install
 
 - **Prettier Config**: No semicolons, single quotes, 140 char width, 2-space tabs
 - **ESLint**: Separate configs for server/framework/web/browser contexts
-- **Globals**: `Candy` and `__` are global variables across the codebase
+- **Globals**: `Odac` and `__` are global variables across the codebase
 - **Module System**: CommonJS (`require`/`module.exports`) for server-side code
 
 ## Logging Standards
 
 ### Server & Core Modules
-- **Log Class**: Use `Candy.core('Log', false).init('ModuleName')` for all logging in `server/` and `core/` directories
+- **Log Class**: Use `Odac.core('Log', false).init('ModuleName')` for all logging in `server/` and `core/` directories
 - **Usage Pattern**:
 
   ```javascript
-  const {log, error} = Candy.core('Log', false).init('ModuleName')
+  const {log, error} = Odac.core('Log', false).init('ModuleName')
 
   log('Info message')
   log('Message with %s placeholder', 'value')

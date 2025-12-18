@@ -1,6 +1,6 @@
 ## 🏗️ How to Build a Controller
 
-A controller is just a JavaScript module that exports a function. This function automatically gets the magical `Candy` context object we talked about in the overview.
+A controller is just a JavaScript module that exports a function. This function automatically gets the magical `Odac` context object we talked about in the overview.
 
 #### A Simple "Hello World" Controller
 
@@ -8,9 +8,9 @@ Check out this basic example from `controller/page/index.js`:
 
 ```javascript
 // This function is our controller!
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // It simply returns a string.
-  return 'Welcome to my awesome CandyPack server!'
+  return 'Welcome to my awesome Odac server!'
 }
 ```
 

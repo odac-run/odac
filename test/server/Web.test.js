@@ -23,7 +23,7 @@ const path = require('path')
 const tls = require('tls')
 
 // Import test utilities
-const {mockCandy, mockLangGet} = require('./__mocks__/globalCandy')
+const {mockOdac} = require('./__mocks__/globalOdac')
 const {createMockRequest, createMockResponse} = require('./__mocks__/testFactories')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
 
@@ -38,14 +38,14 @@ describe('Web', () => {
     // Reset all mocks
     jest.clearAllMocks()
 
-    // Setup global Candy mock
-    mockCandy.resetMocks()
-    mockConfig = mockCandy.core('Config')
+    // Setup global Odac mock
+    mockOdac.resetMocks()
+    mockConfig = mockOdac.core('Config')
 
     // Initialize config structure
     mockConfig.config = {
       websites: {},
-      web: {path: '/var/candypack'},
+      web: {path: '/var/odac'},
       ssl: null
     }
 
@@ -56,28 +56,28 @@ describe('Web', () => {
       info: jest.fn(),
       debug: jest.fn()
     }
-    mockCandy.setMock('server', 'Log', {
+    mockOdac.setMock('server', 'Log', {
       init: jest.fn().mockReturnValue(mockLogInstance)
     })
     mockLog = mockLogInstance.log
 
     // Setup Api mock
-    mockCandy.setMock('server', 'Api', {
+    mockOdac.setMock('server', 'Api', {
       result: jest.fn((success, message) => ({success, message}))
     })
 
     // Setup DNS mock with default methods
-    mockCandy.setMock('server', 'DNS', {
+    mockOdac.setMock('server', 'DNS', {
       record: jest.fn(),
       ip: '127.0.0.1'
     })
 
     // Setup Process mock
-    mockCandy.setMock('core', 'Process', {
+    mockOdac.setMock('core', 'Process', {
       stop: jest.fn()
     })
 
-    global.Candy = mockCandy
+    global.Odac = mockOdac
     global.__ = jest.fn((key, ...args) => {
       // Simple mock translation function
       let result = key
@@ -156,7 +156,7 @@ describe('Web', () => {
   })
 
   afterEach(() => {
-    delete global.Candy
+    delete global.Odac
     delete global.__
   })
 
@@ -175,7 +175,7 @@ describe('Web', () => {
 
       await Web.init()
 
-      expect(mockConfig.config.web.path).toBe('/var/candypack/')
+      expect(mockConfig.config.web.path).toBe('/var/odac/')
 
       // Test macOS platform
       os.platform.mockReturnValue('darwin')
@@ -183,7 +183,7 @@ describe('Web', () => {
 
       await Web.init()
 
-      expect(mockConfig.config.web.path).toBe('/home/user/Candypack/')
+      expect(mockConfig.config.web.path).toBe('/home/user/Odac/')
 
       // Test Windows platform
       os.platform.mockReturnValue('win32')
@@ -191,7 +191,7 @@ describe('Web', () => {
 
       await Web.init()
 
-      expect(mockConfig.config.web.path).toBe('/home/user/Candypack/')
+      expect(mockConfig.config.web.path).toBe('/home/user/Odac/')
     })
 
     test('should create web directory if it does not exist', async () => {
@@ -341,7 +341,7 @@ describe('Web', () => {
   describe('website creation', () => {
     beforeEach(async () => {
       await Web.init()
-      mockConfig.config.web = {path: '/var/candypack'}
+      mockConfig.config.web = {path: '/var/odac'}
     })
 
     test('should create website with valid domain', () => {
@@ -404,25 +404,25 @@ describe('Web', () => {
 
       // Mock fs.existsSync to return false for the website directory so it gets created
       fs.existsSync.mockImplementation(path => {
-        if (path === '/var/candypack/example.com') return false
+        if (path === '/var/odac/example.com') return false
         if (path.includes('node_modules')) return false
         return true
       })
 
       Web.create(domain, mockProgress)
 
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/var/candypack/example.com', {recursive: true})
-      expect(fs.cpSync).toHaveBeenCalledWith(expect.stringContaining('web/'), '/var/candypack/example.com', {recursive: true})
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/var/odac/example.com', {recursive: true})
+      expect(fs.cpSync).toHaveBeenCalledWith(expect.stringContaining('web/'), '/var/odac/example.com', {recursive: true})
     })
 
-    test('should setup npm link for candypack', () => {
+    test('should setup npm link for odac', () => {
       const mockProgress = jest.fn()
       const domain = 'example.com'
 
       Web.create(domain, mockProgress)
 
-      expect(childProcess.execSync).toHaveBeenCalledWith('npm link candypack', {
-        cwd: '/var/candypack/example.com'
+      expect(childProcess.execSync).toHaveBeenCalledWith('npm link odac', {
+        cwd: '/var/odac/example.com'
       })
     })
 
@@ -434,7 +434,7 @@ describe('Web', () => {
       Web.create(domain, mockProgress)
 
       // Note: The actual Web.js code has a bug - missing '/' in path concatenation
-      expect(fs.rmSync).toHaveBeenCalledWith('/var/candypack/example.com/node_modules/.bin', {recursive: true})
+      expect(fs.rmSync).toHaveBeenCalledWith('/var/odac/example.com/node_modules/.bin', {recursive: true})
     })
 
     test('should create node_modules directory if it does not exist', () => {
@@ -444,7 +444,7 @@ describe('Web', () => {
 
       Web.create(domain, mockProgress)
 
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/var/candypack/example.com/node_modules')
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/var/odac/example.com/node_modules')
     })
 
     test('should setup DNS records for non-localhost domains', () => {
@@ -454,8 +454,8 @@ describe('Web', () => {
         record: jest.fn(),
         ip: '192.168.1.1'
       }
-      mockCandy.setMock('server', 'DNS', mockDNS)
-      mockCandy.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'DNS', mockDNS)
+      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
       Web.create(domain, mockProgress)
 
@@ -477,8 +477,8 @@ describe('Web', () => {
     test('should not setup DNS records for localhost', () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
-      mockCandy.setMock('server', 'DNS', mockDNS)
-      mockCandy.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'DNS', mockDNS)
+      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
       Web.create('localhost', mockProgress)
 
@@ -488,8 +488,8 @@ describe('Web', () => {
     test('should not setup DNS records for IP addresses', () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
-      mockCandy.setMock('server', 'DNS', mockDNS)
-      mockCandy.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'DNS', mockDNS)
+      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
       Web.create('192.168.1.1', mockProgress)
 
@@ -509,7 +509,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         'example.com': {
           domain: 'example.com',
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: 12345,
           port: 3000,
           cert: {
@@ -540,7 +540,7 @@ describe('Web', () => {
 
       Web.request(mockReq, mockRes, true)
 
-      expect(mockRes.write).toHaveBeenCalledWith('CandyPack Server')
+      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
     })
 
@@ -549,7 +549,7 @@ describe('Web', () => {
 
       Web.request(mockReq, mockRes, true)
 
-      expect(mockRes.write).toHaveBeenCalledWith('CandyPack Server')
+      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
     })
 
@@ -593,7 +593,7 @@ describe('Web', () => {
 
       Web.request(mockReq, mockRes, true)
 
-      expect(mockRes.write).toHaveBeenCalledWith('CandyPack Server')
+      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
       expect(http.request).not.toHaveBeenCalled()
     })
@@ -604,7 +604,7 @@ describe('Web', () => {
 
       Web.request(mockReq, mockRes, true)
 
-      expect(mockRes.write).toHaveBeenCalledWith('CandyPack Server')
+      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
       expect(http.request).not.toHaveBeenCalled()
     })
@@ -618,8 +618,8 @@ describe('Web', () => {
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-candy-connection-remoteaddress': '192.168.1.100',
-            'x-candy-connection-ssl': 'true'
+            'x-odac-connection-remoteaddress': '192.168.1.100',
+            'x-odac-connection-ssl': 'true'
           })
         }),
         expect.any(Function)
@@ -635,7 +635,7 @@ describe('Web', () => {
       Web.request(mockReq, mockRes, true)
 
       expect(mockLog).toHaveBeenCalledWith(expect.any(Error))
-      expect(mockRes.write).toHaveBeenCalledWith('CandyPack Server')
+      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
     })
 
@@ -668,7 +668,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         'example.com': {
           domain: 'example.com',
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: 12345,
           port: 3000
         }
@@ -713,7 +713,7 @@ describe('Web', () => {
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-candy-connection-ssl': 'true'
+            'x-odac-connection-ssl': 'true'
           })
         }),
         expect.any(Function)
@@ -729,8 +729,8 @@ describe('Web', () => {
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-candy-connection-remoteaddress': '',
-            'x-candy-connection-ssl': 'true'
+            'x-odac-connection-remoteaddress': '',
+            'x-odac-connection-ssl': 'true'
           })
         }),
         expect.any(Function)
@@ -743,7 +743,7 @@ describe('Web', () => {
 
     beforeEach(async () => {
       await Web.init()
-      mockConfig.config.web = {path: '/var/candypack'}
+      mockConfig.config.web = {path: '/var/odac'}
 
       // Setup mock child process
       mockChild = {
@@ -804,7 +804,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com'
+          path: '/var/odac/example.com'
         }
       }
 
@@ -828,7 +828,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           status: 'errored',
           updated: now - 500 // 500ms ago
         }
@@ -847,7 +847,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com'
+          path: '/var/odac/example.com'
         }
       }
 
@@ -865,7 +865,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: null // No process running
         }
       }
@@ -884,7 +884,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid
         }
       }
@@ -895,7 +895,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       const startSpy = jest.spyOn(Web, 'start')
 
@@ -911,7 +911,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: 12345
         }
       }
@@ -925,8 +925,8 @@ describe('Web', () => {
 
       Web.check()
 
-      expect(fs.writeFile).toHaveBeenCalledWith('/home/user/.candypack/logs/example.com.log', 'Test log content', expect.any(Function))
-      expect(fs.writeFile).toHaveBeenCalledWith('/var/candypack/example.com/error.log', 'Test error content', expect.any(Function))
+      expect(fs.writeFile).toHaveBeenCalledWith('/home/user/.odac/logs/example.com.log', 'Test log content', expect.any(Function))
+      expect(fs.writeFile).toHaveBeenCalledWith('/var/odac/example.com/error.log', 'Test error content', expect.any(Function))
     })
 
     test('should handle log file write errors gracefully', async () => {
@@ -934,7 +934,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: 12345
         }
       }
@@ -967,7 +967,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid,
           port
         }
@@ -985,7 +985,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       const result = await Web.delete(domain)
 
@@ -1015,7 +1015,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: null // No process running
         }
       }
@@ -1033,7 +1033,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         [domain]: {
           domain,
-          path: '/var/candypack/example.com'
+          path: '/var/odac/example.com'
         }
       }
 
@@ -1057,7 +1057,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       Web.stopAll()
 
@@ -1073,7 +1073,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       expect(() => Web.stopAll()).not.toThrow()
       expect(mockProcess.stop).not.toHaveBeenCalled()
@@ -1089,7 +1089,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       Web.stopAll()
 
@@ -1352,7 +1352,7 @@ describe('Web', () => {
       mockConfig.config.websites = {
         'example.com': {
           domain: 'example.com',
-          path: '/var/candypack/example.com',
+          path: '/var/odac/example.com',
           pid: 12345,
           port: 3000
         }
@@ -1372,7 +1372,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       const result = await Web.delete('example.com')
 
@@ -1451,7 +1451,7 @@ describe('Web', () => {
     test('should set website configuration', () => {
       const websiteData = {
         domain: 'example.com',
-        path: '/var/candypack/example.com',
+        path: '/var/odac/example.com',
         status: 'running'
       }
 
@@ -1470,7 +1470,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       Web.stopAll()
 
@@ -1487,7 +1487,7 @@ describe('Web', () => {
 
       Web.index(mockReq, mockRes)
 
-      expect(mockRes.write).toHaveBeenCalledWith('CandyPack Server')
+      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
     })
   })

@@ -301,7 +301,7 @@ class WebSocketServer {
     return null
   }
 
-  handleUpgrade(req, socket, head, Candy) {
+  handleUpgrade(req, socket, head, Odac) {
     const path = req.url.split('?')[0]
     const routeInfo = this.getRoute(path)
 
@@ -343,15 +343,15 @@ class WebSocketServer {
 
     if (params) {
       for (const [k, v] of Object.entries(params)) {
-        Candy.Request.data.url[k] = v
+        Odac.Request.data.url[k] = v
       }
     }
 
-    if (Candy.Request && req.headers) {
-      Candy.Request._wsHeaders = req.headers
+    if (Odac.Request && req.headers) {
+      Odac.Request._wsHeaders = req.headers
     }
 
-    handler(client, Candy)
+    handler(client, Odac)
   }
 
   removeClient(id) {

@@ -3,21 +3,21 @@
  * Provides helper functions to reduce boilerplate in server tests
  */
 
-const {mockCandy, mockLangGet} = require('./globalCandy')
+const {mockOdac, mockLangGet} = require('./globalOdac')
 
 /**
- * Sets up the global Candy mock and __ function for tests
+ * Sets up the global Odac mock and __ function for tests
  * Should be called in beforeEach or beforeAll
  */
 const setupGlobalMocks = () => {
-  // Set up global Candy mock
-  global.Candy = mockCandy
+  // Set up global Odac mock
+  global.Odac = mockOdac
 
   // Set up global __ function mock
   global.__ = mockLangGet
 
   // Clear all previous mock calls
-  mockCandy.clearMocks()
+  mockOdac.clearMocks()
   mockLangGet.mockClear()
 }
 
@@ -26,11 +26,11 @@ const setupGlobalMocks = () => {
  * Should be called in afterEach or afterAll
  */
 const cleanupGlobalMocks = () => {
-  mockCandy.resetMocks()
+  mockOdac.resetMocks()
   mockLangGet.mockClear()
 
   // Reset global references
-  delete global.Candy
+  delete global.Odac
   delete global.__
 }
 

@@ -28,11 +28,11 @@ class TestServer {
       check: jest.fn()
     }
 
-    // Store original global Candy if it exists
-    this.originalCandy = global.Candy
+    // Store original global Odac if it exists
+    this.originalCandy = global.Odac
 
-    // Setup isolated Candy mock for this instance
-    global.Candy = {
+    // Setup isolated Odac mock for this instance
+    global.Odac = {
       core: jest.fn(module => {
         if (module === 'Config') {
           return {config: this.mockConfig}
@@ -64,34 +64,34 @@ class TestServer {
   }
 
   init() {
-    global.Candy.core('Config').config.server.pid = process.pid
-    global.Candy.core('Config').config.server.started = Date.now()
-    global.Candy.server('Service')
-    global.Candy.server('DNS')
-    global.Candy.server('Web')
-    global.Candy.server('Mail')
-    global.Candy.server('Api')
+    global.Odac.core('Config').config.server.pid = process.pid
+    global.Odac.core('Config').config.server.started = Date.now()
+    global.Odac.server('Service')
+    global.Odac.server('DNS')
+    global.Odac.server('Web')
+    global.Odac.server('Mail')
+    global.Odac.server('Api')
 
     // Setup health checks
     setTimeout(() => {
       this.intervalId = setInterval(() => {
         try {
-          global.Candy.server('Service').check()
+          global.Odac.server('Service').check()
         } catch (e) {
           // Ignore service check errors
         }
         try {
-          global.Candy.server('SSL').check()
+          global.Odac.server('SSL').check()
         } catch (e) {
           // Ignore SSL check errors
         }
         try {
-          global.Candy.server('Web').check()
+          global.Odac.server('Web').check()
         } catch (e) {
           // Ignore Web check errors
         }
         try {
-          global.Candy.server('Mail').check()
+          global.Odac.server('Mail').check()
         } catch (e) {
           // Ignore Mail check errors
         }
@@ -101,12 +101,12 @@ class TestServer {
 
   stop() {
     try {
-      global.Candy.server('Service').stopAll()
+      global.Odac.server('Service').stopAll()
     } catch (e) {
       // Ignore service stop errors
     }
     try {
-      global.Candy.server('Web').stopAll()
+      global.Odac.server('Web').stopAll()
     } catch (e) {
       // Ignore web stop errors
     }
@@ -117,11 +117,11 @@ class TestServer {
 
   destroy() {
     this.stop()
-    // Restore original Candy if it existed
+    // Restore original Odac if it existed
     if (this.originalCandy) {
-      global.Candy = this.originalCandy
+      global.Odac = this.originalCandy
     } else {
-      delete global.Candy
+      delete global.Odac
     }
   }
 }
@@ -134,8 +134,8 @@ describe('Server', () => {
     jest.clearAllTimers()
     jest.useFakeTimers()
 
-    // Clear any existing global Candy
-    delete global.Candy
+    // Clear any existing global Odac
+    delete global.Odac
   })
 
   afterEach(() => {
@@ -143,7 +143,7 @@ describe('Server', () => {
       server.destroy()
     }
     jest.useRealTimers()
-    delete global.Candy
+    delete global.Odac
   })
 
   describe('initialization', () => {
@@ -182,14 +182,14 @@ describe('Server', () => {
       server = new TestServer()
 
       // Verify all services are initialized
-      expect(global.Candy.server).toHaveBeenCalledWith('Service')
-      expect(global.Candy.server).toHaveBeenCalledWith('DNS')
-      expect(global.Candy.server).toHaveBeenCalledWith('Web')
-      expect(global.Candy.server).toHaveBeenCalledWith('Mail')
-      expect(global.Candy.server).toHaveBeenCalledWith('Api')
+      expect(global.Odac.server).toHaveBeenCalledWith('Service')
+      expect(global.Odac.server).toHaveBeenCalledWith('DNS')
+      expect(global.Odac.server).toHaveBeenCalledWith('Web')
+      expect(global.Odac.server).toHaveBeenCalledWith('Mail')
+      expect(global.Odac.server).toHaveBeenCalledWith('Api')
 
       // Verify call order
-      const serverCalls = global.Candy.server.mock.calls.map(call => call[0])
+      const serverCalls = global.Odac.server.mock.calls.map(call => call[0])
       expect(serverCalls).toEqual(['Service', 'DNS', 'Web', 'Mail', 'Api'])
     })
 
@@ -252,9 +252,9 @@ describe('Server', () => {
       // Create a modified TestServer that throws during DNS initialization
       class ErrorTestServer extends TestServer {
         init() {
-          global.Candy.core('Config').config.server.pid = process.pid
-          global.Candy.core('Config').config.server.started = Date.now()
-          global.Candy.server('Service')
+          global.Odac.core('Config').config.server.pid = process.pid
+          global.Odac.core('Config').config.server.started = Date.now()
+          global.Odac.server('Service')
 
           // This should throw
           throw new Error('DNS initialization failed')
@@ -273,10 +273,10 @@ describe('Server', () => {
       jest.advanceTimersByTime(2000)
 
       // Verify that the same service instances are being called during health checks
-      expect(global.Candy.server).toHaveBeenCalledWith('Service')
-      expect(global.Candy.server).toHaveBeenCalledWith('SSL')
-      expect(global.Candy.server).toHaveBeenCalledWith('Web')
-      expect(global.Candy.server).toHaveBeenCalledWith('Mail')
+      expect(global.Odac.server).toHaveBeenCalledWith('Service')
+      expect(global.Odac.server).toHaveBeenCalledWith('SSL')
+      expect(global.Odac.server).toHaveBeenCalledWith('Web')
+      expect(global.Odac.server).toHaveBeenCalledWith('Mail')
     })
   })
 
@@ -726,8 +726,8 @@ describe('Server', () => {
     test('should handle config access errors gracefully', () => {
       // Create a function that simulates the Server initialization with config error
       const createServerWithConfigError = () => {
-        // Setup global Candy mock that throws on Config access
-        global.Candy = {
+        // Setup global Odac mock that throws on Config access
+        global.Odac = {
           core: jest.fn(module => {
             if (module === 'Config') {
               throw new Error('Config access failed')
@@ -738,7 +738,7 @@ describe('Server', () => {
         }
 
         // Simulate the Server initialization process
-        global.Candy.core('Config').config.server.pid = process.pid
+        global.Odac.core('Config').config.server.pid = process.pid
       }
 
       expect(() => {

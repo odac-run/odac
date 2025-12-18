@@ -5,13 +5,13 @@ Forms can automatically insert data into your database without writing any contr
 ## Basic Usage
 
 ```html
-<candy:form table="waitlist">
-  <candy:field name="email" type="email" label="Email">
-    <candy:validate rule="required|email|unique"/>
-  </candy:field>
+<odac:form table="waitlist">
+  <odac:field name="email" type="email" label="Email">
+    <odac:validate rule="required|email|unique"/>
+  </odac:field>
   
-  <candy:submit text="Join"/>
-</candy:form>
+  <odac:submit text="Join"/>
+</odac:form>
 ```
 
 That's it! The form will automatically:
@@ -44,21 +44,21 @@ CREATE TABLE `waitlist` (
 <div class="waitlist-page">
   <h1>Join Our Waitlist</h1>
   
-  <candy:form table="waitlist" redirect="/" success="Thank you for joining!">
-    <candy:field name="email" type="email" label="Email" placeholder="your@email.com">
-      <candy:validate rule="required|email|unique" message="Please enter a valid email"/>
-    </candy:field>
+  <odac:form table="waitlist" redirect="/" success="Thank you for joining!">
+    <odac:field name="email" type="email" label="Email" placeholder="your@email.com">
+      <odac:validate rule="required|email|unique" message="Please enter a valid email"/>
+    </odac:field>
     
-    <candy:field name="name" type="text" label="Name" placeholder="Your name">
-      <candy:validate rule="required|minlen:2" message="Name is required"/>
-    </candy:field>
+    <odac:field name="name" type="text" label="Name" placeholder="Your name">
+      <odac:validate rule="required|minlen:2" message="Name is required"/>
+    </odac:field>
     
-    <candy:set name="created_at" compute="now"/>
-    <candy:set name="ip" compute="ip"/>
-    <candy:set name="user_agent" compute="user_agent"/>
+    <odac:set name="created_at" compute="now"/>
+    <odac:set name="ip" compute="ip"/>
+    <odac:set name="user_agent" compute="user_agent"/>
     
-    <candy:submit text="Join Waitlist" loading="Joining..." class="btn btn-primary"/>
-  </candy:form>
+    <odac:submit text="Join Waitlist" loading="Joining..." class="btn btn-primary"/>
+  </odac:form>
 </div>
 ```
 
@@ -66,10 +66,10 @@ CREATE TABLE `waitlist` (
 
 **controller/waitlist.js**
 ```javascript
-module.exports = Candy => {
-  Candy.View.skeleton('default')
-  Candy.View.set({content: 'waitlist'})
-  Candy.View.print()
+module.exports = Odac => {
+  Odac.View.skeleton('default')
+  Odac.View.set({content: 'waitlist'})
+  Odac.View.print()
 }
 ```
 
@@ -77,7 +77,7 @@ module.exports = Candy => {
 
 **route/www.js**
 ```javascript
-Candy.Route.page('/waitlist', 'waitlist')
+Odac.Route.page('/waitlist', 'waitlist')
 ```
 
 Done! No form submission handler needed.
@@ -88,21 +88,21 @@ Done! No form submission handler needed.
 Database table name where data will be inserted.
 
 ```html
-<candy:form table="newsletter_subscribers">
+<odac:form table="newsletter_subscribers">
 ```
 
 ### `redirect` (optional)
 URL to redirect after successful submission.
 
 ```html
-<candy:form table="waitlist" redirect="/thank-you">
+<odac:form table="waitlist" redirect="/thank-you">
 ```
 
 ### `success` (optional)
 Custom success message to display.
 
 ```html
-<candy:form table="waitlist" success="Welcome! We'll notify you soon.">
+<odac:form table="waitlist" success="Welcome! We'll notify you soon.">
 ```
 
 ## Unique Validation
@@ -110,9 +110,9 @@ Custom success message to display.
 Use `unique` rule to prevent duplicate entries:
 
 ```html
-<candy:field name="email" type="email">
-  <candy:validate rule="required|email|unique" message="This email is already registered"/>
-</candy:field>
+<odac:field name="email" type="email">
+  <odac:validate rule="required|email|unique" message="This email is already registered"/>
+</odac:field>
 ```
 
 The system will:
@@ -122,13 +122,13 @@ The system will:
 
 ## Auto-Set Values
 
-Use `<candy:set>` to automatically populate fields:
+Use `<odac:set>` to automatically populate fields:
 
 ```html
-<candy:set name="created_at" compute="now"/>
-<candy:set name="ip" compute="ip"/>
-<candy:set name="user_agent" compute="user_agent"/>
-<candy:set name="status" value="pending"/>
+<odac:set name="created_at" compute="now"/>
+<odac:set name="ip" compute="ip"/>
+<odac:set name="user_agent" compute="user_agent"/>
+<odac:set name="status" value="pending"/>
 ```
 
 ### Compute Types
@@ -144,9 +144,9 @@ Use `<candy:set>` to automatically populate fields:
 ### Static Values
 
 ```html
-<candy:set name="status" value="pending"/>
-<candy:set name="source" value="website"/>
-<candy:set name="plan" value="free"/>
+<odac:set name="status" value="pending"/>
+<odac:set name="source" value="website"/>
+<odac:set name="plan" value="free"/>
 ```
 
 ### Conditional Set
@@ -154,7 +154,7 @@ Use `<candy:set>` to automatically populate fields:
 Only set if field is empty:
 
 ```html
-<candy:set name="country" value="US" if-empty/>
+<odac:set name="country" value="US" if-empty/>
 ```
 
 ## Use Cases
@@ -162,58 +162,58 @@ Only set if field is empty:
 ### Newsletter Signup
 
 ```html
-<candy:form table="newsletter" success="Thanks for subscribing!">
-  <candy:field name="email" type="email">
-    <candy:validate rule="required|email|unique"/>
-  </candy:field>
+<odac:form table="newsletter" success="Thanks for subscribing!">
+  <odac:field name="email" type="email">
+    <odac:validate rule="required|email|unique"/>
+  </odac:field>
   
-  <candy:set name="subscribed_at" compute="now"/>
-  <candy:set name="status" value="active"/>
+  <odac:set name="subscribed_at" compute="now"/>
+  <odac:set name="status" value="active"/>
   
-  <candy:submit text="Subscribe"/>
-</candy:form>
+  <odac:submit text="Subscribe"/>
+</odac:form>
 ```
 
 ### Feedback Form
 
 ```html
-<candy:form table="feedback" redirect="/" success="Thank you for your feedback!">
-  <candy:field name="rating" type="number" label="Rating (1-5)">
-    <candy:validate rule="required|min:1|max:5"/>
-  </candy:field>
+<odac:form table="feedback" redirect="/" success="Thank you for your feedback!">
+  <odac:field name="rating" type="number" label="Rating (1-5)">
+    <odac:validate rule="required|min:1|max:5"/>
+  </odac:field>
   
-  <candy:field name="comment" type="textarea" label="Comment">
-    <candy:validate rule="required|minlen:10"/>
-  </candy:field>
+  <odac:field name="comment" type="textarea" label="Comment">
+    <odac:validate rule="required|minlen:10"/>
+  </odac:field>
   
-  <candy:set name="created_at" compute="now"/>
-  <candy:set name="ip" compute="ip"/>
+  <odac:set name="created_at" compute="now"/>
+  <odac:set name="ip" compute="ip"/>
   
-  <candy:submit text="Submit Feedback"/>
-</candy:form>
+  <odac:submit text="Submit Feedback"/>
+</odac:form>
 ```
 
 ### Beta Access Request
 
 ```html
-<candy:form table="beta_requests" success="You're on the list!">
-  <candy:field name="email" type="email">
-    <candy:validate rule="required|email|unique"/>
-  </candy:field>
+<odac:form table="beta_requests" success="You're on the list!">
+  <odac:field name="email" type="email">
+    <odac:validate rule="required|email|unique"/>
+  </odac:field>
   
-  <candy:field name="company" type="text">
-    <candy:validate rule="required"/>
-  </candy:field>
+  <odac:field name="company" type="text">
+    <odac:validate rule="required"/>
+  </odac:field>
   
-  <candy:field name="use_case" type="textarea">
-    <candy:validate rule="required|minlen:20"/>
-  </candy:field>
+  <odac:field name="use_case" type="textarea">
+    <odac:validate rule="required|minlen:20"/>
+  </odac:field>
   
-  <candy:set name="requested_at" compute="now"/>
-  <candy:set name="status" value="pending"/>
+  <odac:set name="requested_at" compute="now"/>
+  <odac:set name="status" value="pending"/>
   
-  <candy:submit text="Request Access"/>
-</candy:form>
+  <odac:submit text="Request Access"/>
+</odac:form>
 ```
 
 ## Error Handling
@@ -255,37 +255,37 @@ Automatic DB insert includes all security features:
 
 ## Combining with Custom Logic
 
-You can add custom logic by specifying a custom `action` attribute. When you do this, the form data is validated and prepared, but the automatic DB insert is skipped. Instead, your controller receives the validated data via `Candy.formData`:
+You can add custom logic by specifying a custom `action` attribute. When you do this, the form data is validated and prepared, but the automatic DB insert is skipped. Instead, your controller receives the validated data via `Odac.formData`:
 
 ```javascript
 // In your view:
-// <candy:form action="/contact/submit" table="contacts">
+// <odac:form action="/contact/submit" table="contacts">
 
 // In your controller:
-Candy.Route.post('/contact/submit', async Candy => {
-  // Candy.formData contains validated form data
-  // Candy.formConfig contains form configuration
+Odac.Route.post('/contact/submit', async Odac => {
+  // Odac.formData contains validated form data
+  // Odac.formConfig contains form configuration
   
   // Perform custom logic (send email, call API, etc.)
-  await sendEmail(Candy.formData.email, 'Thank you!')
+  await sendEmail(Odac.formData.email, 'Thank you!')
   
   // Manually insert to database if needed
-  await Candy.Mysql.query('INSERT INTO contacts SET ?', Candy.formData)
+  await Odac.Mysql.query('INSERT INTO contacts SET ?', Odac.formData)
   
-  return Candy.return({
+  return Odac.return({
     result: {success: true, message: 'Message sent!'}
   })
 })
-  const data = Candy.formData
+  const data = Odac.formData
   
   // Send welcome email
-  Candy.Mail()
+  Odac.Mail()
     .to(data.email)
     .subject('Welcome!')
     .send('Thanks for joining!')
   
   // Return custom response
-  return Candy.return({
+  return Odac.return({
     result: {
       success: true,
       message: 'Check your email!'

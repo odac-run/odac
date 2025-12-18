@@ -1,4 +1,4 @@
-require('../../core/Candy.js')
+require('../../core/Odac.js')
 
 const fs = require('fs')
 const os = require('os')
@@ -18,7 +18,7 @@ class Monitor {
   #width
 
   constructor() {
-    process.stdout.write(process.platform === 'win32' ? `title CandyPack Debug\n` : `\x1b]2;CandyPack Debug\x1b\x5c`)
+    process.stdout.write(process.platform === 'win32' ? `title Odac Debug\n` : `\x1b]2;Odac Debug\x1b\x5c`)
   }
 
   async debug() {
@@ -104,49 +104,49 @@ class Monitor {
     if (c1 % 1 != 0) c1 = Math.floor(c1)
     if (c1 > 50) c1 = 50
     let result = ''
-    result += Candy.cli('Cli').color('┌', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(5), 'gray')
-    let title = Candy.cli('Cli').color(__('Modules'), null)
-    result += ' ' + Candy.cli('Cli').color(title) + ' '
-    result += Candy.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-    result += Candy.cli('Cli').color('┬', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(5), 'gray')
-    title = Candy.cli('Cli').color(__('Logs'), null)
-    result += ' ' + Candy.cli('Cli').color(title) + ' '
-    result += Candy.cli('Cli').color('─'.repeat(this.#width - c1 - title.length - 7), 'gray')
-    result += Candy.cli('Cli').color('┐\n', 'gray')
+    result += Odac.cli('Cli').color('┌', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+    let title = Odac.cli('Cli').color(__('Modules'), null)
+    result += ' ' + Odac.cli('Cli').color(title) + ' '
+    result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+    result += Odac.cli('Cli').color('┬', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+    title = Odac.cli('Cli').color(__('Logs'), null)
+    result += ' ' + Odac.cli('Cli').color(title) + ' '
+    result += Odac.cli('Cli').color('─'.repeat(this.#width - c1 - title.length - 7), 'gray')
+    result += Odac.cli('Cli').color('┐\n', 'gray')
     for (let i = 0; i < this.#height - 3; i++) {
       if (this.#modules[i]) {
-        result += Candy.cli('Cli').color('│', 'gray')
-        result += Candy.cli('Cli').color(
+        result += Odac.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color(
           '[' + (this.#watch.includes(i) ? 'X' : ' ') + '] ',
           i == this.#selected ? 'blue' : 'white',
           i == this.#selected ? 'white' : null,
           i == this.#selected ? 'bold' : null
         )
-        result += Candy.cli('Cli').color(
-          Candy.cli('Cli').spacing(this.#modules[i] ? this.#modules[i] : '', c1 - 4),
+        result += Odac.cli('Cli').color(
+          Odac.cli('Cli').spacing(this.#modules[i] ? this.#modules[i] : '', c1 - 4),
           i == this.#selected ? 'blue' : 'white',
           i == this.#selected ? 'white' : null,
           i == this.#selected ? 'bold' : null
         )
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
       } else {
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
         result += ' '.repeat(c1)
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
       }
-      result += Candy.cli('Cli').spacing(this.#logs.content[i] ? this.#logs.content[i] : ' ', this.#width - c1)
-      result += Candy.cli('Cli').color('│\n', 'gray')
+      result += Odac.cli('Cli').spacing(this.#logs.content[i] ? this.#logs.content[i] : ' ', this.#width - c1)
+      result += Odac.cli('Cli').color('│\n', 'gray')
     }
-    result += Candy.cli('Cli').color('└', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(c1), 'gray')
-    result += Candy.cli('Cli').color('┴', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
-    result += Candy.cli('Cli').color('┘\n', 'gray')
+    result += Odac.cli('Cli').color('└', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
+    result += Odac.cli('Cli').color('┴', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
+    result += Odac.cli('Cli').color('┘\n', 'gray')
     let shortcuts = '↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | Ctrl+C ' + __('Exit')
-    result += Candy.cli('Cli').color(' CANDYPACK', 'magenta', 'bold')
-    result += Candy.cli('Cli').color(Candy.cli('Cli').spacing(shortcuts, this.#width + 1 - 'CANDYPACK'.length, 'right'), 'gray')
+    result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
+    result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {
       this.#current = result
       process.stdout.write('\x1Bc')
@@ -161,9 +161,9 @@ class Monitor {
     this.#logs.selected = this.#selected
     let file = null
     if (this.#selected < this.#domains.length) {
-      file = os.homedir() + '/.candypack/logs/' + this.#domains[this.#selected] + '.log'
+      file = os.homedir() + '/.odac/logs/' + this.#domains[this.#selected] + '.log'
     } else if (this.#selected - this.#domains.length < this.#services.length) {
-      file = os.homedir() + '/.candypack/logs/' + this.#services[this.#selected - this.#domains.length].name + '.log'
+      file = os.homedir() + '/.odac/logs/' + this.#services[this.#selected - this.#domains.length].name + '.log'
     } else {
       this.#logging = false
       return
@@ -183,11 +183,11 @@ class Monitor {
         if ('[LOG]' == line.substring(0, 5)) {
           line = line.substring(5)
           let date = parseInt(line.substring(1, 14))
-          line = Candy.cli('Cli').color('[' + Candy.cli('Cli').formatDate(new Date(date)) + ']', 'green', 'bold') + line.substring(15)
+          line = Odac.cli('Cli').color('[' + Odac.cli('Cli').formatDate(new Date(date)) + ']', 'green', 'bold') + line.substring(15)
         } else if ('[ERR]' == line.substring(0, 5)) {
           line = line.substring(5)
           let date = parseInt(line.substring(1, 14))
-          line = Candy.cli('Cli').color('[' + Candy.cli('Cli').formatDate(new Date(date)) + ']', 'red', 'bold') + line.substring(15)
+          line = Odac.cli('Cli').color('[' + Odac.cli('Cli').formatDate(new Date(date)) + ']', 'red', 'bold') + line.substring(15)
         }
         return line
       })
@@ -206,7 +206,7 @@ class Monitor {
       return
     }
 
-    const file = os.homedir() + '/.candypack/logs/.candypack.log'
+    const file = os.homedir() + '/.odac/logs/.odac.log'
     let log = ''
     let mtime = null
 
@@ -240,8 +240,8 @@ class Monitor {
           const dateColor = isError ? 'red' : 'green'
 
           line =
-            Candy.cli('Cli').color('[' + Candy.cli('Cli').formatDate(new Date(date)) + ']', dateColor, 'bold') +
-            Candy.cli('Cli').color(`[${moduleName}]`, 'white', 'bold') +
+            Odac.cli('Cli').color('[' + Odac.cli('Cli').formatDate(new Date(date)) + ']', dateColor, 'bold') +
+            Odac.cli('Cli').color(`[${moduleName}]`, 'white', 'bold') +
             ' ' +
             cleanedMessage
         }
@@ -324,8 +324,8 @@ class Monitor {
   #monitor() {
     if (this.#printing) return
     this.#printing = true
-    this.#websites = Candy.core('Config').config.websites ?? []
-    this.#services = Candy.core('Config').config.services ?? []
+    this.#websites = Odac.core('Config').config.websites ?? []
+    this.#services = Odac.core('Config').config.services ?? []
     this.#domains = Object.keys(this.#websites)
     this.#width = process.stdout.columns - 3
     this.#height = process.stdout.rows
@@ -334,75 +334,75 @@ class Monitor {
     if (c1 % 1 != 0) c1 = Math.floor(c1)
     if (c1 > 50) c1 = 50
     let result = ''
-    result += Candy.cli('Cli').color('┌', 'gray')
+    result += Odac.cli('Cli').color('┌', 'gray')
     let service = -1
     if (this.#domains.length) {
-      result += Candy.cli('Cli').color('─'.repeat(5), 'gray')
-      let title = Candy.cli('Cli').color(__('Websites'), null)
-      result += ' ' + Candy.cli('Cli').color(title) + ' '
-      result += Candy.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+      result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+      let title = Odac.cli('Cli').color(__('Websites'), null)
+      result += ' ' + Odac.cli('Cli').color(title) + ' '
+      result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
     } else if (this.#services.length) {
-      result += Candy.cli('Cli').color('─'.repeat(5), 'gray')
-      let title = Candy.cli('Cli').color(__('Services'), null)
-      result += ' ' + Candy.cli('Cli').color(title) + ' '
-      result += Candy.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+      result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+      let title = Odac.cli('Cli').color(__('Services'), null)
+      result += ' ' + Odac.cli('Cli').color(title) + ' '
+      result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
       service++
     } else {
-      result += Candy.cli('Cli').color('─'.repeat(c1), 'gray')
+      result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
     }
-    result += Candy.cli('Cli').color('┬', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
-    result += Candy.cli('Cli').color('┐\n', 'gray')
+    result += Odac.cli('Cli').color('┬', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
+    result += Odac.cli('Cli').color('┐\n', 'gray')
     for (let i = 0; i < this.#height - 3; i++) {
       if (this.#domains[i]) {
-        result += Candy.cli('Cli').color('│', 'gray')
-        result += Candy.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, i == this.#selected)
-        result += Candy.cli('Cli').color(
-          Candy.cli('Cli').spacing(this.#domains[i] ? this.#domains[i] : '', c1 - 3),
+        result += Odac.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, i == this.#selected)
+        result += Odac.cli('Cli').color(
+          Odac.cli('Cli').spacing(this.#domains[i] ? this.#domains[i] : '', c1 - 3),
           i == this.#selected ? 'blue' : 'white',
           i == this.#selected ? 'white' : null,
           i == this.#selected ? 'bold' : null
         )
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
       } else if (this.#services.length && service == -1) {
-        result += Candy.cli('Cli').color('├', 'gray')
-        result += Candy.cli('Cli').color('─'.repeat(5), 'gray')
-        let title = Candy.cli('Cli').color(__('Services'), null)
-        result += ' ' + Candy.cli('Cli').color(title) + ' '
-        result += Candy.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-        result += Candy.cli('Cli').color('┤', 'gray')
+        result += Odac.cli('Cli').color('├', 'gray')
+        result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+        let title = Odac.cli('Cli').color(__('Services'), null)
+        result += ' ' + Odac.cli('Cli').color(title) + ' '
+        result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+        result += Odac.cli('Cli').color('┤', 'gray')
         service++
       } else if (service >= 0 && service < this.#services.length) {
-        result += Candy.cli('Cli').color('│', 'gray')
-        result += Candy.cli('Cli').icon(this.#services[service].status ?? null, i - 1 == this.#selected)
-        result += Candy.cli('Cli').color(
-          Candy.cli('Cli').spacing(this.#services[service].name, c1 - 3),
+        result += Odac.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').icon(this.#services[service].status ?? null, i - 1 == this.#selected)
+        result += Odac.cli('Cli').color(
+          Odac.cli('Cli').spacing(this.#services[service].name, c1 - 3),
           i - 1 == this.#selected ? 'blue' : 'white',
           i - 1 == this.#selected ? 'white' : null,
           i - 1 == this.#selected ? 'bold' : null
         )
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
         service++
       } else {
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
         result += ' '.repeat(c1)
-        result += Candy.cli('Cli').color('│', 'gray')
+        result += Odac.cli('Cli').color('│', 'gray')
       }
       if (this.#logs.selected == this.#selected) {
-        result += Candy.cli('Cli').spacing(this.#logs.content[i] ? this.#logs.content[i] : ' ', this.#width - c1)
+        result += Odac.cli('Cli').spacing(this.#logs.content[i] ? this.#logs.content[i] : ' ', this.#width - c1)
       } else {
         result += ' '.repeat(this.#width - c1)
       }
-      result += Candy.cli('Cli').color('│\n', 'gray')
+      result += Odac.cli('Cli').color('│\n', 'gray')
     }
-    result += Candy.cli('Cli').color('└', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(c1), 'gray')
-    result += Candy.cli('Cli').color('┴', 'gray')
-    result += Candy.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
-    result += Candy.cli('Cli').color('┘\n', 'gray')
+    result += Odac.cli('Cli').color('└', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
+    result += Odac.cli('Cli').color('┴', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
+    result += Odac.cli('Cli').color('┘\n', 'gray')
     let shortcuts = '↑/↓ ' + __('Navigate') + ' | Ctrl+C ' + __('Exit')
-    result += Candy.cli('Cli').color(' CANDYPACK', 'magenta', 'bold')
-    result += Candy.cli('Cli').color(Candy.cli('Cli').spacing(shortcuts, this.#width + 1 - 'CANDYPACK'.length, 'right'), 'gray')
+    result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
+    result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {
       this.#current = result
       process.stdout.clearLine(0)

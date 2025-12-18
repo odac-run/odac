@@ -1,3 +1,3 @@
-require('../core/Candy.js')
+require('../core/Odac.js')
 
-Candy.watchdog('Watchdog')
+Odac.watchdog('Watchdog')

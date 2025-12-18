@@ -21,8 +21,8 @@ describe('Subdomain', () => {
     setupGlobalMocks()
 
     // Set up the Log mock before requiring Subdomain
-    const {mockCandy} = require('./__mocks__/globalCandy')
-    mockCandy.setMock('core', 'Log', {
+    const {mockOdac} = require('./__mocks__/globalOdac')
+    mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError
@@ -58,11 +58,11 @@ describe('Subdomain', () => {
       result: jest.fn((success, data) => ({success, data}))
     }
 
-    // Configure global Candy mocks
-    global.Candy.setMock('core', 'Config', {config: mockConfig})
-    global.Candy.setMock('server', 'DNS', mockDNS)
-    global.Candy.setMock('server', 'SSL', mockSSL)
-    global.Candy.setMock('server', 'Api', mockApi)
+    // Configure global Odac mocks
+    global.Odac.setMock('core', 'Config', {config: mockConfig})
+    global.Odac.setMock('server', 'DNS', mockDNS)
+    global.Odac.setMock('server', 'SSL', mockSSL)
+    global.Odac.setMock('server', 'Api', mockApi)
 
     // Mock the __ function to return the key with placeholders replaced correctly
     global.__ = jest.fn((key, ...args) => {

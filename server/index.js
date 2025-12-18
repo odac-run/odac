@@ -1,5 +1,5 @@
-require('../core/Candy.js')
+require('../core/Odac.js')
 
-Candy.core('Lang')
-Candy.core('Config')
-Candy.server('Server')
+Odac.core('Lang')
+Odac.core('Config')
+Odac.server('Server')
