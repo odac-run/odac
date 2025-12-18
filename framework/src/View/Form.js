@@ -11,7 +11,7 @@ class Form {
   }
 
   static parseFormType(content, Odac, type) {
-    const regex = new RegExp(`<odac:${type}[\\s\\S]*?<\\/candy:${type}>`, 'g')
+    const regex = new RegExp(`<odac:${type}[\\s\\S]*?<\\/odac:${type}>`, 'g')
     const matches = content.match(regex)
     if (!matches) return content
 
