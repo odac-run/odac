@@ -224,4 +224,4 @@ MAIL_FROM='noreply@example.com'
 - Changes to `.env` require restarting the application
 - The `.env` file is **optional** - you can use direct values in `config.json` if preferred
 - Variables defined in `.env` are available throughout your entire application
-- If a variable is not found, `Candy.env()` returns the default value or `undefined`
+- If a variable is not found, `Odac.env()` returns the default value or `undefined`

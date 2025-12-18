@@ -15,24 +15,24 @@ Candy.Route.ws('/path', Candy => {
 
 | Method | Description |
 |--------|-------------|
-| `Candy.ws.send(data)` | Send JSON data to client |
-| `Candy.ws.sendBinary(buffer)` | Send binary data |
-| `Candy.ws.close(code, reason)` | Close connection |
-| `Candy.ws.ping()` | Send ping frame |
-| `Candy.ws.join(room)` | Join a room |
-| `Candy.ws.leave(room)` | Leave a room |
-| `Candy.ws.to(room).send(data)` | Send to room |
-| `Candy.ws.broadcast(data)` | Send to all clients |
-| `Candy.ws.on(event, handler)` | Add event listener |
-| `Candy.ws.off(event, handler)` | Remove event listener |
+| `Odac.ws.send(data)` | Send JSON data to client |
+| `Odac.ws.sendBinary(buffer)` | Send binary data |
+| `Odac.ws.close(code, reason)` | Close connection |
+| `Odac.ws.ping()` | Send ping frame |
+| `Odac.ws.join(room)` | Join a room |
+| `Odac.ws.leave(room)` | Leave a room |
+| `Odac.ws.to(room).send(data)` | Send to room |
+| `Odac.ws.broadcast(data)` | Send to all clients |
+| `Odac.ws.on(event, handler)` | Add event listener |
+| `Odac.ws.off(event, handler)` | Remove event listener |
 
 ### WebSocket Client Properties
 
 | Property | Description |
 |----------|-------------|
-| `Candy.ws.id` | Unique client ID |
-| `Candy.ws.rooms` | Array of joined rooms |
-| `Candy.ws.data` | Custom data storage |
+| `Odac.ws.id` | Unique client ID |
+| `Odac.ws.rooms` | Array of joined rooms |
+| `Odac.ws.data` | Custom data storage |
 
 ### Events
 
@@ -47,10 +47,10 @@ Candy.Route.ws('/path', Candy => {
 
 | Method | Description |
 |--------|-------------|
-| `Candy.Route.wsServer.clients` | Map of all clients |
-| `Candy.Route.wsServer.clientCount` | Number of clients |
-| `Candy.Route.wsServer.toRoom(room, data)` | Send to room |
-| `Candy.Route.wsServer.broadcast(data)` | Broadcast to all |
+| `Odac.Route.wsServer.clients` | Map of all clients |
+| `Odac.Route.wsServer.clientCount` | Number of clients |
+| `Odac.Route.wsServer.toRoom(room, data)` | Send to room |
+| `Odac.Route.wsServer.broadcast(data)` | Broadcast to all |
 
 ## Frontend API
 

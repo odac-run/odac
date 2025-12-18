@@ -1,15 +1,15 @@
 ## 📥 The Request Object
 
-The `Candy.Request` object contains information about the user's incoming request.
+The `Odac.Request` object contains information about the user's incoming request.
 
 ### Getting Request Parameters
 
 #### Using Candy.request() (Recommended)
 
-The easiest way to get request parameters is using `Candy.request()`:
+The easiest way to get request parameters is using `Odac.request()`:
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Get parameter from GET or POST automatically
   const userName = await Candy.request('name')
   const userId = await Candy.request('id')
@@ -21,7 +21,7 @@ module.exports = async function (Candy) {
 **Specify Method (Optional):**
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Get from GET parameters only
   const searchQuery = await Candy.request('q', 'GET')
   
@@ -37,7 +37,7 @@ module.exports = async function (Candy) {
 You can also access request data directly:
 
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // GET parameters (URL query string like ?id=123)
   const userId = Candy.Request.get('id')
   
@@ -50,16 +50,16 @@ module.exports = function (Candy) {
 
 ### Request Properties
 
-*   `Candy.Request.method` - HTTP method ('GET', 'POST', etc.)
-*   `Candy.Request.url` - Full URL the user visited
-*   `Candy.Request.host` - Website's hostname
-*   `Candy.Request.ip` - User's IP address
-*   `Candy.Request.ssl` - Whether connection is SSL/HTTPS
+*   `Odac.Request.method` - HTTP method ('GET', 'POST', etc.)
+*   `Odac.Request.url` - Full URL the user visited
+*   `Odac.Request.host` - Website's hostname
+*   `Odac.Request.ip` - User's IP address
+*   `Odac.Request.ssl` - Whether connection is SSL/HTTPS
 
 ### Request Headers
 
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   const userAgent = Candy.Request.header('user-agent')
   const contentType = Candy.Request.header('content-type')
   
@@ -70,7 +70,7 @@ module.exports = function (Candy) {
 ### Complete Example
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Get request parameters
   const productId = await Candy.request('id')
   const quantity = await Candy.request('quantity') || 1

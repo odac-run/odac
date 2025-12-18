@@ -1,23 +1,23 @@
 ## 🔗 Request Data (Query Parameters)
 
-The `<candy get>` tag allows you to access URL query parameters directly in your views. This is useful for forms, filters, and pagination.
+The `<odac get>` tag allows you to access URL query parameters directly in your views. This is useful for forms, filters, and pagination.
 
 ### Getting Query Parameters
 
-Use `<candy get="key" />` to access URL query parameters:
+Use `<odac get="key" />` to access URL query parameters:
 
-**Important:** `<candy get>` is for **query parameters** (URL parameters), not for data from controllers. For controller data, use `<candy var>` (see [Variables](./03-variables.md)).
+**Important:** `<odac get>` is for **query parameters** (URL parameters), not for data from controllers. For controller data, use `<odac var>` (see [Variables](./03-variables.md)).
 
 ```html
 <!-- URL: /search?q=laptop&page=2 -->
 
-<p>Search query: <candy get="q" /></p>
-<p>Current page: <candy get="page" /></p>
+<p>Search query: <odac get="q" /></p>
+<p>Current page: <odac get="page" /></p>
 ```
 
 **How it works:**
 1. User visits `/search?q=laptop&page=2`
-2. `<candy get="q" />` retrieves the value of `q` parameter
+2. `<odac get="q" />` retrieves the value of `q` parameter
 3. If parameter doesn't exist, it returns empty string (no error)
 
 ### Undefined Parameters
@@ -27,7 +27,7 @@ If a parameter doesn't exist, it safely returns an empty string:
 ```html
 <!-- URL: /products (no query parameters) -->
 
-<candy get="search" />
+<odac get="search" />
 <!-- Output: (empty string, no error) -->
 ```
 
@@ -35,31 +35,31 @@ This prevents errors when parameters are optional.
 
 ### Difference: get vs var
 
-**`<candy get>` - Query Parameters (from URL):**
+**`<odac get>` - Query Parameters (from URL):**
 ```html
 <!-- URL: /search?q=laptop -->
-<candy get="q" />
+<odac get="q" />
 <!-- Output: laptop -->
 ```
 
-**`<candy var>` - Controller Data (from Candy.set()):**
+**`<odac var>` - Controller Data (from Candy.set()):**
 ```javascript
 // Controller
 Candy.set('productName', 'Laptop')
 ```
 ```html
 <!-- View -->
-<candy var="productName" />
+<odac var="productName" />
 <!-- Output: Laptop -->
 ```
 
 ### Processing Request Data in Controllers
 
-While you can access query parameters directly in views with `<candy get>`, it's often better to process them in the controller:
+While you can access query parameters directly in views with `<odac get>`, it's often better to process them in the controller:
 
 ```javascript
 // Controller: controller/search.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   // Get query parameters
   const query = Candy.Request.get('q') || 'all products'
   const page = parseInt(Candy.Request.get('page')) || 1
@@ -88,13 +88,13 @@ module.exports = async function(Candy) {
 
 ```html
 <!-- View: view/content/search.html -->
-<h1>Search Results for "<candy var="query" />"</h1>
-<p>Page <candy var="page" /></p>
+<h1>Search Results for "<odac var="query" />"</h1>
+<p>Page <odac var="page" /></p>
 
-<candy:for in="results" value="product">
+<odac:for in="results" value="product">
   <div class="product">
-    <h3><candy var="product.name" /></h3>
-    <p><candy var="product.price" /></p>
+    <h3><odac var="product.name" /></h3>
+    <p><odac var="product.price" /></p>
   </div>
 </candy:for>
 ```
@@ -105,16 +105,16 @@ You can access the full Request object through the Candy object:
 
 ```html
 <!-- Request method -->
-<p>Method: <candy var="Candy.Request.method" /></p>
+<p>Method: <odac var="Candy.Request.method" /></p>
 
 <!-- Current URL -->
-<p>URL: <candy var="Candy.Request.url" /></p>
+<p>URL: <odac var="Candy.Request.url" /></p>
 
 <!-- Client IP -->
-<p>IP: <candy var="Candy.Request.ip" /></p>
+<p>IP: <odac var="Candy.Request.ip" /></p>
 
 <!-- User agent -->
-<p>Browser: <candy var="Candy.Request.headers['user-agent']" /></p>
+<p>Browser: <odac var="Candy.Request.headers['user-agent']" /></p>
 ```
 
 ### Practical Examples
@@ -127,15 +127,15 @@ You can access the full Request object through the Candy object:
   <input 
     type="text" 
     name="q" 
-    value="<candy get="q" />" 
+    value="<odac get="q" />" 
     placeholder="Search products..."
   >
   <button type="submit">Search</button>
 </form>
 
 <!-- Display search query if exists -->
-<candy:if condition="Candy.Request.get('q')">
-  <p>Showing results for: "<candy get="q" />"</p>
+<odac:if condition="Candy.Request.get('q')">
+  <p>Showing results for: "<odac get="q" />"</p>
 </candy:if>
 ```
 
@@ -148,14 +148,14 @@ You can access the full Request object through the Candy object:
 </script:candy>
 
 <div class="pagination">
-  <candy:if condition="currentPage > 1">
-    <a href="?page=<candy var="currentPage - 1" />">Previous</a>
+  <odac:if condition="currentPage > 1">
+    <a href="?page=<odac var="currentPage - 1" />">Previous</a>
   </candy:if>
   
-  <span>Page <candy var="currentPage" /> of <candy var="totalPages" /></span>
+  <span>Page <odac var="currentPage" /> of <odac var="totalPages" /></span>
   
-  <candy:if condition="currentPage < totalPages">
-    <a href="?page=<candy var="currentPage + 1" />">Next</a>
+  <odac:if condition="currentPage < totalPages">
+    <a href="?page=<odac var="currentPage + 1" />">Next</a>
   </candy:if>
 </div>
 ```
@@ -168,19 +168,19 @@ You can access the full Request object through the Candy object:
 <form action="/products" method="GET">
   <select name="category">
     <option value="">All Categories</option>
-    <option value="electronics" <candy:if condition="Candy.Request.get('category') === 'electronics'">selected</candy:if>>
+    <option value="electronics" <odac:if condition="Candy.Request.get('category') === 'electronics'">selected</candy:if>>
       Electronics
     </option>
-    <option value="clothing" <candy:if condition="Candy.Request.get('category') === 'clothing'">selected</candy:if>>
+    <option value="clothing" <odac:if condition="Candy.Request.get('category') === 'clothing'">selected</candy:if>>
       Clothing
     </option>
   </select>
   
   <select name="sort">
-    <option value="name" <candy:if condition="Candy.Request.get('sort') === 'name'">selected</candy:if>>
+    <option value="name" <odac:if condition="Candy.Request.get('sort') === 'name'">selected</candy:if>>
       Name
     </option>
-    <option value="price" <candy:if condition="Candy.Request.get('sort') === 'price'">selected</candy:if>>
+    <option value="price" <odac:if condition="Candy.Request.get('sort') === 'price'">selected</candy:if>>
       Price
     </option>
   </select>
@@ -193,13 +193,13 @@ You can access the full Request object through the Candy object:
 
 ```html
 <nav>
-  <a href="/" class="<candy:if condition="Candy.Request.url === '/'">active</candy:if>">
+  <a href="/" class="<odac:if condition="Candy.Request.url === '/'">active</candy:if>">
     Home
   </a>
-  <a href="/products" class="<candy:if condition="Candy.Request.url.startsWith('/products')">active</candy:if>">
+  <a href="/products" class="<odac:if condition="Candy.Request.url.startsWith('/products')">active</candy:if>">
     Products
   </a>
-  <a href="/about" class="<candy:if condition="Candy.Request.url === '/about'">active</candy:if>">
+  <a href="/about" class="<odac:if condition="Candy.Request.url === '/about'">active</candy:if>">
     About
   </a>
 </nav>
@@ -225,7 +225,7 @@ Candy.set('limit', limit)
 **Avoid:**
 ```html
 <!-- Don't do complex logic in views -->
-<candy:if condition="parseInt(Candy.Request.get('page')) > 0 && parseInt(Candy.Request.get('page')) < 100">
+<odac:if condition="parseInt(Candy.Request.get('page')) > 0 && parseInt(Candy.Request.get('page')) < 100">
   ...
 </candy:if>
 ```

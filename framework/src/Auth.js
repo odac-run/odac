@@ -50,15 +50,15 @@ class Auth {
     } else {
       let check_table = await Odac.Mysql.run('SHOW TABLES LIKE ?', [this.#table])
       if (check_table.length == 0) return false
-      let candy_x = this.#request.cookie('candy_x')
-      let candy_y = this.#request.cookie('candy_y')
+      let odac_x = this.#request.cookie('odac_x')
+      let odac_y = this.#request.cookie('odac_y')
       let browser = this.#request.header('user-agent')
-      if (!candy_x || !candy_y || !browser) return false
-      const tokenTable = Odac.Config.auth.token || 'candy_auth'
+      if (!odac_x || !odac_y || !browser) return false
+      const tokenTable = Odac.Config.auth.token || 'odac_auth'
       const primaryKey = Odac.Config.auth.key || 'id'
-      let sql_token = await Odac.Mysql.table(tokenTable).where(['token_x', candy_x], ['browser', browser]).get()
+      let sql_token = await Odac.Mysql.table(tokenTable).where(['token_x', odac_x], ['browser', browser]).get()
       if (sql_token.length !== 1) return false
-      if (!Odac.Var(sql_token[0].token_y).hashCheck(candy_y)) return false
+      if (!Odac.Var(sql_token[0].token_y).hashCheck(odac_y)) return false
 
       const maxAge = Odac.Config.auth?.maxAge || 30 * 24 * 60 * 60 * 1000
       const updateAge = Odac.Config.auth?.updateAge || 24 * 60 * 60 * 1000
@@ -90,7 +90,7 @@ class Auth {
     if (!user) return false
     if (!Odac.Config.auth) Odac.Config.auth = {}
     let key = Odac.Config.auth.key || 'id'
-    let token = Odac.Config.auth.token || 'candy_auth'
+    let token = Odac.Config.auth.token || 'odac_auth'
     const mysql = require('mysql2')
     const safeTokenTable = mysql.escapeId(token)
     let check_table = await Odac.Mysql.run('SHOW TABLES LIKE ?', [token])
@@ -113,12 +113,12 @@ class Auth {
       browser: this.#request.header('user-agent'),
       ip: this.#request.ip
     }
-    this.#request.cookie('candy_x', cookie.token_x, {
+    this.#request.cookie('odac_x', cookie.token_x, {
       httpOnly: true,
       secure: true,
       sameSite: 'Strict'
     })
-    this.#request.cookie('candy_y', token_y, {httpOnly: true, secure: true, sameSite: 'Strict'})
+    this.#request.cookie('odac_y', token_y, {httpOnly: true, secure: true, sameSite: 'Strict'})
     let mysqlTable = Odac.Mysql.table(token)
     if (!mysqlTable) {
       console.error('Odac Auth Error: MySQL connection not configured. Please add database configuration to your config.json')
@@ -231,18 +231,18 @@ class Auth {
 
     if (!Odac.Config.auth) Odac.Config.auth = {}
     const token = Odac.Config.auth.token || 'user_tokens'
-    const candyX = this.#request.cookie('candy_x')
+    const odacX = this.#request.cookie('odac_x')
     const browser = this.#request.header('user-agent')
 
-    if (candyX && browser) {
+    if (odacX && browser) {
       const mysqlTable = Odac.Mysql.table(token)
       if (mysqlTable) {
-        await mysqlTable.where(['token_x', candyX], ['browser', browser]).delete()
+        await mysqlTable.where(['token_x', odacX], ['browser', browser]).delete()
       }
     }
 
-    this.#request.cookie('candy_x', '', {maxAge: -1})
-    this.#request.cookie('candy_y', '', {maxAge: -1})
+    this.#request.cookie('odac_x', '', {maxAge: -1})
+    this.#request.cookie('odac_y', '', {maxAge: -1})
 
     this.#user = null
     return true

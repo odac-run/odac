@@ -4,17 +4,17 @@ This command removes a subdomain configuration from your server.
 
 ### Interactive Usage
 ```bash
-candy subdomain delete
+odac subdomain delete
 ```
 You will be prompted to enter the full subdomain name (including the main domain) that you want to delete.
 
 ### Single-Line Usage with Prefixes
 ```bash
 # Specify subdomain directly
-candy subdomain delete -s blog.example.com
+odac subdomain delete -s blog.example.com
 
 # Or use long form prefix
-candy subdomain delete --subdomain blog.example.com
+odac subdomain delete --subdomain blog.example.com
 ```
 
 ### Available Prefixes
@@ -22,14 +22,14 @@ candy subdomain delete --subdomain blog.example.com
 
 ### Interactive Example
 ```bash
-$ candy subdomain delete
+$ odac subdomain delete
 > Enter the subdomain name (subdomain.example.com): blog.example.com
 ✓ Subdomain 'blog.example.com' deleted successfully
 ```
 
 ### Single-Line Example
 ```bash
-$ candy subdomain delete -s blog.example.com
+$ odac subdomain delete -s blog.example.com
 ✓ Subdomain 'blog.example.com' deleted successfully
 ```
 

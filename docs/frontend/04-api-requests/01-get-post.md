@@ -1,6 +1,6 @@
-# API Requests with candy.js
+# API Requests with odac.js
 
-Learn how to make GET and POST requests to your API endpoints using candy.js.
+Learn how to make GET and POST requests to your API endpoints using odac.js.
 
 ## GET Requests
 
@@ -40,7 +40,7 @@ Candy.get('/api/data', function(response) {
 
 ### Using Forms
 
-The recommended way to make POST requests is using `Candy.form()`:
+The recommended way to make POST requests is using `Odac.form()`:
 
 ```javascript
 Candy.form('#my-form', function(data) {
@@ -79,7 +79,7 @@ fetch('/api/submit', {
 
 ### Automatic Token Management
 
-candy.js automatically handles CSRF tokens:
+odac.js automatically handles CSRF tokens:
 
 ```javascript
 // Token is automatically included
@@ -226,7 +226,7 @@ setInterval(function() {
 
 ```javascript
 // controller/get/users.js
-module.exports = function(Candy) {
+module.exports = function(Odac) {
   // Get all users
   const users = [
     {id: 1, name: 'John', email: 'john@example.com'},
@@ -246,7 +246,7 @@ Candy.Route.get('/api/users', 'users')
 
 ```javascript
 // controller/get/user.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const userId = Candy.Request.data.url.id
   
   // Fetch user from database
@@ -270,7 +270,7 @@ Candy.Route.get('/api/users/{id}', 'user')
 
 ```javascript
 // controller/post/create.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const name = await Candy.Request.request('name')
   const email = await Candy.Request.request('email')
   
@@ -440,4 +440,4 @@ function getWithRetry(url, callback, maxRetries = 3) {
 
 - Learn about [Form Handling](../03-forms/01-form-handling.md)
 - Explore [AJAX Navigation](../02-ajax-navigation/01-quick-start.md)
-- Check [candy.js Overview](../01-overview/01-introduction.md)
+- Check [odac.js Overview](../01-overview/01-introduction.md)

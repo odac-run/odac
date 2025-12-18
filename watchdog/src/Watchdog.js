@@ -4,8 +4,8 @@ const os = require('os')
 const path = require('path')
 
 // --- Constants ---
-const CANDYPACK_HOME = path.join(os.homedir(), '.odac')
-const LOG_DIR = path.join(CANDYPACK_HOME, 'logs')
+const ODAC_HOME = path.join(os.homedir(), '.odac')
+const LOG_DIR = path.join(ODAC_HOME, 'logs')
 const SERVER_SCRIPT_PATH = path.join(__dirname, '..', '..', 'server', 'index.js')
 
 const MAX_RESTARTS_IN_WINDOW = 100

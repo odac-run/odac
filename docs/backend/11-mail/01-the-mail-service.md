@@ -1,10 +1,10 @@
 ## ✉️ The `Mail` Service
 
-The `Candy.Mail` service is your friendly neighborhood postal worker. It provides a super simple way to send emails using the mail server settings you've already configured in the Odac core.
+The `Odac.Mail` service is your friendly neighborhood postal worker. It provides a super simple way to send emails using the mail server settings you've already configured in the Odac core.
 
 #### How to Send an Email
 
-`Candy.Mail.send(to, subject, htmlBody)`
+`Odac.Mail.send(to, subject, htmlBody)`
 
 *   `to`: The email address of the person you're sending it to.
 *   `subject`: The subject line for your email.
@@ -17,7 +17,7 @@ Just like the database service, `send` is an `async` method, so using it with `a
 Let's imagine you have a controller that handles a contact form on your website.
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   const { recipient, subject, message } = Candy.Request.post;
 
   // It's always a good idea to check your data first!

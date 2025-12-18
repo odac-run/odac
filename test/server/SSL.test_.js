@@ -6,7 +6,7 @@ const selfsigned = require('selfsigned')
 // Import test utilities
 const {setupGlobalMocks, cleanupGlobalMocks} = require('./__mocks__/testHelpers')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
-const {mockCandy} = require('./__mocks__/globalCandy')
+const {mockOdac} = require('./__mocks__/globalOdac')
 
 // Mock all dependencies
 jest.mock('fs')
@@ -38,9 +38,9 @@ describe('SSL', () => {
     })
 
     // Get mock instances from global Odac
-    mockConfig = mockCandy.core('Config')
-    mockLog = mockCandy.server('Log').init('SSL')
-    mockDNS = mockCandy.server('DNS')
+    mockConfig = mockOdac.core('Config')
+    mockLog = mockOdac.server('Log').init('SSL')
+    mockDNS = mockOdac.server('DNS')
 
     // Set up DNS mock methods
     mockDNS.record = jest.fn()
@@ -340,7 +340,7 @@ describe('SSL', () => {
     describe('renew method', () => {
       beforeEach(() => {
         // Set up the API mock to return proper result format
-        const mockApi = mockCandy.server('Api')
+        const mockApi = mockOdac.server('Api')
         mockApi.result = jest.fn((success, message) => ({success, data: message}))
       })
 

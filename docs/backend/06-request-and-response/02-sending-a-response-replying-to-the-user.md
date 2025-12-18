@@ -8,12 +8,12 @@ For many cases, you can just `return` a value from your controller. Odac is smar
 
 ```javascript
 // Return some HTML
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   return '<h1>Welcome to the site!</h1>';
 }
 
 // Return some JSON for an API
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   return { status: 'success', message: 'Your data was saved!' };
 }
 ```
@@ -22,12 +22,12 @@ module.exports = function (Candy) {
 
 Need a bit more control? The `Candy` object has your back.
 
-*   `Candy.return(data)`: Does the same thing as a direct return, but you can call it from anywhere in your function. It stops everything and sends the response immediately.
-*   `Candy.direct(url)`: Need to send the user to a different page? This function performs a redirect, telling the user's browser to go to a new URL.
+*   `Odac.return(data)`: Does the same thing as a direct return, but you can call it from anywhere in your function. It stops everything and sends the response immediately.
+*   `Odac.direct(url)`: Need to send the user to a different page? This function performs a redirect, telling the user's browser to go to a new URL.
 
 **Example:**
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // If the user isn't logged in...
   if (!Candy.Auth.isLogin()) {
     // ...send them to the login page!

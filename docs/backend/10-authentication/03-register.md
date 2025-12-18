@@ -1,11 +1,11 @@
 # User Registration
 
-The `Candy.Auth.register()` method provides a secure and user-friendly way to create new user accounts with automatic password hashing, duplicate checking, and optional auto-login.
+The `Odac.Auth.register()` method provides a secure and user-friendly way to create new user accounts with automatic password hashing, duplicate checking, and optional auto-login.
 
 ## Basic Usage
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   const result = await Candy.Auth.register({
     email: 'user@example.com',
     username: 'johndoe',
@@ -77,7 +77,7 @@ const result = await Candy.Auth.register(
 ## Example Controller
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   const validator = Candy.Validator
 
   // Validate input

@@ -8,7 +8,7 @@ Odac provides a unified streaming API that automatically handles Server-Sent Eve
 
 ```javascript
 // route/www.js
-Candy.Route.get('/hello', async (Candy) => {
+Candy.Route.get('/hello', async (Odac) => {
   Candy.stream('Hello World')
 })
 ```
@@ -20,7 +20,7 @@ Candy.Route.get('/hello', async (Candy) => {
 Candy.Route.get('/hello', 'hello')
 
 // controller/hello/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream('Hello World')
 }
 ```
@@ -29,7 +29,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream({ message: 'Hello', time: Date.now() })
 }
 ```
@@ -40,7 +40,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream((send) => {
     send({ type: 'connected' })
     
@@ -52,13 +52,13 @@ module.exports = async (Candy) => {
 }
 ```
 
-**Important:** Always use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions. They are automatically cleaned up when the connection closes.
+**Important:** Always use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions. They are automatically cleaned up when the connection closes.
 
 ### Manual Cleanup (Alternative)
 
 ```javascript
 // controller/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream((send, close) => {
     send({ type: 'connected' })
     
@@ -80,7 +80,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream([1, 2, 3, 4, 5])
 }
 ```
@@ -89,7 +89,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/users/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream(async function* () {
     const users = await Candy.Mysql.table('users').get()
     
@@ -104,7 +104,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/app/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.stream(
     fetch('https://api.example.com/data')
       .then(r => r.json())
@@ -116,7 +116,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/file/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   const fs = require('fs')
   Candy.stream(fs.createReadStream('large-file.txt'))
 }
@@ -128,7 +128,7 @@ module.exports = async (Candy) => {
 
 ```javascript
 // controller/monitor/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   return Candy.stream((send) => {
     send({ type: 'connected' })
     
@@ -140,13 +140,13 @@ module.exports = async (Candy) => {
 }
 ```
 
-**Note:** When using `Candy.setInterval()` or `Candy.setTimeout()`, cleanup is automatic. No need for manual `clearInterval()` or `clearTimeout()`.
+**Note:** When using `Odac.setInterval()` or `Odac.setTimeout()`, cleanup is automatic. No need for manual `clearInterval()` or `clearTimeout()`.
 
 ### Error Handling
 
 ```javascript
 // controller/data/get/fetch.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   const stream = Candy.stream()
   
   try {
@@ -167,7 +167,7 @@ module.exports = async (Candy) => {
 Candy.Route.get('/logs', 'logs')
 
 // controller/logs/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   return Candy.stream(async function* () {
     const logStream = await getDeploymentLogs()
     
@@ -188,7 +188,7 @@ module.exports = async (Candy) => {
 Candy.Route.get('/posts', 'posts')
 
 // controller/posts/get/index.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   return Candy.stream(async function* () {
     let page = 1
     let hasMore = true
@@ -282,7 +282,7 @@ Odac uses **Server-Sent Events (SSE)** for streaming:
 Odac automatically manages timers and intervals in streaming contexts:
 
 ```javascript
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   return Candy.stream((send) => {
     // ✅ Automatically cleaned up when connection closes
     Candy.setInterval(() => {
@@ -312,7 +312,7 @@ Candy.clearTimeout(timeoutId)
 
 ## Best Practices
 
-1. **Use Candy timers:** Always use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions
+1. **Use Candy timers:** Always use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions
 2. **Return the stream:** Always `return Candy.stream(...)` from your controller
 3. **Throttle messages:** Don't send too frequently (use intervals)
 4. **Handle errors:** Use try-catch for async operations
@@ -321,7 +321,7 @@ Candy.clearTimeout(timeoutId)
 ## Troubleshooting
 
 **Connection drops immediately:**
-- Check if you're calling `Candy.return()` or `res.end()`
+- Check if you're calling `Odac.return()` or `res.end()`
 - Don't use both streaming and regular responses
 - Make sure to `return Candy.stream(...)`
 
@@ -331,12 +331,12 @@ Candy.clearTimeout(timeoutId)
 - Ensure CORS headers if cross-origin
 
 **High memory usage / Memory leaks:**
-- Use `Candy.setInterval()` instead of global `setInterval()`
-- Use `Candy.setTimeout()` instead of global `setTimeout()`
+- Use `Odac.setInterval()` instead of global `setInterval()`
+- Use `Odac.setTimeout()` instead of global `setTimeout()`
 - Avoid creating intervals outside the stream callback
 - Check for other resource leaks (database connections, file handles)
 
 **Intervals keep running after disconnect:**
-- Replace `setInterval()` with `Candy.setInterval()`
-- Replace `setTimeout()` with `Candy.setTimeout()`
+- Replace `setInterval()` with `Odac.setInterval()`
+- Replace `setTimeout()` with `Odac.setTimeout()`
 - These are automatically cleaned up when the connection closes

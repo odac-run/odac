@@ -94,7 +94,7 @@ Example `skeleton/main.html`:
 <html>
 <head>
   <title>My Site</title>
-  <script src="/assets/js/candy.js"></script>
+  <script src="/assets/js/odac.js"></script>
   <script src="/assets/js/app.js"></script>
 </head>
 <body>
@@ -120,10 +120,10 @@ Example `skeleton/main.html`:
 
 ### Controller Setup
 
-Controllers automatically support AJAX loading. Use `Candy.View.skeleton()` to specify which skeleton to use:
+Controllers automatically support AJAX loading. Use `Odac.View.skeleton()` to specify which skeleton to use:
 
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // Define the skeleton template
   Candy.View.skeleton('main')
   
@@ -159,8 +159,8 @@ module.exports = function (Candy) {
 
 1. User clicks `<a href="/about">`
 2. JavaScript intercepts click and sends AJAX request with:
-   - Header: `X-Candy: ajaxload`
-   - Header: `X-Candy-Load: content,header` (requested sections)
+   - Header: `X-Odac: ajaxload`
+   - Header: `X-Odac-Load: content,header` (requested sections)
 3. Server detects AJAX request and returns only requested sections as JSON:
    ```json
    {
@@ -179,7 +179,7 @@ module.exports = function (Candy) {
 6. Page-specific callbacks execute
 
 **Key Points:**
-- The `output` keys in the JSON response match the lowercase keys from `Candy.View.set()` in your controller
+- The `output` keys in the JSON response match the lowercase keys from `Odac.View.set()` in your controller
 - These keys correspond to UPPERCASE placeholders in your skeleton (e.g., `content` → `{{ CONTENT }}`)
 - Only the sections specified in `navigate.update` are sent and updated
 - Frontend selectors target the HTML tags wrapping the placeholders
@@ -347,7 +347,7 @@ Candy.action({
 **Page Identifier Rules:**
 - **With controller**: Uses controller filename (e.g., `user.js` → `'user'`)
 - **With view object**: Uses `content` or `all` value (e.g., `{content: 'dashboard'}` → `'dashboard'`)
-- Accessible via `Candy.page()` or `document.documentElement.dataset.candyPage`
+- Accessible via `Odac.page()` or `document.documentElement.dataset.candyPage`
 
 ## Server Variables
 
@@ -546,7 +546,7 @@ Candy.action({
 ### Links not loading via AJAX
 
 - Check browser console for errors
-- Verify navigate is enabled in `Candy.action()`
+- Verify navigate is enabled in `Odac.action()`
 - Ensure links start with `/` for internal navigation
 
 ### Specific links should not use AJAX
@@ -599,10 +599,10 @@ This is usually caused by mismatched keys between your skeleton, controller, and
 
 **Also verify:**
 - Element selectors match actual DOM elements (e.g., `'main'` matches `<main>`)
-- Skeleton template is defined with `Candy.View.skeleton('main')`
-- View parts are defined in controller with `Candy.View.set()`
+- Skeleton template is defined with `Odac.View.skeleton('main')`
+- View parts are defined in controller with `Odac.View.set()`
 
 ### Variables not available
 
-- Confirm `Candy.set(data, true)` has `true` as second parameter
+- Confirm `Odac.set(data, true)` has `true` as second parameter
 - Check that variables are set before `View.print()` is called

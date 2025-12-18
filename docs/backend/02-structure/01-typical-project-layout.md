@@ -34,6 +34,6 @@ You can also use Odac commands directly:
 odac framework run [port]
 ```
 
-**Note**: For production websites with DNS and SSL, use `candy web create` to register with Odac server.
+**Note**: For production websites with DNS and SSL, use `odac web create` to register with Odac server.
 
 Following this structure helps keep your code's responsibilities separate. Your routing logic lives in one place, your app logic in another, and your presentation files in a third. It's a recipe for success!

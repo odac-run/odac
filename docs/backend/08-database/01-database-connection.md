@@ -86,10 +86,10 @@ Available configuration options:
 
 ### Automatic Connection
 
-The connection is established automatically when your application starts. You don't need to write any connection code - just use `Candy.Mysql` in your controllers.
+The connection is established automatically when your application starts. You don't need to write any connection code - just use `Odac.Mysql` in your controllers.
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Connection is already established
   const users = await Candy.Mysql.table('users').get()
   

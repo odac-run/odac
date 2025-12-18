@@ -4,7 +4,7 @@ Odac provides built-in WebSocket support for real-time bidirectional communicati
 
 ## Route Definition
 
-WebSocket routes are defined in your route files (e.g., `route/www.js` or `route/websocket.js`) using `Candy.Route.ws()`:
+WebSocket routes are defined in your route files (e.g., `route/www.js` or `route/websocket.js`) using `Odac.Route.ws()`:
 
 ```javascript
 // route/websocket.js
@@ -24,7 +24,7 @@ Candy.Route.ws('/chat', Candy => {
 
 **Handler Signature:**
 
-The handler receives the `Candy` instance as the only parameter. The WebSocket client is accessible via `Candy.ws`, providing a consistent API with HTTP routes where everything is accessed through the `Candy` object.
+The handler receives the `Candy` instance as the only parameter. The WebSocket client is accessible via `Odac.ws`, providing a consistent API with HTTP routes where everything is accessed through the `Candy` object.
 
 **CSRF Token Protection:**
 
@@ -47,7 +47,7 @@ web/
 
 ## WebSocket Client API (Candy.ws)
 
-The WebSocket client is accessible via `Candy.ws` in your handler, providing a consistent API pattern with HTTP routes.
+The WebSocket client is accessible via `Odac.ws` in your handler, providing a consistent API pattern with HTTP routes.
 
 ### Sending Messages
 
@@ -224,7 +224,7 @@ Candy.ws.data.joinedAt = Date.now()
 
 ## Intervals and Timeouts
 
-Use `Candy.setInterval()` and `Candy.setTimeout()` instead of global functions. They are automatically cleaned up when the WebSocket connection closes:
+Use `Odac.setInterval()` and `Odac.setTimeout()` instead of global functions. They are automatically cleaned up when the WebSocket connection closes:
 
 ```javascript
 Candy.Route.ws('/live-updates', Candy => {

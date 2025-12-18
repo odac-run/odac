@@ -44,7 +44,7 @@ The development server (`npm start`) is designed for:
 For production deployment with full Odac server features, create your website using:
 
 ```bash
-candy web create
+odac web create
 ```
 
 This registers your website with the Odac server and provides:
@@ -62,7 +62,7 @@ When you create a new website, Odac automatically generates a `package.json` wit
 ```json
 {
   "scripts": {
-    "start": "candy framework run",
+    "start": "odac framework run",
     "test": "echo \"Error: no test specified\" && exit 1"
   }
 }

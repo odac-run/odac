@@ -1,4 +1,4 @@
-# Form Handling with candy.js
+# Form Handling with odac.js
 
 Learn how to handle forms with automatic AJAX submission, CSRF protection, and validation in Odac.
 
@@ -21,7 +21,7 @@ Candy.form('#contact-form', function(data) {
 })
 ```
 
-That's it! candy.js handles:
+That's it! odac.js handles:
 - ✅ AJAX submission
 - ✅ CSRF token (automatic)
 - ✅ Validation errors (auto-generated)
@@ -75,10 +75,10 @@ If you want to control where errors appear, add error elements manually:
 
 ```html
 <input name="email" type="email">
-<span candy-form-error="email"></span>
+<span odac-form-error="email"></span>
 ```
 
-**If not present:** The system automatically creates `<span candy-form-error="email">` after the input field.
+**If not present:** The system automatically creates `<span odac-form-error="email">` after the input field.
 
 **If present:** The system uses your existing element and updates its content.
 
@@ -99,7 +99,7 @@ Candy.form('#my-form', function(data) {
 
 ```css
 /* Error message */
-[candy-form-error] {
+[odac-form-error] {
   color: #ef4444;
   font-size: 0.875rem;
   margin-top: 0.25rem;
@@ -107,7 +107,7 @@ Candy.form('#my-form', function(data) {
 }
 
 /* Invalid input */
-input._candy_error {
+input._odac_error {
   border-color: #ef4444;
 }
 ```
@@ -126,11 +126,11 @@ If you want to control where success messages appear, add a success element manu
 <form id="my-form" action="/api/submit" method="POST">
   <!-- form fields -->
   <button type="submit">Submit</button>
-  <div candy-form-success></div>
+  <div odac-form-success></div>
 </form>
 ```
 
-**If not present:** The system automatically creates `<span candy-form-success>` at the end of the form.
+**If not present:** The system automatically creates `<span odac-form-success>` at the end of the form.
 
 **If present:** The system uses your existing element and updates its content.
 
@@ -240,7 +240,7 @@ Candy.form('#my-form', function(data) {
 
 ```javascript
 // controller/post/contact.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const email = await Candy.Request.request('email')
   const message = await Candy.Request.request('message')
   
@@ -292,7 +292,7 @@ Use HTML5 validation:
 Always validate on the server:
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const email = await Candy.Request.request('email')
   
   const errors = {}
@@ -379,7 +379,7 @@ Candy.form('#login-form', function(data) {
 ```html
 <div class="form-group">
   <input name="email" type="email" required>
-  <span candy-form-error="email" class="error-message"></span>
+  <span odac-form-error="email" class="error-message"></span>
 </div>
 ```
 
@@ -396,7 +396,7 @@ Candy.form('#login-form', function(data) {
 
 ### Form Not Submitting
 
-- Check that `Candy.form()` is called after DOM is ready
+- Check that `Odac.form()` is called after DOM is ready
 - Verify the form selector is correct
 - Check browser console for errors
 
@@ -405,7 +405,7 @@ Candy.form('#login-form', function(data) {
 - Errors are automatically created - no manual elements needed
 - Check that server returns errors in correct format: `{result: {success: false}, errors: {fieldName: 'message'}}`
 - Verify `messages` option is not set to `false`
-- If using custom error elements, ensure `candy-form-error` attributes match field names exactly
+- If using custom error elements, ensure `odac-form-error` attributes match field names exactly
 
 ### CSRF Token Errors
 

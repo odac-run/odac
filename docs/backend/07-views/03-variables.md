@@ -1,14 +1,14 @@
 ## 📦 Variables in Views
 
-Variables allow you to display dynamic data in your templates. Data is passed from controllers to views using `Candy.set()` and displayed using the `<candy var>` tag.
+Variables allow you to display dynamic data in your templates. Data is passed from controllers to views using `Odac.set()` and displayed using the `<odac var>` tag.
 
 ### Passing Data from Controller
 
-Use `Candy.set()` in your controller to pass data to views:
+Use `Odac.set()` in your controller to pass data to views:
 
 ```javascript
 // Controller: controller/profile.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   // Set single variable
   Candy.set('username', 'John Doe')
   
@@ -31,9 +31,9 @@ module.exports = async function(Candy) {
 #### HTML-Safe Output (Recommended)
 
 ```html
-<candy var="username" />
-<candy var="user.email" />
-<candy var="product.price" />
+<odac var="username" />
+<odac var="user.email" />
+<odac var="product.price" />
 ```
 
 This automatically:
@@ -48,7 +48,7 @@ Candy.set('message', 'Hello\nWorld')
 
 ```html
 <!-- View -->
-<candy var="message" />
+<odac var="message" />
 <!-- Output: Hello<br>World -->
 ```
 
@@ -57,8 +57,8 @@ Candy.set('message', 'Hello\nWorld')
 When you need to display HTML content without escaping:
 
 ```html
-<candy var="htmlContent" raw />
-<candy var="user.bio" raw />
+<odac var="htmlContent" raw />
+<odac var="user.bio" raw />
 ```
 
 **Security Warning:** Only use `raw` with trusted content. Never use it with user-generated content to prevent XSS attacks.
@@ -71,7 +71,7 @@ Candy.set('content', '<strong>Bold text</strong>')
 
 ```html
 <!-- View -->
-<candy var="content" raw />
+<odac var="content" raw />
 <!-- Output: <strong>Bold text</strong> -->
 ```
 
@@ -94,9 +94,9 @@ Candy.set('user', {
 
 ```html
 <!-- View -->
-<p>Name: <candy var="user.name" /></p>
-<p>Email: <candy var="user.profile.email" /></p>
-<p>City: <candy var="user.profile.address.city" /></p>
+<p>Name: <odac var="user.name" /></p>
+<p>Email: <odac var="user.profile.email" /></p>
+<p>City: <odac var="user.profile.address.city" /></p>
 ```
 
 ### String Literals
@@ -104,8 +104,8 @@ Candy.set('user', {
 Display static text directly:
 
 ```html
-<candy>Hello World</candy>
-<candy>Welcome to our site</candy>
+<odac>Hello World</odac>
+<odac>Welcome to our site</odac>
 ```
 
 This is useful when you want consistent syntax throughout your templates.
@@ -116,18 +116,18 @@ You have full access to the `Candy` object within templates:
 
 ```html
 <!-- Authentication -->
-<candy:if condition="Candy.Auth.check()">
-  <p>User ID: <candy var="Candy.Auth.user().id" /></p>
-  <p>Email: <candy var="Candy.Auth.user().email" /></p>
+<odac:if condition="Candy.Auth.check()">
+  <p>User ID: <odac var="Candy.Auth.user().id" /></p>
+  <p>Email: <odac var="Candy.Auth.user().email" /></p>
 </candy:if>
 
 <!-- Request Information -->
-<p>Method: <candy var="Candy.Request.method" /></p>
-<p>URL: <candy var="Candy.Request.url" /></p>
-<p>IP: <candy var="Candy.Request.ip" /></p>
+<p>Method: <odac var="Candy.Request.method" /></p>
+<p>URL: <odac var="Candy.Request.url" /></p>
+<p>IP: <odac var="Candy.Request.ip" /></p>
 
 <!-- Configuration -->
-<candy:if condition="Candy.Config.debug">
+<odac:if condition="Candy.Config.debug">
   <div class="debug-info">Debug mode enabled</div>
 </candy:if>
 ```
@@ -138,7 +138,7 @@ You have full access to the `Candy` object within templates:
 
 ```javascript
 // Controller: controller/profile.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   // Fetch user from database
   const userId = Candy.Request.get('id')
   const user = await Candy.Mysql.table('users')
@@ -160,15 +160,15 @@ module.exports = async function(Candy) {
 ```html
 <!-- View: view/content/profile.html -->
 <div class="profile-card">
-  <h2><candy var="user.name" /></h2>
-  <p><candy var="user.email" /></p>
+  <h2><odac var="user.name" /></h2>
+  <p><odac var="user.email" /></p>
   
-  <candy:if condition="user.isVerified">
+  <odac:if condition="user.isVerified">
     <span class="badge">✓ Verified</span>
   </candy:if>
   
   <div class="bio">
-    <candy var="user.bio" raw />
+    <odac var="user.bio" raw />
   </div>
 </div>
 ```
@@ -177,7 +177,7 @@ module.exports = async function(Candy) {
 
 ```javascript
 // Controller: controller/product.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const productId = Candy.Request.get('id')
   const product = await Candy.Mysql.table('products')
     .where('id', productId)
@@ -200,18 +200,18 @@ module.exports = async function(Candy) {
 ```html
 <!-- View: view/content/product.html -->
 <div class="product">
-  <h1><candy var="product.name" /></h1>
+  <h1><odac var="product.name" /></h1>
   
-  <candy:if condition="hasDiscount">
-    <p class="original-price">$<candy var="product.price" /></p>
-    <p class="final-price">$<candy var="finalPrice" /></p>
-    <span class="discount">-<candy var="product.discount" />%</span>
-  <candy:else>
-    <p class="price">$<candy var="product.price" /></p>
+  <odac:if condition="hasDiscount">
+    <p class="original-price">$<odac var="product.price" /></p>
+    <p class="final-price">$<odac var="finalPrice" /></p>
+    <span class="discount">-<odac var="product.discount" />%</span>
+  <odac:else>
+    <p class="price">$<odac var="product.price" /></p>
   </candy:if>
   
   <div class="description">
-    <candy var="product.description" />
+    <odac var="product.description" />
   </div>
 </div>
 ```
@@ -220,7 +220,7 @@ module.exports = async function(Candy) {
 
 ```javascript
 // Controller: controller/products.js
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const products = await Candy.Mysql.table('products')
     .where('active', true)
     .get()
@@ -236,13 +236,13 @@ module.exports = async function(Candy) {
 
 ```html
 <!-- View: view/content/products.html -->
-<h1>Products (<candy var="totalProducts" />)</h1>
+<h1>Products (<odac var="totalProducts" />)</h1>
 
 <div class="products-grid">
-  <candy:for in="products" value="product">
+  <odac:for in="products" value="product">
     <div class="product-card">
-      <h3><candy var="product.name" /></h3>
-      <p>$<candy var="product.price" /></p>
+      <h3><odac var="product.name" /></h3>
+      <p>$<odac var="product.price" /></p>
     </div>
   </candy:for>
 </div>
@@ -250,8 +250,8 @@ module.exports = async function(Candy) {
 
 ### Best Practices
 
-1. **Always use Candy.set()**: Pass all data through `Candy.set()` for consistency
-2. **Set data before rendering**: All `Candy.set()` calls should come before `Candy.View.set()`
+1. **Always use Candy.set()**: Pass all data through `Odac.set()` for consistency
+2. **Set data before rendering**: All `Odac.set()` calls should come before `Odac.View.set()`
 3. **Compute in controller**: Do calculations in the controller, not in views
 4. **Use descriptive names**: `pageTitle`, `userProfile` instead of `title`, `data`
 5. **Group related data**: Use objects to organize related data
@@ -271,7 +271,7 @@ Candy.set({
 **Avoid:**
 ```html
 <!-- Don't do complex logic in views -->
-<candy:if condition="user.role === 'admin' && user.verified && !user.banned">
+<odac:if condition="user.role === 'admin' && user.verified && !user.banned">
   ...
 </candy:if>
 ```
@@ -282,7 +282,7 @@ Always handle cases where data might not exist:
 
 ```javascript
 // Controller
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const productId = Candy.Request.get('id')
   const product = await Candy.Mysql.table('products')
     .where('id', productId)
@@ -300,13 +300,13 @@ module.exports = async function(Candy) {
 
 ```html
 <!-- View -->
-<candy:if condition="error">
+<odac:if condition="error">
   <div class="alert alert-danger">
-    <candy var="error" />
+    <odac var="error" />
   </div>
-<candy:else>
+<odac:else>
   <div class="product">
-    <h1><candy var="product.name" /></h1>
+    <h1><odac var="product.name" /></h1>
   </div>
 </candy:if>
 ```
@@ -325,4 +325,4 @@ Odac also supports legacy syntax:
 {!! user.bio !!}
 ```
 
-**Note:** The new `<candy>` tag syntax is recommended for all new projects as it provides better IDE support and readability.
+**Note:** The new `<odac>` tag syntax is recommended for all new projects as it provides better IDE support and readability.

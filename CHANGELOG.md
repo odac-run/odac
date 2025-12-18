@@ -5,12 +5,12 @@
 
 ### ✨ What's New
 
-- add <candy:login> component for zero-config registration
-- add <candy:register> component for zero-config registration
+- add <odac:login> component for zero-config registration
+- add <odac:register> component for zero-config registration
 - Environment variable support
 - **Framework:** Support multiple validation checks per field
 - HTTP2 & Server-Sent Events (SSE) Support
-- Modernize view template syntax with <candy> tags
+- Modernize view template syntax with <odac> tags
 - No-Code AJAX Navigation
 
 ### 📚 Documentation
@@ -21,7 +21,7 @@
 
 ### 🛠️ Fixes & Improvements
 
-- Added config module to candy debug
+- Added config module to odac debug
 - Improve config force save and migration verification
 
 
@@ -80,8 +80,8 @@ Powered by [🍭 Odac](https://odac.run)
 
 ### ✨ What's New
 
-- Added 'candy service delete' command.
-- Added 'candy subdomain delete' command.
+- Added 'odac service delete' command.
+- Added 'odac subdomain delete' command.
 - Added CLI prefix arguments support
 - CLI Mouse Support
 - **cli:** Add Progress-Based Output
@@ -99,7 +99,7 @@ Powered by [🍭 Odac](https://odac.run)
 
 ### ✨ What's New
 
-- Added 'candy web delete' command.
+- Added 'odac web delete' command.
 - Added German, Spanish, French, Portuguese, Russian, and Chinese language support for CLI
 
 ### 🛠️ Fixes & Improvements

@@ -4,7 +4,7 @@ The Odac framework provides a built-in cron system for running automated tasks. 
 
 ## Basic Usage
 
-Use the `Candy.Route.cron()` method to define cron jobs:
+Use the `Odac.Route.cron()` method to define cron jobs:
 
 ```javascript
 // With controller file

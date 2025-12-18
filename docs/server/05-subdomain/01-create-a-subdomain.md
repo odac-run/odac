@@ -3,17 +3,17 @@ This command allows you to create a new subdomain. Odac will automatically confi
 
 ### Interactive Usage
 ```bash
-candy subdomain create
+odac subdomain create
 ```
 After running the command, you will be prompted to enter the new subdomain name, including the main domain (e.g., `blog.example.com`).
 
 ### Single-Line Usage with Prefixes
 ```bash
 # Specify subdomain directly
-candy subdomain create -s blog.example.com
+odac subdomain create -s blog.example.com
 
 # Or use long form prefix
-candy subdomain create --subdomain blog.example.com
+odac subdomain create --subdomain blog.example.com
 ```
 
 ### Available Prefixes
@@ -21,12 +21,12 @@ candy subdomain create --subdomain blog.example.com
 
 ### Interactive Example
 ```bash
-$ candy subdomain create
+$ odac subdomain create
 > Enter the subdomain name (subdomain.example.com): blog.example.com
 ```
 
 ### Single-Line Example
 ```bash
-$ candy subdomain create -s blog.example.com
+$ odac subdomain create -s blog.example.com
 ✓ Subdomain blog.example.com created successfully
 ```

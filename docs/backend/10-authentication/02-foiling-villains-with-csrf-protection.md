@@ -1,6 +1,6 @@
 ## 🛡️ Foiling Villains with CSRF Protection
 
-Cross-Site Request Forgery (CSRF) is a scary-sounding attack where a bad guy tries to trick your users into submitting forms they didn't mean to. The `Candy.Token` service is your shield against this!
+Cross-Site Request Forgery (CSRF) is a scary-sounding attack where a bad guy tries to trick your users into submitting forms they didn't mean to. The `Odac.Token` service is your shield against this!
 
 #### How it Works
 
@@ -13,8 +13,8 @@ If they don't match, it's a trap!
 
 #### Generating and Checking Tokens
 
-*   `Candy.Token.get()`: Creates a new secret token.
-*   `Candy.Token.check(theToken)`: Checks if `theToken` is valid.
+*   `Odac.Token.get()`: Creates a new secret token.
+*   `Odac.Token.check(theToken)`: Checks if `theToken` is valid.
 
 #### Example: Securing a Form
 
@@ -31,7 +31,7 @@ If they don't match, it's a trap!
 
 **2. Your controller that shows the form:**
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
     // Get a token and pass it to the view
     const token = Candy.Token.get();
     return Candy.View.render('your_form_view', { csrfToken: token });
@@ -40,7 +40,7 @@ module.exports = function (Candy) {
 
 **3. Your controller that handles the form submission:**
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
     const submittedToken = Candy.Request.post.csrf_token;
 
     // Check the token!

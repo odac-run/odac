@@ -217,7 +217,7 @@ Candy.action({
 In your controller, send data to the client:
 
 ```javascript
-module.exports = function(Candy) {
+module.exports = function(Odac) {
   // Set variables for AJAX responses
   Candy.set({
     title: 'About Page',
@@ -360,7 +360,7 @@ Candy.action({
 
 ### Variables Not Available
 
-- Confirm `Candy.set(data, true)` has `true` parameter
+- Confirm `Odac.set(data, true)` has `true` parameter
 - Check variables are set before `View.print()`
 
 ## Next Steps

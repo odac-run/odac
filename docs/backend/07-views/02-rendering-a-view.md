@@ -1,13 +1,13 @@
 ## 🎨 Rendering Views
 
-In Odac, you use the `Candy.View` object to render views. There are two main approaches:
+In Odac, you use the `Odac.View` object to render views. There are two main approaches:
 
 ### 1. Combining Skeleton and View Parts
 
 The most common usage is to select a skeleton and place view parts into it.
 
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   Candy.View
     .skeleton('main')           // Use skeleton/main.html
     .set('header', 'main')      // Place view/header/main.html into {{ HEADER }}
@@ -21,7 +21,7 @@ module.exports = function (Candy) {
 You can set all view parts at once:
 
 ```javascript
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   Candy.View.set({
     skeleton: 'main',
     header: 'main',
@@ -116,7 +116,7 @@ Create a separate view part for the `<head>` section:
 
 **Controller:**
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   const productId = Candy.Request.get('id')
   const product = await Candy.Mysql.table('products')
     .where('id', productId)
@@ -176,4 +176,4 @@ Include the title tag in your content view:
 - Placeholders for view parts are written in uppercase: `{{ HEADER }}`, `{{ CONTENT }}`, etc.
 - View part names are specified in lowercase: `header`, `content`, etc.
 - Variables in skeleton/views are accessed via `Candy` object: `{{ Candy.variableName }}`
-- You don't need to use `return` from the controller, `Candy.View.set()` automatically initiates the rendering process
+- You don't need to use `return` from the controller, `Odac.View.set()` automatically initiates the rendering process

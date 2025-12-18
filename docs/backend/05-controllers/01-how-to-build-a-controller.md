@@ -8,7 +8,7 @@ Check out this basic example from `controller/page/index.js`:
 
 ```javascript
 // This function is our controller!
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // It simply returns a string.
   return 'Welcome to my awesome Odac server!'
 }

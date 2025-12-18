@@ -3,17 +3,17 @@ This command allows you to change the password for an existing email account.
 
 ### Interactive Usage
 ```bash
-candy mail password
+odac mail password
 ```
 You will be prompted to enter the email address and the new password.
 
 ### Single-Line Usage with Prefixes
 ```bash
 # Specify email and new password directly
-candy mail password -e user@example.com -p newpassword
+odac mail password -e user@example.com -p newpassword
 
 # Or use long form prefixes
-candy mail password --email user@example.com --password newpassword
+odac mail password --email user@example.com --password newpassword
 ```
 
 ### Available Prefixes

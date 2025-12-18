@@ -179,7 +179,7 @@ class Web {
     if (!Odac.core('Config').config.web?.path || !fs.existsSync(Odac.core('Config').config.web.path)) {
       if (!Odac.core('Config').config.web) Odac.core('Config').config.web = {}
       if (os.platform() === 'win32' || os.platform() === 'darwin') {
-        Odac.core('Config').config.web.path = os.homedir() + '/Candypack/'
+        Odac.core('Config').config.web.path = os.homedir() + '/Odac/'
       } else {
         Odac.core('Config').config.web.path = '/var/odac/'
       }

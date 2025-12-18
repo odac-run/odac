@@ -6,7 +6,7 @@ This comprehensive reference covers all Odac CLI commands and their usage patter
 
 Odac CLI follows a hierarchical command structure:
 ```bash
-candy [command] [subcommand] [prefixes] [arguments]
+odac [command] [subcommand] [prefixes] [arguments]
 ```
 
 ### Prefix Arguments
@@ -23,18 +23,18 @@ Most commands support prefix arguments that allow you to provide values directly
 
 ### Authentication Commands
 
-#### `candy auth`
+#### `odac auth`
 Define your server to your Odac account.
 
 **Interactive:**
 ```bash
-candy auth
+odac auth
 ```
 
 **Single-line:**
 ```bash
-candy auth -k your-auth-key
-candy auth --key your-auth-key
+odac auth -k your-auth-key
+odac auth --key your-auth-key
 ```
 
 ### Basic Server Commands
@@ -42,196 +42,196 @@ candy auth --key your-auth-key
 #### `candy` (no arguments)
 Display server status, uptime, and statistics.
 
-#### `candy restart`
+#### `odac restart`
 Restart the Odac server.
 
-#### `candy monit`
+#### `odac monit`
 Monitor websites and services in real-time.
 
-#### `candy debug`
+#### `odac debug`
 View live server and application logs.
 
-#### `candy help`
+#### `odac help`
 Display help information for all commands.
 
 ### Service Management
 
-#### `candy run <file>`
+#### `odac run <file>`
 Add a new service by specifying the entry file path.
 
 **Example:**
 ```bash
-candy run /path/to/your/app.js
-candy run ./index.js
+odac run /path/to/your/app.js
+odac run ./index.js
 ```
 
-#### `candy service delete`
+#### `odac service delete`
 Delete a running service.
 
 **Interactive:**
 ```bash
-candy service delete
+odac service delete
 ```
 
 **Single-line:**
 ```bash
-candy service delete -i service-name
-candy service delete --id service-name
+odac service delete -i service-name
+odac service delete --id service-name
 ```
 
 ### Website Management
 
-#### `candy web create`
+#### `odac web create`
 Create a new website configuration.
 
 **Interactive:**
 ```bash
-candy web create
+odac web create
 ```
 
 **Single-line:**
 ```bash
-candy web create -d example.com
-candy web create --domain example.com
+odac web create -d example.com
+odac web create --domain example.com
 ```
 
-#### `candy web delete`
+#### `odac web delete`
 Delete a website configuration.
 
 **Interactive:**
 ```bash
-candy web delete
+odac web delete
 ```
 
 **Single-line:**
 ```bash
-candy web delete -d example.com
-candy web delete --domain example.com
+odac web delete -d example.com
+odac web delete --domain example.com
 ```
 
-#### `candy web list`
+#### `odac web list`
 List all configured websites.
 
 ```bash
-candy web list
+odac web list
 ```
 
 ### Subdomain Management
 
-#### `candy subdomain create`
+#### `odac subdomain create`
 Create a new subdomain.
 
 **Interactive:**
 ```bash
-candy subdomain create
+odac subdomain create
 ```
 
 **Single-line:**
 ```bash
-candy subdomain create -s blog.example.com
-candy subdomain create --subdomain blog.example.com
+odac subdomain create -s blog.example.com
+odac subdomain create --subdomain blog.example.com
 ```
 
-#### `candy subdomain delete`
+#### `odac subdomain delete`
 Delete a subdomain.
 
 **Interactive:**
 ```bash
-candy subdomain delete
+odac subdomain delete
 ```
 
 **Single-line:**
 ```bash
-candy subdomain delete -s blog.example.com
-candy subdomain delete --subdomain blog.example.com
+odac subdomain delete -s blog.example.com
+odac subdomain delete --subdomain blog.example.com
 ```
 
-#### `candy subdomain list`
+#### `odac subdomain list`
 List all subdomains for a domain.
 
 **Interactive:**
 ```bash
-candy subdomain list
+odac subdomain list
 ```
 
 **Single-line:**
 ```bash
-candy subdomain list -d example.com
-candy subdomain list --domain example.com
+odac subdomain list -d example.com
+odac subdomain list --domain example.com
 ```
 
 ### SSL Certificate Management
 
-#### `candy ssl renew`
+#### `odac ssl renew`
 Renew SSL certificate for a domain.
 
 **Interactive:**
 ```bash
-candy ssl renew
+odac ssl renew
 ```
 
 **Single-line:**
 ```bash
-candy ssl renew -d example.com
-candy ssl renew --domain example.com
+odac ssl renew -d example.com
+odac ssl renew --domain example.com
 ```
 
 ### Mail Account Management
 
-#### `candy mail create`
+#### `odac mail create`
 Create a new email account.
 
 **Interactive:**
 ```bash
-candy mail create
+odac mail create
 ```
 
 **Single-line:**
 ```bash
-candy mail create -e user@example.com -p password123
-candy mail create --email user@example.com --password password123
+odac mail create -e user@example.com -p password123
+odac mail create --email user@example.com --password password123
 ```
 
-#### `candy mail delete`
+#### `odac mail delete`
 Delete an email account.
 
 **Interactive:**
 ```bash
-candy mail delete
+odac mail delete
 ```
 
 **Single-line:**
 ```bash
-candy mail delete -e user@example.com
-candy mail delete --email user@example.com
+odac mail delete -e user@example.com
+odac mail delete --email user@example.com
 ```
 
-#### `candy mail list`
+#### `odac mail list`
 List all email accounts for a domain.
 
 **Interactive:**
 ```bash
-candy mail list
+odac mail list
 ```
 
 **Single-line:**
 ```bash
-candy mail list -d example.com
-candy mail list --domain example.com
+odac mail list -d example.com
+odac mail list --domain example.com
 ```
 
-#### `candy mail password`
+#### `odac mail password`
 Change password for an email account.
 
 **Interactive:**
 ```bash
-candy mail password
+odac mail password
 ```
 
 **Single-line:**
 ```bash
-candy mail password -e user@example.com -p newpassword
-candy mail password --email user@example.com --password newpassword
+odac mail password -e user@example.com -p newpassword
+odac mail password --email user@example.com --password newpassword
 ```
 
 ### Usage Tips
@@ -242,14 +242,14 @@ Single-line commands with prefixes are perfect for automation:
 ```bash
 #!/bin/bash
 # Create multiple email accounts
-candy mail create -e admin@example.com -p admin123
-candy mail create -e support@example.com -p support123
-candy mail create -e sales@example.com -p sales123
+odac mail create -e admin@example.com -p admin123
+odac mail create -e support@example.com -p support123
+odac mail create -e sales@example.com -p sales123
 
 # Set up subdomains
-candy subdomain create -s blog.example.com
-candy subdomain create -s shop.example.com
-candy subdomain create -s api.example.com
+odac subdomain create -s blog.example.com
+odac subdomain create -s shop.example.com
+odac subdomain create -s api.example.com
 ```
 
 #### Mixed Usage
@@ -257,7 +257,7 @@ You can mix interactive and single-line modes as needed:
 
 ```bash
 # Specify domain, but let the system prompt for other details
-candy web create -d example.com
+odac web create -d example.com
 ```
 
 #### Password Security
@@ -268,9 +268,9 @@ When using password prefixes (`-p`, `--password`):
 
 ```bash
 # Using environment variable
-candy mail create -e user@example.com -p "$MAIL_PASSWORD"
+odac mail create -e user@example.com -p "$MAIL_PASSWORD"
 ```
 
 ### Error Handling
 
-If a command fails or you provide invalid arguments, Odac will display helpful error messages and suggest corrections. Use `candy help [command]` to get specific help for any command.
+If a command fails or you provide invalid arguments, Odac will display helpful error messages and suggest corrections. Use `odac help [command]` to get specific help for any command.

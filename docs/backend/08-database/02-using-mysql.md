@@ -246,7 +246,7 @@ const stats = await Candy.Mysql.table('orders')
 ### Complete Example
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   const page = await Candy.request('page') || 1
   const perPage = 20
   const search = await Candy.request('search')
@@ -298,7 +298,7 @@ module.exports = async function (Candy) {
 ### Error Handling
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   try {
     const user = await Candy.Mysql.table('users')
       .where('id', await Candy.request('id'))

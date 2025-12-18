@@ -215,13 +215,13 @@ class MockOdac {
 }
 
 // Create the global mock instance
-const mockCandy = new MockOdac()
+const mockOdac = new MockOdac()
 
 // Mock the global __ function
 const mockLangGet = jest.fn(key => key)
 
 module.exports = {
-  mockCandy,
+  mockOdac,
   mockLangGet,
   MockOdac
 }

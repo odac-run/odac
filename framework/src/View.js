@@ -30,7 +30,7 @@ class View {
     },
     component: {
       // TODO: Implement component
-      //   <candy:component name="navbar" title="Dashboard"/>
+      //   <odac:component name="navbar" title="Dashboard"/>
     },
     continue: {
       function: 'continue;',
@@ -50,7 +50,7 @@ class View {
     },
     fetch: {
       // TODO: Implement fetch
-      //  <candy:fetch fetch="/get/products" as="data" method="GET" headers="{}" body="null" refresh="false">
+      //  <odac:fetch fetch="/get/products" as="data" method="GET" headers="{}" body="null" refresh="false">
     },
     for: {
       function: '{ let _arr = $constructor; for(let $key in _arr){ let $value = _arr[$key];',
@@ -68,16 +68,16 @@ class View {
         condition: true
       }
     },
-    '<candy:js>': {
+    '<odac:js>': {
       end: ' html += `',
       function: '`; ',
-      close: '</candy:js>'
+      close: '</odac:js>'
     },
     lazy: {
       // TODO: Implement lazy
-      //  <candy:lazy>
-      //    <candy:component name="profile-card" data="user"/>
-      //  </candy:lazy>
+      //  <odac:lazy>
+      //    <odac:component name="profile-card" data="user"/>
+      //  </odac:lazy>
     },
     list: {
       arguments: {
@@ -98,13 +98,13 @@ class View {
     }
   }
   #part = {}
-  #candy = null
+  #odac = null
 
-  constructor(candy) {
-    this.#candy = candy
+  constructor(odac) {
+    this.#odac = odac
 
     if (!global.Odac?.View?.EarlyHints) {
-      const config = candy.Config?.earlyHints
+      const config = odac.Config?.earlyHints
       this.#earlyHints = new EarlyHints(config)
       this.#earlyHints.init()
 
@@ -123,24 +123,24 @@ class View {
 
   // - PRINT VIEW
   async print() {
-    if (this.#candy.Request.res.finished) return
+    if (this.#odac.Request.res.finished) return
 
-    const routePath = this.#candy.Request.req.url.split('?')[0]
+    const routePath = this.#odac.Request.req.url.split('?')[0]
 
     // Handle AJAX load requests
-    if (this.#candy.Request.isAjaxLoad === true && this.#candy.Request.ajaxLoad && this.#candy.Request.ajaxLoad.length > 0) {
+    if (this.#odac.Request.isAjaxLoad === true && this.#odac.Request.ajaxLoad && this.#odac.Request.ajaxLoad.length > 0) {
       let output = {}
       let variables = {}
 
       // Collect variables marked for AJAX
-      for (let key in this.#candy.Request.variables) {
-        if (this.#candy.Request.variables[key].ajax) {
-          variables[key] = this.#candy.Request.variables[key].value
+      for (let key in this.#odac.Request.variables) {
+        if (this.#odac.Request.variables[key].ajax) {
+          variables[key] = this.#odac.Request.variables[key].value
         }
       }
 
       // Render requested elements
-      for (let element of this.#candy.Request.ajaxLoad) {
+      for (let element of this.#odac.Request.ajaxLoad) {
         if (this.#part[element]) {
           let viewPath = this.#part[element]
           if (viewPath.includes('.')) viewPath = viewPath.replace(/\./g, '/')
@@ -151,14 +151,14 @@ class View {
       }
 
       const currentSkeleton = this.#part.skeleton || 'main'
-      const clientSkeleton = this.#candy.Request.clientSkeleton
+      const clientSkeleton = this.#odac.Request.clientSkeleton
       const skeletonChanged = clientSkeleton && clientSkeleton !== currentSkeleton
 
-      this.#candy.Request.header('Content-Type', 'application/json')
-      this.#candy.Request.header('X-Odac-Page', this.#candy.Request.page || '')
-      this.#candy.Request.header('Vary', 'X-Odac')
+      this.#odac.Request.header('Content-Type', 'application/json')
+      this.#odac.Request.header('X-Odac-Page', this.#odac.Request.page || '')
+      this.#odac.Request.header('Vary', 'X-Odac')
 
-      this.#candy.Request.end({
+      this.#odac.Request.end({
         output: output,
         variables: variables,
         skeletonChanged: skeletonChanged
@@ -198,7 +198,7 @@ class View {
     }
 
     if (result) {
-      const hasEarlyHints = this.#candy.Request.hasEarlyHints()
+      const hasEarlyHints = this.#odac.Request.hasEarlyHints()
 
       if (!hasEarlyHints) {
         const detectedResources = this.#earlyHints.extractFromHtml(result)
@@ -209,8 +209,8 @@ class View {
       }
     }
 
-    this.#candy.Request.header('Content-Type', 'text/html')
-    this.#candy.Request.end(result)
+    this.#odac.Request.header('Content-Type', 'text/html')
+    this.#odac.Request.end(result)
   }
 
   #parseCandyTag(content) {
@@ -221,15 +221,15 @@ class View {
       return ''
     })
 
-    // Parse <script:candy> tags (IDE-friendly JavaScript with backend execution)
-    content = content.replace(/<script:candy([^>]*)>([\s\S]*?)<\/script:candy>/g, (fullMatch, attributes, jsContent) => {
-      return `<candy:js>${jsContent}</candy:js>`
+    // Parse <script:odac> tags (IDE-friendly JavaScript with backend execution)
+    content = content.replace(/<script:odac([^>]*)>([\s\S]*?)<\/script:candy>/g, (fullMatch, attributes, jsContent) => {
+      return `<odac:js>${jsContent}</candy:js>`
     })
 
-    content = content.replace(/<candy:else\s*\/>/g, '<candy:else>')
-    content = content.replace(/<candy:elseif\s+([^>]*?)\/>/g, '<candy:elseif $1>')
+    content = content.replace(/<odac:else\s*\/>/g, '<odac:else>')
+    content = content.replace(/<odac:elseif\s+([^>]*?)\/>/g, '<odac:elseif $1>')
 
-    content = content.replace(/<candy([^>]*?)\/>/g, (fullMatch, attributes) => {
+    content = content.replace(/<odac([^>]*?)\/>/g, (fullMatch, attributes) => {
       attributes = attributes.trim()
 
       const attrs = {}
@@ -255,9 +255,9 @@ class View {
 
     let depth = 0
     let maxDepth = 10
-    while (depth < maxDepth && content.includes('<candy')) {
+    while (depth < maxDepth && content.includes('<odac')) {
       const before = content
-      content = content.replace(/<candy([^>]*)>((?:(?!<candy)[\s\S])*?)<\/candy>/g, (fullMatch, attributes, innerContent) => {
+      content = content.replace(/<odac([^>]*)>((?:(?!<odac)[\s\S])*?)<\/candy>/g, (fullMatch, attributes, innerContent) => {
         attributes = attributes.trim()
         innerContent = innerContent.trim()
 
@@ -322,20 +322,20 @@ class View {
     let content = fs.readFileSync(file, 'utf8')
 
     if (this.#cache[file]?.mtime !== mtime) {
-      content = Form.parse(content, this.#candy)
+      content = Form.parse(content, this.#odac)
 
       const jsBlocks = []
-      content = content.replace(/<script:candy([^>]*)>([\s\S]*?)<\/script:candy>/g, (match, attrs, jsContent) => {
-        const placeholder = `___CANDY_JS_BLOCK_${jsBlocks.length}___`
+      content = content.replace(/<script:odac([^>]*)>([\s\S]*?)<\/script:candy>/g, (match, attrs, jsContent) => {
+        const placeholder = `___ODAC_JS_BLOCK_${jsBlocks.length}___`
         jsBlocks.push(jsContent)
-        return `<script:candy${attrs}>${placeholder}</script:candy>`
+        return `<script:odac${attrs}>${placeholder}</script:odac>`
       })
 
       content = this.#parseCandyTag(content)
       content = content.replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
 
       jsBlocks.forEach((jsContent, index) => {
-        content = content.replace(`___CANDY_JS_BLOCK_${index}___`, jsContent)
+        content = content.replace(`___ODAC_JS_BLOCK_${index}___`, jsContent)
       })
 
       let result = 'html += `\n' + content + '\n`'
@@ -345,11 +345,11 @@ class View {
         let func = this.#functions[key]
         let matches = func.close
           ? result.match(new RegExp(`${key}[\\s\\S]*?${func.close}`, 'g'))
-          : result.match(new RegExp(`<candy:${key}(?:\\s+[^>]*?(?:"[^"]*"|'[^']*'|[^"'>])*)?>`, 'g'))
+          : result.match(new RegExp(`<odac:${key}(?:\\s+[^>]*?(?:"[^"]*"|'[^']*'|[^"'>])*)?>`, 'g'))
         if (!matches) continue
         for (let match of matches) {
           let matchForParsing = match
-          if (!func.close) matchForParsing = matchForParsing.replace(/^<candy:/, '').replace(/>$/, '')
+          if (!func.close) matchForParsing = matchForParsing.replace(/^<odac:/, '').replace(/>$/, '')
           const attrRegex = /(\w+)(?:=(["'])((?:(?!\2).)*)\2|=([^\s>]+))?/g
           let attrMatch
           const args = []
@@ -424,9 +424,9 @@ class View {
     }
     try {
       return await require(`${__dir}/${CACHE_DIR}/${Odac.View.cache[file].cache}`)(
-        this.#candy,
-        key => this.#candy.Request.get(key),
-        (...args) => this.#candy.Lang.get(...args)
+        this.#odac,
+        key => this.#odac.Request.get(key),
+        (...args) => this.#odac.Lang.get(...args)
       )
     } catch (e) {
       let stackLine = e.stack.split('\n')[1].match(/:(\d+):\d+/)
@@ -441,8 +441,8 @@ class View {
     if (args.length === 1 && typeof args[0] === 'object') for (let key in args[0]) this.#part[key] = args[0][key]
     else if (args.length === 2) this.#part[args[0]] = args[1]
 
-    if (!this.#candy.Request.page) {
-      this.#candy.Request.page = this.#part.content || this.#part.all || ''
+    if (!this.#odac.Request.page) {
+      this.#odac.Request.page = this.#part.content || this.#part.all || ''
     }
 
     this.#sendEarlyHintsIfAvailable()
@@ -463,7 +463,7 @@ class View {
     })
 
     const skeletonName = this.#part.skeleton || 'main'
-    const pageName = this.#candy.Request.page || ''
+    const pageName = this.#odac.Request.page || ''
 
     skeleton = skeleton.replace(/<html([^>]*)>/, (match, attrs) => {
       const updates = []
@@ -481,9 +481,9 @@ class View {
   }
 
   #sendEarlyHintsIfAvailable() {
-    if (this.#candy.Request.res.headersSent) return
+    if (this.#odac.Request.res.headersSent) return
 
-    const routePath = this.#candy.Request.req.url.split('?')[0]
+    const routePath = this.#odac.Request.req.url.split('?')[0]
     const viewPaths = []
 
     if (this.#part.skeleton) {
@@ -505,7 +505,7 @@ class View {
     }
 
     if (hints && hints.length > 0) {
-      this.#candy.Request.setEarlyHints(hints)
+      this.#odac.Request.setEarlyHints(hints)
     }
   }
 }

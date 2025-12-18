@@ -145,8 +145,8 @@ class Monitor {
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┘\n', 'gray')
     let shortcuts = '↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | Ctrl+C ' + __('Exit')
-    result += Odac.cli('Cli').color(' CANDYPACK', 'magenta', 'bold')
-    result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'CANDYPACK'.length, 'right'), 'gray')
+    result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
+    result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {
       this.#current = result
       process.stdout.write('\x1Bc')
@@ -401,8 +401,8 @@ class Monitor {
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┘\n', 'gray')
     let shortcuts = '↑/↓ ' + __('Navigate') + ' | Ctrl+C ' + __('Exit')
-    result += Odac.cli('Cli').color(' CANDYPACK', 'magenta', 'bold')
-    result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'CANDYPACK'.length, 'right'), 'gray')
+    result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
+    result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {
       this.#current = result
       process.stdout.clearLine(0)

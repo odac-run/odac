@@ -47,7 +47,7 @@ Candy.listen('/events', (data) => {
 
 ```javascript
 // Server
-Candy.Route.get('/dashboard/stats', async (Candy) => {
+Candy.Route.get('/dashboard/stats', async (Odac) => {
   Candy.stream((send) => {
     const interval = setInterval(async () => {
       const stats = await getServerStats()
@@ -72,7 +72,7 @@ Candy.listen('/dashboard/stats', (stats) => {
 
 ```javascript
 // Server
-Candy.Route.get('/notifications', async (Candy) => {
+Candy.Route.get('/notifications', async (Odac) => {
   const userId = await Candy.request('userId')
   
   Candy.stream((send) => {
@@ -90,7 +90,7 @@ Candy.listen('/notifications', (notification) => {
 
 ```javascript
 // Server
-Candy.Route.get('/build/logs', async (Candy) => {
+Candy.Route.get('/build/logs', async (Odac) => {
   Candy.stream(async function* () {
     for await (const log of getBuildLogs()) {
       yield { timestamp: Date.now(), message: log }

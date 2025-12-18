@@ -80,10 +80,10 @@ If no custom error page is defined, Odac will fall back to its built-in error re
 
 Error controllers receive the same Candy context as regular controllers, allowing you to:
 
-- Access request information (`Candy.request`)
-- Use database connections (`Candy.db`)
-- Render views with data (`Candy.view`)
-- Redirect users (`Candy.redirect`)
+- Access request information (`Odac.request`)
+- Use database connections (`Odac.db`)
+- Render views with data (`Odac.view`)
+- Redirect users (`Odac.redirect`)
 - Log error details for debugging
 
 ```javascript

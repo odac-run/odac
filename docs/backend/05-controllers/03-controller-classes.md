@@ -9,7 +9,7 @@ A controller class receives the `Candy` object in its constructor, giving you ac
 ```javascript
 // controller/User.js
 class User {
-  constructor(Candy) {
+  constructor(Odac) {
     this.Candy = Candy
   }
 
@@ -68,7 +68,7 @@ Candy.Route.post('/profile/update', 'User.updateProfile')
 Controller classes are automatically instantiated for each request and attached to the `Candy` object. You can access them from any controller:
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   // Access your User class
   const profile = await Candy.User.getProfile()
   

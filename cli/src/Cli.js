@@ -82,7 +82,7 @@ class Cli {
           args += ' <' + positionalArgs.join('> <') + '>'
         }
       }
-      let line = '\x1b[91mcandy ' + command + '\x1b[0m\x1b[90m' + args + '\x1b[0m : ' + __(obj.description)
+      let line = '\x1b[91modac ' + command + '\x1b[0m\x1b[90m' + args + '\x1b[0m : ' + __(obj.description)
       result += line
       line = line.split(':')[0]
       if (line.length > space) space = line.length
@@ -106,11 +106,11 @@ class Cli {
     if (typeof commands == 'string') {
       let obj = Odac.core('Commands')
       let command = commands.shift()
-      if (!obj[command]) return console.log(__(`'%s' is not a valid command.`, this.color(`candy ${commands.join(' ')}`, 'yellow')))
+      if (!obj[command]) return console.log(__(`'%s' is not a valid command.`, this.color(`odac ${commands.join(' ')}`, 'yellow')))
       obj = obj[command]
       while (commands.length > 0 && commands.length && obj.sub[commands[0]]) {
         command = commands.shift()
-        if (!obj.sub[command]) return console.log(__(`'%s' is not a valid command.`, this.color(`candy ${commands.join(' ')}`, 'yellow')))
+        if (!obj.sub[command]) return console.log(__(`'%s' is not a valid command.`, this.color(`odac ${commands.join(' ')}`, 'yellow')))
         obj = obj.sub[command]
       }
       let detail = await this.#detail(command, obj)
@@ -158,7 +158,7 @@ class Cli {
     if (args.length == 0) return this.#status()
     let command = args.shift()
     if (!Odac.core('Commands')[command])
-      return console.log(__(`'%s' is not a valid command.`, this.color(`candy ${cmds.join(' ')}`, 'yellow')))
+      return console.log(__(`'%s' is not a valid command.`, this.color(`odac ${cmds.join(' ')}`, 'yellow')))
     let action = Odac.core('Commands')[command]
     while (args.length > 0 && !action.args) {
       command = args.shift()

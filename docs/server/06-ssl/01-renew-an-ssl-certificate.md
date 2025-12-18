@@ -3,17 +3,17 @@ This command attempts to renew the SSL certificate for a given domain. This can 
 
 ### Interactive Usage
 ```bash
-candy ssl renew
+odac ssl renew
 ```
 After running the command, you will be prompted to enter the domain name for which you want to renew the SSL certificate.
 
 ### Single-Line Usage with Prefixes
 ```bash
 # Specify domain directly
-candy ssl renew -d example.com
+odac ssl renew -d example.com
 
 # Or use long form prefix
-candy ssl renew --domain example.com
+odac ssl renew --domain example.com
 ```
 
 ### Available Prefixes
@@ -21,13 +21,13 @@ candy ssl renew --domain example.com
 
 ### Interactive Example
 ```bash
-$ candy ssl renew
+$ odac ssl renew
 > Enter the domain name: example.com
 ```
 
 ### Single-Line Example
 ```bash
-$ candy ssl renew -d example.com
+$ odac ssl renew -d example.com
 ✓ SSL certificate renewal initiated for example.com
 ```
 

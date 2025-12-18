@@ -8,7 +8,7 @@ Create middleware files in the `middleware/` directory:
 
 ```javascript
 // middleware/auth.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   if (!await Candy.Auth.check()) {
     return Candy.direct('/login')  // Redirect to login
   }
@@ -18,8 +18,8 @@ module.exports = async (Candy) => {
 
 **Middleware Rules:**
 - Return `false` → Stop execution (403 Forbidden)
-- Return `Candy.abort(code)` → Stop with custom error code
-- Return `Candy.direct(url)` → Stop and redirect
+- Return `Odac.abort(code)` → Stop with custom error code
+- Return `Odac.direct(url)` → Stop and redirect
 - Return nothing or `true` → Continue to next middleware/controller
 
 ### Using Middleware
@@ -49,7 +49,7 @@ Candy.Route
 
 #### With Auth Routes
 
-`Candy.Route.auth` already requires authentication. You can add additional middleware on top:
+`Odac.Route.auth` already requires authentication. You can add additional middleware on top:
 
 ```javascript
 // Admin-only routes (requires login + admin role)
@@ -80,7 +80,7 @@ Candy.Route.auth
 #### Authentication
 ```javascript
 // middleware/auth.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   if (!await Candy.Auth.check()) {
     return Candy.direct('/login')
   }
@@ -90,7 +90,7 @@ module.exports = async (Candy) => {
 #### Admin Check
 ```javascript
 // middleware/admin.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   const user = await Candy.Auth.user()
   if (!user || user.role !== 'admin') {
     return false  // 403 Forbidden
@@ -101,7 +101,7 @@ module.exports = async (Candy) => {
 #### CORS Headers
 ```javascript
 // middleware/cors.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   Candy.Request.header('Access-Control-Allow-Origin', '*')
   Candy.Request.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE')
 }
@@ -113,7 +113,7 @@ module.exports = async (Candy) => {
 const requests = new Map()
 let lastCleanup = Date.now()
 
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   const ip = Candy.Request.ip
   const now = Date.now()
   const limit = 100
@@ -151,7 +151,7 @@ module.exports = async (Candy) => {
 #### Premium Check with View
 ```javascript
 // middleware/premium.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   const user = await Candy.Auth.user()
   
   if (!user.isPremium) {
@@ -166,7 +166,7 @@ module.exports = async (Candy) => {
 #### Logging
 ```javascript
 // middleware/logger.js
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   console.log(`${Candy.Request.method} ${Candy.Request.url}`)
 }
 ```
@@ -174,7 +174,7 @@ module.exports = async (Candy) => {
 #### Inline Middleware
 ```javascript
 Candy.Route
-  .use(async (Candy) => {
+  .use(async (Odac) => {
     console.log('Custom middleware')
   })
   .page('/special', 'special')

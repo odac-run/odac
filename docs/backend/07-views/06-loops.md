@@ -7,10 +7,10 @@ Loops allow you to repeat content for each item in an array or object. This is e
 The most common way to iterate over arrays and objects:
 
 ```html
-<candy:for in="users" key="index" value="user">
+<odac:for in="users" key="index" value="user">
   <div class="user-card">
-    <h3><candy var="user.name" /></h3>
-    <p><candy var="user.email" /></p>
+    <h3><odac var="user.name" /></h3>
+    <p><odac var="user.email" /></p>
   </div>
 </candy:for>
 ```
@@ -34,11 +34,11 @@ Candy.set('products', [
 ```html
 <!-- View -->
 <div class="products">
-  <candy:for in="products" key="index" value="product">
+  <odac:for in="products" key="index" value="product">
     <div class="product">
-      <span class="number"><candy var="index + 1" />.</span>
-      <h3><candy var="product.name" /></h3>
-      <p>$<candy var="product.price" /></p>
+      <span class="number"><odac var="index + 1" />.</span>
+      <h3><odac var="product.name" /></h3>
+      <p>$<odac var="product.price" /></p>
     </div>
   </candy:for>
 </div>
@@ -58,10 +58,10 @@ Candy.set('settings', {
 ```html
 <!-- View -->
 <table>
-  <candy:for in="settings" key="settingKey" value="settingValue">
+  <odac:for in="settings" key="settingKey" value="settingValue">
     <tr>
-      <td><candy var="settingKey" /></td>
-      <td><candy var="settingValue" /></td>
+      <td><odac var="settingKey" /></td>
+      <td><odac var="settingValue" /></td>
     </tr>
   </candy:for>
 </table>
@@ -76,8 +76,8 @@ Use while loops for conditional iteration:
   let counter = 0;
 </script:candy>
 
-<candy:while condition="counter < 5">
-  <p>Item <candy var="counter + 1" /></p>
+<odac:while condition="counter < 5">
+  <p>Item <odac var="counter + 1" /></p>
   <script:candy>counter++;</script:candy>
 </candy:while>
 ```
@@ -91,12 +91,12 @@ Use while loops for conditional iteration:
 Exit the loop early:
 
 ```html
-<candy:for in="products" value="product">
-  <candy:if condition="product.stock === 0">
+<odac:for in="products" value="product">
+  <odac:if condition="product.stock === 0">
     <p class="notice">Some products are out of stock</p>
-    <candy:break />
+    <odac:break />
   </candy:if>
-  <div><candy var="product.name" /></div>
+  <div><odac var="product.name" /></div>
 </candy:for>
 ```
 
@@ -105,14 +105,14 @@ Exit the loop early:
 Skip to the next iteration:
 
 ```html
-<candy:for in="users" value="user">
-  <candy:if condition="user.isBlocked">
-    <candy:continue />
+<odac:for in="users" value="user">
+  <odac:if condition="user.isBlocked">
+    <odac:continue />
   </candy:if>
   
   <div class="user">
-    <h3><candy var="user.name" /></h3>
-    <p><candy var="user.email" /></p>
+    <h3><odac var="user.name" /></h3>
+    <p><odac var="user.email" /></p>
   </div>
 </candy:for>
 ```
@@ -125,15 +125,15 @@ Skip to the next iteration:
 <div class="product-list">
   <h2>Our Products</h2>
   
-  <candy:for in="products" key="i" value="product">
+  <odac:for in="products" key="i" value="product">
     <div class="product-item">
-      <span class="number">#<candy var="i + 1" /></span>
-      <img src="<candy var="product.image" />" alt="<candy var="product.name" />">
-      <h3><candy var="product.name" /></h3>
-      <p class="price">$<candy var="product.price" /></p>
+      <span class="number">#<odac var="i + 1" /></span>
+      <img src="<odac var="product.image" />" alt="<odac var="product.name" />">
+      <h3><odac var="product.name" /></h3>
+      <p class="price">$<odac var="product.price" /></p>
       
-      <candy:if condition="product.discount">
-        <span class="discount">-<candy var="product.discount" />%</span>
+      <odac:if condition="product.discount">
+        <span class="discount">-<odac var="product.discount" />%</span>
       </candy:if>
     </div>
   </candy:for>
@@ -154,16 +154,16 @@ Skip to the next iteration:
     </tr>
   </thead>
   <tbody>
-    <candy:for in="users" key="index" value="user">
+    <odac:for in="users" key="index" value="user">
       <tr>
-        <td><candy var="index + 1" /></td>
-        <td><candy var="user.name" /></td>
-        <td><candy var="user.email" /></td>
-        <td><candy var="user.role" /></td>
+        <td><odac var="index + 1" /></td>
+        <td><odac var="user.name" /></td>
+        <td><odac var="user.email" /></td>
+        <td><odac var="user.role" /></td>
         <td>
-          <candy:if condition="user.isActive">
+          <odac:if condition="user.isActive">
             <span class="badge success">Active</span>
-          <candy:else>
+          <odac:else>
             <span class="badge danger">Inactive</span>
           </candy:if>
         </td>
@@ -177,15 +177,15 @@ Skip to the next iteration:
 
 ```html
 <div class="categories">
-  <candy:for in="categories" value="category">
+  <odac:for in="categories" value="category">
     <div class="category">
-      <h2><candy var="category.name" /></h2>
+      <h2><odac var="category.name" /></h2>
       
       <div class="products">
-        <candy:for in="category.products" value="product">
+        <odac:for in="category.products" value="product">
           <div class="product">
-            <h3><candy var="product.name" /></h3>
-            <p>$<candy var="product.price" /></p>
+            <h3><odac var="product.name" /></h3>
+            <p>$<odac var="product.price" /></p>
           </div>
         </candy:for>
       </div>
@@ -198,14 +198,14 @@ Skip to the next iteration:
 
 ```html
 <div class="grid">
-  <candy:for in="items" key="i" value="item">
+  <odac:for in="items" key="i" value="item">
     <div class="grid-item">
-      <img src="<candy var="item.image" />" alt="<candy var="item.title" />">
-      <h3><candy var="item.title" /></h3>
-      <p><candy var="item.description" /></p>
+      <img src="<odac var="item.image" />" alt="<odac var="item.title" />">
+      <h3><odac var="item.title" /></h3>
+      <p><odac var="item.description" /></p>
       
       <!-- Add row break every 3 items -->
-      <candy:if condition="(i + 1) % 3 === 0">
+      <odac:if condition="(i + 1) % 3 === 0">
         <div class="row-break"></div>
       </candy:if>
     </div>
@@ -219,20 +219,20 @@ Skip to the next iteration:
 <div class="active-users">
   <h2>Active Users</h2>
   
-  <candy:for in="users" value="user">
+  <odac:for in="users" value="user">
     <!-- Skip inactive users -->
-    <candy:if condition="!user.isActive">
-      <candy:continue />
+    <odac:if condition="!user.isActive">
+      <odac:continue />
     </candy:if>
     
     <!-- Skip blocked users -->
-    <candy:if condition="user.isBlocked">
-      <candy:continue />
+    <odac:if condition="user.isBlocked">
+      <odac:continue />
     </candy:if>
     
     <div class="user-card">
-      <h3><candy var="user.name" /></h3>
-      <p><candy var="user.email" /></p>
+      <h3><odac var="user.name" /></h3>
+      <p><odac var="user.email" /></p>
     </div>
   </candy:for>
 </div>
@@ -244,16 +244,16 @@ Skip to the next iteration:
 <div class="products-section">
   <h2>Products</h2>
   
-  <candy:if condition="products && products.length > 0">
+  <odac:if condition="products && products.length > 0">
     <div class="products-grid">
-      <candy:for in="products" value="product">
+      <odac:for in="products" value="product">
         <div class="product-card">
-          <h3><candy var="product.name" /></h3>
-          <p>$<candy var="product.price" /></p>
+          <h3><odac var="product.name" /></h3>
+          <p>$<odac var="product.price" /></p>
         </div>
       </candy:for>
     </div>
-  <candy:else>
+  <odac:else>
     <div class="empty-state">
       <p>No products found.</p>
       <a href="/products/add">Add your first product</a>
@@ -266,10 +266,10 @@ Skip to the next iteration:
 
 ```html
 <table>
-  <candy:for in="items" key="i" value="item">
-    <tr class="<candy:if condition="i % 2 === 0">even<candy:else>odd</candy:if>">
-      <td><candy var="item.name" /></td>
-      <td><candy var="item.value" /></td>
+  <odac:for in="items" key="i" value="item">
+    <tr class="<odac:if condition="i % 2 === 0">even<odac:else>odd</candy:if>">
+      <td><odac var="item.name" /></td>
+      <td><odac var="item.value" /></td>
     </tr>
   </candy:for>
 </table>
@@ -285,14 +285,14 @@ Skip to the next iteration:
     let count = 0;
   </script:candy>
   
-  <candy:for in="products" value="product">
-    <candy:if condition="count >= 5">
-      <candy:break />
+  <odac:for in="products" value="product">
+    <odac:if condition="count >= 5">
+      <odac:break />
     </candy:if>
     
     <div class="product">
-      <h3><candy var="product.name" /></h3>
-      <p>$<candy var="product.price" /></p>
+      <h3><odac var="product.name" /></h3>
+      <p>$<odac var="product.price" /></p>
     </div>
     
     <script:candy>count++;</script:candy>
@@ -312,9 +312,9 @@ Skip to the next iteration:
 </script:candy>
 
 <div class="items">
-  <candy:while condition="index < endIndex && index < items.length">
+  <odac:while condition="index < endIndex && index < items.length">
     <div class="item">
-      <candy var="items[index].name" />
+      <odac var="items[index].name" />
     </div>
     <script:candy>index++;</script:candy>
   </candy:while>
@@ -337,17 +337,17 @@ Candy.set('activeUsers', users.filter(u => u.isActive))
 
 ```html
 <!-- View - simple loop -->
-<candy:for in="activeUsers" value="user">
-  <div><candy var="user.name" /></div>
+<odac:for in="activeUsers" value="user">
+  <div><odac var="user.name" /></div>
 </candy:for>
 ```
 
 **Avoid:**
 ```html
 <!-- Too complex for a view -->
-<candy:for in="users" value="user">
-  <candy:if condition="user.isActive && !user.isBlocked && user.role !== 'guest'">
-    <div><candy var="user.name" /></div>
+<odac:for in="users" value="user">
+  <odac:if condition="user.isActive && !user.isBlocked && user.role !== 'guest'">
+    <div><odac var="user.name" /></div>
   </candy:if>
 </candy:for>
 ```

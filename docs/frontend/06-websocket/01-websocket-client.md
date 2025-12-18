@@ -1,6 +1,6 @@
 # WebSocket Client
 
-candy.js provides a simple WebSocket client with automatic reconnection and cross-tab sharing support.
+odac.js provides a simple WebSocket client with automatic reconnection and cross-tab sharing support.
 
 ## Basic Usage
 
@@ -32,7 +32,7 @@ const ws = Candy.ws('/chat', {
 
 ## CSRF Token Protection
 
-By default, candy.js automatically sends a CSRF token during the WebSocket handshake (similar to AJAX requests). The token is sent via the `Sec-WebSocket-Protocol` header.
+By default, odac.js automatically sends a CSRF token during the WebSocket handshake (similar to AJAX requests). The token is sent via the `Sec-WebSocket-Protocol` header.
 
 **Disable token (for public WebSockets):**
 ```javascript
@@ -40,7 +40,7 @@ const ws = Candy.ws('/public', {token: false})
 ```
 
 **How it works:**
-1. Client calls `Candy.token()` to get current CSRF token
+1. Client calls `Odac.token()` to get current CSRF token
 2. Token is sent as `candy-token-{token}` in WebSocket protocol header
 3. Server validates token before accepting connection
 4. If invalid, connection closes with code `4002`

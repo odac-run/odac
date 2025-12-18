@@ -21,8 +21,8 @@ describe('Subdomain', () => {
     setupGlobalMocks()
 
     // Set up the Log mock before requiring Subdomain
-    const {mockCandy} = require('./__mocks__/globalCandy')
-    mockCandy.setMock('core', 'Log', {
+    const {mockOdac} = require('./__mocks__/globalOdac')
+    mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError

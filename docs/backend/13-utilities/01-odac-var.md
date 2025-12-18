@@ -1,6 +1,6 @@
 ## 🔧 Candy.Var - String Manipulation & Validation
 
-`Candy.Var` is a powerful utility class for string manipulation, validation, encryption, and formatting. It provides a chainable, fluent interface for common string operations.
+`Odac.Var` is a powerful utility class for string manipulation, validation, encryption, and formatting. It provides a chainable, fluent interface for common string operations.
 
 ### Basic Usage
 
@@ -67,7 +67,7 @@ Candy.Var('example.com').isAny('email', 'domain')       // true
 
 ```javascript
 // Controller validation
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const email = Candy.Request.post('email')
   
   if (!Candy.Var(email).is('email')) {
@@ -285,7 +285,7 @@ Candy.Var(jsonData).save('/path/to/nested/dir/data.json')
 #### User Registration with Validation
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const email = Candy.Request.post('email')
   const password = Candy.Request.post('password')
   const username = Candy.Request.post('username')
@@ -327,7 +327,7 @@ module.exports = async function(Candy) {
 #### Login with Password Verification
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const email = Candy.Request.post('email')
   const password = Candy.Request.post('password')
   
@@ -362,7 +362,7 @@ module.exports = async function(Candy) {
 #### URL Slug Generation
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const title = Candy.Request.post('title')
   
   // Create URL-friendly slug
@@ -394,7 +394,7 @@ module.exports = async function(Candy) {
 #### Template Variable Replacement
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const user = await Candy.Auth.user()
   
   // Email template
@@ -430,7 +430,7 @@ module.exports = async function(Candy) {
 #### Phone Number Formatting
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const phone = Candy.Request.post('phone')
   
   // Remove all non-numeric characters
@@ -457,7 +457,7 @@ module.exports = async function(Candy) {
 #### Data Encryption for Storage
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const creditCard = Candy.Request.post('credit_card')
   
   // Encrypt sensitive data
@@ -473,7 +473,7 @@ module.exports = async function(Candy) {
 }
 
 // Later, to retrieve and decrypt
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const payment = await Candy.Mysql.table('payments')
     .where('user_id', Candy.Auth.id())
     .first()
@@ -498,7 +498,7 @@ module.exports = async function(Candy) {
 
 ### Notes
 
-- `Candy.Var()` returns the processed string value, not a Var instance (except for chaining)
+- `Odac.Var()` returns the processed string value, not a Var instance (except for chaining)
 - Encryption uses AES-256-CBC with a fixed IV
 - BCrypt hashing is one-way and cannot be decrypted
 - Date formatting works with any valid JavaScript date string

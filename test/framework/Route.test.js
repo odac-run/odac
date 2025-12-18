@@ -19,7 +19,7 @@ describe('Route', () => {
 
   describe('check - token request', () => {
     it('should handle token request with undefined route gracefully', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -45,17 +45,17 @@ describe('Route', () => {
 
       route.routes = {}
 
-      const result = await route.check(mockCandy)
+      const result = await route.check(mockOdac)
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token')
       expect(result.page).toBeUndefined()
-      expect(mockCandy.Request.header).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'http://example.com')
-      expect(mockCandy.Request.header).toHaveBeenCalledWith('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+      expect(mockOdac.Request.header).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'http://example.com')
+      expect(mockOdac.Request.header).toHaveBeenCalledWith('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
     })
 
     it('should handle token request with route but no page defined', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -83,7 +83,7 @@ describe('Route', () => {
         test_route: {}
       }
 
-      const result = await route.check(mockCandy)
+      const result = await route.check(mockOdac)
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token-2')
@@ -91,7 +91,7 @@ describe('Route', () => {
     })
 
     it('should handle token request with route and page but no url match', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -123,7 +123,7 @@ describe('Route', () => {
         }
       }
 
-      const result = await route.check(mockCandy)
+      const result = await route.check(mockOdac)
 
       expect(result).toBeDefined()
       expect(result.token).toBe('test-token-3')
@@ -131,7 +131,7 @@ describe('Route', () => {
     })
 
     it('should not return token when referer does not match', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -162,13 +162,13 @@ describe('Route', () => {
         }
       }
 
-      await route.check(mockCandy)
+      await route.check(mockOdac)
 
-      expect(mockCandy.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
+      expect(mockOdac.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
     })
 
     it('should not return token when client cookie does not match', async () => {
-      const mockCandy = {
+      const mockOdac = {
         Request: {
           url: '/',
           method: 'get',
@@ -199,9 +199,9 @@ describe('Route', () => {
         }
       }
 
-      await route.check(mockCandy)
+      await route.check(mockOdac)
 
-      expect(mockCandy.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
+      expect(mockOdac.Request.header).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String))
     })
   })
 

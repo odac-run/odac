@@ -5,9 +5,9 @@ Odac provides built-in internationalization (i18n) support, allowing you to crea
 ### Basic Translation
 
 ```html
-<candy translate>Welcome</candy>
-<candy translate>Hello World</candy>
-<candy translate>Login</candy>
+<odac translate>Welcome</odac>
+<odac translate>Hello World</odac>
+<odac translate>Login</odac>
 ```
 
 The text inside the tag is used as the translation key. Odac looks up this key in your locale files.
@@ -45,10 +45,10 @@ locale/
 
 ### Translations with Placeholders
 
-Use nested `<candy>` tags to insert dynamic values:
+Use nested `<odac>` tags to insert dynamic values:
 
 ```html
-<candy translate>Hello <candy var="user.name" /></candy>
+<odac translate>Hello <odac var="user.name" /></odac>
 ```
 
 **How it works:**
@@ -67,9 +67,9 @@ Use nested `<candy>` tags to insert dynamic values:
 ### Multiple Placeholders
 
 ```html
-<candy translate>
-  <candy var="user.firstName" /> <candy var="user.lastName" />
-</candy>
+<odac translate>
+  <odac var="user.firstName" /> <odac var="user.lastName" />
+</odac>
 ```
 
 This creates the key `%s1 %s2` and replaces both placeholders.
@@ -85,7 +85,7 @@ This creates the key `%s1 %s2` and replaces both placeholders.
 ### String Literals in Translations
 
 ```html
-<candy translate>Hello <candy>John</candy>, how are you?</candy>
+<odac translate>Hello <odac>John</odac>, how are you?</odac>
 ```
 
 **Locale file:**
@@ -102,11 +102,11 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 
 ```html
 <!-- Normal translation (HTML will be encoded) -->
-<candy translate>Click <a href="/help">here</a> for help</candy>
+<odac translate>Click <a href="/help">here</a> for help</odac>
 <!-- Output: Click &lt;a href="/help"&gt;here&lt;/a&gt; for help -->
 
 <!-- Raw translation (HTML preserved) -->
-<candy translate raw>Click <a href="/help">here</a> for help</candy>
+<odac translate raw>Click <a href="/help">here</a> for help</odac>
 <!-- Output: Click <a href="/help">here</a> for help -->
 ```
 
@@ -121,9 +121,9 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 ### Raw Translations with Placeholders
 
 ```html
-<candy translate raw>
-  Welcome <strong><candy var="user.name" /></strong>!
-</candy>
+<odac translate raw>
+  Welcome <strong><odac var="user.name" /></strong>!
+</odac>
 ```
 
 **Locale file:**
@@ -140,10 +140,10 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 
 ```html
 <nav>
-  <a href="/"><candy translate>Home</candy></a>
-  <a href="/products"><candy translate>Products</candy></a>
-  <a href="/about"><candy translate>About Us</candy></a>
-  <a href="/contact"><candy translate>Contact</candy></a>
+  <a href="/"><odac translate>Home</odac></a>
+  <a href="/products"><odac translate>Products</odac></a>
+  <a href="/about"><odac translate>About Us</odac></a>
+  <a href="/contact"><odac translate>Contact</odac></a>
 </nav>
 ```
 
@@ -152,10 +152,10 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 ```html
 <div class="welcome">
   <h1>
-    <candy translate>Welcome back, <candy var="user.name" />!</candy>
+    <odac translate>Welcome back, <odac var="user.name" />!</odac>
   </h1>
   <p>
-    <candy translate>You have <candy var="notifications.length" /> new notifications</candy>
+    <odac translate>You have <odac var="notifications.length" /> new notifications</odac>
   </p>
 </div>
 ```
@@ -175,21 +175,21 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 ```html
 <form>
   <div class="form-group">
-    <label><candy translate>Email Address</candy></label>
-    <input type="email" name="email" placeholder="<candy translate>Enter your email</candy>">
+    <label><odac translate>Email Address</odac></label>
+    <input type="email" name="email" placeholder="<odac translate>Enter your email</odac>">
   </div>
   
   <div class="form-group">
-    <label><candy translate>Password</candy></label>
-    <input type="password" name="password" placeholder="<candy translate>Enter your password</candy>">
+    <label><odac translate>Password</odac></label>
+    <input type="password" name="password" placeholder="<odac translate>Enter your password</odac>">
   </div>
   
   <button type="submit">
-    <candy translate>Login</candy>
+    <odac translate>Login</odac>
   </button>
   
   <a href="/forgot-password">
-    <candy translate>Forgot your password?</candy>
+    <odac translate>Forgot your password?</odac>
   </a>
 </form>
 ```
@@ -198,24 +198,24 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 
 ```html
 <div class="product">
-  <h2><candy var="product.name" /></h2>
+  <h2><odac var="product.name" /></h2>
   
   <p class="price">
-    <candy translate>Price: $<candy var="product.price" /></candy>
+    <odac translate>Price: $<odac var="product.price" /></odac>
   </p>
   
-  <candy:if condition="product.stock > 0">
+  <odac:if condition="product.stock > 0">
     <p class="stock">
-      <candy translate><candy var="product.stock" /> units in stock</candy>
+      <odac translate><odac var="product.stock" /> units in stock</odac>
     </p>
-  <candy:else>
+  <odac:else>
     <p class="out-of-stock">
-      <candy translate>Out of stock</candy>
+      <odac translate>Out of stock</odac>
     </p>
   </candy:if>
   
   <button>
-    <candy translate>Add to Cart</candy>
+    <odac translate>Add to Cart</odac>
   </button>
 </div>
 ```
@@ -237,14 +237,14 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 #### Error Messages
 
 ```html
-<candy:if condition="errors">
+<odac:if condition="errors">
   <div class="error-box">
-    <candy:if condition="errors.email">
-      <p><candy translate>Invalid email address</candy></p>
+    <odac:if condition="errors.email">
+      <p><odac translate>Invalid email address</odac></p>
     </candy:if>
     
-    <candy:if condition="errors.password">
-      <p><candy translate>Password must be at least 8 characters</candy></p>
+    <odac:if condition="errors.password">
+      <p><odac translate>Password must be at least 8 characters</odac></p>
     </candy:if>
   </div>
 </candy:if>
@@ -254,11 +254,11 @@ By default, translations are HTML-escaped for security. Use `raw` attribute when
 
 ```html
 <div class="notice">
-  <candy translate raw>
+  <odac translate raw>
     By clicking "Register", you agree to our 
     <a href="/terms">Terms of Service</a> and 
     <a href="/privacy">Privacy Policy</a>.
-  </candy>
+  </odac>
 </div>
 ```
 
@@ -276,7 +276,7 @@ The language is typically set based on user preference or browser settings. You 
 
 ```javascript
 // Controller
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   // Set language from user preference
   const userLang = Candy.Auth.check() 
     ? Candy.Auth.user().language 
@@ -297,7 +297,7 @@ module.exports = async function(Candy) {
 You can also use translations in your controllers:
 
 ```javascript
-module.exports = async function(Candy) {
+module.exports = async function(Odac) {
   const message = Candy.__('Welcome back, %s!', user.name)
   
   Candy.set('message', message)
@@ -338,10 +338,10 @@ module.exports = async function(Candy) {
 #### Pluralization
 
 ```html
-<candy:if condition="count === 1">
-  <candy translate><candy var="count" /> item</candy>
-<candy:else>
-  <candy translate><candy var="count" /> items</candy>
+<odac:if condition="count === 1">
+  <odac translate><odac var="count" /> item</odac>
+<odac:else>
+  <odac translate><odac var="count" /> items</odac>
 </candy:if>
 ```
 
@@ -354,5 +354,5 @@ Candy.set('date', formattedDate)
 ```
 
 ```html
-<p><candy translate>Last updated: <candy var="date" /></candy></p>
+<p><odac translate>Last updated: <odac var="date" /></odac></p>
 ```

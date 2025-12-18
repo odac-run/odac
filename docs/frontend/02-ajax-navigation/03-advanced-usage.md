@@ -75,7 +75,7 @@ Candy.action({
 Define all parts in your controller:
 
 ```javascript
-module.exports = function(Candy) {
+module.exports = function(Odac) {
   Candy.View.skeleton('main')
   Candy.View.set({
     header: 'main',
@@ -283,7 +283,7 @@ Gracefully handle navigation errors:
 
 ```javascript
 // Override Candy.load to add error handling
-const originalLoad = Candy.load.bind(Candy)
+const originalLoad = Candy.load.bind(Odac)
 
 Candy.load = function(url, callback, push) {
   try {
@@ -362,7 +362,7 @@ Candy.action({
         // Prefetch the page
         fetch(url, {
           headers: {
-            'X-Candy': 'prefetch'
+            'X-Odac': 'prefetch'
           }
         }).then(response => response.text())
           .then(html => {
@@ -516,4 +516,4 @@ Candy.action({
 
 - Learn about [Form Handling](../03-forms/01-form-handling.md)
 - Explore [API Requests](../04-api-requests/01-get-post.md)
-- Check [candy.js Overview](../01-overview/01-introduction.md)
+- Check [odac.js Overview](../01-overview/01-introduction.md)

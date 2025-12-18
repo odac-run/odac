@@ -145,5 +145,5 @@ const ws = Candy.ws('/chat', {shared: true})
 
 // In Chrome DevTools:
 // chrome://inspect/#workers
-// You'll see "candy-ws-/chat" if shared
+// You'll see "odac-ws-/chat" if shared
 ```

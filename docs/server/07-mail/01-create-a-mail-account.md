@@ -3,17 +3,17 @@ This command allows you to create a new email account.
 
 ### Interactive Usage
 ```bash
-candy mail create
+odac mail create
 ```
 You will be prompted to enter the new email address and a password for the account.
 
 ### Single-Line Usage with Prefixes
 ```bash
 # Specify email and password directly
-candy mail create -e user@example.com -p mypassword
+odac mail create -e user@example.com -p mypassword
 
 # Or use long form prefixes
-candy mail create --email user@example.com --password mypassword
+odac mail create --email user@example.com --password mypassword
 ```
 
 ### Available Prefixes

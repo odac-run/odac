@@ -17,7 +17,7 @@ On top of that, `Candy` has some quick-and-easy helper functions:
 Odac provides memory-safe timer functions that automatically clean up when the request ends:
 
 ```javascript
-module.exports = async (Candy) => {
+module.exports = async (Odac) => {
   // ✅ Automatically cleaned up when request ends
   Candy.setInterval(() => {
     console.log('This will stop when the request ends')

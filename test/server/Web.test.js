@@ -23,7 +23,7 @@ const path = require('path')
 const tls = require('tls')
 
 // Import test utilities
-const {mockCandy, mockLangGet} = require('./__mocks__/globalCandy')
+const {mockOdac, mockLangGet} = require('./__mocks__/globalOdac')
 const {createMockRequest, createMockResponse} = require('./__mocks__/testFactories')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
 
@@ -39,8 +39,8 @@ describe('Web', () => {
     jest.clearAllMocks()
 
     // Setup global Odac mock
-    mockCandy.resetMocks()
-    mockConfig = mockCandy.core('Config')
+    mockOdac.resetMocks()
+    mockConfig = mockOdac.core('Config')
 
     // Initialize config structure
     mockConfig.config = {
@@ -56,28 +56,28 @@ describe('Web', () => {
       info: jest.fn(),
       debug: jest.fn()
     }
-    mockCandy.setMock('server', 'Log', {
+    mockOdac.setMock('server', 'Log', {
       init: jest.fn().mockReturnValue(mockLogInstance)
     })
     mockLog = mockLogInstance.log
 
     // Setup Api mock
-    mockCandy.setMock('server', 'Api', {
+    mockOdac.setMock('server', 'Api', {
       result: jest.fn((success, message) => ({success, message}))
     })
 
     // Setup DNS mock with default methods
-    mockCandy.setMock('server', 'DNS', {
+    mockOdac.setMock('server', 'DNS', {
       record: jest.fn(),
       ip: '127.0.0.1'
     })
 
     // Setup Process mock
-    mockCandy.setMock('core', 'Process', {
+    mockOdac.setMock('core', 'Process', {
       stop: jest.fn()
     })
 
-    global.Odac = mockCandy
+    global.Odac = mockOdac
     global.__ = jest.fn((key, ...args) => {
       // Simple mock translation function
       let result = key
@@ -183,7 +183,7 @@ describe('Web', () => {
 
       await Web.init()
 
-      expect(mockConfig.config.web.path).toBe('/home/user/Candypack/')
+      expect(mockConfig.config.web.path).toBe('/home/user/Odac/')
 
       // Test Windows platform
       os.platform.mockReturnValue('win32')
@@ -191,7 +191,7 @@ describe('Web', () => {
 
       await Web.init()
 
-      expect(mockConfig.config.web.path).toBe('/home/user/Candypack/')
+      expect(mockConfig.config.web.path).toBe('/home/user/Odac/')
     })
 
     test('should create web directory if it does not exist', async () => {
@@ -454,8 +454,8 @@ describe('Web', () => {
         record: jest.fn(),
         ip: '192.168.1.1'
       }
-      mockCandy.setMock('server', 'DNS', mockDNS)
-      mockCandy.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'DNS', mockDNS)
+      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
       Web.create(domain, mockProgress)
 
@@ -477,8 +477,8 @@ describe('Web', () => {
     test('should not setup DNS records for localhost', () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
-      mockCandy.setMock('server', 'DNS', mockDNS)
-      mockCandy.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'DNS', mockDNS)
+      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
       Web.create('localhost', mockProgress)
 
@@ -488,8 +488,8 @@ describe('Web', () => {
     test('should not setup DNS records for IP addresses', () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
-      mockCandy.setMock('server', 'DNS', mockDNS)
-      mockCandy.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'DNS', mockDNS)
+      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
       Web.create('192.168.1.1', mockProgress)
 
@@ -895,7 +895,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       const startSpy = jest.spyOn(Web, 'start')
 
@@ -985,7 +985,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       const result = await Web.delete(domain)
 
@@ -1057,7 +1057,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       Web.stopAll()
 
@@ -1073,7 +1073,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       expect(() => Web.stopAll()).not.toThrow()
       expect(mockProcess.stop).not.toHaveBeenCalled()
@@ -1089,7 +1089,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       Web.stopAll()
 
@@ -1372,7 +1372,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       const result = await Web.delete('example.com')
 
@@ -1470,7 +1470,7 @@ describe('Web', () => {
       const mockProcess = {
         stop: jest.fn()
       }
-      mockCandy.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('core', 'Process', mockProcess)
 
       Web.stopAll()
 
