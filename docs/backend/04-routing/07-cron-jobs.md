@@ -1,6 +1,6 @@
 # Cron Jobs
 
-The CandyPack framework provides a built-in cron system for running automated tasks. This system checks every minute and executes jobs based on specified conditions.
+The Odac framework provides a built-in cron system for running automated tasks. This system checks every minute and executes jobs based on specified conditions.
 
 ## Basic Usage
 

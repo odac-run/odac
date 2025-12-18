@@ -4,7 +4,7 @@ Once you've processed the request, it's time to send something back. You've got 
 
 #### The Simple Way: Just Return It!
 
-For many cases, you can just `return` a value from your controller. CandyPack is smart enough to figure out what to do.
+For many cases, you can just `return` a value from your controller. Odac is smart enough to figure out what to do.
 
 ```javascript
 // Return some HTML

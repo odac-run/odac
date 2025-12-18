@@ -5,7 +5,7 @@ describe('Route', () => {
 
   beforeEach(() => {
     route = new Route()
-    global.Candy = {
+    global.Odac = {
       Route: {},
       Config: {}
     }
@@ -13,7 +13,7 @@ describe('Route', () => {
   })
 
   afterEach(() => {
-    delete global.Candy
+    delete global.Odac
     delete global.__dir
   })
 
@@ -28,16 +28,17 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
-          })
+          }),
+          abort: jest.fn()
         },
         token: jest.fn(() => 'test-token')
       }
@@ -63,16 +64,17 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'https://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
-          })
+          }),
+          abort: jest.fn()
         },
         token: jest.fn(() => 'test-token-2')
       }
@@ -98,16 +100,17 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
-          })
+          }),
+          abort: jest.fn()
         },
         token: jest.fn(() => 'test-token-3')
       }
@@ -137,14 +140,14 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://malicious.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'test-client'
+            if (key === 'odac_client') return 'test-client'
             return null
           }),
           abort: jest.fn()
@@ -174,14 +177,14 @@ describe('Route', () => {
           host: 'example.com',
           header: jest.fn(key => {
             const headers = {
-              'X-Candy': 'token',
+              'X-Odac': 'token',
               Referer: 'http://example.com/',
-              'X-Candy-Client': 'test-client'
+              'X-Odac-Client': 'test-client'
             }
             return headers[key]
           }),
           cookie: jest.fn(key => {
-            if (key === 'candy_client') return 'different-client'
+            if (key === 'odac_client') return 'different-client'
             return null
           }),
           abort: jest.fn()
@@ -204,7 +207,7 @@ describe('Route', () => {
 
   describe('set', () => {
     it('should register a route with function handler', () => {
-      global.Candy.Route.buff = 'test_route'
+      global.Odac.Route.buff = 'test_route'
       const handler = jest.fn()
 
       route.set('get', '/test', handler)
@@ -217,7 +220,7 @@ describe('Route', () => {
     })
 
     it('should handle array of methods', () => {
-      global.Candy.Route.buff = 'test_route'
+      global.Odac.Route.buff = 'test_route'
       const handler = jest.fn()
 
       route.set(['get', 'post'], '/test', handler)
@@ -227,7 +230,7 @@ describe('Route', () => {
     })
 
     it('should strip trailing slash from url', () => {
-      global.Candy.Route.buff = 'test_route'
+      global.Odac.Route.buff = 'test_route'
       const handler = jest.fn()
 
       route.set('get', '/test/', handler)

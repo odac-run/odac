@@ -1,3 +1,3 @@
-require('../core/Candy.js')
+require('../core/Odac.js')
 
-Candy.cli('Cli')
+Odac.cli('Cli')

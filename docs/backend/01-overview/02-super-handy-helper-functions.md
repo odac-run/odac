@@ -14,7 +14,7 @@ On top of that, `Candy` has some quick-and-easy helper functions:
 
 ### Memory-Safe Timers
 
-CandyPack provides memory-safe timer functions that automatically clean up when the request ends:
+Odac provides memory-safe timer functions that automatically clean up when the request ends:
 
 ```javascript
 module.exports = async (Candy) => {

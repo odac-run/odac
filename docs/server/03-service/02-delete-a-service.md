@@ -1,6 +1,6 @@
 ## 🗑️ Delete a Service
 
-This command removes a running service from CandyPack's monitoring and stops its execution.
+This command removes a running service from Odac's monitoring and stops its execution.
 
 ### Interactive Usage
 ```bash
@@ -44,5 +44,5 @@ $ candy service delete -i my-api-service
 ### Important Notes
 - Deleting a service stops its execution immediately
 - The service will no longer be monitored or automatically restarted
-- This does not delete the source code files, only removes the service from CandyPack
+- This does not delete the source code files, only removes the service from Odac
 - You can restart the same service later using `candy run <file>`

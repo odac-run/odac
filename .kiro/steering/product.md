@@ -1,12 +1,12 @@
-# CandyPack Product Overview
+# Odac Product Overview
 
-CandyPack is a next-generation server and framework toolkit that combines hosting infrastructure with a web development framework. It's designed as a lightweight, zero-config solution for building and deploying modern web applications.
+Odac is a next-generation server and framework toolkit that combines hosting infrastructure with a web development framework. It's designed as a lightweight, zero-config solution for building and deploying modern web applications.
 
 ## Core Components
 
 - **Server**: Full-featured hosting platform with DNS, SSL, mail server (IMAP/SMTP), and multi-domain support
 - **Backend**: Web application framework with routing, authentication, CSRF protection, and internationalization
-- **Frontend**: Client-side framework (candy.js) with AJAX navigation, form handling, and API requests
+- **Frontend**: Client-side framework (odac.js) with AJAX navigation, form handling, and API requests
 - **CLI**: Command-line interface for server management and deployment
 - **Watchdog**: Process monitoring and management system
 

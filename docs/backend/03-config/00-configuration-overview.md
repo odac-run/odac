@@ -1,6 +1,6 @@
 ## ⚙️ Configuration Overview
 
-CandyPack uses a simple and flexible configuration system based on `config.json` and optional `.env` files. You can choose the approach that best fits your needs.
+Odac uses a simple and flexible configuration system based on `config.json` and optional `.env` files. You can choose the approach that best fits your needs.
 
 ### Configuration Files
 

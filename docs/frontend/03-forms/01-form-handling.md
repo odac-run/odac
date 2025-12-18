@@ -1,6 +1,6 @@
 # Form Handling with candy.js
 
-Learn how to handle forms with automatic AJAX submission, CSRF protection, and validation in CandyPack.
+Learn how to handle forms with automatic AJAX submission, CSRF protection, and validation in Odac.
 
 ## Quick Start
 

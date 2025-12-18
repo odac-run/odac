@@ -1,6 +1,6 @@
 # WebSocket Overview
 
-CandyPack provides built-in WebSocket support with automatic reconnection and cross-tab sharing capabilities.
+Odac provides built-in WebSocket support with automatic reconnection and cross-tab sharing capabilities.
 
 ## Quick Start
 
@@ -44,7 +44,7 @@ Support for dynamic route parameters like `/room/{id}`.
 
 ```
 Browser Tab 1 ─┐
-Browser Tab 2 ─┼─> SharedWorker ─> WebSocket ─> CandyPack Server ─> Your Handler
+Browser Tab 2 ─┼─> SharedWorker ─> WebSocket ─> Odac Server ─> Your Handler
 Browser Tab 3 ─┘
 ```
 

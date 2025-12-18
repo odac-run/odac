@@ -10,7 +10,7 @@ mockCandy.setMock('core', 'Log', {
   })
 })
 
-global.Candy = mockCandy
+global.Odac = mockCandy
 
 jest.mock('axios')
 const axios = require('axios')

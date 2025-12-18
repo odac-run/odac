@@ -3,29 +3,29 @@ const nodeCrypto = require('crypto')
 
 class Api {
   #commands = {
-    auth: (...args) => Candy.server('Hub').auth(...args),
-    'mail.create': (...args) => Candy.server('Mail').create(...args),
-    'mail.delete': (...args) => Candy.server('Mail').delete(...args),
-    'mail.list': (...args) => Candy.server('Mail').list(...args),
-    'mail.password': (...args) => Candy.server('Mail').password(...args),
-    'mail.send': (...args) => Candy.server('Mail').send(...args),
-    'service.start': (...args) => Candy.server('Service').start(...args),
-    'service.delete': (...args) => Candy.server('Service').delete(...args),
-    'server.stop': () => Candy.server('Server').stop(),
-    'ssl.renew': (...args) => Candy.server('SSL').renew(...args),
-    'subdomain.create': (...args) => Candy.server('Subdomain').create(...args),
-    'subdomain.delete': (...args) => Candy.server('Subdomain').delete(...args),
-    'subdomain.list': (...args) => Candy.server('Subdomain').list(...args),
-    'web.create': (...args) => Candy.server('Web').create(...args),
-    'web.delete': (...args) => Candy.server('Web').delete(...args),
-    'web.list': (...args) => Candy.server('Web').list(...args)
+    auth: (...args) => Odac.server('Hub').auth(...args),
+    'mail.create': (...args) => Odac.server('Mail').create(...args),
+    'mail.delete': (...args) => Odac.server('Mail').delete(...args),
+    'mail.list': (...args) => Odac.server('Mail').list(...args),
+    'mail.password': (...args) => Odac.server('Mail').password(...args),
+    'mail.send': (...args) => Odac.server('Mail').send(...args),
+    'service.start': (...args) => Odac.server('Service').start(...args),
+    'service.delete': (...args) => Odac.server('Service').delete(...args),
+    'server.stop': () => Odac.server('Server').stop(),
+    'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
+    'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),
+    'subdomain.delete': (...args) => Odac.server('Subdomain').delete(...args),
+    'subdomain.list': (...args) => Odac.server('Subdomain').list(...args),
+    'web.create': (...args) => Odac.server('Web').create(...args),
+    'web.delete': (...args) => Odac.server('Web').delete(...args),
+    'web.list': (...args) => Odac.server('Web').list(...args)
   }
   #connections = {}
 
   init() {
-    if (!Candy.core('Config').config.api) Candy.core('Config').config.api = {}
+    if (!Odac.core('Config').config.api) Odac.core('Config').config.api = {}
     // Regenerate auth token every start
-    Candy.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
+    Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
 
     const server = net.createServer()
 
@@ -49,7 +49,7 @@ class Api {
         }
 
         const {auth, action, data} = payload || {}
-        if (!auth || auth !== Candy.core('Config').config.api.auth) {
+        if (!auth || auth !== Odac.core('Config').config.api.auth) {
           return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
         }
         if (!action || !this.#commands[action]) {

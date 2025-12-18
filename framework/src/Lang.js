@@ -5,8 +5,8 @@ class Lang {
   #data = {}
   #lang
 
-  constructor(Candy) {
-    this.#candy = Candy
+  constructor(Odac) {
+    this.#candy = Odac
     this.set()
   }
 

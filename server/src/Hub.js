@@ -1,4 +1,4 @@
-const {log} = Candy.core('Log', false).init('Hub')
+const {log} = Odac.core('Log', false).init('Hub')
 
 const axios = require('axios')
 const nodeCrypto = require('crypto')
@@ -19,7 +19,7 @@ class Hub {
   }
 
   isAuthenticated() {
-    return !!(Candy.core('Config').config.hub && Candy.core('Config').config.hub.token)
+    return !!(Odac.core('Config').config.hub && Odac.core('Config').config.hub.token)
   }
 
   check() {
@@ -29,7 +29,7 @@ class Hub {
       return
     }
 
-    const hub = Candy.core('Config').config.hub
+    const hub = Odac.core('Config').config.hub
     if (!hub || !hub.token) {
       return
     }
@@ -43,7 +43,7 @@ class Hub {
           log('Server not authenticated: %s', response.reason || 'unknown')
           if (response.reason === 'token_invalid' || response.reason === 'signature_invalid') {
             log('Authentication credentials invalid, clearing config')
-            delete Candy.core('Config').config.hub
+            delete Odac.core('Config').config.hub
           }
           return
         }
@@ -147,7 +147,7 @@ class Hub {
   }
 
   signWebSocketMessage(message) {
-    const hub = Candy.core('Config').config.hub
+    const hub = Odac.core('Config').config.hub
     if (!hub || !hub.secret) {
       return null
     }
@@ -189,8 +189,8 @@ class Hub {
     const networkInfo = this.getNetworkUsage()
     const servicesInfo = this.getServicesInfo()
 
-    const serverStarted = Candy.core('Config').config.server.started
-    const candypackUptime = serverStarted ? Math.floor((Date.now() - serverStarted) / 1000) : 0
+    const serverStarted = Odac.core('Config').config.server.started
+    const odacUptime = serverStarted ? Math.floor((Date.now() - serverStarted) / 1000) : 0
 
     return {
       cpu: this.getCpuUsage(),
@@ -198,7 +198,7 @@ class Hub {
       disk: diskInfo,
       network: networkInfo,
       services: servicesInfo,
-      uptime: candypackUptime,
+      uptime: odacUptime,
       hostname: os.hostname(),
       platform: os.platform(),
       arch: os.arch(),
@@ -208,7 +208,7 @@ class Hub {
 
   getServicesInfo() {
     try {
-      const config = Candy.core('Config').config
+      const config = Odac.core('Config').config
 
       const websites = config.websites ? Object.keys(config.websites).length : 0
       const services = config.services ? config.services.length : 0
@@ -460,7 +460,7 @@ class Hub {
   }
 
   async auth(code) {
-    log('CandyPack authenticating...')
+    log('Odac authenticating...')
     log('Auth code received: %s', code ? code.substring(0, 8) + '...' : 'none')
     const packageJson = require('../../package.json')
     const distro = this.getLinuxDistro()
@@ -486,17 +486,17 @@ class Hub {
       let token = response.token
       let secret = response.secret
       log('Token received: %s...', token ? token.substring(0, 8) : 'none')
-      Candy.core('Config').config.hub = {token: token, secret: secret}
-      log('CandyPack authenticated!')
-      return Candy.server('Api').result(true, __('Authentication successful'))
+      Odac.core('Config').config.hub = {token: token, secret: secret}
+      log('Odac authenticated!')
+      return Odac.server('Api').result(true, __('Authentication successful'))
     } catch (error) {
       log('Authentication failed: %s', error ? error : 'Unknown error')
-      return Candy.server('Api').result(false, error || __('Authentication failed'))
+      return Odac.server('Api').result(false, error || __('Authentication failed'))
     }
   }
 
   signRequest(data) {
-    const hub = Candy.core('Config').config.hub
+    const hub = Odac.core('Config').config.hub
     if (!hub || !hub.secret) {
       return null
     }
@@ -513,7 +513,7 @@ class Hub {
       log('POST request to: %s', url)
 
       const headers = {}
-      const hub = Candy.core('Config').config.hub
+      const hub = Odac.core('Config').config.hub
       if (hub && hub.token) {
         headers['Authorization'] = `Bearer ${hub.token}`
       }

@@ -2,62 +2,62 @@ class Subdomain {
   async create(subdomain) {
     let domain = subdomain.split('.')
     subdomain = subdomain.trim().split('.')
-    if (subdomain.length < 3) return Candy.server('Api').result(false, await __('Invalid subdomain name.'))
-    if (Candy.core('Config').config.websites[domain.join('.')])
-      return Candy.server('Api').result(false, await __('Domain %s already exists.', domain.join('.')))
+    if (subdomain.length < 3) return Odac.server('Api').result(false, await __('Invalid subdomain name.'))
+    if (Odac.core('Config').config.websites[domain.join('.')])
+      return Odac.server('Api').result(false, await __('Domain %s already exists.', domain.join('.')))
     while (domain.length > 2) {
       domain.shift()
-      if (Candy.core('Config').config.websites[domain.join('.')]) {
+      if (Odac.core('Config').config.websites[domain.join('.')]) {
         domain = domain.join('.')
         break
       }
     }
-    if (typeof domain == 'object') return Candy.server('Api').result(false, await __('Domain %s not found.', domain.join('.')))
+    if (typeof domain == 'object') return Odac.server('Api').result(false, await __('Domain %s not found.', domain.join('.')))
     subdomain = subdomain.join('.').substr(0, subdomain.join('.').length - domain.length - 1)
     let fulldomain = [subdomain, domain].join('.')
-    if (Candy.core('Config').config.websites[domain].subdomain.includes(subdomain))
-      return Candy.server('Api').result(false, await __('Subdomain %s already exists.', fulldomain))
-    Candy.server('DNS').record({name: fulldomain, type: 'A'}, {name: 'www.' + fulldomain, type: 'CNAME'}, {name: fulldomain, type: 'MX'})
-    let websites = Candy.core('Config').config.websites
+    if (Odac.core('Config').config.websites[domain].subdomain.includes(subdomain))
+      return Odac.server('Api').result(false, await __('Subdomain %s already exists.', fulldomain))
+    Odac.server('DNS').record({name: fulldomain, type: 'A'}, {name: 'www.' + fulldomain, type: 'CNAME'}, {name: fulldomain, type: 'MX'})
+    let websites = Odac.core('Config').config.websites
     websites[domain].subdomain.push(subdomain)
     websites[domain].subdomain.push('www.' + subdomain)
     websites[domain].subdomain.sort()
-    Candy.core('Config').config.websites = websites
-    Candy.server('SSL').renew(domain)
-    return Candy.server('Api').result(true, await __('Subdomain %s1 created successfully for domain %s2.', fulldomain, domain))
+    Odac.core('Config').config.websites = websites
+    Odac.server('SSL').renew(domain)
+    return Odac.server('Api').result(true, await __('Subdomain %s1 created successfully for domain %s2.', fulldomain, domain))
   }
 
   async delete(subdomain) {
     let domain = subdomain.split('.')
     subdomain = subdomain.trim().split('.')
-    if (subdomain.length < 3) return Candy.server('Api').result(false, await __('Invalid subdomain name.'))
-    if (Candy.core('Config').config.websites[domain.join('.')])
-      return Candy.server('Api').result(false, await __('%s is a domain.', domain.join('.')))
+    if (subdomain.length < 3) return Odac.server('Api').result(false, await __('Invalid subdomain name.'))
+    if (Odac.core('Config').config.websites[domain.join('.')])
+      return Odac.server('Api').result(false, await __('%s is a domain.', domain.join('.')))
     while (domain.length > 2) {
       domain.shift()
-      if (Candy.core('Config').config.websites[domain.join('.')]) {
+      if (Odac.core('Config').config.websites[domain.join('.')]) {
         domain = domain.join('.')
         break
       }
     }
-    if (typeof domain == 'object') return Candy.server('Api').result(false, await __('Domain %s not found.', domain.join('.')))
+    if (typeof domain == 'object') return Odac.server('Api').result(false, await __('Domain %s not found.', domain.join('.')))
     subdomain = subdomain.join('.').substr(0, subdomain.join('.').length - domain.length - 1)
     let fulldomain = [subdomain, domain].join('.')
-    if (!Candy.core('Config').config.websites[domain].subdomain.includes(subdomain))
-      return Candy.server('Api').result(false, await __('Subdomain %s not found.', fulldomain))
-    Candy.server('DNS').delete({name: fulldomain, type: 'A'}, {name: 'www.' + fulldomain, type: 'CNAME'}, {name: fulldomain, type: 'MX'})
-    let websites = Candy.core('Config').config.websites
+    if (!Odac.core('Config').config.websites[domain].subdomain.includes(subdomain))
+      return Odac.server('Api').result(false, await __('Subdomain %s not found.', fulldomain))
+    Odac.server('DNS').delete({name: fulldomain, type: 'A'}, {name: 'www.' + fulldomain, type: 'CNAME'}, {name: fulldomain, type: 'MX'})
+    let websites = Odac.core('Config').config.websites
     websites[domain].subdomain = websites[domain].subdomain.filter(s => s != subdomain && s != 'www.' + subdomain)
-    Candy.core('Config').config.websites = websites
-    return Candy.server('Api').result(true, await __('Subdomain %s1 deleted successfully from domain %s2.', fulldomain, domain))
+    Odac.core('Config').config.websites = websites
+    return Odac.server('Api').result(true, await __('Subdomain %s1 deleted successfully from domain %s2.', fulldomain, domain))
   }
 
   async list(domain) {
-    if (!Candy.core('Config').config.websites[domain]) return Candy.server('Api').result(false, await __('Domain %s not found.', domain))
-    let subdomains = Candy.core('Config').config.websites[domain].subdomain.map(subdomain => {
+    if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+    let subdomains = Odac.core('Config').config.websites[domain].subdomain.map(subdomain => {
       return subdomain + '.' + domain
     })
-    return Candy.server('Api').result(true, (await __('Subdomains of %s:', domain)) + '\n  ' + subdomains.join('\n  '))
+    return Odac.server('Api').result(true, (await __('Subdomains of %s:', domain)) + '\n  ' + subdomains.join('\n  '))
   }
 }
 

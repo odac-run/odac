@@ -1,10 +1,10 @@
 ## ⏰ Session Management
 
-CandyPack uses a secure cookie-based session system with automatic expiration and cleanup.
+Odac uses a secure cookie-based session system with automatic expiration and cleanup.
 
 ### How Sessions Work
 
-When a user logs in, CandyPack creates a session token stored in secure cookies:
+When a user logs in, Odac creates a session token stored in secure cookies:
 
 ```javascript
 // Login creates a session

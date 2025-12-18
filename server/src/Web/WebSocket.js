@@ -51,9 +51,9 @@ class WebSocketProxy {
       options.headers[key.toLowerCase()] = value
     }
 
-    options.headers['x-candy-connection-remoteaddress'] = socket.remoteAddress ?? ''
-    options.headers['x-candy-connection-ssl'] = 'true'
-    options.headers['x-candy-websocket'] = 'true'
+    options.headers['x-odac-connection-remoteaddress'] = socket.remoteAddress ?? ''
+    options.headers['x-odac-connection-ssl'] = 'true'
+    options.headers['x-odac-websocket'] = 'true'
 
     const proxyReq = http.request(options)
 

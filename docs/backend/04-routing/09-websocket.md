@@ -1,6 +1,6 @@
 # WebSocket Routes
 
-CandyPack provides built-in WebSocket support for real-time bidirectional communication.
+Odac provides built-in WebSocket support for real-time bidirectional communication.
 
 ## Route Definition
 

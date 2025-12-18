@@ -38,7 +38,7 @@ candy run ./scheduler/cron.js
 - **Automatic conversion**: Relative paths are automatically converted to absolute paths internally
 
 ### Service Management
-Once started, CandyPack will:
+Once started, Odac will:
 - Monitor the service continuously
 - Automatically restart it if it crashes
 - Assign it a unique service ID for management

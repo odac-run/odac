@@ -1,6 +1,6 @@
 # Candy Register Forms
 
-The `<candy:register>` component provides a zero-configuration way to create secure registration forms. Simply write HTML, and CandyPack handles validation, security, database operations, and auto-login automatically.
+The `<candy:register>` component provides a zero-configuration way to create secure registration forms. Simply write HTML, and Odac handles validation, security, database operations, and auto-login automatically.
 
 ## Quick Start
 
@@ -405,7 +405,7 @@ Or use content as button text:
 
 ### Automatic Security
 
-CandyPack automatically handles:
+Odac automatically handles:
 
 1. **CSRF Protection** - Form tokens prevent cross-site attacks
 2. **Password Hashing** - Passwords are hashed with bcrypt
@@ -436,7 +436,7 @@ The system automatically queries the auth table to check for duplicates.
 
 ## HTML5 Validation
 
-CandyPack automatically adds HTML5 validation attributes for better UX:
+Odac automatically adds HTML5 validation attributes for better UX:
 
 ```html
 <!-- This field -->
@@ -506,7 +506,7 @@ Customize table names and primary key if needed:
 
 **Auto-Creation (Recommended):**
 
-The users table is created automatically on first registration! CandyPack analyzes your form fields and creates the appropriate table structure:
+The users table is created automatically on first registration! Odac analyzes your form fields and creates the appropriate table structure:
 
 - Fields with `unique` attribute → `VARCHAR(255) NOT NULL UNIQUE`
 - Password field → `VARCHAR(255) NOT NULL` (for bcrypt hashes)
@@ -640,7 +640,7 @@ Then handle the response in JavaScript if needed (though not required for basic 
 
 ## Best Practices
 
-1. **Always validate on both client and server** - CandyPack does this automatically
+1. **Always validate on both client and server** - Odac does this automatically
 2. **Use unique attribute for email/username** - Prevents duplicate accounts
 3. **Set minimum password length** - Use `minlen:8` or higher
 4. **Use password confirmation** - Add a `password_confirm` field with `same:password` rule

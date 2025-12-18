@@ -7,7 +7,7 @@ const findProcess = require('find-process')
 jest.mock('find-process')
 const processKillSpy = jest.spyOn(process, 'kill').mockImplementation(() => {})
 
-global.Candy = {
+global.Odac = {
   core: () => ({
     config: {}
   })
@@ -21,7 +21,7 @@ describe('Process', () => {
     // The mock function is on the .default property of the module mock
     findProcess.default.mockClear()
     processKillSpy.mockClear()
-    global.Candy.core = () => ({config: {}})
+    global.Odac.core = () => ({config: {}})
   })
 
   it('should be defined', () => {
@@ -81,7 +81,7 @@ describe('Process', () => {
     })
 
     it('should call stop for all configured pids', async () => {
-      global.Candy.core = () => ({
+      global.Odac.core = () => ({
         config: {
           server: {
             watchdog: 100,
@@ -110,7 +110,7 @@ describe('Process', () => {
     })
 
     it('should handle partial configurations gracefully', async () => {
-      global.Candy.core = () => ({
+      global.Odac.core = () => ({
         config: {
           server: {
             pid: 200
@@ -130,7 +130,7 @@ describe('Process', () => {
     })
 
     it('should not call stop if no pids are configured', async () => {
-      global.Candy.core = () => ({
+      global.Odac.core = () => ({
         config: {
           server: {},
           websites: {},
@@ -144,7 +144,7 @@ describe('Process', () => {
     })
 
     it('should handle missing top-level config keys', async () => {
-      global.Candy.core = () => ({
+      global.Odac.core = () => ({
         config: {}
       })
 

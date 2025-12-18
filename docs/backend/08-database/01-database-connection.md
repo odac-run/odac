@@ -1,6 +1,6 @@
 ## 🔌 Database Connection
 
-CandyPack automatically connects to your MySQL database when you provide the configuration.
+Odac automatically connects to your MySQL database when you provide the configuration.
 
 ### Configuration
 

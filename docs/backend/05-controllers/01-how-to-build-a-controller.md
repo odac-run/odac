@@ -10,7 +10,7 @@ Check out this basic example from `controller/page/index.js`:
 // This function is our controller!
 module.exports = function (Candy) {
   // It simply returns a string.
-  return 'Welcome to my awesome CandyPack server!'
+  return 'Welcome to my awesome Odac server!'
 }
 ```
 

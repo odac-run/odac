@@ -1,6 +1,6 @@
 # AJAX Navigation Configuration
 
-Learn how to configure and customize AJAX navigation in your CandyPack application.
+Learn how to configure and customize AJAX navigation in your Odac application.
 
 ## Prerequisites
 

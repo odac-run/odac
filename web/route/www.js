@@ -5,15 +5,15 @@
 // Controllers are located in controller/page/ directory
 
 // Home page - displays welcome message, features, and interactive demos
-Candy.Route.page('/', 'index')
+Odac.Route.page('/', 'index')
 
-// About page - provides information about CandyPack
-Candy.Route.page('/about', 'about')
+// About page - provides information about Odac
+Odac.Route.page('/about', 'about')
 
 // ============================================
 // API Routes
 // ============================================
 // Add your API routes here
 // Example:
-// Candy.Route.post('/api/contact', 'contact')
-// Candy.Route.get('/api/data', 'data')
+// Odac.Route.post('/api/contact', 'contact')
+// Odac.Route.get('/api/data', 'data')

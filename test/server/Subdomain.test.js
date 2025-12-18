@@ -58,11 +58,11 @@ describe('Subdomain', () => {
       result: jest.fn((success, data) => ({success, data}))
     }
 
-    // Configure global Candy mocks
-    global.Candy.setMock('core', 'Config', {config: mockConfig})
-    global.Candy.setMock('server', 'DNS', mockDNS)
-    global.Candy.setMock('server', 'SSL', mockSSL)
-    global.Candy.setMock('server', 'Api', mockApi)
+    // Configure global Odac mocks
+    global.Odac.setMock('core', 'Config', {config: mockConfig})
+    global.Odac.setMock('server', 'DNS', mockDNS)
+    global.Odac.setMock('server', 'SSL', mockSSL)
+    global.Odac.setMock('server', 'Api', mockApi)
 
     // Mock the __ function to return the key with placeholders replaced correctly
     global.__ = jest.fn((key, ...args) => {

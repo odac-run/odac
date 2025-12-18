@@ -9,11 +9,11 @@ Normally, all publicly served files should be in your `public` folder. However, 
 }
 ```
 
-When a user visits a URL that matches a key in the `route` object, CandyPack will serve the corresponding file from your filesystem.
+When a user visits a URL that matches a key in the `route` object, Odac will serve the corresponding file from your filesystem.
 
 #### Using the `${candy}` Variable
 
-The special variable `${candy}` is a shortcut that points to the root directory where CandyPack is installed. This is helpful for linking to files that are part of the framework itself.
+The special variable `${candy}` is a shortcut that points to the root directory where Odac is installed. This is helpful for linking to files that are part of the framework itself.
 
 #### Absolute Paths
 

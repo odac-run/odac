@@ -1,6 +1,6 @@
 ## 🗄️ Using MySQL
 
-CandyPack provides a powerful query builder for safe and easy database operations.
+Odac provides a powerful query builder for safe and easy database operations.
 
 ### Selecting Data
 

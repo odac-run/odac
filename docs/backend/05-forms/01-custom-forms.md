@@ -1,6 +1,6 @@
 # Custom Forms
 
-CandyPack provides an automatic form system with built-in validation, CSRF protection, and seamless client-side integration. The `<candy:form>` tag allows you to create forms with minimal code while maintaining full control.
+Odac provides an automatic form system with built-in validation, CSRF protection, and seamless client-side integration. The `<candy:form>` tag allows you to create forms with minimal code while maintaining full control.
 
 ## Basic Usage
 

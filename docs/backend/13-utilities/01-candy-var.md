@@ -135,9 +135,9 @@ Candy.Var('hello world').replace('world', 'universe')
 // Multiple replacements with object
 Candy.Var('Hello {{name}}, welcome to {{site}}').replace({
   '{{name}}': 'John',
-  '{{site}}': 'CandyPack'
+  '{{site}}': 'Odac'
 })
-// Returns: 'Hello John, welcome to CandyPack'
+// Returns: 'Hello John, welcome to Odac'
 
 // Works with arrays/objects recursively
 const data = {
@@ -413,7 +413,7 @@ module.exports = async function(Candy) {
     '{{name}}': user.name,
     '{{email}}': user.email,
     '{{url}}': 'https://example.com/dashboard',
-    '{{site}}': 'CandyPack'
+    '{{site}}': 'Odac'
   })
   
   // Send email

@@ -1,6 +1,6 @@
 # WebSocket Quick Reference
 
-Quick reference for CandyPack WebSocket API.
+Quick reference for Odac WebSocket API.
 
 ## Backend API
 

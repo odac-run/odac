@@ -1,5 +1,5 @@
 ## 🔗 Create a Subdomain
-This command allows you to create a new subdomain. CandyPack will automatically configure it to point to a directory with the same name inside your main domain's root directory.
+This command allows you to create a new subdomain. Odac will automatically configure it to point to a directory with the same name inside your main domain's root directory.
 
 ### Interactive Usage
 ```bash

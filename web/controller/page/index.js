@@ -1,7 +1,7 @@
 /**
  * Home Page Controller
  *
- * This controller renders the home page using CandyPack's skeleton-based view system.
+ * This controller renders the home page using Odac's skeleton-based view system.
  * The skeleton provides the layout (header, nav, footer) and the view provides the content.
  *
  * For AJAX requests (candy-link navigation), only the content is returned.
@@ -14,17 +14,17 @@
  * - Dynamic page loading with candy-link
  */
 
-module.exports = function (Candy) {
+module.exports = function (Odac) {
   // Set variables that will be available in AJAX responses
-  Candy.set(
+  Odac.set(
     {
-      welcomeMessage: 'Welcome to CandyPack!',
+      welcomeMessage: 'Welcome to Odac!',
       timestamp: Date.now()
     },
     true
   ) // true = include in AJAX responses
 
-  Candy.View.set({
+  Odac.View.set({
     skeleton: 'main',
     head: 'main',
     header: 'main',

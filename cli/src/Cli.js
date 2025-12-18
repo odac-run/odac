@@ -1,4 +1,4 @@
-require('../../core/Candy.js')
+require('../../core/Odac.js')
 
 const childProcess = require('child_process')
 const readline = require('readline')
@@ -11,14 +11,14 @@ class Cli {
     if (!this.booting) this.booting = true
     else return
     return new Promise(resolve => {
-      console.log(__('Starting CandyPack Server...'))
+      console.log(__('Starting Odac Server...'))
       const child = childProcess.spawn('node', [__dirname + '/../../watchdog/index.js'], {
         detached: true,
         stdio: 'ignore'
       })
       child.unref()
       setTimeout(() => {
-        Candy.core('Config').reload()
+        Odac.core('Config').reload()
         resolve()
       }, 1000)
     })
@@ -60,7 +60,7 @@ class Cli {
       output = begin + output + end
     }
     if (!raw) {
-      if (text == 'CandyPack') output = this.color(output, 'magenta')
+      if (text == 'Odac') output = this.color(output, 'magenta')
       if (text == __('Running')) output = this.color(output, 'green')
       if (text == '\u2713') output = this.color(output, 'green')
       if (text == '\u2717') output = this.color(output, 'red')
@@ -104,7 +104,7 @@ class Cli {
     let result = []
     let space = 0
     if (typeof commands == 'string') {
-      let obj = Candy.core('Commands')
+      let obj = Odac.core('Commands')
       let command = commands.shift()
       if (!obj[command]) return console.log(__(`'%s' is not a valid command.`, this.color(`candy ${commands.join(' ')}`, 'yellow')))
       obj = obj[command]
@@ -118,10 +118,10 @@ class Cli {
       let lines = detail.result.split('\n')
       for (let line of lines) result.push(line)
     } else {
-      for (const command in Candy.core('Commands')) {
+      for (const command in Odac.core('Commands')) {
         if (commands && commands !== true && commands[0] !== command) continue
-        if (Candy.server('Hub').isAuthenticated() && command === 'auth') continue
-        let obj = Candy.core('Commands')[command]
+        if (Odac.server('Hub').isAuthenticated() && command === 'auth') continue
+        let obj = Odac.core('Commands')[command]
         if (commands === true && !obj.action) continue
         let detail = await this.#detail(command, obj)
         if (detail.space > space) space = detail.space
@@ -151,15 +151,15 @@ class Cli {
   }
 
   async init() {
-    console.log('\n', this.#format('CandyPack'), '\n')
-    if (!(await Candy.cli('Connector').check())) await this.boot()
+    console.log('\n', this.#format('Odac'), '\n')
+    if (!(await Odac.cli('Connector').check())) await this.boot()
     let args = process.argv.slice(2)
     let cmds = process.argv.slice(2)
     if (args.length == 0) return this.#status()
     let command = args.shift()
-    if (!Candy.core('Commands')[command])
+    if (!Odac.core('Commands')[command])
       return console.log(__(`'%s' is not a valid command.`, this.color(`candy ${cmds.join(' ')}`, 'yellow')))
-    let action = Candy.core('Commands')[command]
+    let action = Odac.core('Commands')[command]
     while (args.length > 0 && !action.args) {
       command = args.shift()
       if (!action.sub || !action.sub[command]) return this.help(cmds)
@@ -212,8 +212,8 @@ class Cli {
       auth: false,
       uptime: 0
     }
-    status.online = await Candy.cli('Connector').check()
-    var uptime = Date.now() - Candy.core('Config').config.server.started
+    status.online = await Odac.cli('Connector').check()
+    var uptime = Date.now() - Odac.core('Config').config.server.started
     let seconds = Math.floor(uptime / 1000)
     let minutes = Math.floor(seconds / 60)
     let hours = Math.floor(minutes / 60)
@@ -227,9 +227,9 @@ class Cli {
     if (minutes && !days) uptimeString += minutes + 'm '
     if (seconds && !hours) uptimeString += seconds + 's'
     status.uptime = uptimeString
-    status.services = Candy.core('Config').config.services ? Object.keys(Candy.core('Config').config.services).length : 0
-    status.websites = Candy.core('Config').config.websites ? Object.keys(Candy.core('Config').config.websites).length : 0
-    status.auth = Candy.server('Hub').isAuthenticated()
+    status.services = Odac.core('Config').config.services ? Object.keys(Odac.core('Config').config.services).length : 0
+    status.websites = Odac.core('Config').config.websites ? Object.keys(Odac.core('Config').config.websites).length : 0
+    status.auth = Odac.server('Hub').isAuthenticated()
     var args = process.argv.slice(2)
     if (args.length == 0) {
       let length = 0
@@ -262,7 +262,7 @@ class Cli {
           }
         }
       }
-      if (!status.auth) console.log(__('Login on %s to manage all your server operations.', '\x1b[95mhttps://candypack.dev\x1b[0m'))
+      if (!status.auth) console.log(__('Login on %s to manage all your server operations.', '\x1b[95mhttps://odac.dev\x1b[0m'))
       console.log()
       console.log(__('Commands:'))
       length = 0

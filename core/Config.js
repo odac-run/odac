@@ -2,7 +2,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const {log, error} = Candy.core('Log', false).init('Config')
+const {log, error} = Odac.core('Log', false).init('Config')
 
 class Config {
   #dir
@@ -697,7 +697,7 @@ class Config {
 
   init() {
     try {
-      this.#dir = path.join(os.homedir(), '.candypack')
+      this.#dir = path.join(os.homedir(), '.odac')
       this.#file = path.join(this.#dir, 'config.json')
       this.#configDir = path.join(this.#dir, 'config')
 
@@ -811,7 +811,7 @@ class Config {
 
       // Set up auto-save interval with modular support
       // Handle process.mainModule safely
-      if (process.mainModule && process.mainModule.path && !process.mainModule.path.includes('node_modules/candypack/bin')) {
+      if (process.mainModule && process.mainModule.path && !process.mainModule.path.includes('node_modules/odac/bin')) {
         setInterval(() => this.#save(), 500).unref()
         this.config = this.#proxy(this.config)
       }

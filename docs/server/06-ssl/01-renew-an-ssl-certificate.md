@@ -31,4 +31,4 @@ $ candy ssl renew -d example.com
 ✓ SSL certificate renewal initiated for example.com
 ```
 
-CandyPack will then handle the process of validating your domain and renewing the certificate.
+Odac will then handle the process of validating your domain and renewing the certificate.

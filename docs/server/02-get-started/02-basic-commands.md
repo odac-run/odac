@@ -1,9 +1,9 @@
 ## 💻 Basic Commands
 
-These are the most common commands for interacting with the CandyPack server.
+These are the most common commands for interacting with the Odac server.
 
 ### Check Status
-To see the current status of the CandyPack server, including uptime and the number of running services, simply run the `candy` command with no arguments:
+To see the current status of the Odac server, including uptime and the number of running services, simply run the `candy` command with no arguments:
 ```bash
 candy
 ```
@@ -33,7 +33,7 @@ candy help
 ```
 
 ### Using Prefix Arguments
-Many CandyPack commands support prefix arguments that allow you to provide values directly in the command line, avoiding interactive prompts. This is especially useful for automation and scripting.
+Many Odac commands support prefix arguments that allow you to provide values directly in the command line, avoiding interactive prompts. This is especially useful for automation and scripting.
 
 **Common Prefixes:**
 - `-d`, `--domain`: Specify domain name

@@ -6,12 +6,12 @@
 const {mockCandy, mockLangGet} = require('./globalCandy')
 
 /**
- * Sets up the global Candy mock and __ function for tests
+ * Sets up the global Odac mock and __ function for tests
  * Should be called in beforeEach or beforeAll
  */
 const setupGlobalMocks = () => {
-  // Set up global Candy mock
-  global.Candy = mockCandy
+  // Set up global Odac mock
+  global.Odac = mockCandy
 
   // Set up global __ function mock
   global.__ = mockLangGet
@@ -30,7 +30,7 @@ const cleanupGlobalMocks = () => {
   mockLangGet.mockClear()
 
   // Reset global references
-  delete global.Candy
+  delete global.Odac
   delete global.__
 }
 

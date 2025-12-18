@@ -313,7 +313,7 @@ module.exports = async function(Candy) {
 
 ### Legacy Syntax (Backward Compatibility)
 
-CandyPack also supports legacy syntax:
+Odac also supports legacy syntax:
 
 ```html
 <!-- HTML-safe output -->

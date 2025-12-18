@@ -8,7 +8,7 @@ const FORBIDDEN_HEADERS = [
   'proxy-connection',
   'proxy-authenticate',
   'trailer',
-  'x-candy-early-hints'
+  'x-odac-early-hints'
 ]
 
 class WebProxy {
@@ -19,9 +19,9 @@ class WebProxy {
   }
 
   #handleEarlyHints(proxyRes, res) {
-    if (proxyRes.headers['x-candy-early-hints'] && typeof res.writeEarlyHints === 'function') {
+    if (proxyRes.headers['x-odac-early-hints'] && typeof res.writeEarlyHints === 'function') {
       try {
-        const links = JSON.parse(proxyRes.headers['x-candy-early-hints'])
+        const links = JSON.parse(proxyRes.headers['x-odac-early-hints'])
         if (Array.isArray(links) && links.length > 0) {
           res.writeEarlyHints({link: links})
         }
@@ -46,8 +46,8 @@ class WebProxy {
       options.headers[key.toLowerCase()] = value
     }
 
-    options.headers['x-candy-connection-remoteaddress'] = req.socket.remoteAddress ?? ''
-    options.headers['x-candy-connection-ssl'] = 'true'
+    options.headers['x-odac-connection-remoteaddress'] = req.socket.remoteAddress ?? ''
+    options.headers['x-odac-connection-ssl'] = 'true'
 
     const proxyReq = http.request(options, proxyRes => {
       this.#handleEarlyHints(proxyRes, res)

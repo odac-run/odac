@@ -1,8 +1,8 @@
 ## 🔧 Template Syntax Overview
 
-CandyPack uses a powerful template engine to create dynamic content in view files. The engine provides a clean, HTML-like syntax for displaying variables, conditionals, loops, translations, and more.
+Odac uses a powerful template engine to create dynamic content in view files. The engine provides a clean, HTML-like syntax for displaying variables, conditionals, loops, translations, and more.
 
-> **Note:** CandyPack also supports legacy syntax (`{{ }}`, `{!! !!}`, `{{-- --}}`) for backward compatibility, but the new `<candy>` tag syntax is recommended for all new projects.
+> **Note:** Odac also supports legacy syntax (`{{ }}`, `{!! !!}`, `{{-- --}}`) for backward compatibility, but the new `<candy>` tag syntax is recommended for all new projects.
 
 ### Quick Reference
 
@@ -164,7 +164,7 @@ Full access to the Candy object in templates:
 
 ### Legacy Syntax
 
-CandyPack also supports legacy syntax for backward compatibility:
+Odac also supports legacy syntax for backward compatibility:
 
 ```html
 <!-- Variable output -->

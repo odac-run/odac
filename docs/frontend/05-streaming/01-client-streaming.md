@@ -1,6 +1,6 @@
 # Client-Side Streaming
 
-CandyPack provides a simple client-side API for consuming Server-Sent Events (SSE) streams.
+Odac provides a simple client-side API for consuming Server-Sent Events (SSE) streams.
 
 ### Basic Usage
 

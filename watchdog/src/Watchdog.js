@@ -4,7 +4,7 @@ const os = require('os')
 const path = require('path')
 
 // --- Constants ---
-const CANDYPACK_HOME = path.join(os.homedir(), '.candypack')
+const CANDYPACK_HOME = path.join(os.homedir(), '.odac')
 const LOG_DIR = path.join(CANDYPACK_HOME, 'logs')
 const SERVER_SCRIPT_PATH = path.join(__dirname, '..', '..', 'server', 'index.js')
 
@@ -39,8 +39,8 @@ class Watchdog {
     try {
       // Ensure log directory exists before attempting to write files
       await fs.mkdir(LOG_DIR, {recursive: true})
-      const logFile = path.join(LOG_DIR, '.candypack.log')
-      const errFile = path.join(LOG_DIR, '.candypack_err.log')
+      const logFile = path.join(LOG_DIR, '.odac.log')
+      const errFile = path.join(LOG_DIR, '.odac_err.log')
 
       // Limit log buffer to last 1000 lines
       const logLines = this.#logBuffer.split('\n')
@@ -72,22 +72,22 @@ class Watchdog {
   async #performStartupChecks() {
     try {
       // Kill previous watchdog process if it exists and is different from the current one
-      if (Candy.core('Config').config.server.watchdog && Candy.core('Config').config.server.watchdog !== process.pid)
-        await Candy.core('Process').stop(Candy.core('Config').config.server.watchdog)
+      if (Odac.core('Config').config.server.watchdog && Odac.core('Config').config.server.watchdog !== process.pid)
+        await Odac.core('Process').stop(Odac.core('Config').config.server.watchdog)
 
       // Kill previous server process if it exists
-      if (Candy.core('Config').config.server.pid) await Candy.core('Process').stop(Candy.core('Config').config.server.pid)
+      if (Odac.core('Config').config.server.pid) await Odac.core('Process').stop(Odac.core('Config').config.server.pid)
 
-      for (const domain of Object.keys(Candy.core('Config').config?.websites ?? []))
-        if (Candy.core('Config').config.websites[domain].pid)
-          await Candy.core('Process').stop(Candy.core('Config').config.websites[domain].pid)
+      for (const domain of Object.keys(Odac.core('Config').config?.websites ?? []))
+        if (Odac.core('Config').config.websites[domain].pid)
+          await Odac.core('Process').stop(Odac.core('Config').config.websites[domain].pid)
 
-      for (const service of Candy.core('Config').config.services ?? []) if (service.pid) await Candy.core('Process').stop(service.pid)
+      for (const service of Odac.core('Config').config.services ?? []) if (service.pid) await Odac.core('Process').stop(service.pid)
 
       // Update config with current watchdog's info
-      Candy.core('Config').config.server.watchdog = process.pid
-      Candy.core('Config').config.server.started = Date.now()
-      Candy.core('Config').force()
+      Odac.core('Config').config.server.watchdog = process.pid
+      Odac.core('Config').config.server.started = Date.now()
+      Odac.core('Config').force()
 
       return new Promise(resolve => setTimeout(() => resolve(true), 1000))
     } catch (error) {
@@ -113,7 +113,7 @@ class Watchdog {
 
     process.on('exit', () => child.kill())
 
-    Candy.core('Config').config.server.pid = child.pid
+    Odac.core('Config').config.server.pid = child.pid
 
     console.log(`Watchdog process started with PID: ${process.pid}`)
     console.log(`Server process started with PID: ${child.pid}`)
@@ -128,7 +128,7 @@ class Watchdog {
     })
 
     child.on('close', code => {
-      Candy.core('Config').reload()
+      Odac.core('Config').reload()
       this.#errorBuffer += `[ERR][${new Date().toISOString()}] Process closed with code ${code}\n`
 
       // Reset restart count if the last restart was a while ago

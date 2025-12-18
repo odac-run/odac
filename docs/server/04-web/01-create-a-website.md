@@ -1,5 +1,5 @@
 ## 🌐 Create a Website
-This command helps you set up a new website on your server. CandyPack will ask for the domain name and the path to the website's files.
+This command helps you set up a new website on your server. Odac will ask for the domain name and the path to the website's files.
 
 ### Interactive Usage
 ```bash
@@ -7,7 +7,7 @@ candy web create
 ```
 After running the command, you will be prompted to enter the following information:
 - **Domain Name:** The primary domain for your website (e.g., `example.com`).
-- **Path:** The absolute path to your website's root directory (e.g., `/var/www/example.com`). If you leave this blank, CandyPack will suggest a default path based on the domain name.
+- **Path:** The absolute path to your website's root directory (e.g., `/var/www/example.com`). If you leave this blank, Odac will suggest a default path based on the domain name.
 
 ### Single-Line Usage with Prefixes
 ```bash

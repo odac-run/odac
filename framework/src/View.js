@@ -20,7 +20,7 @@ class View {
       end: '*/ html += `'
     },
     '{{': {
-      function: '${Candy.Var(await ',
+      function: '${Odac.Var(await ',
       close: '}}',
       end: ').html().replace(/\\n/g, "<br>")}'
     },
@@ -103,16 +103,16 @@ class View {
   constructor(candy) {
     this.#candy = candy
 
-    if (!global.Candy?.View?.EarlyHints) {
+    if (!global.Odac?.View?.EarlyHints) {
       const config = candy.Config?.earlyHints
       this.#earlyHints = new EarlyHints(config)
       this.#earlyHints.init()
 
-      if (!global.Candy) global.Candy = {}
-      if (!global.Candy.View) global.Candy.View = {}
-      global.Candy.View.EarlyHints = this.#earlyHints
+      if (!global.Odac) global.Odac = {}
+      if (!global.Odac.View) global.Odac.View = {}
+      global.Odac.View.EarlyHints = this.#earlyHints
     } else {
-      this.#earlyHints = global.Candy.View.EarlyHints
+      this.#earlyHints = global.Odac.View.EarlyHints
     }
   }
 
@@ -155,8 +155,8 @@ class View {
       const skeletonChanged = clientSkeleton && clientSkeleton !== currentSkeleton
 
       this.#candy.Request.header('Content-Type', 'application/json')
-      this.#candy.Request.header('X-Candy-Page', this.#candy.Request.page || '')
-      this.#candy.Request.header('Vary', 'X-Candy')
+      this.#candy.Request.header('X-Odac-Page', this.#candy.Request.page || '')
+      this.#candy.Request.header('Vary', 'X-Odac')
 
       this.#candy.Request.end({
         output: output,
@@ -171,7 +171,7 @@ class View {
     if (this.#part.skeleton && fs.existsSync(`./skeleton/${this.#part.skeleton}.html`)) {
       result = fs.readFileSync(`./skeleton/${this.#part.skeleton}.html`, 'utf8')
 
-      // Add data-candy-navigate to content wrapper for auto-navigation
+      // Add data-odac-navigate to content wrapper for auto-navigation
       result = this.#addNavigateAttribute(result)
 
       for (let key in this.#part) {
@@ -215,9 +215,9 @@ class View {
 
   #parseCandyTag(content) {
     // Parse backend comments
-    // Multi-line: <!--candy ... candy-->
-    // Single-line: <!--candy ... -->
-    content = content.replace(/<!--candy([\s\S]*?)(?:candy-->|-->)/g, () => {
+    // Multi-line: <!--odac ... odac-->
+    // Single-line: <!--odac ... -->
+    content = content.replace(/<!--odac([\s\S]*?)(?:odac-->|-->)/g, () => {
       return ''
     })
 
@@ -288,7 +288,7 @@ class View {
             if (variable.startsWith("'") && variable.endsWith("'")) {
               placeholders.push(variable)
             } else {
-              placeholders.push(`Candy.Var(await ${variable}).html().replace(/\\n/g, "<br>")`)
+              placeholders.push(`Odac.Var(await ${variable}).html().replace(/\\n/g, "<br>")`)
             }
             return `%s${placeholderIndex++}`
           })
@@ -412,18 +412,18 @@ class View {
       if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, {recursive: true})
       fs.writeFileSync(
         `${CACHE_DIR}/${cache}`,
-        `module.exports = async (Candy, get, __) => {\nlet html = '';\n${result}\nreturn html.trim()\n}`
+        `module.exports = async (Odac, get, __) => {\nlet html = '';\n${result}\nreturn html.trim()\n}`
       )
       delete require.cache[require.resolve(`${__dir}/${CACHE_DIR}/${cache}`)]
-      if (!Candy.View) Candy.View = {}
-      if (!Candy.View.cache) Candy.View.cache = {}
-      Candy.View.cache[file] = {
+      if (!Odac.View) Odac.View = {}
+      if (!Odac.View.cache) Odac.View.cache = {}
+      Odac.View.cache[file] = {
         mtime: mtime,
         cache: cache
       }
     }
     try {
-      return await require(`${__dir}/${CACHE_DIR}/${Candy.View.cache[file].cache}`)(
+      return await require(`${__dir}/${CACHE_DIR}/${Odac.View.cache[file].cache}`)(
         this.#candy,
         key => this.#candy.Request.get(key),
         (...args) => this.#candy.Lang.get(...args)
@@ -457,8 +457,8 @@ class View {
 
   #addNavigateAttribute(skeleton) {
     skeleton = skeleton.replace(/(<[^>]+>)(\s*\{\{\s*CONTENT\s*\}\})/, (match, openTag, content) => {
-      if (openTag.includes('data-candy-navigate')) return match
-      const tagWithAttr = openTag.slice(0, -1) + ' data-candy-navigate="content">'
+      if (openTag.includes('data-odac-navigate')) return match
+      const tagWithAttr = openTag.slice(0, -1) + ' data-odac-navigate="content">'
       return tagWithAttr + content
     })
 
@@ -467,11 +467,11 @@ class View {
 
     skeleton = skeleton.replace(/<html([^>]*)>/, (match, attrs) => {
       const updates = []
-      if (!attrs.includes('data-candy-skeleton')) {
-        updates.push(`data-candy-skeleton="${skeletonName}"`)
+      if (!attrs.includes('data-odac-skeleton')) {
+        updates.push(`data-odac-skeleton="${skeletonName}"`)
       }
-      if (!attrs.includes('data-candy-page')) {
-        updates.push(`data-candy-page="${pageName}"`)
+      if (!attrs.includes('data-odac-page')) {
+        updates.push(`data-odac-page="${pageName}"`)
       }
       if (updates.length === 0) return match
       return `<html${attrs} ${updates.join(' ')}>`

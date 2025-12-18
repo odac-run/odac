@@ -1,4 +1,5 @@
-class CandyPack {
+// eslint-disable-next-line no-redeclare
+class Odac {
   constructor() {
     this._registry = new Map()
     this._singletons = new Map()
@@ -15,9 +16,8 @@ class CandyPack {
 
   #resolve(key, requestedSingleton = null) {
     const entry = this._registry.get(key)
-    if (!entry) throw new Error(`Candy: '${key}' not found`)
+    if (!entry) throw new Error(`Odac: '${key}' not found`)
 
-    // Use requested singleton preference if provided, otherwise use registered preference
     const useSingleton = requestedSingleton !== null ? requestedSingleton : entry.singleton
 
     if (useSingleton) {
@@ -31,7 +31,6 @@ class CandyPack {
       return this._singletons.get(key)
     }
 
-    // For non-singleton, create new instance each time
     const instance = this.#instantiate(entry.value)
     if (instance && typeof instance.init === 'function') {
       instance.init()
@@ -81,7 +80,7 @@ class CandyPack {
   }
 }
 
-if (!global.Candy) {
-  global.Candy = new CandyPack()
-  global.__ = (...args) => Candy.core('Lang').get(...args)
+if (!global.Odac) {
+  global.Odac = new Odac()
+  global.__ = (...args) => global.Odac.core('Lang').get(...args)
 }

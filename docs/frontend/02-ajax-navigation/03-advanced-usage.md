@@ -1,6 +1,6 @@
 # Advanced AJAX Navigation
 
-Advanced techniques and patterns for AJAX navigation in CandyPack.
+Advanced techniques and patterns for AJAX navigation in Odac.
 
 **Note:** All examples assume you have properly configured your skeleton template and controller. See the [Quick Start guide](01-quick-start.md#skeleton-structure-required) for setup instructions.
 

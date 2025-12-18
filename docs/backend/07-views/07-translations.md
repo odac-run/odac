@@ -1,6 +1,6 @@
 ## 🌍 Translations (i18n)
 
-CandyPack provides built-in internationalization (i18n) support, allowing you to create multi-language applications easily.
+Odac provides built-in internationalization (i18n) support, allowing you to create multi-language applications easily.
 
 ### Basic Translation
 
@@ -10,7 +10,7 @@ CandyPack provides built-in internationalization (i18n) support, allowing you to
 <candy translate>Login</candy>
 ```
 
-The text inside the tag is used as the translation key. CandyPack looks up this key in your locale files.
+The text inside the tag is used as the translation key. Odac looks up this key in your locale files.
 
 ### Translation Files
 
@@ -53,7 +53,7 @@ Use nested `<candy>` tags to insert dynamic values:
 
 **How it works:**
 1. The content becomes: `Hello %s1`
-2. CandyPack looks up this key in the locale file
+2. Odac looks up this key in the locale file
 3. `%s1` is replaced with the actual value
 
 **Locale file:**

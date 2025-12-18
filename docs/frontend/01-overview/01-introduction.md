@@ -1,6 +1,6 @@
 # Frontend Javascript Framework: candy.js
 
-`candy.js` is a lightweight frontend JavaScript framework designed to simplify interactions with the backend, handle forms, and manage page-specific logic within the CandyPack ecosystem. It provides a set of tools for event handling, AJAX requests, and more, all accessible through the global `Candy` object.
+`candy.js` is a lightweight frontend JavaScript framework designed to simplify interactions with the backend, handle forms, and manage page-specific logic within the Odac ecosystem. It provides a set of tools for event handling, AJAX requests, and more, all accessible through the global `Candy` object.
 
 ## The Global `Candy` Object
 

@@ -1,6 +1,6 @@
 # Streaming API
 
-CandyPack provides a unified streaming API that automatically handles Server-Sent Events (SSE), with future support for WebSocket and HTTP/3.
+Odac provides a unified streaming API that automatically handles Server-Sent Events (SSE), with future support for WebSocket and HTTP/3.
 
 ## Quick Start
 
@@ -263,7 +263,7 @@ function Dashboard() {
 
 ## Protocol
 
-CandyPack uses **Server-Sent Events (SSE)** for streaming:
+Odac uses **Server-Sent Events (SSE)** for streaming:
 - ✅ One-way communication (server → client)
 - ✅ Automatic reconnection
 - ✅ Works over HTTP/2
@@ -279,7 +279,7 @@ CandyPack uses **Server-Sent Events (SSE)** for streaming:
 
 ## Memory Management
 
-CandyPack automatically manages timers and intervals in streaming contexts:
+Odac automatically manages timers and intervals in streaming contexts:
 
 ```javascript
 module.exports = async (Candy) => {

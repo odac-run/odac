@@ -1,10 +1,10 @@
 ## 📖 CLI Reference
 
-This comprehensive reference covers all CandyPack CLI commands and their usage patterns, including both interactive and single-line modes with prefix arguments.
+This comprehensive reference covers all Odac CLI commands and their usage patterns, including both interactive and single-line modes with prefix arguments.
 
 ### Command Structure
 
-CandyPack CLI follows a hierarchical command structure:
+Odac CLI follows a hierarchical command structure:
 ```bash
 candy [command] [subcommand] [prefixes] [arguments]
 ```
@@ -24,7 +24,7 @@ Most commands support prefix arguments that allow you to provide values directly
 ### Authentication Commands
 
 #### `candy auth`
-Define your server to your CandyPack account.
+Define your server to your Odac account.
 
 **Interactive:**
 ```bash
@@ -43,7 +43,7 @@ candy auth --key your-auth-key
 Display server status, uptime, and statistics.
 
 #### `candy restart`
-Restart the CandyPack server.
+Restart the Odac server.
 
 #### `candy monit`
 Monitor websites and services in real-time.
@@ -273,4 +273,4 @@ candy mail create -e user@example.com -p "$MAIL_PASSWORD"
 
 ### Error Handling
 
-If a command fails or you provide invalid arguments, CandyPack will display helpful error messages and suggest corrections. Use `candy help [command]` to get specific help for any command.
+If a command fails or you provide invalid arguments, Odac will display helpful error messages and suggest corrections. Use `candy help [command]` to get specific help for any command.

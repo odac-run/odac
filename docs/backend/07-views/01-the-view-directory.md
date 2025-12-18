@@ -1,6 +1,6 @@
 ## 📁 View System Overview
 
-CandyPack's view system creates dynamic HTML pages by combining skeleton (layout) and view (content) files. This system provides a modular structure by keeping page layout and content separate.
+Odac's view system creates dynamic HTML pages by combining skeleton (layout) and view (content) files. This system provides a modular structure by keeping page layout and content separate.
 
 ### Directory Structure
 

@@ -1,6 +1,6 @@
 ## 💬 Comments in Views
 
-CandyPack supports two types of comments in view files: backend comments (not rendered) and regular HTML comments (rendered).
+Odac supports two types of comments in view files: backend comments (not rendered) and regular HTML comments (rendered).
 
 ### Backend Comments (Not Rendered)
 

@@ -1,6 +1,6 @@
 ## 🎨 Rendering Views
 
-In CandyPack, you use the `Candy.View` object to render views. There are two main approaches:
+In Odac, you use the `Candy.View` object to render views. There are two main approaches:
 
 ### 1. Combining Skeleton and View Parts
 

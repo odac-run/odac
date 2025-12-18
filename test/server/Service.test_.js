@@ -47,9 +47,9 @@ describe('Service', () => {
   beforeEach(() => {
     jest.clearAllMocks()
 
-    // Setup global Candy mock
+    // Setup global Odac mock
     setupGlobalMocks()
-    mockCandy = global.Candy
+    mockCandy = global.Odac
 
     // Mock child_process module
     mockChildProcess = createMockChildProcess()
@@ -700,14 +700,14 @@ describe('Service', () => {
       await Service.check()
 
       expect(fs.writeFile).toHaveBeenCalledWith(
-        '/home/user/.candypack/logs/test-service.js.log',
+        '/home/user/.odac/logs/test-service.js.log',
         expect.stringContaining(stdoutData),
         'utf8',
         expect.any(Function)
       )
 
       expect(fs.writeFile).toHaveBeenCalledWith(
-        '/home/user/.candypack/logs/test-service.js.err.log',
+        '/home/user/.odac/logs/test-service.js.err.log',
         expect.stringContaining(stderrData),
         'utf8',
         expect.any(Function)
@@ -836,7 +836,7 @@ describe('Service', () => {
 
       await Service.init()
 
-      expect(fs.readFile).toHaveBeenCalledWith('/home/user/.candypack/logs/test-service.js.log', 'utf8', expect.any(Function))
+      expect(fs.readFile).toHaveBeenCalledWith('/home/user/.odac/logs/test-service.js.log', 'utf8', expect.any(Function))
     })
 
     test('should calculate and report service uptime correctly', async () => {
@@ -1008,14 +1008,14 @@ describe('Service', () => {
 
       // Should write to both regular log and error log
       expect(fs.writeFile).toHaveBeenCalledWith(
-        '/home/user/.candypack/logs/test-service.js.log',
+        '/home/user/.odac/logs/test-service.js.log',
         expect.stringContaining('[ERR]'),
         'utf8',
         expect.any(Function)
       )
 
       expect(fs.writeFile).toHaveBeenCalledWith(
-        '/home/user/.candypack/logs/test-service.js.err.log',
+        '/home/user/.odac/logs/test-service.js.err.log',
         expect.stringContaining(errorMessage),
         'utf8',
         expect.any(Function)

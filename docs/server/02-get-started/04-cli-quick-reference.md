@@ -1,6 +1,6 @@
 ## ⚡ CLI Quick Reference
 
-A compact reference for all CandyPack CLI commands with their prefix arguments.
+A compact reference for all Odac CLI commands with their prefix arguments.
 
 ### Basic Commands
 ```bash

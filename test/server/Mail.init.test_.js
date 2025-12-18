@@ -61,9 +61,9 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
       }
     }
 
-    // Setup global Candy mocks
-    global.Candy.setMock('core', 'Config', mockConfig)
-    global.Candy.setMock('server', 'Log', {
+    // Setup global Odac mocks
+    global.Odac.setMock('core', 'Config', mockConfig)
+    global.Odac.setMock('server', 'Log', {
       init: jest.fn().mockReturnValue({
         log: jest.fn(),
         error: jest.fn()
@@ -111,7 +111,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
         expect.objectContaining({
           logger: true,
           secure: false,
-          banner: 'CandyPack',
+          banner: 'Odac',
           size: 1024 * 1024 * 10,
           authOptional: true
         })
@@ -153,7 +153,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
         expect.objectContaining({
           logger: true,
           secure: false,
-          banner: 'CandyPack'
+          banner: 'Odac'
         })
       )
 
@@ -179,7 +179,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
       Mail.init()
 
       // Assert
-      expect(sqlite3.verbose().Database).toHaveBeenCalledWith('/home/user/.candypack/db/mail', expect.any(Function))
+      expect(sqlite3.verbose().Database).toHaveBeenCalledWith('/home/user/.odac/db/mail', expect.any(Function))
     })
 
     test('should create mail database tables on initialization', () => {
@@ -210,7 +210,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
       Mail.init()
 
       // Assert
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/user/.candypack/db', {recursive: true})
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/user/.odac/db', {recursive: true})
     })
 
     test('should handle database connection errors', () => {
@@ -225,7 +225,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
         })
       })
 
-      global.Candy.setMock('server', 'Log', {
+      global.Odac.setMock('server', 'Log', {
         init: jest.fn().mockReturnValue({
           log: jest.fn(),
           error: mockError
@@ -365,7 +365,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
     test('should handle SMTP server errors', () => {
       // Arrange
       const mockLog = jest.fn()
-      global.Candy.setMock('server', 'Log', {
+      global.Odac.setMock('server', 'Log', {
         init: jest.fn().mockReturnValue({
           log: mockLog,
           error: jest.fn()
@@ -388,7 +388,7 @@ describe('Mail Module - Server Initialization and Database Setup', () => {
     test('should handle secure SMTP server errors', () => {
       // Arrange
       const mockError = jest.fn()
-      global.Candy.setMock('server', 'Log', {
+      global.Odac.setMock('server', 'Log', {
         init: jest.fn().mockReturnValue({
           log: jest.fn(),
           error: mockError

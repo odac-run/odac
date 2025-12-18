@@ -1,6 +1,6 @@
 # AJAX Navigation
 
-CandyPack framework includes a built-in AJAX navigation system that enables smooth, single-page application (SPA) style navigation without full page reloads.
+Odac framework includes a built-in AJAX navigation system that enables smooth, single-page application (SPA) style navigation without full page reloads.
 
 ## Features
 

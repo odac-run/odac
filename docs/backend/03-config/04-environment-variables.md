@@ -1,6 +1,6 @@
 ## 🌍 Environment Variables
 
-CandyPack supports environment variables through `.env` files, making it easy to manage sensitive data and environment-specific settings.
+Odac supports environment variables through `.env` files, making it easy to manage sensitive data and environment-specific settings.
 
 ### Creating a .env File
 

@@ -110,7 +110,7 @@ module.exports = {
 
 ---
 
-Powered by [🍭 CandyPack](https://candypack.dev)
+Powered by [⚡ Odac](https://odac.run)
 `
         }
       }
@@ -126,7 +126,7 @@ Powered by [🍭 CandyPack](https://candypack.dev)
       '@semantic-release/git',
       {
         assets: ['package.json', 'CHANGELOG.md'],
-        message: '🍭 CandyPack v${nextRelease.version} Released'
+        message: '⚡ Odac v${nextRelease.version} Released'
       }
     ],
     '@semantic-release/github'

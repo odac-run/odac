@@ -1,6 +1,6 @@
 ## 🚨 Error Pages
 
-CandyPack framework provides built-in error handling with customizable error pages for different HTTP status codes. You can define custom error pages to provide a better user experience when things go wrong.
+Odac framework provides built-in error handling with customizable error pages for different HTTP status codes. You can define custom error pages to provide a better user experience when things go wrong.
 
 #### `error(statusCode, controller)`
 Maps HTTP error status codes to custom controller handlers. This allows you to create branded error pages instead of showing generic browser error messages.
@@ -74,7 +74,7 @@ Create corresponding view templates in your `view/errors/` directory:
 
 #### Default Error Handling
 
-If no custom error page is defined, CandyPack will fall back to its built-in error responses. It's recommended to at least define custom 404 and 500 error pages for a professional user experience.
+If no custom error page is defined, Odac will fall back to its built-in error responses. It's recommended to at least define custom 404 and 500 error pages for a professional user experience.
 
 #### Error Context
 

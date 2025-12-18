@@ -3,7 +3,7 @@
 #### `get(path, controller, options)`
 Defines a route that responds to `GET` requests. This is ideal for API endpoints that return data (like JSON).
 
--   `options`: By default, CandyPack protects routes from CSRF attacks by checking for a token. For a public API or stateless endpoint, you must disable this by passing `{ token: false }`. If you don't, the server will expect a token and will not return a response if one isn't provided.
+-   `options`: By default, Odac protects routes from CSRF attacks by checking for a token. For a public API or stateless endpoint, you must disable this by passing `{ token: false }`. If you don't, the server will expect a token and will not return a response if one isn't provided.
 
 ```javascript
 // An API endpoint at GET /api/users/123

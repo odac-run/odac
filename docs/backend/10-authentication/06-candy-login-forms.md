@@ -1,6 +1,6 @@
 # Candy Login Forms
 
-The `<candy:login>` component provides a zero-configuration way to create secure login forms. Simply write HTML, and CandyPack handles validation, security, authentication, and session management automatically.
+The `<candy:login>` component provides a zero-configuration way to create secure login forms. Simply write HTML, and Odac handles validation, security, authentication, and session management automatically.
 
 ## Quick Start
 
@@ -332,7 +332,7 @@ Or use content as button text:
 
 ### Automatic Security
 
-CandyPack automatically handles:
+Odac automatically handles:
 
 1. **CSRF Protection** - Form tokens prevent cross-site attacks
 2. **Password Verification** - Passwords are verified against bcrypt hashes
@@ -352,7 +352,7 @@ Each form gets a unique token when rendered:
 
 ## HTML5 Validation
 
-CandyPack automatically adds HTML5 validation attributes for better UX:
+Odac automatically adds HTML5 validation attributes for better UX:
 
 ```html
 <!-- This field -->
@@ -548,7 +548,7 @@ The login form supports multiple authentication methods:
 ## Best Practices
 
 1. **Always use HTTPS** - Login forms should only be served over HTTPS
-2. **Validate on both client and server** - CandyPack does this automatically
+2. **Validate on both client and server** - Odac does this automatically
 3. **Provide clear error messages** - Don't reveal whether email/username exists
 4. **Add "Forgot Password" link** - Help users recover their accounts
 5. **Consider rate limiting** - Prevent brute force attacks (implement in controller)

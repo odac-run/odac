@@ -3,14 +3,14 @@ const nodeCrypto = require('crypto')
 class Form {
   static FORM_TYPES = ['register', 'login', 'form']
 
-  static parse(content, Candy) {
+  static parse(content, Odac) {
     for (const type of this.FORM_TYPES) {
-      content = this.parseFormType(content, Candy, type)
+      content = this.parseFormType(content, Odac, type)
     }
     return content
   }
 
-  static parseFormType(content, Candy, type) {
+  static parseFormType(content, Odac, type) {
     const regex = new RegExp(`<candy:${type}[\\s\\S]*?<\\/candy:${type}>`, 'g')
     const matches = content.match(regex)
     if (!matches) return content
@@ -19,7 +19,7 @@ class Form {
       const formToken = nodeCrypto.randomBytes(32).toString('hex')
       const formConfig = this.extractConfig(match, formToken, type)
 
-      this.storeConfig(formToken, formConfig, Candy, type)
+      this.storeConfig(formToken, formConfig, Odac, type)
 
       const generatedForm = this.generateForm(match, formConfig, formToken, type)
       content = content.replace(match, generatedForm)
@@ -38,13 +38,13 @@ class Form {
     }
   }
 
-  static storeConfig(token, config, Candy, type) {
+  static storeConfig(token, config, Odac, type) {
     if (type === 'register') {
-      this.storeRegisterConfig(token, config, Candy)
+      this.storeRegisterConfig(token, config, Odac)
     } else if (type === 'login') {
-      this.storeLoginConfig(token, config, Candy)
+      this.storeLoginConfig(token, config, Odac)
     } else if (type === 'form') {
-      this.storeFormConfig(token, config, Candy)
+      this.storeFormConfig(token, config, Odac)
     }
   }
 
@@ -195,21 +195,21 @@ class Form {
     return set
   }
 
-  static storeRegisterConfig(token, config, Candy) {
-    if (!Candy.View) Candy.View = {}
-    if (!Candy.View.registerForms) Candy.View.registerForms = {}
+  static storeRegisterConfig(token, config, Odac) {
+    if (!Odac.View) Odac.View = {}
+    if (!Odac.View.registerForms) Odac.View.registerForms = {}
 
     const formData = {
       config: config,
       created: Date.now(),
       expires: Date.now() + 30 * 60 * 1000,
-      sessionId: Candy.Request.session('_client'),
-      userAgent: Candy.Request.header('user-agent'),
-      ip: Candy.Request.ip
+      sessionId: Odac.Request.session('_client'),
+      userAgent: Odac.Request.header('user-agent'),
+      ip: Odac.Request.ip
     }
 
-    Candy.View.registerForms[token] = formData
-    Candy.Request.session(`_register_form_${token}`, formData)
+    Odac.View.registerForms[token] = formData
+    Odac.Request.session(`_register_form_${token}`, formData)
   }
 
   static generateRegisterForm(originalHtml, config, formToken) {
@@ -236,10 +236,10 @@ class Form {
 
     innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
 
-    let html = `<form class="candy-register-form" data-candy-register="${formToken}" method="POST" action="/_candy/register" novalidate>\n`
-    html += `  <input type="hidden" name="_candy_register_token" value="${formToken}">\n`
+    let html = `<form class="candy-register-form" data-odac-register="${formToken}" method="POST" action="/_candy/register" novalidate>\n`
+    html += `  <input type="hidden" name="_odac_register_token" value="${formToken}">\n`
     html += innerContent
-    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `\n  <span class="odac-form-success" style="display:none;"></span>\n`
     html += `</form>`
 
     return html
@@ -412,21 +412,21 @@ class Form {
     return config
   }
 
-  static storeLoginConfig(token, config, Candy) {
-    if (!Candy.View) Candy.View = {}
-    if (!Candy.View.loginForms) Candy.View.loginForms = {}
+  static storeLoginConfig(token, config, Odac) {
+    if (!Odac.View) Odac.View = {}
+    if (!Odac.View.loginForms) Odac.View.loginForms = {}
 
     const formData = {
       config: config,
       created: Date.now(),
       expires: Date.now() + 30 * 60 * 1000,
-      sessionId: Candy.Request.session('_client'),
-      userAgent: Candy.Request.header('user-agent'),
-      ip: Candy.Request.ip
+      sessionId: Odac.Request.session('_client'),
+      userAgent: Odac.Request.header('user-agent'),
+      ip: Odac.Request.ip
     }
 
-    Candy.View.loginForms[token] = formData
-    Candy.Request.session(`_login_form_${token}`, formData)
+    Odac.View.loginForms[token] = formData
+    Odac.Request.session(`_login_form_${token}`, formData)
   }
 
   static generateLoginForm(originalHtml, config, formToken) {
@@ -451,10 +451,10 @@ class Form {
       innerContent = innerContent.replace(submitMatch[0], submitButton)
     }
 
-    let html = `<form class="candy-login-form" data-candy-login="${formToken}" method="POST" action="/_candy/login" novalidate>\n`
-    html += `  <input type="hidden" name="_candy_login_token" value="${formToken}">\n`
+    let html = `<form class="candy-login-form" data-odac-login="${formToken}" method="POST" action="/_candy/login" novalidate>\n`
+    html += `  <input type="hidden" name="_odac_login_token" value="${formToken}">\n`
     html += innerContent
-    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `\n  <span class="odac-form-success" style="display:none;"></span>\n`
     html += `</form>`
 
     return html
@@ -538,21 +538,21 @@ class Form {
     return config
   }
 
-  static storeFormConfig(token, config, Candy) {
-    if (!Candy.View) Candy.View = {}
-    if (!Candy.View.customForms) Candy.View.customForms = {}
+  static storeFormConfig(token, config, Odac) {
+    if (!Odac.View) Odac.View = {}
+    if (!Odac.View.customForms) Odac.View.customForms = {}
 
     const formData = {
       config: config,
       created: Date.now(),
       expires: Date.now() + 30 * 60 * 1000,
-      sessionId: Candy.Request.session('_client'),
-      userAgent: Candy.Request.header('user-agent'),
-      ip: Candy.Request.ip
+      sessionId: Odac.Request.session('_client'),
+      userAgent: Odac.Request.header('user-agent'),
+      ip: Odac.Request.ip
     }
 
-    Candy.View.customForms[token] = formData
-    Candy.Request.session(`_custom_form_${token}`, formData)
+    Odac.View.customForms[token] = formData
+    Odac.Request.session(`_custom_form_${token}`, formData)
   }
 
   static generateCustomForm(originalHtml, config, formToken) {
@@ -584,13 +584,13 @@ class Form {
 
     innerContent = innerContent.replace(/<candy:set[^>]*\/?>/g, '')
 
-    let formAttrs = `class="candy-custom-form${config.class ? ' ' + escapeHtml(config.class) : ''}" data-candy-form="${escapeHtml(formToken)}" method="${escapeHtml(method)}" action="${escapeHtml(action)}" novalidate`
+    let formAttrs = `class="candy-custom-form${config.class ? ' ' + escapeHtml(config.class) : ''}" data-odac-form="${escapeHtml(formToken)}" method="${escapeHtml(method)}" action="${escapeHtml(action)}" novalidate`
     if (config.id) formAttrs += ` id="${escapeHtml(config.id)}"`
 
     let html = `<form ${formAttrs}>\n`
-    html += `  <input type="hidden" name="_candy_form_token" value="${escapeHtml(formToken)}">\n`
+    html += `  <input type="hidden" name="_odac_form_token" value="${escapeHtml(formToken)}">\n`
     html += innerContent
-    html += `\n  <span class="candy-form-success" style="display:none;"></span>\n`
+    html += `\n  <span class="odac-form-success" style="display:none;"></span>\n`
     html += `</form>`
 
     return html

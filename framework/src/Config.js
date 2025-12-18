@@ -21,7 +21,7 @@ module.exports = {
 
   init: function () {
     try {
-      this.system = JSON.parse(fs.readFileSync(os.homedir() + '/.candypack/config.json'))
+      this.system = JSON.parse(fs.readFileSync(os.homedir() + '/.odac/config.json'))
     } catch {
       this.system = {}
     }

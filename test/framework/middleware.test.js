@@ -5,7 +5,7 @@ describe('Middleware System', () => {
 
   beforeEach(() => {
     route = new Route()
-    global.Candy = {Route: {buff: 'test'}}
+    global.Odac = {Route: {buff: 'test'}}
     global.__dir = __dirname
   })
 

@@ -1,6 +1,6 @@
 ## ✉️ The `Mail` Service
 
-The `Candy.Mail` service is your friendly neighborhood postal worker. It provides a super simple way to send emails using the mail server settings you've already configured in the CandyPack core.
+The `Candy.Mail` service is your friendly neighborhood postal worker. It provides a super simple way to send emails using the mail server settings you've already configured in the Odac core.
 
 #### How to Send an Email
 
