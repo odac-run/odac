@@ -503,7 +503,7 @@ class Odac {
           return xhr
         },
         error: () => {
-          console.error('CandyJS:', 'Somethings went wrong...', '\nForm: ' + obj.form + '\nRequest: ' + formElement.getAttribute('action'))
+          console.error('Odac:', 'Somethings went wrong...', '\nForm: ' + obj.form + '\nRequest: ' + formElement.getAttribute('action'))
         },
         complete: () => {
           const submitButtons = formElement.querySelectorAll('button[type="submit"], input[type="submit"]')
