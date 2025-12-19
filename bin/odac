@@ -2,9 +2,5 @@
 
 let args = process.argv
 if(process.argv[0].includes('node')) args = process.argv.slice(1)
-if (args[1] === 'framework') {
-  require('../framework/index.js')
-  return
-}
 
 require(args.includes('watchdog') ? '../watchdog/index.js' : '../cli/index.js')
