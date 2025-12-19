@@ -1,13 +1,13 @@
 /**
- * CandyPack Template - Client-Side Application
+ * Odac Template - Client-Side Application
  *
- * This file demonstrates candy.js features including:
- * - AJAX page loading with Candy.loader() for smooth navigation
+ * This file demonstrates odac.js features including:
+ * - AJAX page loading with odac.loader() for smooth navigation
  * - History API integration
  * - Event delegation
  */
 
-Candy.action({
+odac.action({
   /**
    * AJAX Navigation
    * Enables smooth page transitions without full page reloads
@@ -22,7 +22,7 @@ Candy.action({
 
   /**
    * Custom functions
-   * These become available as Candy.fn.functionName()
+   * These become available as odac.fn.functionName()
    */
   function: {
     /**
@@ -56,7 +56,7 @@ Candy.action({
    */
   load: function () {
     // Set initial active navigation state
-    Candy.fn.updateActiveNav(window.location.pathname)
+    odac.fn.updateActiveNav(window.location.pathname)
   },
 
   /**

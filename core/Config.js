@@ -2,7 +2,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const {log, error} = Candy.core('Log', false).init('Config')
+const {log, error} = Odac.core('Log', false).init('Config')
 
 class Config {
   #dir
@@ -29,7 +29,9 @@ class Config {
     ssl: ['ssl'],
     mail: ['mail'],
     dns: ['dns'],
-    api: ['api']
+    api: ['api'],
+    firewall: ['firewall'],
+    hub: ['hub']
   }
 
   // Initialize default configuration for module keys
@@ -47,6 +49,17 @@ class Config {
           config[key] = {}
         } else if (key === 'services') {
           config[key] = []
+        } else if (key === 'firewall') {
+          config[key] = {
+            enabled: true,
+            blacklist: [],
+            whitelist: [],
+            rateLimit: {
+              enabled: true,
+              windowMs: 60000,
+              max: 300
+            }
+          }
         } else {
           config[key] = {}
         }
@@ -684,7 +697,7 @@ class Config {
 
   init() {
     try {
-      this.#dir = path.join(os.homedir(), '.candypack')
+      this.#dir = path.join(os.homedir(), '.odac')
       this.#file = path.join(this.#dir, 'config.json')
       this.#configDir = path.join(this.#dir, 'config')
 
@@ -798,7 +811,7 @@ class Config {
 
       // Set up auto-save interval with modular support
       // Handle process.mainModule safely
-      if (process.mainModule && process.mainModule.path && !process.mainModule.path.includes('node_modules/candypack/bin')) {
+      if (process.mainModule && process.mainModule.path && !process.mainModule.path.includes('node_modules/odac/bin')) {
         setInterval(() => this.#save(), 500).unref()
         this.config = this.#proxy(this.config)
       }

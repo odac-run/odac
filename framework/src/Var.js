@@ -44,7 +44,7 @@ class Var {
     let hour = date.getHours()
     let minute = date.getMinutes()
     let second = date.getSeconds()
-    return Candy.Var(format).replace({
+    return Odac.Var(format).replace({
       Y: year,
       m: month < 10 ? `0${month}` : month,
       d: day < 10 ? `0${day}` : day,
@@ -56,7 +56,7 @@ class Var {
   }
 
   decrypt(key) {
-    if (!key) key = Candy.Config.encrypt.key
+    if (!key) key = Odac.Config.encrypt.key
     const iv = '2dea8a25e5e8f004'
     try {
       const encryptedText = Buffer.from(this.#value, 'base64')
@@ -71,7 +71,7 @@ class Var {
   }
 
   encrypt(key) {
-    if (!key) key = Candy.Config.encrypt.key
+    if (!key) key = Odac.Config.encrypt.key
     const iv = '2dea8a25e5e8f004'
     const cipher = nodeCrypto.createCipheriv('aes-256-cbc', key, iv)
     let encrypted = cipher.update(this.#value)
@@ -88,7 +88,8 @@ class Var {
   }
 
   html() {
-    return this.#value.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    if (this.#value === null || this.#value === undefined) return ''
+    return String(this.#value).replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
 
   is(...args) {
@@ -96,7 +97,7 @@ class Var {
     let any = this.#any
     this.#any = false
     let result = !any
-    //     if(\Candy::config('locale')->get() == 'tr') $this->str = \Candy::var($this->str)->clear('Ç','ç','Ğ','ğ','İ','ı','Ö','ö','Ş','ş','Ü','ü');
+    //     if(\Odac::config('locale')->get() == 'tr') $this->str = \Odac::var($this->str)->clear('Ç','ç','Ğ','ğ','İ','ı','Ö','ö','Ş','ş','Ü','ü');
     if (args.includes('alpha')) result = (result || any) && ((any && result) || /^[A-Za-z]+$/.test(this.#value))
     if (args.includes('alphaspace')) result = (result || any) && ((any && result) || /^[A-Za-z\s]+$/.test(this.#value))
     if (args.includes('alphanumeric')) result = (result || any) && ((any && result) || /^[A-Za-z0-9]+$/.test(this.#value))
@@ -159,7 +160,7 @@ class Var {
     if (args.length == 1) args = args[0]
     if (['array', 'object'].includes(typeof this.#value)) {
       let new_value = {}
-      for (const key of Object.keys(this.#value)) new_value[key] = Candy.Var(this.#value[key]).replace(args)
+      for (const key of Object.keys(this.#value)) new_value[key] = Odac.Var(this.#value[key]).replace(args)
       return new_value
     }
     for (const arg of Object.keys(args)) this.#value = this.#value.replace(arg, args[arg])

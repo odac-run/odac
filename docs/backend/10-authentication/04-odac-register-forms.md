@@ -1,6 +1,6 @@
-# Candy Register Forms
+# Odac Register Forms
 
-The `<candy:register>` component provides a zero-configuration way to create secure registration forms. Simply write HTML, and CandyPack handles validation, security, database operations, and auto-login automatically.
+The `<odac:register>` component provides a zero-configuration way to create secure registration forms. Simply write HTML, and Odac handles validation, security, database operations, and auto-login automatically.
 
 ## Quick Start
 
@@ -22,21 +22,21 @@ That's all you need! The `auth` configuration is optional.
 ### 2. Create Your Form (view/content/register.html)
 
 ```html
-<candy:register redirect="/dashboard">
-  <candy:field name="email" type="email" placeholder="Email" unique>
-    <candy:validate rule="required|email" message="Please enter a valid email"/>
-  </candy:field>
+<odac:register redirect="/dashboard">
+  <odac:field name="email" type="email" placeholder="Email" unique>
+    <odac:validate rule="required|email" message="Please enter a valid email"/>
+  </odac:field>
   
-  <candy:field name="username" type="text" placeholder="Username" unique>
-    <candy:validate rule="required|minlen:4" message="Username must be at least 4 characters"/>
-  </candy:field>
+  <odac:field name="username" type="text" placeholder="Username" unique>
+    <odac:validate rule="required|minlen:4" message="Username must be at least 4 characters"/>
+  </odac:field>
   
-  <candy:field name="password" type="password" placeholder="Password">
-    <candy:validate rule="required|minlen:8" message="Password must be at least 8 characters"/>
-  </candy:field>
+  <odac:field name="password" type="password" placeholder="Password">
+    <odac:validate rule="required|minlen:8" message="Password must be at least 8 characters"/>
+  </odac:field>
   
-  <candy:submit>Create Account</candy:submit>
-</candy:register>
+  <odac:submit>Create Account</odac:submit>
+</odac:register>
 ```
 
 That's it! No JavaScript, no controller code, no SQL needed. The form automatically:
@@ -76,16 +76,16 @@ If you want to customize table names or primary key:
 
 ## Form Attributes
 
-### `<candy:register>`
+### `<odac:register>`
 
 Main form container with configuration options:
 
 ```html
-<candy:register 
+<odac:register 
   redirect="/dashboard"    <!-- Redirect URL after successful registration -->
   autologin="true">        <!-- Auto-login after registration (default: true) -->
   <!-- fields here -->
-</candy:register>
+</odac:register>
 ```
 
 **Attributes:**
@@ -94,20 +94,20 @@ Main form container with configuration options:
 
 ## Field Types
 
-### `<candy:field>`
+### `<odac:field>`
 
 Defines an input field with validation rules:
 
 ```html
-<candy:field 
+<odac:field 
   name="email"              <!-- Field name (required) -->
   type="email"              <!-- Input type (default: text) -->
   placeholder="Email"       <!-- Placeholder text -->
   label="Email Address"     <!-- Label text (optional) -->
   unique>                   <!-- Check uniqueness in database -->
   
-  <candy:validate rule="required|email" message="Valid email required"/>
-</candy:field>
+  <odac:validate rule="required|email" message="Valid email required"/>
+</odac:field>
 ```
 
 **Attributes:**
@@ -132,19 +132,19 @@ Use the `skip` attribute for fields that should be validated but not saved to th
 
 ```html
 <!-- Password confirmation - validate but don't save -->
-<candy:field name="confirm_password" type="password" placeholder="Confirm Password" skip>
-  <candy:validate rule="required|same:password" message="Passwords must match"/>
-</candy:field>
+<odac:field name="confirm_password" type="password" placeholder="Confirm Password" skip>
+  <odac:validate rule="required|same:password" message="Passwords must match"/>
+</odac:field>
 
 <!-- Terms acceptance - validate but don't save -->
-<candy:field name="terms" type="checkbox" label="I accept the terms" skip>
-  <candy:validate rule="accepted" message="You must accept the terms"/>
-</candy:field>
+<odac:field name="terms" type="checkbox" label="I accept the terms" skip>
+  <odac:validate rule="accepted" message="You must accept the terms"/>
+</odac:field>
 
 <!-- Captcha verification - validate but don't save -->
-<candy:field name="captcha" type="text" placeholder="Enter captcha" skip>
-  <candy:validate rule="required" message="Please complete the captcha"/>
-</candy:field>
+<odac:field name="captcha" type="text" placeholder="Enter captcha" skip>
+  <odac:validate rule="required" message="Please complete the captcha"/>
+</odac:field>
 ```
 
 **Common Use Cases:**
@@ -156,12 +156,12 @@ Use the `skip` attribute for fields that should be validated but not saved to th
 
 ## Validation Rules
 
-### `<candy:validate>`
+### `<odac:validate>`
 
 Defines validation rules for a field:
 
 ```html
-<candy:validate 
+<odac:validate 
   rule="required|minlen:4|alphanumeric"
   message="Username must be 4+ alphanumeric characters"/>
 ```
@@ -210,27 +210,27 @@ Defines validation rules for a field:
 
 ### Multiple Validation Rules
 
-You can add multiple `<candy:validate>` tags for different error messages:
+You can add multiple `<odac:validate>` tags for different error messages:
 
 ```html
-<candy:field name="username" type="text" unique>
-  <candy:validate rule="required" message="Username is required"/>
-  <candy:validate rule="minlen:4" message="Username must be at least {min} characters"/>
-  <candy:validate rule="maxlen:20" message="Username cannot exceed {max} characters"/>
-  <candy:validate rule="alphanumeric" message="Username can only contain letters and numbers"/>
-  <candy:validate rule="unique" message="Username '{value}' is already taken"/>
-</candy:field>
+<odac:field name="username" type="text" unique>
+  <odac:validate rule="required" message="Username is required"/>
+  <odac:validate rule="minlen:4" message="Username must be at least {min} characters"/>
+  <odac:validate rule="maxlen:20" message="Username cannot exceed {max} characters"/>
+  <odac:validate rule="alphanumeric" message="Username can only contain letters and numbers"/>
+  <odac:validate rule="unique" message="Username '{value}' is already taken"/>
+</odac:field>
 ```
 
 Or combine rules in a single tag:
 
 ```html
-<candy:field name="username" type="text" unique>
-  <candy:validate 
+<odac:field name="username" type="text" unique>
+  <odac:validate 
     rule="required|minlen:4|maxlen:20|alphanumeric" 
     message="Username must be 4-20 alphanumeric characters"/>
-  <candy:validate rule="unique" message="Username '{value}' is already taken"/>
-</candy:field>
+  <odac:validate rule="unique" message="Username '{value}' is already taken"/>
+</odac:field>
 ```
 
 ## Message Placeholders
@@ -238,17 +238,17 @@ Or combine rules in a single tag:
 Use placeholders in error messages for dynamic values:
 
 ```html
-<candy:field name="username" type="text">
-  <candy:validate 
+<odac:field name="username" type="text">
+  <odac:validate 
     rule="minlen:4" 
     message="Username '{value}' is too short. Minimum {min} characters required"/>
-</candy:field>
+</odac:field>
 
-<candy:field name="age" type="number">
-  <candy:validate 
+<odac:field name="age" type="number">
+  <odac:validate 
     rule="min:18|max:120" 
     message="Age must be between {min} and {max} years"/>
-</candy:field>
+</odac:field>
 ```
 
 **Available Placeholders:**
@@ -262,25 +262,25 @@ Use placeholders in error messages for dynamic values:
 
 ## Backend-Only Values
 
-### `<candy:set>`
+### `<odac:set>`
 
 Set values that are processed only on the backend (not visible in HTML):
 
 ```html
-<candy:register redirect="/dashboard">
+<odac:register redirect="/dashboard">
   <!-- User input fields -->
-  <candy:field name="email" type="email" unique>
-    <candy:validate rule="required|email"/>
-  </candy:field>
+  <odac:field name="email" type="email" unique>
+    <odac:validate rule="required|email"/>
+  </odac:field>
   
   <!-- Backend-only values -->
-  <candy:set name="role" value="user"/>
-  <candy:set name="status" value="pending"/>
-  <candy:set name="registered_at" compute="now"/>
-  <candy:set name="ip_address" compute="ip"/>
+  <odac:set name="role" value="user"/>
+  <odac:set name="status" value="pending"/>
+  <odac:set name="registered_at" compute="now"/>
+  <odac:set name="ip_address" compute="ip"/>
   
-  <candy:submit>Register</candy:submit>
-</candy:register>
+  <odac:submit>Register</odac:submit>
+</odac:register>
 ```
 
 **Attributes:**
@@ -295,13 +295,13 @@ Set values that are processed only on the backend (not visible in HTML):
 Use `compute` attribute for dynamic values:
 
 ```html
-<candy:set name="registered_at" compute="now"/>        <!-- Unix timestamp -->
-<candy:set name="date" compute="date"/>                <!-- 2025-01-20 -->
-<candy:set name="datetime" compute="datetime"/>        <!-- ISO 8601 -->
-<candy:set name="timestamp" compute="timestamp"/>      <!-- Milliseconds -->
-<candy:set name="ip_address" compute="ip"/>            <!-- User's IP -->
-<candy:set name="user_agent" compute="user_agent"/>    <!-- Browser info -->
-<candy:set name="uuid" compute="uuid"/>                <!-- UUID v4 -->
+<odac:set name="registered_at" compute="now"/>        <!-- Unix timestamp -->
+<odac:set name="date" compute="date"/>                <!-- 2025-01-20 -->
+<odac:set name="datetime" compute="datetime"/>        <!-- ISO 8601 -->
+<odac:set name="timestamp" compute="timestamp"/>      <!-- Milliseconds -->
+<odac:set name="ip_address" compute="ip"/>            <!-- User's IP -->
+<odac:set name="user_agent" compute="user_agent"/>    <!-- Browser info -->
+<odac:set name="uuid" compute="uuid"/>                <!-- UUID v4 -->
 ```
 
 ### Conditional Values
@@ -309,103 +309,103 @@ Use `compute` attribute for dynamic values:
 Use `if-empty` to set a default only if the user didn't provide a value:
 
 ```html
-<candy:field name="country" type="text" placeholder="Country (optional)">
+<odac:field name="country" type="text" placeholder="Country (optional)">
   <!-- User can optionally fill this -->
-</candy:field>
+</odac:field>
 
-<candy:set name="country" value="TR" if-empty/>
+<odac:set name="country" value="TR" if-empty/>
 <!-- If user leaves it empty, set to "TR" -->
 ```
 
 ## Submit Button
 
-### `<candy:submit>`
+### `<odac:submit>`
 
 Defines the submit button:
 
 ```html
-<candy:submit 
+<odac:submit 
   text="Create Account"           <!-- Button text -->
   loading="Creating account...">  <!-- Loading state text -->
-</candy:submit>
+</odac:submit>
 ```
 
 Or use content as button text:
 
 ```html
-<candy:submit>Create Account</candy:submit>
+<odac:submit>Create Account</odac:submit>
 ```
 
 ## Complete Example
 
 ```html
-<candy:register redirect="/dashboard" autologin="true">
+<odac:register redirect="/dashboard" autologin="true">
   
   <!-- Email Field -->
-  <candy:field name="email" type="email" placeholder="Email Address" unique>
-    <candy:validate rule="required" message="Email is required"/>
-    <candy:validate rule="email" message="Please enter a valid email address"/>
-    <candy:validate rule="unique" message="The email '{value}' is already registered"/>
-  </candy:field>
+  <odac:field name="email" type="email" placeholder="Email Address" unique>
+    <odac:validate rule="required" message="Email is required"/>
+    <odac:validate rule="email" message="Please enter a valid email address"/>
+    <odac:validate rule="unique" message="The email '{value}' is already registered"/>
+  </odac:field>
   
   <!-- Username Field -->
-  <candy:field name="username" type="text" placeholder="Username" unique>
-    <candy:validate rule="required" message="Username is required"/>
-    <candy:validate rule="minlen:4" message="Username must be at least {min} characters"/>
-    <candy:validate rule="maxlen:20" message="Username cannot exceed {max} characters"/>
-    <candy:validate rule="alphanumeric" message="Only letters and numbers allowed"/>
-    <candy:validate rule="unique" message="Username '{value}' is already taken"/>
-  </candy:field>
+  <odac:field name="username" type="text" placeholder="Username" unique>
+    <odac:validate rule="required" message="Username is required"/>
+    <odac:validate rule="minlen:4" message="Username must be at least {min} characters"/>
+    <odac:validate rule="maxlen:20" message="Username cannot exceed {max} characters"/>
+    <odac:validate rule="alphanumeric" message="Only letters and numbers allowed"/>
+    <odac:validate rule="unique" message="Username '{value}' is already taken"/>
+  </odac:field>
   
   <!-- Password Field -->
-  <candy:field name="password" type="password" placeholder="Password">
-    <candy:validate rule="required" message="Password is required"/>
-    <candy:validate rule="minlen:8" message="Password must be at least {min} characters"/>
-  </candy:field>
+  <odac:field name="password" type="password" placeholder="Password">
+    <odac:validate rule="required" message="Password is required"/>
+    <odac:validate rule="minlen:8" message="Password must be at least {min} characters"/>
+  </odac:field>
   
   <!-- Password Confirmation -->
-  <candy:field name="password_confirm" type="password" placeholder="Confirm Password" skip>
-    <candy:validate rule="required" message="Please confirm your password"/>
-    <candy:validate rule="same:password" message="Passwords do not match"/>
-  </candy:field>
+  <odac:field name="password_confirm" type="password" placeholder="Confirm Password" skip>
+    <odac:validate rule="required" message="Please confirm your password"/>
+    <odac:validate rule="same:password" message="Passwords do not match"/>
+  </odac:field>
   
   <!-- Full Name -->
-  <candy:field name="name" type="text" placeholder="Full Name">
-    <candy:validate rule="required" message="Name is required"/>
-    <candy:validate rule="alphaspace" message="Name can only contain letters and spaces"/>
-    <candy:validate rule="minlen:3" message="Name must be at least {min} characters"/>
-  </candy:field>
+  <odac:field name="name" type="text" placeholder="Full Name">
+    <odac:validate rule="required" message="Name is required"/>
+    <odac:validate rule="alphaspace" message="Name can only contain letters and spaces"/>
+    <odac:validate rule="minlen:3" message="Name must be at least {min} characters"/>
+  </odac:field>
   
   <!-- Age -->
-  <candy:field name="age" type="number" placeholder="Age">
-    <candy:validate rule="required" message="Age is required"/>
-    <candy:validate rule="min:18" message="You must be at least {min} years old"/>
-    <candy:validate rule="max:120" message="Please enter a valid age"/>
-  </candy:field>
+  <odac:field name="age" type="number" placeholder="Age">
+    <odac:validate rule="required" message="Age is required"/>
+    <odac:validate rule="min:18" message="You must be at least {min} years old"/>
+    <odac:validate rule="max:120" message="Please enter a valid age"/>
+  </odac:field>
   
   <!-- Terms Checkbox -->
-  <candy:field name="terms" type="checkbox" label="I agree to the terms and conditions" skip>
-    <candy:validate rule="accepted" message="You must accept the terms to continue"/>
-  </candy:field>
+  <odac:field name="terms" type="checkbox" label="I agree to the terms and conditions" skip>
+    <odac:validate rule="accepted" message="You must accept the terms to continue"/>
+  </odac:field>
   
   <!-- Backend-only values -->
-  <candy:set name="role" value="user"/>
-  <candy:set name="status" value="active"/>
-  <candy:set name="registered_at" compute="now"/>
-  <candy:set name="ip_address" compute="ip"/>
-  <candy:set name="user_agent" compute="user_agent"/>
+  <odac:set name="role" value="user"/>
+  <odac:set name="status" value="active"/>
+  <odac:set name="registered_at" compute="now"/>
+  <odac:set name="ip_address" compute="ip"/>
+  <odac:set name="user_agent" compute="user_agent"/>
   
   <!-- Submit Button -->
-  <candy:submit text="Create Account" loading="Creating your account..."/>
+  <odac:submit text="Create Account" loading="Creating your account..."/>
   
-</candy:register>
+</odac:register>
 ```
 
 ## Security Features
 
 ### Automatic Security
 
-CandyPack automatically handles:
+Odac automatically handles:
 
 1. **CSRF Protection** - Form tokens prevent cross-site attacks
 2. **Password Hashing** - Passwords are hashed with bcrypt
@@ -420,29 +420,29 @@ Each form gets a unique token when rendered:
 - Token is stored server-side with field whitelist
 - Token expires after 30 minutes
 - Only fields defined in the view are accepted
-- Backend-only values (`<candy:set>`) are never exposed to HTML
+- Backend-only values (`<odac:set>`) are never exposed to HTML
 
 ### Unique Field Checking
 
 Fields marked with `unique` attribute are checked against the database:
 
 ```html
-<candy:field name="email" type="email" unique>
-  <candy:validate rule="unique" message="Email already exists"/>
-</candy:field>
+<odac:field name="email" type="email" unique>
+  <odac:validate rule="unique" message="Email already exists"/>
+</odac:field>
 ```
 
 The system automatically queries the auth table to check for duplicates.
 
 ## HTML5 Validation
 
-CandyPack automatically adds HTML5 validation attributes for better UX:
+Odac automatically adds HTML5 validation attributes for better UX:
 
 ```html
 <!-- This field -->
-<candy:field name="username" type="text">
-  <candy:validate rule="required|minlen:4|maxlen:20|alphanumeric"/>
-</candy:field>
+<odac:field name="username" type="text">
+  <odac:validate rule="required|minlen:4|maxlen:20|alphanumeric"/>
+</odac:field>
 
 <!-- Generates this HTML -->
 <input 
@@ -506,7 +506,7 @@ Customize table names and primary key if needed:
 
 **Auto-Creation (Recommended):**
 
-The users table is created automatically on first registration! CandyPack analyzes your form fields and creates the appropriate table structure:
+The users table is created automatically on first registration! Odac analyzes your form fields and creates the appropriate table structure:
 
 - Fields with `unique` attribute → `VARCHAR(255) NOT NULL UNIQUE`
 - Password field → `VARCHAR(255) NOT NULL` (for bcrypt hashes)
@@ -564,20 +564,20 @@ CREATE TABLE `candy_auth` (
 
 ### Display Errors
 
-Error messages are automatically displayed in `<span>` elements with `candy-form-error` attribute:
+Error messages are automatically displayed in `<span>` elements with `odac-form-error` attribute:
 
 ```html
 <!-- Errors appear here automatically -->
-<span class="candy-form-error" candy-form-error="email" style="display:none;"></span>
+<span class="odac-form-error" odac-form-error="email" style="display:none;"></span>
 ```
 
 ### Success Messages
 
-Success messages appear in elements with `candy-form-success` class:
+Success messages appear in elements with `odac-form-success` class:
 
 ```html
 <!-- Success message appears here -->
-<span class="candy-form-success" style="display:none;"></span>
+<span class="odac-form-success" style="display:none;"></span>
 ```
 
 ### Custom Styling
@@ -585,13 +585,13 @@ Success messages appear in elements with `candy-form-success` class:
 Style error and success messages with CSS:
 
 ```css
-.candy-form-error {
+.odac-form-error {
   color: red;
   font-size: 0.875rem;
   margin-top: 0.25rem;
 }
 
-.candy-form-success {
+.odac-form-success {
   color: green;
   font-size: 1rem;
   padding: 1rem;
@@ -600,11 +600,11 @@ Style error and success messages with CSS:
   border-radius: 0.25rem;
 }
 
-.candy-field {
+.odac-field {
   margin-bottom: 1rem;
 }
 
-input._candy_error {
+input._odac_error {
   border-color: red;
 }
 ```
@@ -617,13 +617,13 @@ You can define custom callbacks for computed values:
 
 ```javascript
 // In your page controller or global script
-Candy.fn.generateReferralCode = async (Candy) => {
+Odac.fn.generateReferralCode = async (Odac) => {
   return Math.random().toString(36).substring(2, 10).toUpperCase()
 }
 ```
 
 ```html
-<candy:set name="referral_code" callback="generateReferralCode"/>
+<odac:set name="referral_code" callback="generateReferralCode"/>
 ```
 
 ### Conditional Registration
@@ -631,21 +631,21 @@ Candy.fn.generateReferralCode = async (Candy) => {
 Disable auto-login and handle redirect manually:
 
 ```html
-<candy:register autologin="false">
+<odac:register autologin="false">
   <!-- fields -->
-</candy:register>
+</odac:register>
 ```
 
 Then handle the response in JavaScript if needed (though not required for basic usage).
 
 ## Best Practices
 
-1. **Always validate on both client and server** - CandyPack does this automatically
+1. **Always validate on both client and server** - Odac does this automatically
 2. **Use unique attribute for email/username** - Prevents duplicate accounts
 3. **Set minimum password length** - Use `minlen:8` or higher
 4. **Use password confirmation** - Add a `password_confirm` field with `same:password` rule
 5. **Add terms checkbox** - Use `accepted` rule for legal compliance
-6. **Use backend-only values** - Store metadata with `<candy:set>`
+6. **Use backend-only values** - Store metadata with `<odac:set>`
 7. **Provide clear error messages** - Use placeholders for dynamic values
 8. **Test form expiration** - Forms expire after 30 minutes
 
@@ -660,7 +660,7 @@ Then handle the response in JavaScript if needed (though not required for basic 
 ### Validation Not Working
 
 - Ensure validation rules are spelled correctly
-- Check that field names match between `<candy:field>` and validation
+- Check that field names match between `<odac:field>` and validation
 - Verify HTML5 validation isn't blocking submission
 
 ### Unique Check Failing

@@ -1,4 +1,4 @@
-class candy {
+class Odac {
   actions = {}
   #data = null
   fn = {}
@@ -52,7 +52,7 @@ class candy {
         }
 
         document.dispatchEvent(
-          new CustomEvent('candy:ajaxSuccess', {
+          new CustomEvent('odac:ajaxSuccess', {
             detail: {response: responseData, status: xhr.statusText, xhr, requestUrl: url}
           })
         )
@@ -107,7 +107,7 @@ class candy {
   }
 
   #on(element, event, selector, handler) {
-    element.addEventListener(event, function (e) {
+    element.addEventListener(event, e => {
       let target = e.target.closest(selector)
       if (target) {
         handler.call(target, e)
@@ -245,14 +245,14 @@ class candy {
   }
 
   client() {
-    if (!document.cookie.includes('candy_client=')) return null
-    return document.cookie.split('candy_client=')[1].split(';')[0]
+    if (!document.cookie.includes('odac_client=')) return null
+    return document.cookie.split('odac_client=')[1].split(';')[0]
   }
 
   data() {
     if (this.#data) return this.#data
-    if (!document.cookie.includes('candy_data=')) return null
-    return JSON.parse(unescape(document.cookie.split('candy_data=')[1].split(';')[0]))
+    if (!document.cookie.includes('odac_data=')) return null
+    return JSON.parse(unescape(document.cookie.split('odac_data=')[1].split(';')[0]))
   }
 
   form(obj, callback) {
@@ -284,11 +284,11 @@ class candy {
 
         const customMessage = input.getAttribute(`data-error-${errorType}`)
         if (customMessage) {
-          let errorSpan = formElement.querySelector(`[candy-form-error="${input.name}"]`)
+          let errorSpan = formElement.querySelector(`[odac-form-error="${input.name}"]`)
 
           if (!errorSpan) {
             errorSpan = document.createElement('span')
-            errorSpan.setAttribute('candy-form-error', input.name)
+            errorSpan.setAttribute('odac-form-error', input.name)
 
             if ((input.type === 'checkbox' || input.type === 'radio') && input.id) {
               const label = formElement.querySelector(`label[for="${input.id}"]`)
@@ -309,7 +309,7 @@ class candy {
 
       for (const input of inputs) {
         input.style.borderColor = ''
-        const errorSpan = formElement.querySelector(`[candy-form-error="${input.name}"]`)
+        const errorSpan = formElement.querySelector(`[odac-form-error="${input.name}"]`)
         if (errorSpan) {
           errorSpan.style.display = 'none'
           errorSpan.textContent = ''
@@ -355,13 +355,13 @@ class candy {
 
       let actions = this.actions
       if (
-        actions.candy &&
-        actions.candy.form &&
-        actions.candy.form.input &&
-        actions.candy.form.input.class &&
-        actions.candy.form.input.class.invalid
+        actions.odac &&
+        actions.odac.form &&
+        actions.odac.form.input &&
+        actions.odac.form.input.class &&
+        actions.odac.form.input.class.invalid
       ) {
-        const invalidClass = actions.candy.form.input.class.invalid
+        const invalidClass = actions.odac.form.input.class.invalid
         formElement
           .querySelectorAll(`select.${invalidClass},input.${invalidClass},textarea.${invalidClass}`)
           .forEach(el => el.classList.remove(invalidClass))
@@ -369,10 +369,10 @@ class candy {
 
       if (obj.messages !== false) {
         if (obj.messages == undefined || obj.messages == true || obj.messages.includes('error')) {
-          formElement.querySelectorAll('*[candy-form-error]').forEach(el => (el.style.display = 'none'))
+          formElement.querySelectorAll('*[odac-form-error]').forEach(el => (el.style.display = 'none'))
         }
         if (obj.messages == undefined || obj.messages == true || obj.messages.includes('success')) {
-          formElement.querySelectorAll('*[candy-form-success]').forEach(el => (el.style.display = 'none'))
+          formElement.querySelectorAll('*[odac-form-success]').forEach(el => (el.style.display = 'none'))
         }
       }
 
@@ -414,17 +414,20 @@ class candy {
           if (!data.result) return false
           if (obj.messages == undefined || obj.messages) {
             if (data.result.success && (obj.messages == undefined || obj.messages.includes('success') || obj.messages == true)) {
-              const successEl = formElement.querySelector('*[candy-form-success]')
+              const successEl = formElement.querySelector('*[odac-form-success]')
               if (successEl) {
                 successEl.innerHTML = data.result.message
                 this.#fadeIn(successEl)
               } else {
-                formElement.insertAdjacentHTML('beforeend', `<span candy-form-success="${obj.form}">${data.result.message}</span>`)
+                const span = document.createElement('span')
+                span.setAttribute('odac-form-success', obj.form)
+                span.textContent = data.result.message
+                formElement.appendChild(span)
               }
             } else if (!data.result.success && data.errors) {
               Object.entries(data.errors).forEach(([name, message]) => {
                 if (message) {
-                  let errorEl = formElement.querySelector(`[candy-form-error="${name}"]`)
+                  let errorEl = formElement.querySelector(`[odac-form-error="${name}"]`)
                   if (errorEl) {
                     errorEl.textContent = message
                     errorEl.style.cssText = 'display:block;color:#dc3545;font-size:0.875rem;margin-top:0.25rem'
@@ -432,7 +435,7 @@ class candy {
                     const inputEl = formElement.querySelector(`*[name="${name}"]`)
                     if (inputEl) {
                       errorEl = document.createElement('span')
-                      errorEl.setAttribute('candy-form-error', name)
+                      errorEl.setAttribute('odac-form-error', name)
                       errorEl.textContent = message
                       errorEl.style.cssText = 'display:block;color:#dc3545;font-size:0.875rem;margin-top:0.25rem'
 
@@ -446,9 +449,9 @@ class candy {
                       } else {
                         inputEl.parentNode.insertBefore(errorEl, inputEl.nextSibling)
                       }
-                    } else if (name === '_candy_form') {
+                    } else if (name === '_odac_form') {
                       errorEl = document.createElement('div')
-                      errorEl.setAttribute('candy-form-error', name)
+                      errorEl.setAttribute('odac-form-error', name)
                       errorEl.textContent = message
                       errorEl.style.cssText =
                         'display:block;color:#dc3545;background-color:#f8d7da;border:1px solid #f5c2c7;border-radius:0.375rem;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.875rem'
@@ -465,7 +468,7 @@ class candy {
                     'focus',
                     function handler() {
                       inputEl.style.borderColor = ''
-                      const errorEl = formElement.querySelector(`[candy-form-error="${name}"]`)
+                      const errorEl = formElement.querySelector(`[odac-form-error="${name}"]`)
                       if (errorEl) {
                         errorEl.style.display = 'none'
                         errorEl.textContent = ''
@@ -500,7 +503,7 @@ class candy {
           return xhr
         },
         error: () => {
-          console.error('CandyJS:', 'Somethings went wrong...', '\nForm: ' + obj.form + '\nRequest: ' + formElement.getAttribute('action'))
+          console.error('Odac:', 'Somethings went wrong...', '\nForm: ' + obj.form + '\nRequest: ' + formElement.getAttribute('action'))
         },
         complete: () => {
           const submitButtons = formElement.querySelectorAll('button[type="submit"], input[type="submit"]')
@@ -528,9 +531,7 @@ class candy {
 
   page() {
     if (!this.#page) {
-      let data = this.data()
-      if (data !== null) this.#page = data.page
-      else this.token(true)
+      this.#page = document.documentElement.dataset.candyPage || ''
     }
     return this.#page
   }
@@ -542,36 +543,29 @@ class candy {
   }
 
   token() {
-    let data = this.data()
     if (!this.#token.listener) {
-      document.addEventListener('candy:ajaxSuccess', event => {
+      document.addEventListener('odac:ajaxSuccess', event => {
         const {detail} = event
         const {xhr, requestUrl} = detail
         if (requestUrl.includes('://')) return false
         try {
-          const token = xhr.getResponseHeader('X-Candy-Token')
+          const token = xhr.getResponseHeader('X-Odac-Token')
           if (token) this.#token.hash.push(token)
           if (this.#token.hash.length > 2) this.#token.hash.shift()
         } catch (e) {
           console.error('Error in ajaxSuccess token handler:', e)
         }
       })
-      this.#token.listener = true // Mark as listener attached
+      this.#token.listener = true
     }
     if (!this.#token.hash.length) {
-      if (!this.#token.data && data) {
-        this.#page = data.page
-        this.#token.hash.push(data.token)
-        this.#token.data = true
-      } else {
-        var req = new XMLHttpRequest()
-        req.open('GET', '/', false)
-        req.setRequestHeader('X-Candy', 'token')
-        req.setRequestHeader('X-Candy-Client', this.client())
-        req.send(null)
-        var req_data = JSON.parse(req.response)
-        if (req_data.token) this.#token.hash.push(req_data.token)
-      }
+      var req = new XMLHttpRequest()
+      req.open('GET', '/', false)
+      req.setRequestHeader('X-Odac', 'token')
+      req.setRequestHeader('X-Odac-Client', this.client())
+      req.send(null)
+      var req_data = JSON.parse(req.response)
+      if (req_data.token) this.#token.hash.push(req_data.token)
     }
     this.#token.hash.filter(n => n)
     var return_token = this.#token.hash.shift()
@@ -579,7 +573,7 @@ class candy {
       this.#ajax({
         url: '/',
         type: 'GET',
-        headers: {'X-Candy': 'token', 'X-Candy-Client': this.client()},
+        headers: {'X-Odac': 'token', 'X-Odac-Client': this.client()},
         success: data => {
           var result = JSON.parse(JSON.stringify(data))
           if (result.token) this.#token.hash.push(result.token)
@@ -600,53 +594,93 @@ class candy {
 
     this.#isNavigating = true
 
+    const currentSkeleton = document.documentElement.dataset.candySkeleton
+    const elements = Object.entries(this.#loader.elements)
+
+    // Collect elements to update
+    const elementsToUpdate = []
+    elements.forEach(([key, selector]) => {
+      const element = document.querySelector(selector)
+      if (element) {
+        elementsToUpdate.push({key, element})
+      }
+    })
+
+    let ajaxData = null
+    let ajaxXhr = null
+    let fadeOutComplete = false
+    let ajaxComplete = false
+
+    const applyUpdate = () => {
+      if (!fadeOutComplete || !ajaxComplete || !ajaxData) return
+
+      const finalUrl = ajaxXhr.responseURL || url
+
+      if (ajaxData.skeletonChanged) {
+        window.location.href = finalUrl
+        return
+      }
+
+      if (finalUrl !== currentUrl && push) {
+        window.history.pushState(null, document.title, finalUrl)
+      }
+
+      const newPage = ajaxXhr.getResponseHeader('X-Odac-Page')
+      if (newPage !== null) {
+        this.#page = newPage
+        document.documentElement.dataset.candyPage = newPage
+      }
+
+      if (elementsToUpdate.length === 0) {
+        this.#handleLoadComplete(ajaxData, callback)
+        return
+      }
+
+      // Update content and fade in
+      let completed = 0
+      elementsToUpdate.forEach(({key, element}) => {
+        if (ajaxData.output && ajaxData.output[key] !== undefined) {
+          element.innerHTML = ajaxData.output[key]
+        }
+        this.#fadeIn(element, 200, () => {
+          completed++
+          if (completed === elementsToUpdate.length) {
+            this.#handleLoadComplete(ajaxData, callback)
+          }
+        })
+      })
+    }
+
+    // Start fade out
+    if (elementsToUpdate.length > 0) {
+      let fadeOutCount = 0
+      elementsToUpdate.forEach(({element}) => {
+        this.#fadeOut(element, 200, () => {
+          fadeOutCount++
+          if (fadeOutCount === elementsToUpdate.length) {
+            fadeOutComplete = true
+            applyUpdate()
+          }
+        })
+      })
+    } else {
+      fadeOutComplete = true
+    }
+
     this.#ajax({
       url: url,
       type: 'GET',
       headers: {
-        'X-Candy': 'ajaxload',
-        'X-Candy-Load': Object.keys(this.#loader.elements).join(',')
+        'X-Odac': 'ajaxload',
+        'X-Odac-Load': Object.keys(this.#loader.elements).join(','),
+        'X-Odac-Skeleton': currentSkeleton || ''
       },
       dataType: 'json',
       success: (data, status, xhr) => {
-        if (url !== currentUrl && push) {
-          window.history.pushState(null, document.title, url)
-        }
-
-        const newPage = xhr.getResponseHeader('X-Candy-Page')
-        if (newPage) this.#page = newPage
-
-        // Update elements with fade effect
-        const elements = Object.entries(this.#loader.elements)
-        let completed = 0
-
-        if (elements.length === 0) {
-          this.#handleLoadComplete(data, callback)
-          return
-        }
-
-        elements.forEach(([key, selector]) => {
-          const element = document.querySelector(selector)
-          if (!element) {
-            completed++
-            if (completed === elements.length) {
-              this.#handleLoadComplete(data, callback)
-            }
-            return
-          }
-
-          this.#fadeOut(element, 400, () => {
-            if (data.output && data.output[key]) {
-              element.innerHTML = data.output[key]
-            }
-            this.#fadeIn(element, 400, () => {
-              completed++
-              if (completed === elements.length) {
-                this.#handleLoadComplete(data, callback)
-              }
-            })
-          })
-        })
+        ajaxData = data
+        ajaxXhr = xhr
+        ajaxComplete = true
+        applyUpdate()
       },
       error: () => {
         this.#isNavigating = false
@@ -690,12 +724,13 @@ class candy {
     this.#loader.elements = elements
     this.#loader.callback = callback
 
+    const candyInstance = this
+
     // Handle link clicks
-    this.#on(document, 'click', selector, e => {
+    this.#on(document, 'click', selector, function (e) {
       if (e.ctrlKey || e.metaKey) return
 
-      // Get the matched anchor element (passed as 'this' from #on method)
-      const anchor = e.currentTarget || e.target.closest(selector)
+      const anchor = this
       if (!anchor) return
 
       const url = anchor.getAttribute('href')
@@ -708,7 +743,7 @@ class candy {
 
       if ((target === null || target === '_self') && !isExternal) {
         e.preventDefault()
-        this.load(url, callback)
+        candyInstance.load(url, callback)
       }
     })
 
@@ -719,7 +754,7 @@ class candy {
   }
 
   listen(url, onMessage, options = {}) {
-    const {onError = null, onOpen = null, autoReconnect = true, reconnectDelay = 3000} = options
+    const {onError = null, onOpen = null, autoReconnect = false, reconnectDelay = 3000} = options
 
     let eventSource = null
     let reconnectTimer = null
@@ -728,7 +763,8 @@ class candy {
     const connect = () => {
       if (isClosed) return
 
-      eventSource = new EventSource(url)
+      const urlWithToken = url + (url.includes('?') ? '&' : '?') + '_token=' + encodeURIComponent(this.token())
+      eventSource = new EventSource(urlWithToken)
 
       eventSource.onopen = e => {
         if (onOpen) onOpen(e)
@@ -766,18 +802,303 @@ class candy {
       }
     }
   }
+
+  ws(path, options = {}) {
+    const {autoReconnect = true, reconnectDelay = 3000, maxReconnectAttempts = 10, shared = false, token = true} = options
+
+    if (shared && typeof SharedWorker !== 'undefined') {
+      return this.#createSharedWebSocket(path, {autoReconnect, reconnectDelay, maxReconnectAttempts, token})
+    }
+
+    let socket = null
+    let reconnectTimer = null
+    let reconnectAttempts = 0
+    let isClosed = false
+    const handlers = {}
+
+    const emit = (event, ...args) => {
+      if (handlers[event]) {
+        handlers[event].forEach(fn => fn(...args))
+      }
+    }
+
+    const connect = () => {
+      if (isClosed) return
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${protocol}//${window.location.host}${path}`
+
+      const protocols = []
+      if (token) {
+        const csrfToken = this.token()
+        if (csrfToken) {
+          protocols.push(`odac-token-${csrfToken}`)
+        }
+      }
+
+      socket = protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
+
+      socket.onopen = () => {
+        reconnectAttempts = 0
+        emit('open')
+      }
+
+      socket.onmessage = e => {
+        try {
+          const data = JSON.parse(e.data)
+          emit('message', data)
+        } catch {
+          emit('message', e.data)
+        }
+      }
+
+      socket.onclose = e => {
+        emit('close', e)
+
+        if (autoReconnect && !isClosed && reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++
+          reconnectTimer = setTimeout(connect, reconnectDelay)
+        }
+      }
+
+      socket.onerror = e => {
+        emit('error', e)
+      }
+    }
+
+    connect()
+
+    return {
+      on: (event, handler) => {
+        if (!handlers[event]) handlers[event] = []
+        handlers[event].push(handler)
+        return this
+      },
+      off: (event, handler) => {
+        if (!handlers[event]) return
+        if (handler) {
+          handlers[event] = handlers[event].filter(h => h !== handler)
+        } else {
+          delete handlers[event]
+        }
+        return this
+      },
+      send: data => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(typeof data === 'object' ? JSON.stringify(data) : data)
+        }
+        return this
+      },
+      close: () => {
+        isClosed = true
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        if (socket) socket.close()
+      },
+      get state() {
+        return socket ? socket.readyState : WebSocket.CLOSED
+      },
+      get connected() {
+        return socket && socket.readyState === WebSocket.OPEN
+      }
+    }
+  }
+
+  #createSharedWebSocket(path, options) {
+    const workerUrl = this.#createWorkerBlob()
+    const worker = new SharedWorker(workerUrl, `odac-ws-${path}`)
+    const handlers = {}
+    let isConnected = false
+
+    const emit = (event, ...args) => {
+      if (handlers[event]) {
+        handlers[event].forEach(fn => fn(...args))
+      }
+    }
+
+    worker.port.onmessage = e => {
+      const {type, data} = e.data
+
+      switch (type) {
+        case 'open':
+          isConnected = true
+          emit('open')
+          break
+        case 'message':
+          emit('message', data)
+          break
+        case 'close':
+          isConnected = false
+          emit('close', data)
+          break
+        case 'error':
+          emit('error', data)
+          break
+      }
+    }
+
+    worker.port.start()
+
+    const token = options.token ? this.token() : null
+
+    worker.port.postMessage({
+      type: 'connect',
+      path,
+      host: window.location.host,
+      protocol: window.location.protocol === 'https:' ? 'wss:' : 'ws:',
+      token,
+      options
+    })
+
+    return {
+      on: (event, handler) => {
+        if (!handlers[event]) handlers[event] = []
+        handlers[event].push(handler)
+        return this
+      },
+      off: (event, handler) => {
+        if (!handlers[event]) return
+        if (handler) {
+          handlers[event] = handlers[event].filter(h => h !== handler)
+        } else {
+          delete handlers[event]
+        }
+        return this
+      },
+      send: data => {
+        worker.port.postMessage({
+          type: 'send',
+          data: typeof data === 'object' ? JSON.stringify(data) : data
+        })
+        return this
+      },
+      close: () => {
+        worker.port.postMessage({type: 'close'})
+        worker.port.close()
+      },
+      get connected() {
+        return isConnected
+      }
+    }
+  }
+
+  #createWorkerBlob() {
+    const workerCode = `
+      let socket = null
+      let reconnectTimer = null
+      let reconnectAttempts = 0
+      let options = {}
+      let protocols = []
+      const ports = new Set()
+
+      function broadcast(type, data) {
+        ports.forEach(port => {
+          port.postMessage({type, data})
+        })
+      }
+
+      function connect(wsUrl, protocols) {
+        if (socket && socket.readyState !== WebSocket.CLOSED) return
+
+        socket = protocols && protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
+
+        socket.onopen = () => {
+          reconnectAttempts = 0
+          broadcast('open')
+        }
+
+        socket.onmessage = e => {
+          try {
+            const data = JSON.parse(e.data)
+            broadcast('message', data)
+          } catch {
+            broadcast('message', e.data)
+          }
+        }
+
+        socket.onclose = e => {
+          broadcast('close', e)
+
+          if (options.autoReconnect && reconnectAttempts < options.maxReconnectAttempts) {
+            reconnectAttempts++
+            reconnectTimer = setTimeout(() => connect(wsUrl, protocols), options.reconnectDelay)
+          }
+        }
+
+        socket.onerror = e => {
+          broadcast('error', e)
+        }
+      }
+
+      self.onconnect = e => {
+        const port = e.ports[0]
+        ports.add(port)
+
+        port.onmessage = event => {
+          const {type, path, host, protocol, token, options: opts, data} = event.data
+
+          switch (type) {
+            case 'connect':
+              options = opts
+              const wsUrl = protocol + '//' + host + path
+              protocols = token ? ['odac-token-' + token] : []
+              connect(wsUrl, protocols)
+              break
+            case 'send':
+              if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(data)
+              }
+              break
+            case 'close':
+              ports.delete(port)
+              if (ports.size === 0 && socket) {
+                socket.close()
+                socket = null
+              }
+              break
+          }
+        }
+
+        port.start()
+      }
+    `
+
+    const blob = new Blob([workerCode], {type: 'application/javascript'})
+    return URL.createObjectURL(blob)
+  }
 }
 
-window.Candy = new candy()
+window.Odac = new Odac()
+
+// Auto-initialize navigation from data-odac-navigate attribute
+;(function initAutoNavigate() {
+  const init = () => {
+    const contentEl = document.querySelector('[data-odac-navigate="content"]')
+    if (contentEl) {
+      window.Odac.loader('a[href^="/"]:not([data-navigate="false"]):not(.no-navigate)', {content: '[data-odac-navigate="content"]'}, null)
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init)
+  } else {
+    init()
+  }
+})()
 
 document.addEventListener('DOMContentLoaded', () => {
   const formTypes = ['register', 'login']
 
   formTypes.forEach(type => {
-    const forms = document.querySelectorAll(`form.candy-${type}-form[data-candy-${type}]`)
+    const forms = document.querySelectorAll(`form.odac-${type}-form[data-odac-${type}]`)
     forms.forEach(form => {
-      const token = form.getAttribute(`data-candy-${type}`)
-      window.Candy.form({form: `form[data-candy-${type}="${token}"]`})
+      const token = form.getAttribute(`data-odac-${type}`)
+      window.Odac.form({form: `form[data-odac-${type}="${token}"]`})
     })
+  })
+
+  const customForms = document.querySelectorAll('form.odac-custom-form[data-odac-form]')
+  customForms.forEach(form => {
+    const token = form.getAttribute('data-odac-form')
+    window.Odac.form({form: `form[data-odac-form="${token}"]`})
   })
 })

@@ -4,7 +4,7 @@ You can delete a website using the `web delete` command. This command will promp
 
 ### Interactive Usage
 ```bash
-candy web delete
+odac web delete
 ```
 
 The command will then ask for the domain name:
@@ -15,10 +15,10 @@ Enter the domain name: my-website.com
 ### Single-Line Usage with Prefixes
 ```bash
 # Specify domain directly
-candy web delete -d my-website.com
+odac web delete -d my-website.com
 
 # Or use long form prefix
-candy web delete --domain my-website.com
+odac web delete --domain my-website.com
 ```
 
 ### Available Prefixes

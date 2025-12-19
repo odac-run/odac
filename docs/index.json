@@ -125,8 +125,8 @@
       "title": "Backend Overview",
       "children": [
         {
-          "file": "01-whats-in-the-candy-box.md",
-          "title": "Candy Object"
+          "file": "01-whats-in-the-odac-box.md",
+          "title": "Odac Object"
         },
         {
           "file": "02-super-handy-helper-functions.md",
@@ -171,6 +171,10 @@
         {
           "file": "04-environment-variables.md",
           "title": "Environment Variables"
+        },
+        {
+          "file": "05-early-hints.md",
+          "title": "Early Hints"
         }
       ]
     },
@@ -205,6 +209,26 @@
         {
           "file": "07-cron-jobs.md",
           "title": "Cron Jobs"
+        },
+        {
+          "file": "08-middleware.md",
+          "title": "Middleware"
+        },
+        {
+          "file": "09-websocket.md",
+          "title": "WebSocket"
+        },
+        {
+          "file": "09-websocket-examples.md",
+          "title": "WebSocket Examples"
+        },
+        {
+          "file": "09-websocket-quick-reference.md",
+          "title": "WebSocket Quick Reference"
+        },
+        {
+          "file": "09-websocket-auth-middleware.md",
+          "title": "WebSocket Auth & Middleware"
         }
       ]
     },
@@ -217,8 +241,26 @@
           "title": "Building Controllers"
         },
         {
-          "file": "02-your-trusty-candy-assistant.md",
-          "title": "Using Candy"
+          "file": "02-your-trusty-odac-assistant.md",
+          "title": "Using Odac"
+        },
+        {
+          "file": "03-controller-classes.md",
+          "title": "Controller Classes"
+        }
+      ]
+    },
+    {
+      "file": "05-forms",
+      "title": "Forms",
+      "children": [
+        {
+          "file": "01-custom-forms.md",
+          "title": "Custom Forms"
+        },
+        {
+          "file": "02-automatic-database-insert.md",
+          "title": "Automatic Database Insert"
         }
       ]
     },
@@ -250,11 +292,35 @@
         },
         {
           "file": "03-template-syntax.md",
-          "title": "Template Syntax"
+          "title": "Template Syntax Overview"
         },
         {
-          "file": "04-passing-data-to-views.md",
-          "title": "Passing Data to Views"
+          "file": "03-variables.md",
+          "title": "Variables"
+        },
+        {
+          "file": "04-request-data.md",
+          "title": "Request Data"
+        },
+        {
+          "file": "05-conditionals.md",
+          "title": "Conditionals"
+        },
+        {
+          "file": "06-loops.md",
+          "title": "Loops"
+        },
+        {
+          "file": "07-translations.md",
+          "title": "Translations (i18n)"
+        },
+        {
+          "file": "08-backend-javascript.md",
+          "title": "Backend JavaScript"
+        },
+        {
+          "file": "09-comments.md",
+          "title": "Comments"
         }
       ]
     },
@@ -299,16 +365,16 @@
           "title": "User Registration (Programmatic)"
         },
         {
-          "file": "04-candy-register-forms.md",
-          "title": "Candy Register Forms (Zero-Config)"
+          "file": "04-odac-register-forms.md",
+          "title": "Odac Register Forms (Zero-Config)"
         },
         {
           "file": "05-session-management.md",
           "title": "Session Management"
         },
         {
-          "file": "06-candy-login-forms.md",
-          "title": "Candy Login Forms (Zero-Config)"
+          "file": "06-odac-login-forms.md",
+          "title": "Odac Login Forms (Zero-Config)"
         }
       ]
     },
@@ -331,12 +397,22 @@
           "title": "Streaming API"
         }
       ]
+    },
+    {
+      "file": "13-utilities",
+      "title": "Utilities",
+      "children": [
+        {
+          "file": "01-odac-var.md",
+          "title": "Odac.Var"
+        }
+      ]
     }
   ],
   "frontend": [
     {
       "file": "01-overview",
-      "title": "candy.js Overview",
+      "title": "odac.js Overview",
       "children": [
         {
           "file": "01-introduction.md",
@@ -389,6 +465,24 @@
         {
           "file": "01-client-streaming.md",
           "title": "Client-Side Streaming"
+        }
+      ]
+    },
+    {
+      "file": "06-websocket",
+      "title": "WebSocket",
+      "children": [
+        {
+          "file": "00-overview.md",
+          "title": "Overview"
+        },
+        {
+          "file": "01-websocket-client.md",
+          "title": "WebSocket Client"
+        },
+        {
+          "file": "02-shared-websocket.md",
+          "title": "Shared WebSocket (Cross-Tab)"
         }
       ]
     }

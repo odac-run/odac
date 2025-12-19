@@ -4,7 +4,7 @@ To start a new service, use the `run` command followed by the path to your appli
 
 ### Usage
 ```bash
-candy run <file>
+odac run <file>
 ```
 
 ### Arguments
@@ -14,22 +14,22 @@ candy run <file>
 
 **Absolute path:**
 ```bash
-candy run /path/to/your/app/index.js
+odac run /path/to/your/app/index.js
 ```
 
 **Relative path from current directory:**
 ```bash
-candy run index.js
-candy run ./src/server.js
-candy run ../other-project/app.js
+odac run index.js
+odac run ./src/server.js
+odac run ../other-project/app.js
 ```
 
 **Multiple services:**
 ```bash
 # Start multiple services in sequence
-candy run ./api/index.js
-candy run ./worker/processor.js
-candy run ./scheduler/cron.js
+odac run ./api/index.js
+odac run ./worker/processor.js
+odac run ./scheduler/cron.js
 ```
 
 ### Path Resolution
@@ -38,7 +38,7 @@ candy run ./scheduler/cron.js
 - **Automatic conversion**: Relative paths are automatically converted to absolute paths internally
 
 ### Service Management
-Once started, CandyPack will:
+Once started, Odac will:
 - Monitor the service continuously
 - Automatically restart it if it crashes
 - Assign it a unique service ID for management
@@ -46,12 +46,12 @@ Once started, CandyPack will:
 
 You can view service status using:
 ```bash
-candy monit    # Real-time monitoring
-candy          # Quick status overview
+odac monit    # Real-time monitoring
+odac          # Quick status overview
 ```
 
 ### Service Deletion
 To remove a running service, use:
 ```bash
-candy service delete -i <service-name-or-id>
+odac service delete -i <service-name-or-id>
 ```

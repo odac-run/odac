@@ -1,4 +1,4 @@
-const {log, error} = Candy.core('Log', false).init('Mail', 'SMTP')
+const {log, error} = Odac.core('Log', false).init('Mail', 'SMTP')
 
 const nodeCrypto = require('crypto')
 const dns = require('dns')
@@ -482,7 +482,7 @@ class smtp {
       let signature = ''
       if (this.config.enableDKIM) {
         try {
-          let dkim = Candy.core('Config').config.websites[domain]?.cert?.dkim
+          let dkim = Odac.core('Config').config.websites[domain]?.cert?.dkim
           if (dkim && this.#validateDKIMConfig(dkim)) {
             signature = this.#dkim({
               header: headers,
@@ -638,7 +638,7 @@ class smtp {
 
       try {
         // Authentication if configured
-        const config = Candy.core('Config').config.websites[sender]
+        const config = Odac.core('Config').config.websites[sender]
         if (config?.smtp?.auth) {
           const authSuccess = await this.#authenticateSocket(socket, config.smtp.username, config.smtp.password)
           if (!authSuccess) {

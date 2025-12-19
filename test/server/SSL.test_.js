@@ -6,7 +6,7 @@ const selfsigned = require('selfsigned')
 // Import test utilities
 const {setupGlobalMocks, cleanupGlobalMocks} = require('./__mocks__/testHelpers')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
-const {mockCandy} = require('./__mocks__/globalCandy')
+const {mockOdac} = require('./__mocks__/globalOdac')
 
 // Mock all dependencies
 jest.mock('fs')
@@ -37,10 +37,10 @@ describe('SSL', () => {
       return result
     })
 
-    // Get mock instances from global Candy
-    mockConfig = mockCandy.core('Config')
-    mockLog = mockCandy.server('Log').init('SSL')
-    mockDNS = mockCandy.server('DNS')
+    // Get mock instances from global Odac
+    mockConfig = mockOdac.core('Config')
+    mockLog = mockOdac.server('Log').init('SSL')
+    mockDNS = mockOdac.server('DNS')
 
     // Set up DNS mock methods
     mockDNS.record = jest.fn()
@@ -173,14 +173,14 @@ describe('SSL', () => {
             'example.com': createMockWebsiteConfig('example.com')
           }
           mockConfig.config.ssl = {
-            key: '/home/test/.candypack/cert/ssl/candypack.key',
-            cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+            key: '/home/test/.odac/cert/ssl/odac.key',
+            cert: '/home/test/.odac/cert/ssl/odac.crt',
             expiry: Date.now() + 86400000 // Valid
           }
 
           // Mock self-signed certificate files as missing
           fs.existsSync.mockImplementation(path => {
-            if (path.includes('candypack.key') || path.includes('candypack.crt')) {
+            if (path.includes('odac.key') || path.includes('odac.crt')) {
               return false
             }
             return true
@@ -259,8 +259,8 @@ describe('SSL', () => {
 
         await SSL.check()
 
-        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'CandyPack'}], {days: 365, keySize: 2048})
-        expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl', {recursive: true})
+        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'Odac'}], {days: 365, keySize: 2048})
+        expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl', {recursive: true})
         expect(fs.writeFileSync).toHaveBeenCalledTimes(2)
       })
 
@@ -340,7 +340,7 @@ describe('SSL', () => {
     describe('renew method', () => {
       beforeEach(() => {
         // Set up the API mock to return proper result format
-        const mockApi = mockCandy.server('Api')
+        const mockApi = mockOdac.server('Api')
         mockApi.result = jest.fn((success, message) => ({success, data: message}))
       })
 
@@ -781,7 +781,7 @@ describe('SSL', () => {
 
         // Mock directory doesn't exist to trigger creation
         fs.existsSync.mockImplementation(path => {
-          if (path.includes('.candypack/cert/ssl')) {
+          if (path.includes('.odac/cert/ssl')) {
             return false
           }
           return true
@@ -789,9 +789,9 @@ describe('SSL', () => {
 
         await SSL.check()
 
-        expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl', {recursive: true})
-        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl/example.com.key', 'mock-key')
-        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl/example.com.crt', 'mock-certificate')
+        expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl', {recursive: true})
+        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl/example.com.key', 'mock-key')
+        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl/example.com.crt', 'mock-certificate')
       })
 
       it('should not create directory if it already exists', async () => {
@@ -807,8 +807,8 @@ describe('SSL', () => {
         await SSL.check()
 
         expect(fs.mkdirSync).not.toHaveBeenCalled()
-        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl/example.com.key', 'mock-key')
-        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl/example.com.crt', 'mock-certificate')
+        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl/example.com.key', 'mock-key')
+        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl/example.com.crt', 'mock-certificate')
       })
 
       it('should update website configuration with new certificate', async () => {
@@ -821,8 +821,8 @@ describe('SSL', () => {
         await SSL.check()
 
         expect(mockWebsite.cert.ssl).toEqual({
-          key: '/home/test/.candypack/cert/ssl/example.com.key',
-          cert: '/home/test/.candypack/cert/ssl/example.com.crt',
+          key: '/home/test/.odac/cert/ssl/example.com.key',
+          cert: '/home/test/.odac/cert/ssl/example.com.crt',
           expiry: expect.any(Number)
         })
       })
@@ -854,8 +854,8 @@ describe('SSL', () => {
           await SSL.check()
 
           expect(mockWebsite.cert.ssl).toEqual({
-            key: '/home/test/.candypack/cert/ssl/example.com.key',
-            cert: '/home/test/.candypack/cert/ssl/example.com.crt',
+            key: '/home/test/.odac/cert/ssl/example.com.key',
+            cert: '/home/test/.odac/cert/ssl/example.com.crt',
             expiry: expect.any(Number)
           })
           expect(mockConfig.config.websites['example.com']).toBe(mockWebsite)
@@ -872,8 +872,8 @@ describe('SSL', () => {
 
           // Configuration should be updated with new certificate info
           expect(mockConfig.config.websites['example.com'].cert.ssl).toBeDefined()
-          expect(mockConfig.config.websites['example.com'].cert.ssl.key).toBe('/home/test/.candypack/cert/ssl/example.com.key')
-          expect(mockConfig.config.websites['example.com'].cert.ssl.cert).toBe('/home/test/.candypack/cert/ssl/example.com.crt')
+          expect(mockConfig.config.websites['example.com'].cert.ssl.key).toBe('/home/test/.odac/cert/ssl/example.com.key')
+          expect(mockConfig.config.websites['example.com'].cert.ssl.cert).toBe('/home/test/.odac/cert/ssl/example.com.crt')
         })
       })
     })
@@ -975,7 +975,7 @@ describe('SSL', () => {
 
         await SSL.check()
 
-        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'CandyPack'}], {days: 365, keySize: 2048})
+        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'Odac'}], {days: 365, keySize: 2048})
       })
 
       it('should generate self-signed certificate when SSL config is expired', async () => {
@@ -983,14 +983,14 @@ describe('SSL', () => {
           'example.com': createMockWebsiteConfig('example.com')
         }
         mockConfig.config.ssl = {
-          key: '/home/test/.candypack/cert/ssl/candypack.key',
-          cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+          key: '/home/test/.odac/cert/ssl/odac.key',
+          cert: '/home/test/.odac/cert/ssl/odac.crt',
           expiry: Date.now() - 86400000 // Expired yesterday
         }
 
         await SSL.check()
 
-        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'CandyPack'}], {days: 365, keySize: 2048})
+        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'Odac'}], {days: 365, keySize: 2048})
       })
 
       it('should use correct certificate attributes for self-signed generation', async () => {
@@ -1001,7 +1001,7 @@ describe('SSL', () => {
 
         await SSL.check()
 
-        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'CandyPack'}], {days: 365, keySize: 2048})
+        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'Odac'}], {days: 365, keySize: 2048})
       })
 
       it('should use correct options for self-signed certificate generation', async () => {
@@ -1021,8 +1021,8 @@ describe('SSL', () => {
           'example.com': createMockWebsiteConfig('example.com')
         }
         mockConfig.config.ssl = {
-          key: '/home/test/.candypack/cert/ssl/candypack.key',
-          cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+          key: '/home/test/.odac/cert/ssl/odac.key',
+          cert: '/home/test/.odac/cert/ssl/odac.crt',
           expiry: Date.now() + 86400000 // Valid for another day
         }
 
@@ -1039,15 +1039,15 @@ describe('SSL', () => {
           'example.com': createMockWebsiteConfig('example.com')
         }
         mockConfig.config.ssl = {
-          key: '/home/test/.candypack/cert/ssl/candypack.key',
-          cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+          key: '/home/test/.odac/cert/ssl/odac.key',
+          cert: '/home/test/.odac/cert/ssl/odac.crt',
           expiry: Date.now() + 86400000 // Valid expiry
         }
 
         // Mock key file missing but cert file exists
         fs.existsSync.mockImplementation(path => {
-          if (path.includes('candypack.key')) return false
-          if (path.includes('candypack.crt')) return true
+          if (path.includes('odac.key')) return false
+          if (path.includes('odac.crt')) return true
           return true
         })
 
@@ -1061,15 +1061,15 @@ describe('SSL', () => {
           'example.com': createMockWebsiteConfig('example.com')
         }
         mockConfig.config.ssl = {
-          key: '/home/test/.candypack/cert/ssl/candypack.key',
-          cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+          key: '/home/test/.odac/cert/ssl/odac.key',
+          cert: '/home/test/.odac/cert/ssl/odac.crt',
           expiry: Date.now() + 86400000 // Valid expiry
         }
 
         // Mock cert file missing but key file exists
         fs.existsSync.mockImplementation(path => {
-          if (path.includes('candypack.key')) return true
-          if (path.includes('candypack.crt')) return false
+          if (path.includes('odac.key')) return true
+          if (path.includes('odac.crt')) return false
           return true
         })
 
@@ -1088,13 +1088,13 @@ describe('SSL', () => {
 
         // Mock directory doesn't exist
         fs.existsSync.mockImplementation(path => {
-          if (path.includes('.candypack/cert/ssl')) return false
+          if (path.includes('.odac/cert/ssl')) return false
           return true
         })
 
         await SSL.check()
 
-        expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl', {recursive: true})
+        expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl', {recursive: true})
       })
 
       it('should not create SSL directory if it already exists', async () => {
@@ -1120,7 +1120,7 @@ describe('SSL', () => {
         await SSL.check()
 
         expect(fs.writeFileSync).toHaveBeenCalledWith(
-          '/home/test/.candypack/cert/ssl/candypack.key',
+          '/home/test/.odac/cert/ssl/odac.key',
           '-----BEGIN PRIVATE KEY-----\nmock-private-key\n-----END PRIVATE KEY-----'
         )
       })
@@ -1134,7 +1134,7 @@ describe('SSL', () => {
         await SSL.check()
 
         expect(fs.writeFileSync).toHaveBeenCalledWith(
-          '/home/test/.candypack/cert/ssl/candypack.crt',
+          '/home/test/.odac/cert/ssl/odac.crt',
           '-----BEGIN CERTIFICATE-----\nmock-certificate\n-----END CERTIFICATE-----'
         )
       })
@@ -1148,8 +1148,8 @@ describe('SSL', () => {
         await SSL.check()
 
         expect(mockConfig.config.ssl).toEqual({
-          key: '/home/test/.candypack/cert/ssl/candypack.key',
-          cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+          key: '/home/test/.odac/cert/ssl/odac.key',
+          cert: '/home/test/.odac/cert/ssl/odac.crt',
           expiry: expect.any(Number)
         })
       })
@@ -1171,8 +1171,8 @@ describe('SSL', () => {
 
       it('should preserve existing SSL configuration when certificate is valid', async () => {
         const existingSSL = {
-          key: '/home/test/.candypack/cert/ssl/candypack.key',
-          cert: '/home/test/.candypack/cert/ssl/candypack.crt',
+          key: '/home/test/.odac/cert/ssl/odac.key',
+          cert: '/home/test/.odac/cert/ssl/odac.crt',
           expiry: Date.now() + 86400000 // Valid for another day
         }
 
@@ -1217,7 +1217,7 @@ describe('SSL', () => {
 
         // Mock fs.writeFileSync to throw an error only for self-signed cert files
         fs.writeFileSync.mockImplementation(path => {
-          if (path.includes('candypack.key') || path.includes('candypack.crt')) {
+          if (path.includes('odac.key') || path.includes('odac.crt')) {
             throw new Error('File write failed')
           }
         })
@@ -1372,8 +1372,8 @@ describe('SSL', () => {
 
         await SSL.check()
 
-        expect(mockConfig.config.ssl.key).toBe('/home/test/.candypack/cert/ssl/candypack.key')
-        expect(mockConfig.config.ssl.cert).toBe('/home/test/.candypack/cert/ssl/candypack.crt')
+        expect(mockConfig.config.ssl.key).toBe('/home/test/.odac/cert/ssl/odac.key')
+        expect(mockConfig.config.ssl.cert).toBe('/home/test/.odac/cert/ssl/odac.crt')
         expect(typeof mockConfig.config.ssl.expiry).toBe('number')
         expect(mockConfig.config.ssl.expiry).toBeGreaterThan(Date.now())
       })
@@ -1409,13 +1409,13 @@ describe('SSL', () => {
 
         // Verify key file content
         expect(fs.writeFileSync).toHaveBeenCalledWith(
-          '/home/test/.candypack/cert/ssl/candypack.key',
+          '/home/test/.odac/cert/ssl/odac.key',
           expect.stringContaining('-----BEGIN PRIVATE KEY-----')
         )
 
         // Verify certificate file content
         expect(fs.writeFileSync).toHaveBeenCalledWith(
-          '/home/test/.candypack/cert/ssl/candypack.crt',
+          '/home/test/.odac/cert/ssl/odac.crt',
           expect.stringContaining('-----BEGIN CERTIFICATE-----')
         )
       })
@@ -1431,7 +1431,7 @@ describe('SSL', () => {
 
         await SSL.check()
 
-        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'CandyPack'}], {days: 365, keySize: 2048})
+        expect(selfsigned.generate).toHaveBeenCalledWith([{name: 'commonName', value: 'Odac'}], {days: 365, keySize: 2048})
       })
 
       it('should validate certificate generation parameters are secure', async () => {
@@ -1483,8 +1483,8 @@ describe('SSL', () => {
         await SSL.check()
 
         // Should still write the files even with malformed data
-        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl/candypack.key', 'invalid-key-data')
-        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.candypack/cert/ssl/candypack.crt', 'invalid-cert-data')
+        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl/odac.key', 'invalid-key-data')
+        expect(fs.writeFileSync).toHaveBeenCalledWith('/home/test/.odac/cert/ssl/odac.crt', 'invalid-cert-data')
       })
     })
   })

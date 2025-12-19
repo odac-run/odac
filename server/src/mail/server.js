@@ -1,4 +1,4 @@
-const {log} = Candy.core('Log', false).init('Mail', 'Server')
+const {log} = Odac.core('Log', false).init('Mail', 'Server')
 
 const tls = require('tls')
 const imap = require('./imap')

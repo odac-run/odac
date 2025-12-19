@@ -1,43 +1,47 @@
 const nodeCrypto = require('crypto')
 
-class CandyRequest {
-  #candy
+class OdacRequest {
+  #odac
   #complete = false
   #cookies = {received: [], sent: []}
   data = {post: {}, get: {}, url: {}}
   #event = {data: [], end: []}
-  #headers = {Server: 'CandyPack'}
+  #headers = {Server: 'Odac'}
   #status = 200
   #timeout = null
+  #earlyHints = null
   variables = {}
   isAjaxLoad = false
   ajaxLoad = null
+  clientSkeleton = null
   page = null
 
-  constructor(id, req, res, candy) {
+  constructor(id, req, res, odac) {
     this.id = id
     this.req = req
     this.res = res
-    this.#candy = candy
+    this.#odac = odac
     this.method = req.method.toLowerCase()
     this.url = req.url
     this.host = req.headers.host
-    this.ssl = this.header('x-candy-connection-ssl') === 'true'
-    this.ip = (this.header('x-candy-connection-remoteaddress') ?? req.connection.remoteAddress).replace('::ffff:', '')
-    delete this.req.headers['x-candy-connection-ssl']
-    delete this.req.headers['x-candy-connection-remoteaddress']
+    this.ssl = this.header('x-odac-connection-ssl') === 'true'
+    this.ip = (this.header('x-odac-connection-remoteaddress') ?? req.connection.remoteAddress).replace('::ffff:', '')
+    delete this.req.headers['x-odac-connection-ssl']
+    delete this.req.headers['x-odac-connection-remoteaddress']
     let route = req.headers.host.split('.')[0]
-    if (!Candy.Route.routes[route]) route = 'www'
+    if (!Odac.Route.routes[route]) route = 'www'
     this.route = route
-    this.#timeout = setTimeout(() => !this.res.finished && this.abort(408), Candy.Config.request.timeout)
+    if (this.res) {
+      this.#timeout = setTimeout(() => !this.res.finished && this.abort(408), Odac.Config.request.timeout)
+    }
     this.#data()
-    if (!Candy.Request) Candy.Request = {}
-    if (!this.cookie('candy_client') || !this.session('_client') || this.session('_client') !== this.cookie('candy_client')) {
+    if (!Odac.Request) Odac.Request = {}
+    if (!this.cookie('odac_client') || !this.session('_client') || this.session('_client') !== this.cookie('odac_client')) {
       let client = nodeCrypto
         .createHash('md5')
         .update(this.ip + this.id + Date.now().toString() + Math.random().toString())
         .digest('hex')
-      this.cookie('candy_client', client, {expires: null, httpOnly: false})
+      this.cookie('odac_client', client, {expires: null, httpOnly: false})
       this.session('_client', client)
     }
   }
@@ -46,8 +50,8 @@ class CandyRequest {
   async abort(code) {
     this.status(code)
     let result = {401: 'Unauthorized', 404: 'Not Found', 408: 'Request Timeout'}[code] ?? null
-    if (Candy.Route.routes[this.route].error && Candy.Route.routes[this.route].error[code])
-      result = await Candy.Route.routes[this.route].error[code].cache(this.#candy)
+    if (Odac.Route.routes[this.route].error && Odac.Route.routes[this.route].error[code])
+      result = await Odac.Route.routes[this.route].error[code].cache(this.#odac)
     this.end(result)
   }
 
@@ -176,8 +180,23 @@ class CandyRequest {
   // - PRINT HEADERS
   print() {
     if (this.res.headersSent) return
+
+    if (this.#earlyHints && this.#earlyHints.length > 0 && global.Odac?.View?.EarlyHints) {
+      global.Odac.View.EarlyHints.send(this.res, this.#earlyHints)
+    }
+
     this.#headers['Set-Cookie'] = this.#cookies.sent
     this.res.writeHead(this.#status, this.#headers)
+  }
+
+  // - SET EARLY HINTS
+  setEarlyHints(hints) {
+    this.#earlyHints = hints
+  }
+
+  // - HAS EARLY HINTS
+  hasEarlyHints() {
+    return this.#earlyHints !== null && this.#earlyHints.length > 0
   }
 
   // - REDIRECT
@@ -208,8 +227,8 @@ class CandyRequest {
 
   // - SESSION
   session(key, value) {
-    if (!Candy.Request.session) Candy.Request.session = {}
-    if (!Candy.Request.sessionLocks) Candy.Request.sessionLocks = {}
+    if (!Odac.Request.session) Odac.Request.session = {}
+    if (!Odac.Request.sessionLocks) Odac.Request.sessionLocks = {}
 
     let pri = nodeCrypto
       .createHash('md5')
@@ -217,45 +236,45 @@ class CandyRequest {
       .digest('hex')
     let pub = this.cookie('candy_session')
 
-    if (!pub || !Candy.Request.session[pub + '-' + pri]) {
+    if (!pub || !Odac.Request.session[pub + '-' + pri]) {
       const lockKey = `${this.ip}-${pri}`
       const now = Date.now()
 
-      if (Candy.Request.sessionLocks[lockKey]) {
-        const lock = Candy.Request.sessionLocks[lockKey]
-        if (now - lock.timestamp < 5000 && Candy.Request.session[`${lock.sessionId}-${pri}`]) {
+      if (Odac.Request.sessionLocks[lockKey]) {
+        const lock = Odac.Request.sessionLocks[lockKey]
+        if (now - lock.timestamp < 5000 && Odac.Request.session[`${lock.sessionId}-${pri}`]) {
           pub = lock.sessionId
         } else {
-          delete Candy.Request.sessionLocks[lockKey]
+          delete Odac.Request.sessionLocks[lockKey]
         }
       }
 
       if (!pub) {
-        const sessionLockValues = Object.values(Candy.Request.sessionLocks)
+        const sessionLockValues = Object.values(Odac.Request.sessionLocks)
         const activeSessions = new Set(sessionLockValues.map(l => l.sessionId))
         do {
           pub = nodeCrypto
             .createHash('md5')
             .update(this.ip + this.id + Date.now().toString() + Math.random().toString())
             .digest('hex')
-        } while (Candy.Request.session[`${pub}-${pri}`] || activeSessions.has(pub))
+        } while (Odac.Request.session[`${pub}-${pri}`] || activeSessions.has(pub))
 
-        Candy.Request.sessionLocks[lockKey] = {sessionId: pub, timestamp: now}
-        Candy.Request.session[`${pub}-${pri}`] = {}
+        Odac.Request.sessionLocks[lockKey] = {sessionId: pub, timestamp: now}
+        Odac.Request.session[`${pub}-${pri}`] = {}
         this.cookie('candy_session', `${pub}`)
 
         setTimeout(() => {
-          if (Candy.Request.sessionLocks[lockKey]?.timestamp === now) {
-            delete Candy.Request.sessionLocks[lockKey]
+          if (Odac.Request.sessionLocks[lockKey]?.timestamp === now) {
+            delete Odac.Request.sessionLocks[lockKey]
           }
         }, 5000)
       }
     }
 
-    if (!Candy.Request.session[pub + '-' + pri]) Candy.Request.session[pub + '-' + pri] = {}
-    if (value === undefined) return Candy.Request.session[pub + '-' + pri][key] ?? null
-    else if (value === null) delete Candy.Request.session[pub + '-' + pri][key]
-    else Candy.Request.session[pub + '-' + pri][key] = value
+    if (!Odac.Request.session[pub + '-' + pri]) Odac.Request.session[pub + '-' + pri] = {}
+    if (value === undefined) return Odac.Request.session[pub + '-' + pri][key] ?? null
+    else if (value === null) delete Odac.Request.session[pub + '-' + pri][key]
+    else Odac.Request.session[pub + '-' + pri][key] = value
   }
 
   // - SET
@@ -269,6 +288,11 @@ class CandyRequest {
     this.#status = code
   }
 
+  // - CLEAR TIMEOUT (for long-running connections like SSE)
+  clearTimeout() {
+    clearTimeout(this.#timeout)
+  }
+
   // - WRITE DATA
   write(data) {
     if (this.res.finished) return
@@ -276,4 +300,4 @@ class CandyRequest {
   }
 }
 
-module.exports = CandyRequest
+module.exports = OdacRequest

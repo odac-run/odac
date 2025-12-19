@@ -31,8 +31,8 @@ npm run test:watch    # Run tests in watch mode
 npm run release       # Semantic release (automated)
 
 # Installation
-curl -sL https://candypack.dev/install | bash  # Quick install
-npm install -g candypack                       # Manual install
+curl -sL https://odac.run/install | bash  # Quick install
+npm install -g odac                        # Manual install
 
 # Git Hooks & CI/CD
 # Pre-commit automatically runs:
@@ -52,16 +52,17 @@ npm install -g candypack                       # Manual install
 
 - **Prettier Config**: No semicolons, single quotes, 140 char width, 2-space tabs
 - **ESLint**: Separate configs for server/framework/web/browser contexts
-- **Globals**: `Candy` and `__` are global variables across the codebase
+- **Globals**: `Odac` and `__` are global variables across the codebase
 - **Module System**: CommonJS (`require`/`module.exports`) for server-side code
 
 ## Logging Standards
 
-- **Log Class**: Use `Candy.core('Log', false).init('ModuleName')` for all logging
+### Server & Core Modules
+- **Log Class**: Use `Odac.core('Log', false).init('ModuleName')` for all logging in `server/` and `core/` directories
 - **Usage Pattern**:
 
   ```javascript
-  const {log, error} = Candy.core('Log', false).init('ModuleName')
+  const {log, error} = Odac.core('Log', false).init('ModuleName')
 
   log('Info message')
   log('Message with %s placeholder', 'value')
@@ -70,4 +71,17 @@ npm install -g candypack                       # Manual install
 
 - **CLI Mode**: Logs are automatically suppressed in CLI mode to avoid breaking the interface
 - **Location**: Log class is in `core/Log.js` (also available via `server/src/Log.js` for backward compatibility)
-- **Never use**: `console.log()` or `console.error()` directly - always use the Log class
+
+### Framework Modules
+- **Console Logging**: Use `console.log()` and `console.error()` directly in `framework/` directory
+- **Reason**: Framework runs in user's application context where Log class may not be available
+- **Usage Pattern**:
+
+  ```javascript
+  console.log('[ModuleName] Info message')
+  console.error('[ModuleName] Error:', error.message)
+  ```
+
+### General Rule
+- **Server/Core**: Always use Log class (never `console.log`)
+- **Framework**: Always use `console.log` (Log class not guaranteed to be available)

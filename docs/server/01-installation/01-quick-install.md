@@ -7,7 +7,7 @@ This is the recommended method for most users.
 Run the following command in your terminal:
 
 ```bash
-curl -sL https://candypack.dev/install | bash
+curl -sL https://odac.run/install | bash
 ```
 
 ### Windows
@@ -15,5 +15,5 @@ curl -sL https://candypack.dev/install | bash
 Open PowerShell as an administrator and run the following command:
 
 ```powershell
-iex (iwr -useb 'https://candypack.dev/install')
+iex (iwr -useb 'https://odac.run/install')
 ```

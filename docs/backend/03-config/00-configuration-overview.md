@@ -1,6 +1,6 @@
 ## ⚙️ Configuration Overview
 
-CandyPack uses a simple and flexible configuration system based on `config.json` and optional `.env` files. You can choose the approach that best fits your needs.
+Odac uses a simple and flexible configuration system based on `config.json` and optional `.env` files. You can choose the approach that best fits your needs.
 
 ### Configuration Files
 
@@ -87,12 +87,12 @@ Combine both methods - use direct values for non-sensitive data and environment 
 You can access configuration values in three ways:
 
 ```javascript
-// 1. From Candy.Config (recommended for structured config)
-const dbHost = Candy.Config.mysql.host
+// 1. From Odac.Config (recommended for structured config)
+const dbHost = Odac.Config.mysql.host
 
-// 2. Using Candy.env() helper
-const apiKey = Candy.env('API_KEY')
-const debug = Candy.env('DEBUG', 'false')
+// 2. Using Odac.env() helper
+const apiKey = Odac.env('API_KEY')
+const debug = Odac.env('DEBUG', 'false')
 
 // 3. Direct process.env access
 const nodeEnv = process.env.NODE_ENV
@@ -149,6 +149,19 @@ const nodeEnv = process.env.NODE_ENV
   }
 }
 ```
+
+**Early Hints (HTTP 103):**
+```json
+{
+  "earlyHints": {
+    "enabled": true,
+    "auto": true,
+    "maxResources": 5
+  }
+}
+```
+
+Early Hints is a performance optimization feature that works automatically without any configuration. The server sends preliminary HTTP headers to the browser before the final response, allowing browsers to start preloading critical resources (CSS, JavaScript, fonts) earlier. This is completely zero-config - it detects resources from your HTML automatically and sends hints on subsequent requests.
 
 See individual documentation sections for detailed configuration options.
 

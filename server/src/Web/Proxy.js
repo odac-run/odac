@@ -1,51 +1,74 @@
 const http = require('http')
-const httpProxy = require('http-proxy')
+
+const FORBIDDEN_HEADERS = [
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'upgrade',
+  'proxy-connection',
+  'proxy-authenticate',
+  'trailer',
+  'x-odac-early-hints'
+]
 
 class WebProxy {
   #log
-  #proxy
 
   constructor(log) {
     this.#log = log
-    this.#proxy = httpProxy.createProxyServer({
-      timeout: 30000,
-      proxyTimeout: 30000,
-      keepAlive: true
-    })
   }
 
-  http2(req, res, website, host) {
+  #handleEarlyHints(proxyRes, res) {
+    if (proxyRes.headers['x-odac-early-hints'] && typeof res.writeEarlyHints === 'function') {
+      try {
+        const links = JSON.parse(proxyRes.headers['x-odac-early-hints'])
+        if (Array.isArray(links) && links.length > 0) {
+          res.writeEarlyHints({link: links})
+        }
+      } catch {
+        // Ignore parsing errors
+      }
+    }
+  }
+
+  #proxy(req, res, website, host, isHttp2) {
     const options = {
       hostname: '127.0.0.1',
       port: website.port,
       path: req.url,
       method: req.method,
-      headers: {}
+      headers: {},
+      timeout: 0
     }
 
     for (const [key, value] of Object.entries(req.headers)) {
-      if (!key.startsWith(':')) {
-        options.headers[key.toLowerCase()] = value
-      }
+      if (isHttp2 && key.startsWith(':')) continue
+      options.headers[key.toLowerCase()] = value
     }
 
-    options.headers['x-candy-connection-remoteaddress'] = req.socket.remoteAddress ?? ''
-    options.headers['x-candy-connection-ssl'] = 'true'
+    options.headers['x-odac-connection-remoteaddress'] = req.socket.remoteAddress ?? ''
+    options.headers['x-odac-connection-ssl'] = 'true'
 
     const proxyReq = http.request(options, proxyRes => {
-      const responseHeaders = {}
-      const forbiddenHeaders = [
-        'connection',
-        'keep-alive',
-        'transfer-encoding',
-        'upgrade',
-        'proxy-connection',
-        'proxy-authenticate',
-        'trailer'
-      ]
+      this.#handleEarlyHints(proxyRes, res)
 
+      const isSSE = proxyRes.headers['content-type']?.includes('text/event-stream')
+      if (isSSE) {
+        req.setTimeout(0)
+        res.setTimeout(0)
+
+        const abortConnection = () => {
+          proxyReq.destroy()
+          proxyRes.destroy()
+        }
+        req.on('close', abortConnection)
+        req.on('aborted', abortConnection)
+        res.on('close', abortConnection)
+      }
+
+      const responseHeaders = {}
       for (const [key, value] of Object.entries(proxyRes.headers)) {
-        if (!forbiddenHeaders.includes(key.toLowerCase())) {
+        if (!FORBIDDEN_HEADERS.includes(key.toLowerCase())) {
           responseHeaders[key] = value
         }
       }
@@ -55,7 +78,8 @@ class WebProxy {
     })
 
     proxyReq.on('error', err => {
-      this.#log(`HTTP/2 proxy error for ${host}: ${err.message}`)
+      if (err.code === 'ECONNRESET') return
+      this.#log(`Proxy error for ${host}: ${err.message}`)
       if (!res.headersSent) {
         res.writeHead(502)
         res.end('Bad Gateway')
@@ -65,32 +89,12 @@ class WebProxy {
     req.pipe(proxyReq)
   }
 
+  http2(req, res, website, host) {
+    this.#proxy(req, res, website, host, true)
+  }
+
   http1(req, res, website, host) {
-    const onProxyReq = (proxyReq, req) => {
-      proxyReq.setHeader('x-candy-connection-remoteaddress', req.socket.remoteAddress ?? '')
-      proxyReq.setHeader('x-candy-connection-ssl', 'true')
-    }
-
-    const onError = (err, req, res) => {
-      this.#log(`Proxy error for ${host}: ${err.message}`)
-      if (!res.headersSent) {
-        res.statusCode = 502
-        res.end('Bad Gateway')
-      }
-    }
-
-    const cleanup = () => {
-      this.#proxy.off('proxyReq', onProxyReq)
-      this.#proxy.off('error', onError)
-    }
-
-    this.#proxy.on('proxyReq', onProxyReq)
-    this.#proxy.on('error', onError)
-
-    res.on('finish', cleanup)
-    res.on('close', cleanup)
-
-    this.#proxy.web(req, res, {target: 'http://127.0.0.1:' + website.port})
+    this.#proxy(req, res, website, host, false)
   }
 }
 

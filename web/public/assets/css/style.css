@@ -1,5 +1,5 @@
 /* ============================================
-   CandyPack Template Stylesheet
+   Odac Template Stylesheet
    Modern, responsive design with smooth transitions
    ============================================ */
 
@@ -536,7 +536,7 @@ textarea.error {
   display: block;
 }
 
-[candy-form-success] {
+[odac-form-success] {
   background-color: var(--accent);
   color: var(--white);
   padding: var(--spacing-sm);
@@ -545,7 +545,7 @@ textarea.error {
   display: none;
 }
 
-[candy-form-success]:not(:empty) {
+[odac-form-success]:not(:empty) {
   display: block;
 }
 
@@ -1333,7 +1333,7 @@ footer a:hover {
 }
 
 /* Smooth page transitions */
-[candy-page] {
+[odac-page] {
   animation: fadeIn 0.4s ease-out;
 }
 

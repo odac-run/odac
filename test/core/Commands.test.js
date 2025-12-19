@@ -1,5 +1,5 @@
-// Mock the Candy global before requiring Commands
-global.Candy = {
+// Mock the Odac global before requiring Commands
+global.Odac = {
   cli: jest.fn(),
   core: jest.fn()
 }
@@ -29,7 +29,7 @@ describe('Commands', () => {
       monit: jest.fn()
     }
 
-    global.Candy.cli.mockImplementation(name => {
+    global.Odac.cli.mockImplementation(name => {
       switch (name) {
         case 'Cli':
           return mockCli
@@ -42,7 +42,7 @@ describe('Commands', () => {
       }
     })
 
-    global.Candy.core.mockImplementation(name => {
+    global.Odac.core.mockImplementation(name => {
       if (name === 'Lang') {
         return {get: key => key}
       }
@@ -68,11 +68,11 @@ describe('Commands', () => {
     })
 
     it('should have correct command descriptions', () => {
-      expect(Commands.auth.description).toBe('Define your server to your CandyPack account')
-      expect(Commands.debug.description).toBe('Debug CandyPack Server')
+      expect(Commands.auth.description).toBe('Define your server to your Odac account')
+      expect(Commands.debug.description).toBe('Debug Odac Server')
       expect(Commands.help.description).toBe('List all available commands')
       expect(Commands.monit.description).toBe('Monitor Website or Service')
-      expect(Commands.restart.description).toBe('Restart CandyPack Server')
+      expect(Commands.restart.description).toBe('Restart Odac Server')
       expect(Commands.run.description).toBe('Add a new Service')
     })
   })

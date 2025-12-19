@@ -1,5 +1,5 @@
 {
   "route": {
-    "/assets/js/candy.js": "${candy}/framework/web/candy.js"
+    "/assets/js/odac.js": "${odac}/framework/web/odac.js"
   }
 }

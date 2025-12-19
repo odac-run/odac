@@ -1,12 +1,12 @@
 # User Registration
 
-The `Candy.Auth.register()` method provides a secure and user-friendly way to create new user accounts with automatic password hashing, duplicate checking, and optional auto-login.
+The `Odac.Auth.register()` method provides a secure and user-friendly way to create new user accounts with automatic password hashing, duplicate checking, and optional auto-login.
 
 ## Basic Usage
 
 ```javascript
-module.exports = async function (Candy) {
-  const result = await Candy.Auth.register({
+module.exports = async function (Odac) {
+  const result = await Odac.Auth.register({
     email: 'user@example.com',
     username: 'johndoe',
     password: 'securePassword123',
@@ -24,7 +24,7 @@ module.exports = async function (Candy) {
 ## Advanced Options
 
 ```javascript
-const result = await Candy.Auth.register(
+const result = await Odac.Auth.register(
   {
     email: 'user@example.com',
     username: 'johndoe',
@@ -77,8 +77,8 @@ const result = await Candy.Auth.register(
 ## Example Controller
 
 ```javascript
-module.exports = async function (Candy) {
-  const validator = Candy.Validator
+module.exports = async function (Odac) {
+  const validator = Odac.Validator
 
   // Validate input
   validator.post('email').check('required|email').message('A valid email is required')
@@ -90,20 +90,20 @@ module.exports = async function (Candy) {
   }
 
   // Get validated data
-  const email = await Candy.request('email')
-  const username = await Candy.request('username')
-  const password = await Candy.request('password')
-  const name = await Candy.request('name')
+  const email = await Odac.request('email')
+  const username = await Odac.request('username')
+  const password = await Odac.request('password')
+  const name = await Odac.request('name')
   
   // Register user
-  const result = await Candy.Auth.register(
+  const result = await Odac.Auth.register(
     {email, username, password, name},
     {uniqueFields: ['email', 'username']}
   )
   
   if (result.success) {
     // User is now registered and logged in
-    return Candy.direct('/dashboard')
+    return Odac.direct('/dashboard')
   } else {
     // Show error message
     return {error: result.error}

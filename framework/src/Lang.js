@@ -1,12 +1,12 @@
 const fs = require('fs')
 
 class Lang {
-  #candy
+  #odac
   #data = {}
   #lang
 
-  constructor(Candy) {
-    this.#candy = Candy
+  constructor(Odac) {
+    this.#odac = Odac
     this.set()
   }
 
@@ -42,10 +42,10 @@ class Lang {
   }
 
   set(lang) {
-    if (!lang || lang.length !== 2 || !this.#candy.Var(lang).is('alpha')) {
-      if (this.#candy.Request.header('ACCEPT-LANGUAGE') && this.#candy.Request.header('ACCEPT-LANGUAGE').length > 1)
-        lang = this.#candy.Request.header('ACCEPT-LANGUAGE').substr(0, 2)
-      else lang = this.#candy.Config.lang?.default || 'en'
+    if (!lang || lang.length !== 2 || !this.#odac.Var(lang).is('alpha')) {
+      if (this.#odac.Request.header('ACCEPT-LANGUAGE') && this.#odac.Request.header('ACCEPT-LANGUAGE').length > 1)
+        lang = this.#odac.Request.header('ACCEPT-LANGUAGE').substr(0, 2)
+      else lang = this.#odac.Config.lang?.default || 'en'
     }
     this.#lang = lang
     if (fs.existsSync(__dir + '/storage/language/' + lang + '.json'))

@@ -2,6 +2,8 @@ const fs = require('fs')
 
 const Cron = require('./Route/Cron.js')
 const Internal = require('./Route/Internal.js')
+const MiddlewareChain = require('./Route/Middleware.js')
+const {WebSocketServer} = require('./WebSocket.js')
 
 var routes2 = {}
 const mime = {
@@ -64,91 +66,134 @@ const mime = {
 class Route {
   loading = false
   routes = {}
+  middlewares = {}
+  _pendingMiddlewares = []
+  #wsServer = new WebSocketServer()
+  auth = {
+    page: (path, authFile, file) => this.authPage(path, authFile, file),
+    post: (path, authFile, file) => this.authPost(path, authFile, file),
+    get: (path, authFile, file) => this.authGet(path, authFile, file),
+    ws: (path, handler, options) => this.authWs(path, handler, options),
+    use: (...middlewares) => new MiddlewareChain(this, [...middlewares.flat()])
+  }
 
-  async check(Candy) {
-    let url = Candy.Request.url.split('?')[0]
-    if (url.substr(-1) === '/') url = url.substr(0, url.length - 1)
+  async #runMiddlewares(Odac, middlewares) {
+    if (!middlewares || middlewares.length === 0) return
 
-    if (url.startsWith('/_candy/')) {
-      Candy.Request.route = '_candy_internal'
+    for (const mw of middlewares) {
+      const middleware = typeof mw === 'function' ? mw : this.middlewares[mw]?.handler
+
+      if (!middleware) {
+        console.error(`Middleware not found: ${mw}`)
+        return Odac.Request.abort(500)
+      }
+
+      const result = await middleware(Odac)
+
+      if (result === false) {
+        return Odac.Request.abort(403)
+      }
+
+      if (result !== undefined && result !== true) {
+        return result
+      }
+    }
+  }
+
+  async #executeController(Odac, controller) {
+    const middlewareResult = await this.#runMiddlewares(Odac, controller.middlewares)
+    if (middlewareResult !== undefined) return middlewareResult
+
+    if (controller.params) {
+      for (let key in controller.params) {
+        Odac.Request.data.url[key] = controller.params[key]
+      }
+    }
+
+    if (typeof controller.cache === 'function') {
+      return controller.cache(Odac)
+    }
+  }
+
+  async check(Odac) {
+    let url = Odac.Request.url.split('?')[0]
+    if (url.endsWith('/')) url = url.slice(0, -1)
+
+    if (url.startsWith('/_odac/')) {
+      Odac.Request.route = '_odac_internal'
+    }
+
+    if (['post', 'put', 'patch', 'delete'].includes(Odac.Request.method)) {
+      const formToken = await Odac.request('_odac_form_token')
+      if (formToken) {
+        await Internal.processForm(Odac)
+      }
     }
     if (
-      Candy.Request.url === '/' &&
-      Candy.Request.method === 'get' &&
-      Candy.Request.header('X-Candy') === 'token' &&
-      Candy.Request.header('Referer').startsWith((Candy.Request.ssl ? 'https://' : 'http://') + Candy.Request.host + '/') &&
-      Candy.Request.header('X-Candy-Client') === Candy.Request.cookie('candy_client')
+      Odac.Request.url === '/' &&
+      Odac.Request.method === 'get' &&
+      Odac.Request.header('X-Odac') === 'token' &&
+      Odac.Request.header('Referer').startsWith((Odac.Request.ssl ? 'https://' : 'http://') + Odac.Request.host + '/') &&
+      Odac.Request.header('X-Odac-Client') === Odac.Request.cookie('odac_client')
     ) {
-      Candy.Request.header('Access-Control-Allow-Origin', (Candy.Request.ssl ? 'https://' : 'http://') + Candy.Request.host)
-      Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+      Odac.Request.header('Access-Control-Allow-Origin', (Odac.Request.ssl ? 'https://' : 'http://') + Odac.Request.host)
+      Odac.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
       return {
-        token: Candy.token(),
-        page: this.routes[Candy.Request.route]['page'][url].file || this.routes[Candy.Request.route].error[404].file || ''
+        token: Odac.token()
       }
     }
 
     // Handle AJAX page load requests
-    if (Candy.Request.method === 'get' && Candy.Request.header('X-Candy') === 'ajaxload') {
-      let loadElements = Candy.Request.header('X-Candy-Load')
+    if (Odac.Request.method === 'get' && Odac.Request.header('X-Odac') === 'ajaxload') {
+      let loadElements = Odac.Request.header('X-Odac-Load')
       if (loadElements) {
-        Candy.Request.ajaxLoad = loadElements.split(',')
+        Odac.Request.ajaxLoad = loadElements.split(',')
       }
-      Candy.Request.isAjaxLoad = true
+      Odac.Request.isAjaxLoad = true
+      Odac.Request.clientSkeleton = Odac.Request.header('X-Odac-Skeleton')
     }
-    if (Candy.Config.route && Candy.Config.route[url]) {
-      Candy.Config.route[url] = Candy.Config.route[url].replace('${candy}', `${__dir}/node_modules/candypack`)
-      if (fs.existsSync(Candy.Config.route[url])) {
-        let stat = fs.lstatSync(Candy.Config.route[url])
+    if (Odac.Config && Odac.Config.route && Odac.Config.route[url]) {
+      Odac.Config.route[url] = Odac.Config.route[url].replace('${odac}', `${__dir}/node_modules/odac`)
+      if (fs.existsSync(Odac.Config.route[url])) {
+        let stat = fs.lstatSync(Odac.Config.route[url])
         if (stat.isFile()) {
           let type = 'text/html'
-          if (Candy.Config.route[url].includes('.')) {
-            let arr = Candy.Config.route[url].split('.')
+          if (Odac.Config.route[url].includes('.')) {
+            let arr = Odac.Config.route[url].split('.')
             type = mime[arr[arr.length - 1]]
           }
-          Candy.Request.header('Content-Type', type)
-          Candy.Request.header('Cache-Control', 'public, max-age=31536000')
-          Candy.Request.header('Content-Length', stat.size)
-          return fs.readFileSync(Candy.Config.route[url])
+          Odac.Request.header('Content-Type', type)
+          Odac.Request.header('Cache-Control', 'public, max-age=31536000')
+          Odac.Request.header('Content-Length', stat.size)
+          return fs.readFileSync(Odac.Config.route[url])
         }
       }
     }
-    for (let method of ['#' + Candy.Request.method, Candy.Request.method]) {
-      let controller = this.#controller(Candy.Request.route, method, url)
+    for (let method of ['#' + Odac.Request.method, Odac.Request.method]) {
+      let controller = this.#controller(Odac.Request.route, method, url)
       if (controller) {
-        if (!Candy.Request.method.startsWith('#') || (await Candy.Auth.check())) {
-          Candy.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        if (!method.startsWith('#') || (await Odac.Auth.check())) {
+          Odac.Request.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
           if (
-            ['post', 'get'].includes(Candy.Request.method) &&
+            ['post', 'get'].includes(Odac.Request.method) &&
             controller.token &&
-            (!(await Candy.request('_token')) || !Candy.token(await Candy.Request.request('_token')))
+            (!(await Odac.request('_token')) || !Odac.token(await Odac.Request.request('_token')))
           )
-            return Candy.Request.abort(401)
-          if (typeof controller.cache === 'function') {
-            if (controller.params) for (let key in controller.params) Candy.Request.data.url[key] = controller.params[key]
-            return controller.cache(Candy)
-          }
+            return Odac.Request.abort(401)
+
+          return await this.#executeController(Odac, controller)
         }
       }
     }
-    if (
-      this.routes[Candy.Request.route]['#page'] &&
-      this.routes[Candy.Request.route]['#page'][url] &&
-      typeof this.routes[Candy.Request.route]['#page'][url].cache === 'function'
-    ) {
-      if (await Candy.Auth.check()) {
-        Candy.Request.page = this.routes[Candy.Request.route]['#page'][url].file
-        Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-        return this.routes[Candy.Request.route]['#page'][url].cache(Candy)
-      }
+    let authPageController = this.#controller(Odac.Request.route, '#page', url)
+    if (authPageController && (await Odac.Auth.check())) {
+      Odac.Request.page = authPageController.cache?.file || authPageController.file
+      return await this.#executeController(Odac, authPageController)
     }
-    if (
-      this.routes[Candy.Request.route]['page'] &&
-      this.routes[Candy.Request.route]['page'][url] &&
-      typeof this.routes[Candy.Request.route]['page'][url].cache === 'function'
-    ) {
-      Candy.Request.page = this.routes[Candy.Request.route]['page'][url].file
-      Candy.cookie('candy_data', {page: Candy.Request.page, token: Candy.token()}, {expires: null, httpOnly: false})
-      return this.routes[Candy.Request.route]['page'][url].cache(Candy)
+    let pageController = this.#controller(Odac.Request.route, 'page', url)
+    if (pageController) {
+      Odac.Request.page = pageController.cache?.file || pageController.file
+      return await this.#executeController(Odac, pageController)
     }
     if (url && !url.includes('/../') && fs.existsSync(`${__dir}/public${url}`)) {
       let stat = fs.lstatSync(`${__dir}/public${url}`)
@@ -158,13 +203,13 @@ class Route {
           let arr = url.split('.')
           type = mime[arr[arr.length - 1]]
         }
-        Candy.Request.header('Content-Type', type)
-        Candy.Request.header('Cache-Control', 'public, max-age=31536000')
-        Candy.Request.header('Content-Length', stat.size)
+        Odac.Request.header('Content-Type', type)
+        Odac.Request.header('Cache-Control', 'public, max-age=31536000')
+        Odac.Request.header('Content-Length', stat.size)
         return fs.readFileSync(`${__dir}/public${url}`)
       }
     }
-    return Candy.Request.abort(404)
+    return Odac.Request.abort(404)
   }
 
   #controller(route, method, url) {
@@ -191,59 +236,80 @@ class Route {
         return {
           params: params,
           cache: this.routes[route][method][key].cache,
-          token: this.routes[route][method][key].token
+          token: this.routes[route][method][key].token,
+          middlewares: this.routes[route][method][key].middlewares
         }
     }
     return false
   }
 
+  #loadMiddlewares() {
+    const middlewareDir = `${__dir}/middleware/`
+    if (!fs.existsSync(middlewareDir)) return
+
+    for (const file of fs.readdirSync(middlewareDir)) {
+      if (!file.endsWith('.js')) continue
+      const name = file.replace('.js', '')
+      const path = `${middlewareDir}${file}`
+      const mtime = fs.statSync(path).mtimeMs
+
+      if (this.middlewares[name] && this.middlewares[name].mtime >= mtime - 1000) continue
+
+      delete require.cache[require.resolve(path)]
+      this.middlewares[name] = {
+        path,
+        mtime,
+        handler: require(path)
+      }
+    }
+  }
+
   #init() {
     if (this.loading) return
     this.loading = true
+    this.#loadMiddlewares()
     for (const file of fs.readdirSync(`${__dir}/controller/`)) {
-      if (file.substr(-3) !== '.js') continue
+      if (!file.endsWith('.js')) continue
       let name = file.replace('.js', '')
-      if (!Candy.Route.class) Candy.Route.class = {}
-      if (Candy.Route.class[name]) {
-        if (Candy.Route.class[name].mtime >= fs.statSync(Candy.Route.class[name].path).mtimeMs) continue
-        delete global[name]
-        delete require.cache[require.resolve(Candy.Route.class[name].path)]
+      if (!Odac.Route.class) Odac.Route.class = {}
+      if (Odac.Route.class[name]) {
+        if (Odac.Route.class[name].mtime >= fs.statSync(Odac.Route.class[name].path).mtimeMs + 1000) continue
+        delete require.cache[require.resolve(Odac.Route.class[name].path)]
       }
-      if (global[name]) continue
-      Candy.Route.class[name] = {
+      Odac.Route.class[name] = {
         path: `${__dir}/controller/${file}`,
-        mtime: fs.statSync(`${__dir}/controller/${file}`).mtimeMs
+        mtime: fs.statSync(`${__dir}/controller/${file}`).mtimeMs,
+        module: require(`${__dir}/controller/${file}`)
       }
-      global[name] = require(Candy.Route.class[name].path)
     }
     let dir = fs.readdirSync(`${__dir}/route/`)
     for (const file of dir) {
-      if (file.substr(-3) !== '.js') continue
+      if (!file.endsWith('.js')) continue
       let mtime = fs.statSync(`${__dir}/route/${file}`).mtimeMs
-      Candy.Route.buff = file.replace('.js', '')
-      if (!routes2[Candy.Route.buff] || routes2[Candy.Route.buff] < mtime) {
+      Odac.Route.buff = file.replace('.js', '')
+      if (!routes2[Odac.Route.buff] || routes2[Odac.Route.buff] < mtime - 1000) {
         delete require.cache[require.resolve(`${__dir}/route/${file}`)]
-        routes2[Candy.Route.buff] = mtime
+        routes2[Odac.Route.buff] = mtime
         require(`${__dir}/route/${file}`)
       }
       for (const type of ['page', '#page', 'post', '#post', 'get', '#get', 'error']) {
-        if (!this.routes[Candy.Route.buff]) continue
-        if (!this.routes[Candy.Route.buff][type]) continue
-        for (const route in this.routes[Candy.Route.buff][type]) {
-          if (routes2[Candy.Route.buff] > this.routes[Candy.Route.buff][type][route].loaded) {
-            delete require.cache[require.resolve(this.routes[Candy.Route.buff][type][route].path)]
-            delete this.routes[Candy.Route.buff][type][route]
-          } else if (this.routes[Candy.Route.buff][type][route]) {
-            if (typeof this.routes[Candy.Route.buff][type][route].type === 'function') continue
-            if (this.routes[Candy.Route.buff][type][route].mtime < fs.statSync(this.routes[Candy.Route.buff][type][route].path).mtimeMs) {
-              delete require.cache[require.resolve(this.routes[Candy.Route.buff][type][route].path)]
-              this.routes[Candy.Route.buff][type][route].cache = require(this.routes[Candy.Route.buff][type][route].path)
-              this.routes[Candy.Route.buff][type][route].mtime = fs.statSync(this.routes[Candy.Route.buff][type][route].path).mtimeMs
+        if (!this.routes[Odac.Route.buff]) continue
+        if (!this.routes[Odac.Route.buff][type]) continue
+        for (const route in this.routes[Odac.Route.buff][type]) {
+          if (routes2[Odac.Route.buff] > this.routes[Odac.Route.buff][type][route].loaded) {
+            delete require.cache[require.resolve(this.routes[Odac.Route.buff][type][route].path)]
+            delete this.routes[Odac.Route.buff][type][route]
+          } else if (this.routes[Odac.Route.buff][type][route]) {
+            if (typeof this.routes[Odac.Route.buff][type][route].type === 'function') continue
+            if (this.routes[Odac.Route.buff][type][route].mtime < fs.statSync(this.routes[Odac.Route.buff][type][route].path).mtimeMs) {
+              delete require.cache[require.resolve(this.routes[Odac.Route.buff][type][route].path)]
+              this.routes[Odac.Route.buff][type][route].cache = require(this.routes[Odac.Route.buff][type][route].path)
+              this.routes[Odac.Route.buff][type][route].mtime = fs.statSync(this.routes[Odac.Route.buff][type][route].path).mtimeMs
             }
           }
         }
       }
-      delete Candy.Route.buff
+      delete Odac.Route.buff
     }
     Cron.init()
     this.loading = false
@@ -254,145 +320,205 @@ class Route {
     this.#registerInternalRoutes()
     setInterval(() => {
       this.#init()
-    }, 1000)
+    }, 5000)
   }
 
   #registerInternalRoutes() {
-    if (!Candy.Route) Candy.Route = {}
-    Candy.Route.buff = '_candy_internal'
+    if (!Odac.Route) Odac.Route = {}
+    Odac.Route.buff = '_odac_internal'
 
     this.set(
       'POST',
-      '/_candy/register',
-      async Candy => {
-        const csrfToken = await Candy.request('_token')
-        if (!csrfToken || !Candy.token(csrfToken)) {
-          return Candy.Request.abort(401)
+      '/_odac/register',
+      async Odac => {
+        const csrfToken = await Odac.request('_token')
+        if (!csrfToken || !Odac.token(csrfToken)) {
+          return Odac.Request.abort(401)
         }
-        return await Internal.register(Candy)
+        return await Internal.register(Odac)
       },
       {token: true}
     )
 
     this.set(
       'POST',
-      '/_candy/login',
-      async Candy => {
-        const csrfToken = await Candy.request('_token')
-        if (!csrfToken || !Candy.token(csrfToken)) {
-          return Candy.Request.abort(401)
+      '/_odac/login',
+      async Odac => {
+        const csrfToken = await Odac.request('_token')
+        if (!csrfToken || !Odac.token(csrfToken)) {
+          return Odac.Request.abort(401)
         }
-        return await Internal.login(Candy)
+        return await Internal.login(Odac)
       },
       {token: true}
     )
 
-    delete Candy.Route.buff
+    this.set(
+      ['POST', 'GET', 'PUT', 'PATCH', 'DELETE'],
+      '/_odac/form',
+      async Odac => {
+        const csrfToken = await Odac.request('_token')
+        if (!csrfToken || !Odac.token(csrfToken)) {
+          return Odac.Request.abort(401)
+        }
+        const result = await Internal.customForm(Odac)
+        if (result !== null) return result
+
+        return Odac.return({
+          result: {
+            success: false,
+            message: 'No handler defined for this form'
+          },
+          errors: {_odac_form: 'Form action not configured'}
+        })
+      },
+      {token: true}
+    )
+
+    delete Odac.Route.buff
   }
 
   async request(req, res) {
     let id = `${Date.now()}${Math.random().toString(36).substr(2, 9)}`
-    let param = Candy.instance(id, req, res)
+    let param = Odac.instance(id, req, res)
     if (!this.routes[param.Request.route]) return param.Request.end()
     try {
       let result = this.check(param)
       if (result instanceof Promise) result = await result
+      const Stream = require('./Stream.js')
+      if (result instanceof Stream) return
+      if (param.Request.res.finished || param.Request.res.writableEnded) {
+        param.cleanup()
+        return
+      }
       if (result) param.Request.end(result)
+      await param.View.print(param)
       param.Request.print(param)
-      param.View.print(param)
+      param.cleanup()
     } catch (e) {
       console.error(e)
       param.Request.abort(500)
+      param.cleanup()
       return param.Request.end()
     }
   }
 
+  use(...middlewares) {
+    return new MiddlewareChain(this, [...middlewares.flat()])
+  }
+
   set(type, url, file, options = {}) {
+    if (Array.isArray(type)) {
+      type = type.map(t => t.toLowerCase())
+      for (const t of type) {
+        this.set(t, url, file, options)
+      }
+      return this
+    }
+
     if (!options) options = {}
     if (typeof url !== 'string') url = String(url)
-    if (url.length && url.substr(-1) === '/') url = url.substr(0, url.length - 1)
+    if (url.length && url.endsWith('/')) url = url.slice(0, -1)
 
     type = type.toLowerCase()
 
     const isFunction = typeof file === 'function'
-    let path = `${__dir}/route/${Candy.Route.buff}.js`
+    let path = `${__dir}/route/${Odac.Route.buff}.js`
 
     if (!isFunction && file) {
       path = `${__dir}/controller/${type.replace('#', '')}/${file}.js`
-      if (file.includes('.')) {
+      if (typeof file === 'string' && file.includes('.')) {
         let arr = file.split('.')
         path = `${__dir}/controller/${arr[0]}/${type.replace('#', '')}/${arr.slice(1).join('.')}.js`
       }
     }
 
-    if (!this.routes[Candy.Route.buff]) this.routes[Candy.Route.buff] = {}
-    if (!this.routes[Candy.Route.buff][type]) this.routes[Candy.Route.buff][type] = {}
+    if (!this.routes[Odac.Route.buff]) this.routes[Odac.Route.buff] = {}
+    if (!this.routes[Odac.Route.buff][type]) this.routes[Odac.Route.buff][type] = {}
 
-    if (this.routes[Candy.Route.buff][type][url]) {
-      this.routes[Candy.Route.buff][type][url].loaded = routes2[Candy.Route.buff]
-      if (!isFunction && this.routes[Candy.Route.buff][type][url].mtime < fs.statSync(path).mtimeMs) {
-        delete this.routes[Candy.Route.buff][type][url]
+    if (this.routes[Odac.Route.buff][type][url]) {
+      this.routes[Odac.Route.buff][type][url].loaded = routes2[Odac.Route.buff]
+      if (!isFunction && this.routes[Odac.Route.buff][type][url].mtime < fs.statSync(path).mtimeMs) {
+        delete this.routes[Odac.Route.buff][type][url]
         delete require.cache[require.resolve(path)]
-      } else return
+      } else return this
     }
 
     if (isFunction || fs.existsSync(path)) {
-      if (!this.routes[Candy.Route.buff][type][url]) this.routes[Candy.Route.buff][type][url] = {}
-      this.routes[Candy.Route.buff][type][url].cache = isFunction ? file : require(path)
-      this.routes[Candy.Route.buff][type][url].type = isFunction ? 'function' : 'controller'
-      this.routes[Candy.Route.buff][type][url].file = file
-      this.routes[Candy.Route.buff][type][url].mtime = isFunction ? Date.now() : fs.statSync(path).mtimeMs
-      this.routes[Candy.Route.buff][type][url].path = path
-      this.routes[Candy.Route.buff][type][url].loaded = routes2[Candy.Route.buff]
-      this.routes[Candy.Route.buff][type][url].token = options.token ?? true
+      if (!this.routes[Odac.Route.buff][type][url]) this.routes[Odac.Route.buff][type][url] = {}
+      this.routes[Odac.Route.buff][type][url].cache = isFunction ? file : require(path)
+      this.routes[Odac.Route.buff][type][url].type = isFunction ? 'function' : 'controller'
+      this.routes[Odac.Route.buff][type][url].file = file
+      this.routes[Odac.Route.buff][type][url].mtime = isFunction ? Date.now() : fs.statSync(path).mtimeMs
+      this.routes[Odac.Route.buff][type][url].path = path
+      this.routes[Odac.Route.buff][type][url].loaded = routes2[Odac.Route.buff]
+      this.routes[Odac.Route.buff][type][url].token = options.token ?? true
+      this.routes[Odac.Route.buff][type][url].middlewares = this._pendingMiddlewares.length > 0 ? [...this._pendingMiddlewares] : undefined
     }
+
+    return this
   }
 
   page(path, file) {
     if (typeof file === 'object' && !Array.isArray(file)) {
-      this.set('page', path, _candy => {
-        _candy.View.set(file)
+      this.set('page', path, _odac => {
+        _odac.View.set(file)
         return
       })
-      return
+      return this
     }
     if (file) this.set('page', path, file)
+    return this
   }
 
   post(path, file, options) {
     this.set('post', path, file, options)
+    return this
   }
 
   get(path, file, options) {
     this.set('get', path, file, options)
+    return this
   }
 
   authPage(path, authFile, file) {
     if (typeof authFile === 'object' && !Array.isArray(authFile)) {
-      this.set('#page', path, _candy => {
-        _candy.View.set(authFile)
+      this.set('#page', path, _odac => {
+        _odac.View.set(authFile)
         return
       })
       if (typeof file === 'object' && !Array.isArray(file)) {
-        this.set('page', path, _candy => {
-          _candy.View.set(file)
+        this.set('page', path, _odac => {
+          _odac.View.set(file)
           return
         })
       }
-      return
+      return this
     }
     if (authFile) this.set('#page', path, authFile)
-    if (file) this.set('page', path, file)
+    if (file) {
+      if (typeof file === 'object' && !Array.isArray(file)) {
+        this.set('page', path, _odac => {
+          _odac.View.set(file)
+          return
+        })
+      } else {
+        this.set('page', path, file)
+      }
+    }
+    return this
   }
 
   authPost(path, authFile, file) {
     if (authFile) this.set('#post', path, authFile)
     if (file) this.post(path, file)
+    return this
   }
 
   authGet(path, authFile, file) {
     if (authFile) this.set('#get', path, authFile)
     if (file) this.get(path, file)
+    return this
   }
 
   error(code, file) {
@@ -401,6 +527,94 @@ class Route {
 
   cron(controller) {
     return Cron.job(controller)
+  }
+
+  ws(path, handler, options = {}) {
+    this.setWs('ws', path, handler, options)
+    return this
+  }
+
+  authWs(path, handler, options = {}) {
+    this.setWs('#ws', path, handler, options)
+    return this
+  }
+
+  setWs(type, path, handler, options = {}) {
+    const middlewares = this._pendingMiddlewares.length > 0 ? [...this._pendingMiddlewares] : undefined
+    this._pendingMiddlewares = []
+
+    const {token = true} = options
+    const requireAuth = type === '#ws'
+
+    const wrappedHandler = async (ws, Odac) => {
+      Odac.ws = ws
+
+      ws.on('close', () => {
+        if (Odac.cleanup && typeof Odac.cleanup === 'function') {
+          Odac.cleanup()
+        }
+      })
+
+      if (requireAuth) {
+        const isAuthenticated = await Odac.Auth.check()
+        if (!isAuthenticated) {
+          ws.close(4001, 'Unauthorized')
+          return
+        }
+      }
+
+      if (token) {
+        const wsToken = Odac.Request._wsHeaders ? Odac.Request._wsHeaders['sec-websocket-protocol'] : null
+        const tokens = wsToken ? wsToken.split(', ') : []
+        const odacToken = tokens.find(t => t.startsWith('odac-token-'))
+
+        if (!odacToken) {
+          ws.close(4002, 'Missing token')
+          return
+        }
+
+        const tokenValue = odacToken.replace('odac-token-', '')
+        if (!Odac.token(tokenValue)) {
+          ws.close(4002, 'Invalid token')
+          return
+        }
+      }
+
+      if (middlewares) {
+        for (const mw of middlewares) {
+          const middleware = typeof mw === 'function' ? mw : this.middlewares[mw]?.handler
+
+          if (!middleware) {
+            console.error(`Middleware not found: ${mw}`)
+            ws.close(4000, 'Internal error')
+            return
+          }
+
+          const result = await middleware(Odac)
+
+          if (result === false) {
+            ws.close(4003, 'Forbidden')
+            return
+          }
+
+          if (result !== undefined && result !== true) {
+            ws.close(4000, 'Middleware rejected')
+            return
+          }
+        }
+      }
+      return handler(Odac)
+    }
+
+    this.#wsServer.route(path, wrappedHandler)
+  }
+
+  handleWebSocketUpgrade(req, socket, head, Odac) {
+    this.#wsServer.handleUpgrade(req, socket, head, Odac)
+  }
+
+  get wsServer() {
+    return this.#wsServer
   }
 }
 

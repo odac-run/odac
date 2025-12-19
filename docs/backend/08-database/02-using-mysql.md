@@ -1,25 +1,25 @@
 ## 🗄️ Using MySQL
 
-CandyPack provides a powerful query builder for safe and easy database operations.
+Odac provides a powerful query builder for safe and easy database operations.
 
 ### Selecting Data
 
 #### Get All Records
 
 ```javascript
-const users = await Candy.Mysql.table('users').get()
+const users = await Odac.Mysql.table('users').get()
 ```
 
 #### Get First Record
 
 ```javascript
-const user = await Candy.Mysql.table('users').where('id', 1).first()
+const user = await Odac.Mysql.table('users').where('id', 1).first()
 ```
 
 #### Select Specific Columns
 
 ```javascript
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .select('id', 'name', 'email')
   .get()
 ```
@@ -28,35 +28,35 @@ const users = await Candy.Mysql.table('users')
 
 ```javascript
 // Single condition
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where('status', 'active')
   .get()
 
 // Multiple conditions (AND)
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where('status', 'active')
   .where('verified', 1)
   .get()
 
 // OR condition
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where('role', 'admin')
   .orWhere('role', 'moderator')
   .get()
 
 // Comparison operators
-const products = await Candy.Mysql.table('products')
+const products = await Odac.Mysql.table('products')
   .where('price', '>', 100)
   .where('stock', '<=', 10)
   .get()
 
 // LIKE
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where('name', 'LIKE', '%John%')
   .get()
 
 // IN
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where('role', 'IN', ['admin', 'moderator'])
   .get()
 ```
@@ -67,7 +67,7 @@ For complex queries with nested AND/OR conditions, use arrays:
 
 ```javascript
 // SQL: WHERE (status = 'active' AND verified = 1) OR (role = 'admin')
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where([
     ['status', 'active'],
     ['verified', 1]
@@ -76,7 +76,7 @@ const users = await Candy.Mysql.table('users')
   .get()
 
 // SQL: WHERE status = 'active' AND (role = 'admin' OR role = 'moderator')
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where('status', 'active')
   .where([
     ['role', 'admin'],
@@ -88,7 +88,7 @@ const users = await Candy.Mysql.table('users')
 // Complex nested conditions
 // SQL: WHERE (status = 'active' AND (role = 'admin' OR role = 'moderator')) 
 //      AND (verified = 1 OR email_verified = 1)
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .where([
     ['status', 'active'],
     [
@@ -109,19 +109,19 @@ const users = await Candy.Mysql.table('users')
 
 ```javascript
 // Order by
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .order('created_at', 'desc')
   .get()
 
 // Limit
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .limit(10)
   .get()
 
 // Pagination
 const page = 2
 const perPage = 20
-const users = await Candy.Mysql.table('users')
+const users = await Odac.Mysql.table('users')
   .limit((page - 1) * perPage, perPage)
   .get()
 ```
@@ -129,7 +129,7 @@ const users = await Candy.Mysql.table('users')
 ### Counting Records
 
 ```javascript
-const userCount = await Candy.Mysql.table('users')
+const userCount = await Odac.Mysql.table('users')
   .where('status', 'active')
   .rows()
 ```
@@ -137,7 +137,7 @@ const userCount = await Candy.Mysql.table('users')
 ### Joins
 
 ```javascript
-const orders = await Candy.Mysql.table('orders')
+const orders = await Odac.Mysql.table('orders')
   .leftJoin('users', 'orders.user_id', 'users.id')
   .select('orders.*', 'users.name', 'users.email')
   .get()
@@ -147,7 +147,7 @@ const orders = await Candy.Mysql.table('orders')
 
 ```javascript
 // Insert single record
-const result = await Candy.Mysql.table('users').insert({
+const result = await Odac.Mysql.table('users').insert({
   name: 'John Doe',
   email: 'john@example.com',
   status: 'active'
@@ -160,7 +160,7 @@ console.log(result.affected) // Affected rows
 ### Updating Data
 
 ```javascript
-const result = await Candy.Mysql.table('users')
+const result = await Odac.Mysql.table('users')
   .where('id', 1)
   .set({
     name: 'Jane Doe',
@@ -173,7 +173,7 @@ console.log(result.affected) // Number of updated rows
 ### Deleting Data
 
 ```javascript
-const result = await Candy.Mysql.table('users')
+const result = await Odac.Mysql.table('users')
   .where('id', 1)
   .delete()
 
@@ -186,12 +186,12 @@ For complex queries, use raw SQL:
 
 ```javascript
 // Raw value in select
-const users = await Candy.Mysql.table('users')
-  .select('id', 'name', Candy.Mysql.raw('COUNT(*) as total'))
+const users = await Odac.Mysql.table('users')
+  .select('id', 'name', Odac.Mysql.raw('COUNT(*) as total'))
   .get()
 
 // Raw query with parameters (SAFE - recommended)
-const result = await Candy.Mysql.run('SELECT * FROM users WHERE status = ?', ['active'])
+const result = await Odac.Mysql.run('SELECT * FROM users WHERE status = ?', ['active'])
 ```
 
 #### ⚠️ Security Warning: Mysql.raw()
@@ -200,25 +200,25 @@ const result = await Candy.Mysql.run('SELECT * FROM users WHERE status = ?', ['a
 
 ```javascript
 // ❌ DANGEROUS - Never do this!
-const userInput = await Candy.request('search')
-const users = await Candy.Mysql.table('users')
-  .where('name', Candy.Mysql.raw(userInput))  // SQL INJECTION RISK!
+const userInput = await Odac.request('search')
+const users = await Odac.Mysql.table('users')
+  .where('name', Odac.Mysql.raw(userInput))  // SQL INJECTION RISK!
   .get()
 
 // ✅ SAFE - Use query builder instead
-const userInput = await Candy.request('search')
-const users = await Candy.Mysql.table('users')
+const userInput = await Odac.request('search')
+const users = await Odac.Mysql.table('users')
   .where('name', 'LIKE', `%${userInput}%`)  // Automatically escaped
   .get()
 
 // ✅ SAFE - Use with hardcoded values only
-const users = await Candy.Mysql.table('users')
-  .select('id', 'name', Candy.Mysql.raw('COUNT(*) as total'))  // OK - hardcoded
+const users = await Odac.Mysql.table('users')
+  .select('id', 'name', Odac.Mysql.raw('COUNT(*) as total'))  // OK - hardcoded
   .get()
 
 // ✅ SAFE - Use parameterized queries for dynamic values
-const status = await Candy.request('status')
-const result = await Candy.Mysql.run(
+const status = await Odac.request('status')
+const result = await Odac.Mysql.run(
   'SELECT * FROM users WHERE status = ?',
   [status]  // Automatically escaped
 )
@@ -237,8 +237,8 @@ const result = await Candy.Mysql.run(
 ### Group By
 
 ```javascript
-const stats = await Candy.Mysql.table('orders')
-  .select('user_id', Candy.Mysql.raw('COUNT(*) as order_count'))
+const stats = await Odac.Mysql.table('orders')
+  .select('user_id', Odac.Mysql.raw('COUNT(*) as order_count'))
   .groupBy('user_id')
   .get()
 ```
@@ -246,13 +246,13 @@ const stats = await Candy.Mysql.table('orders')
 ### Complete Example
 
 ```javascript
-module.exports = async function (Candy) {
-  const page = await Candy.request('page') || 1
+module.exports = async function (Odac) {
+  const page = await Odac.request('page') || 1
   const perPage = 20
-  const search = await Candy.request('search')
+  const search = await Odac.request('search')
   
   // Build query
-  let query = Candy.Mysql.table('products')
+  let query = Odac.Mysql.table('products')
     .select('id', 'name', 'price', 'stock')
     .where('status', 'active')
   
@@ -268,17 +268,17 @@ module.exports = async function (Candy) {
     .get()
   
   // Get total count
-  const totalCount = await Candy.Mysql.table('products')
+  const totalCount = await Odac.Mysql.table('products')
     .where('status', 'active')
     .rows()
   
-  Candy.set({
+  Odac.set({
     products: products,
     currentPage: page,
     totalPages: Math.ceil(totalCount / perPage)
   })
   
-  Candy.View.set({
+  Odac.View.set({
     skeleton: 'main',
     content: 'products.list'
   })
@@ -298,23 +298,23 @@ module.exports = async function (Candy) {
 ### Error Handling
 
 ```javascript
-module.exports = async function (Candy) {
+module.exports = async function (Odac) {
   try {
-    const user = await Candy.Mysql.table('users')
-      .where('id', await Candy.request('id'))
+    const user = await Odac.Mysql.table('users')
+      .where('id', await Odac.request('id'))
       .first()
     
     if (!user) {
-      Candy.set('error', 'User not found')
+      Odac.set('error', 'User not found')
     } else {
-      Candy.set('user', user)
+      Odac.set('user', user)
     }
   } catch (error) {
     console.error('Database error:', error)
-    Candy.set('error', 'An error occurred')
+    Odac.set('error', 'An error occurred')
   }
   
-  Candy.View.set({
+  Odac.View.set({
     skeleton: 'main',
     content: 'user.profile'
   })

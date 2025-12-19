@@ -3,15 +3,25 @@ class Stream {
   #req
   #res
   #closed = false
+  #odac
 
-  constructor(req, res, input) {
+  constructor(req, res, input, odac) {
     this.#req = req
     this.#res = res
+    this.#odac = odac
     this.#init()
     this.#handleInput(input)
   }
 
   #init() {
+    if (this.#res.headersSent || this.#res.writableEnded) {
+      this.#closed = true
+      return
+    }
+
+    this.#req.setTimeout(0)
+    this.#res.setTimeout(0)
+
     this.#res.setHeader('Content-Type', 'text/event-stream')
     this.#res.setHeader('Cache-Control', 'no-cache')
     this.#res.setHeader('Connection', 'keep-alive')
@@ -22,9 +32,12 @@ class Stream {
       }
     }, 30000)
 
-    this.#req.on('close', () => {
+    const handleClose = () => {
       this.close()
-    })
+    }
+
+    this.#req.on('close', handleClose)
+    this.#res.on('close', handleClose)
   }
 
   #handleInput(input) {
@@ -116,7 +129,12 @@ class Stream {
     if (this.#closed) return
     this.#closed = true
     clearInterval(this.#heartbeat)
-    this.#res.end()
+    if (!this.#res.writableEnded) {
+      this.#res.end()
+    }
+    if (this.#odac && typeof this.#odac.cleanup === 'function') {
+      this.#odac.cleanup()
+    }
   }
 
   #pipeIterator(iterator) {

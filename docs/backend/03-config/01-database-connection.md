@@ -15,7 +15,7 @@ When you add a `mysql` object to your `config.json`, the system will automatical
 }
 ```
 
-Once this is configured, you can directly use `Candy.Mysql` commands to run queries.
+Once this is configured, you can directly use `Odac.Mysql` commands to run queries.
 
 ### Using Environment Variables
 

@@ -15,61 +15,61 @@ class Internal {
     }
   }
 
-  static async register(Candy) {
-    const token = await Candy.request('_candy_register_token')
+  static async register(Odac) {
+    const token = await Odac.request('_odac_register_token')
     if (!token) {
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid request'}
+        errors: {_odac_form: 'Invalid request'}
       })
     }
 
-    const formData = Candy.Request.session(`_register_form_${token}`)
+    const formData = Odac.Request.session(`_register_form_${token}`)
 
     if (!formData) {
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Form session expired. Please refresh the page.'}
+        errors: {_odac_form: 'Form session expired. Please refresh the page.'}
       })
     }
 
     if (formData.expires < Date.now()) {
-      Candy.Request.session(`_register_form_${token}`, null)
-      return Candy.return({
+      Odac.Request.session(`_register_form_${token}`, null)
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Form session expired. Please refresh the page.'}
+        errors: {_odac_form: 'Form session expired. Please refresh the page.'}
       })
     }
 
-    if (formData.sessionId !== Candy.Request.session('_client')) {
-      return Candy.return({
+    if (formData.sessionId !== Odac.Request.session('_client')) {
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid session'}
+        errors: {_odac_form: 'Invalid session'}
       })
     }
 
-    if (formData.userAgent !== Candy.Request.header('user-agent')) {
-      return Candy.return({
+    if (formData.userAgent !== Odac.Request.header('user-agent')) {
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid request'}
+        errors: {_odac_form: 'Invalid request'}
       })
     }
 
-    if (formData.ip !== Candy.Request.ip) {
-      return Candy.return({
+    if (formData.ip !== Odac.Request.ip) {
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid request'}
+        errors: {_odac_form: 'Invalid request'}
       })
     }
 
     const config = formData.config
-    const validator = Candy.validator()
+    const validator = Odac.validator()
     const data = {}
 
     const uniqueFields = []
 
     for (const field of config.fields) {
-      const value = await Candy.request(field.name)
+      const value = await Odac.request(field.name)
 
       for (const validation of field.validations) {
         this.#validateField(validator, field, validation, value)
@@ -89,10 +89,10 @@ class Internal {
         if (set.ifEmpty && data[set.name]) continue
         data[set.name] = set.value
       } else if (set.compute) {
-        data[set.name] = await this.computeValue(set.compute, Candy)
+        data[set.name] = await this.computeValue(set.compute, Odac)
       } else if (set.callback) {
-        if (typeof Candy.fn[set.callback] === 'function') {
-          data[set.name] = await Candy.fn[set.callback](Candy)
+        if (typeof Odac.fn[set.callback] === 'function') {
+          data[set.name] = await Odac.fn[set.callback](Odac)
         }
       }
     }
@@ -101,29 +101,29 @@ class Internal {
       return validator.result()
     }
 
-    const registerResult = await Candy.Auth.register(data, {
+    const registerResult = await Odac.Auth.register(data, {
       autoLogin: config.autologin !== false,
       uniqueFields: uniqueFields.length > 0 ? uniqueFields : ['email']
     })
 
     if (!registerResult.success) {
       if (registerResult.error === 'Database connection not configured') {
-        return Candy.return({
+        return Odac.return({
           result: {success: false},
-          errors: {_candy_form: 'Service temporarily unavailable. Please try again later.'}
+          errors: {_odac_form: 'Service temporarily unavailable. Please try again later.'}
         })
       }
-      const errorField = registerResult.field || '_candy_form'
+      const errorField = registerResult.field || '_odac_form'
       const errors = {[errorField]: registerResult.error}
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
         errors: errors
       })
     }
 
-    Candy.Request.session(`_register_form_${token}`, null)
+    Odac.Request.session(`_register_form_${token}`, null)
 
-    return Candy.return({
+    return Odac.return({
       result: {
         success: true,
         message: 'Registration successful',
@@ -158,7 +158,7 @@ class Internal {
     return result
   }
 
-  static async computeValue(type, Candy) {
+  static async computeValue(type, Odac) {
     switch (type) {
       case 'now':
         return Math.floor(Date.now() / 1000)
@@ -169,9 +169,9 @@ class Internal {
       case 'timestamp':
         return Date.now()
       case 'ip':
-        return Candy.Request.ip
+        return Odac.Request.ip
       case 'user_agent':
-        return Candy.Request.header('user-agent')
+        return Odac.Request.header('user-agent')
       case 'uuid':
         return require('crypto').randomUUID()
       default:
@@ -179,59 +179,59 @@ class Internal {
     }
   }
 
-  static async login(Candy) {
-    const token = await Candy.request('_candy_login_token')
+  static async login(Odac) {
+    const token = await Odac.request('_odac_login_token')
     if (!token) {
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid request'}
+        errors: {_odac_form: 'Invalid request'}
       })
     }
 
-    const formData = Candy.Request.session(`_login_form_${token}`)
+    const formData = Odac.Request.session(`_login_form_${token}`)
 
     if (!formData) {
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Form session expired. Please refresh the page.'}
+        errors: {_odac_form: 'Form session expired. Please refresh the page.'}
       })
     }
 
     if (formData.expires < Date.now()) {
-      Candy.Request.session(`_login_form_${token}`, null)
-      return Candy.return({
+      Odac.Request.session(`_login_form_${token}`, null)
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Form session expired. Please refresh the page.'}
+        errors: {_odac_form: 'Form session expired. Please refresh the page.'}
       })
     }
 
-    if (formData.sessionId !== Candy.Request.session('_client')) {
-      return Candy.return({
+    if (formData.sessionId !== Odac.Request.session('_client')) {
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid session'}
+        errors: {_odac_form: 'Invalid session'}
       })
     }
 
-    if (formData.userAgent !== Candy.Request.header('user-agent')) {
-      return Candy.return({
+    if (formData.userAgent !== Odac.Request.header('user-agent')) {
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid request'}
+        errors: {_odac_form: 'Invalid request'}
       })
     }
 
-    if (formData.ip !== Candy.Request.ip) {
-      return Candy.return({
+    if (formData.ip !== Odac.Request.ip) {
+      return Odac.return({
         result: {success: false},
-        errors: {_candy_form: 'Invalid request'}
+        errors: {_odac_form: 'Invalid request'}
       })
     }
 
     const config = formData.config
-    const validator = Candy.validator()
+    const validator = Odac.validator()
     const credentials = {}
 
     for (const field of config.fields) {
-      const value = await Candy.request(field.name)
+      const value = await Odac.request(field.name)
 
       for (const validation of field.validations) {
         this.#validateField(validator, field, validation, value)
@@ -244,32 +244,195 @@ class Internal {
       return validator.result()
     }
 
-    const loginResult = await Candy.Auth.login(credentials)
+    const loginResult = await Odac.Auth.login(credentials)
 
     if (!loginResult.success) {
       if (loginResult.error === 'Database connection not configured') {
-        return Candy.return({
+        return Odac.return({
           result: {success: false},
-          errors: {_candy_form: 'Service temporarily unavailable. Please try again later.'}
+          errors: {_odac_form: 'Service temporarily unavailable. Please try again later.'}
         })
       }
-      const errorField = loginResult.field || '_candy_form'
+      const errorField = loginResult.field || '_odac_form'
       const errors = {[errorField]: loginResult.error}
-      return Candy.return({
+      return Odac.return({
         result: {success: false},
         errors: errors
       })
     }
 
-    Candy.Request.session(`_login_form_${token}`, null)
+    Odac.Request.session(`_login_form_${token}`, null)
 
-    return Candy.return({
+    return Odac.return({
       result: {
         success: true,
         message: 'Login successful',
         redirect: config.redirect
       }
     })
+  }
+
+  static async processForm(Odac) {
+    const token = await Odac.request('_odac_form_token')
+    if (!token) return
+
+    const formData = Odac.Request.session(`_custom_form_${token}`)
+    if (!formData) return
+
+    if (formData.expires < Date.now()) {
+      Odac.Request.session(`_custom_form_${token}`, null)
+      return
+    }
+
+    if (formData.sessionId !== Odac.Request.session('_client')) return
+    if (formData.userAgent !== Odac.Request.header('user-agent')) return
+    if (formData.ip !== Odac.Request.ip) return
+
+    const config = formData.config
+    const validator = Odac.validator()
+    const data = {}
+
+    const uniqueFields = []
+
+    for (const field of config.fields) {
+      const value = await Odac.request(field.name)
+
+      for (const validation of field.validations) {
+        this.#validateField(validator, field, validation, value)
+
+        if (validation.rule.includes('unique')) {
+          if (!uniqueFields.some(f => f.name === field.name)) {
+            uniqueFields.push({name: field.name, message: validation.message})
+          }
+        }
+      }
+
+      if (!field.skip) {
+        data[field.name] = value
+      }
+    }
+
+    for (const set of config.sets || []) {
+      if (set.value !== undefined && set.value !== null) {
+        if (set.ifEmpty && data[set.name] !== undefined && data[set.name] !== null && data[set.name] !== '') continue
+        data[set.name] = set.value
+      } else if (set.compute) {
+        data[set.name] = await this.computeValue(set.compute, Odac)
+      } else if (set.callback) {
+        if (typeof Odac.fn[set.callback] === 'function') {
+          data[set.name] = await Odac.fn[set.callback](Odac)
+        }
+      }
+    }
+
+    Odac.formData = data
+    Odac.formConfig = config
+    Odac.formValidator = validator
+    Odac.formUniqueFields = uniqueFields
+  }
+
+  static async customForm(Odac) {
+    const token = await Odac.request('_odac_form_token')
+    if (!token) {
+      return Odac.return({
+        result: {success: false},
+        errors: {_odac_form: 'Invalid request'}
+      })
+    }
+
+    const formData = Odac.Request.session(`_custom_form_${token}`)
+
+    if (!formData) {
+      return Odac.return({
+        result: {success: false},
+        errors: {_odac_form: 'Form session expired. Please refresh the page.'}
+      })
+    }
+
+    if (formData.expires < Date.now()) {
+      Odac.Request.session(`_custom_form_${token}`, null)
+      return Odac.return({
+        result: {success: false},
+        errors: {_odac_form: 'Form session expired. Please refresh the page.'}
+      })
+    }
+
+    if (formData.sessionId !== Odac.Request.session('_client')) {
+      return Odac.return({
+        result: {success: false},
+        errors: {_odac_form: 'Invalid session'}
+      })
+    }
+
+    if (formData.userAgent !== Odac.Request.header('user-agent')) {
+      return Odac.return({
+        result: {success: false},
+        errors: {_odac_form: 'Invalid request'}
+      })
+    }
+
+    if (formData.ip !== Odac.Request.ip) {
+      return Odac.return({
+        result: {success: false},
+        errors: {_odac_form: 'Invalid request'}
+      })
+    }
+
+    if (await Odac.formValidator.error()) {
+      return Odac.formValidator.result()
+    }
+
+    if (Odac.formConfig.table) {
+      try {
+        const mysql = Odac.Mysql
+
+        for (const field of Odac.formUniqueFields) {
+          if (Odac.formData[field.name] == null) continue
+
+          const existingRecord = await mysql.query(`SELECT id FROM ?? WHERE ?? = ? LIMIT 1`, [
+            Odac.formConfig.table,
+            field.name,
+            Odac.formData[field.name]
+          ])
+
+          if (existingRecord && existingRecord.length > 0) {
+            const errorMessage = field.message || `This ${field.name} is already registered`
+            return Odac.return({
+              result: {success: false},
+              errors: {[field.name]: errorMessage}
+            })
+          }
+        }
+
+        await mysql.query('INSERT INTO ?? SET ?', [Odac.formConfig.table, Odac.formData])
+
+        Odac.Request.session(`_custom_form_${token}`, null)
+
+        return Odac.return({
+          result: {
+            success: true,
+            message: Odac.formConfig.successMessage || 'Form submitted successfully!',
+            redirect: Odac.formConfig.redirect
+          }
+        })
+      } catch (error) {
+        if (error.message === 'Database connection not configured') {
+          return Odac.return({
+            result: {success: false},
+            errors: {_odac_form: 'Database not configured. Please check your config.json'}
+          })
+        }
+
+        return Odac.return({
+          result: {success: false},
+          errors: {_odac_form: error.message || 'Database error occurred'}
+        })
+      }
+    }
+
+    Odac.Request.session(`_custom_form_${token}`, null)
+
+    return null
   }
 }
 

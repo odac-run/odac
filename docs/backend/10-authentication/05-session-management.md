@@ -1,18 +1,18 @@
 ## ⏰ Session Management
 
-CandyPack uses a secure cookie-based session system with automatic expiration and cleanup.
+Odac uses a secure cookie-based session system with automatic expiration and cleanup.
 
 ### How Sessions Work
 
-When a user logs in, CandyPack creates a session token stored in secure cookies:
+When a user logs in, Odac creates a session token stored in secure cookies:
 
 ```javascript
 // Login creates a session
-await Candy.Auth.login({email, password})
+await Odac.Auth.login({email, password})
 
 // Session is automatically checked on each request
-if (await Candy.Auth.check()) {
-  const user = Candy.Auth.user(null)
+if (await Odac.Auth.check()) {
+  const user = Odac.Auth.user(null)
 }
 ```
 
@@ -116,18 +116,18 @@ Sessions are protected with:
 
 **Logout current session:**
 ```javascript
-await Candy.Auth.logout()
+await Odac.Auth.logout()
 ```
 
 **Check session status:**
 ```javascript
-const isLoggedIn = await Candy.Auth.check()
+const isLoggedIn = await Odac.Auth.check()
 ```
 
 **Get user info:**
 ```javascript
-const user = Candy.Auth.user(null)  // Full user object
-const email = Candy.Auth.user('email')  // Specific field
+const user = Odac.Auth.user(null)  // Full user object
+const email = Odac.Auth.user('email')  // Specific field
 ```
 
 ### Best Practices
@@ -153,7 +153,7 @@ const email = Candy.Auth.user('email')  // Specific field
 - Manually clean old sessions if needed:
 ```javascript
 const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-await Candy.Mysql.table('user_tokens')
+await Odac.Mysql.table('user_tokens')
   .where('active', '<', cutoffDate)
   .delete()
 ```
