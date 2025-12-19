@@ -20,7 +20,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install production dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy application files
 COPY . .
@@ -42,4 +42,4 @@ ENV NODE_ENV=production
 VOLUME ["/app/storage", "/app/sites"]
 
 # Start Odac daemon
-CMD ["node", "watchdog/index.js"]
+CMD ["node", "server/index.js"]
