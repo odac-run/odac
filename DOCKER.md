@@ -227,6 +227,12 @@ docker run -it --rm \
   odacrun/odac:dev sh
 ```
 
+## Technical Details
+
+- **Base Image**: `node:22-alpine` (minimal footprint)
+- **Node.js Version**: 22.x LTS
+- **OS**: Alpine Linux (lightweight, secure)
+
 ### Run Tests
 
 ```bash

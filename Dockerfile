@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:22-alpine
 
 LABEL maintainer="emre.red <mail@emre.red>"
 LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
