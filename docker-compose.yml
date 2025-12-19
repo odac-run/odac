@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  odac:
+    image: odacrun/odac:latest
+    container_name: odac
+    restart: unless-stopped
+    
+    # Use host network for direct port access
+    network_mode: host
+    
+    volumes:
+      # Docker socket for managing containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      
+      # Persistent data
+      - odac-storage:/app/storage
+      - odac-sites:/app/sites
+    
+    environment:
+      - NODE_ENV=production
+      - TZ=UTC
+    
+    # Required capabilities for DNS and network management
+    cap_add:
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  odac-storage:
+    driver: local
+  odac-sites:
+    driver: local
