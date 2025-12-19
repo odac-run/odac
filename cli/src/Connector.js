@@ -76,16 +76,31 @@ class Connector {
 
   check() {
     return new Promise(resolve => {
-      if (!Odac.core('Config').config.server.watchdog) return resolve(false)
-      findProcess('pid', Odac.core('Config').config.server.watchdog)
-        .then(list => {
-          if (list.length > 0 && list[0].name == 'node') return resolve(true)
-          return resolve(false)
-        })
-        .catch(err => {
-          console.error('Error checking process:', err)
-          return resolve(false)
-        })
+      // Try port check first (works in Docker)
+      const socket = net.createConnection({port: 1453, host: '127.0.0.1'}, () => {
+        socket.end()
+        return resolve(true)
+      })
+
+      socket.on('error', () => {
+        // Fallback to PID check (works on bare metal)
+        if (!Odac.core('Config').config.server.watchdog) return resolve(false)
+        findProcess('pid', Odac.core('Config').config.server.watchdog)
+          .then(list => {
+            if (list.length > 0 && list[0].name == 'node') return resolve(true)
+            return resolve(false)
+          })
+          .catch(err => {
+            console.error('Error checking process:', err)
+            return resolve(false)
+          })
+      })
+
+      // Timeout after 2 seconds
+      setTimeout(() => {
+        socket.destroy()
+        resolve(false)
+      }, 2000)
     })
   }
 }

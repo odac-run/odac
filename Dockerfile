@@ -28,6 +28,9 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/storage /app/sites
 
+# Link odac CLI globally
+RUN npm link
+
 # Expose ports (documentation only, will use host network)
 EXPOSE 80 443 25 587 993 143 53/udp 53/tcp
 
@@ -37,9 +40,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Set environment
 ENV NODE_ENV=production
+ENV HOME=/app/storage
 
 # Volumes for persistence
 VOLUME ["/app/storage", "/app/sites"]
 
 # Start Odac daemon
-CMD ["node", "server/index.js"]
+CMD ["node", "watchdog/index.js"]
