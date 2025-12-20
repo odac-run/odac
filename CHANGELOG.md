@@ -1,5 +1,71 @@
 ### ⚙️ Engine Tuning
 
+- 'for' and 'list' directive argument handling
+- Hub polling
+- Proxy logic
+- rebrand from CandyPack to Odac
+- remove deprecated 'client' module from monitor list
+- remove framework and move to separate repository
+- View rendering to support async operations
+
+### ⚡️ Performance Upgrades
+
+- optimize Docker image with multi-stage build
+- **server:** optimize TLS handshake with certificate caching and faster ciphers
+- **server:** optimize TLS handshake with certificate caching and faster ciphers
+
+### ✨ What's New
+
+- Add <candy:form> system with automatic validation and DB insert
+- Add cloud integration
+- Add DDoS Protection Firewall
+- add Docker Hub release automation
+- add Docker support for containerized deployment
+- add environment variable support for Docker volumes
+- Add skeleton-aware navigation and auto-navigation support
+- Add support for controller classes and update docs
+- **framework:** add Early Hints (HTTP 103) support with zero-config
+- **Framework:** Add middleware support
+- WebSocket Support
+
+### 📚 Documentation
+
+- Add Candy.Var utility documentation
+- clarify difference between candy get and var tags
+- split template syntax into separate detailed pages
+
+### 🛠️ Fixes & Improvements
+
+- add GitHub Actions permissions for semantic-release
+- Add input validation to Auth.check method
+- Add memory-safe timers and auto-cleanup for streaming
+- add missing dependencies for server components
+- Add WebSocket cleanup
+- Adjust route reload timing and cache invalidation
+- Enable object stringification in MySQL connection
+- escape backslash characters in View.js regex replacements
+- Escape backticks earlier in view content processing
+- Escape backticks in cached view templates
+- File type check in Route controller path logic
+- Handle null and undefined in Var.html()
+- Improve Docker compatibility
+- Preserve template literals in <script:candy> blocks
+- Prevent replace error when candy get value is undefined
+- Refactor route controller lookup and page handling
+- Support view config object in authPage third parameter
+
+
+### 💥 BREAKING CHANGES
+
+- rebrand from CandyPack to Odac (#88)
+
+
+---
+
+Powered by [⚡ Odac](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - Modular Config
 - New default web template
 
