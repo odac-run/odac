@@ -1,15 +1,35 @@
+FROM node:22-alpine AS builder
+
+LABEL maintainer="emre.red <mail@emre.red>"
+LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
+
+# Install build dependencies
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install all dependencies (including devDependencies for native builds)
+RUN npm ci
+
+# Copy application files
+COPY . .
+
+# Production stage
 FROM node:22-alpine
 
 LABEL maintainer="emre.red <mail@emre.red>"
 LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
 
-# Install system dependencies
+# Install only runtime dependencies
 RUN apk add --no-cache \
     docker-cli \
     docker-compose \
-    python3 \
-    make \
-    g++ \
     sqlite \
     bash \
     curl
@@ -19,10 +39,11 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install production dependencies
+# Install production dependencies only
 RUN npm ci --omit=dev
 
-# Copy application files
+# Copy application files from builder
+COPY --from=builder /app/node_modules ./node_modules
 COPY . .
 
 # Create necessary directories
