@@ -110,7 +110,7 @@ module.exports = {
 
 ---
 
-Powered by [⚡ Odac](https://odac.run)
+Powered by [⚡ ODAC](https://odac.run)
 `
         }
       }
@@ -131,7 +131,7 @@ Powered by [⚡ Odac](https://odac.run)
       '@semantic-release/git',
       {
         assets: ['package.json', 'CHANGELOG.md'],
-        message: '⚡ Odac v${nextRelease.version} Released'
+        message: '⚡ ODAC v${nextRelease.version} Released'
       }
     ],
     '@semantic-release/github'
