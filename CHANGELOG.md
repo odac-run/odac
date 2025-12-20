@@ -1,3 +1,13 @@
+### 🛠️ Fixes & Improvements
+
+- remove conditional checks for Docker build steps
+
+
+
+---
+
+Powered by [⚡ Odac](https://odac.run)
+
 ### ⚙️ Engine Tuning
 
 - 'for' and 'list' directive argument handling
