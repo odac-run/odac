@@ -178,7 +178,10 @@ class Web {
     this.server()
     if (!Odac.core('Config').config.web?.path || !fs.existsSync(Odac.core('Config').config.web.path)) {
       if (!Odac.core('Config').config.web) Odac.core('Config').config.web = {}
-      if (os.platform() === 'win32' || os.platform() === 'darwin') {
+      // Check environment variable first (Docker support)
+      if (process.env.ODAC_WEB_PATH) {
+        Odac.core('Config').config.web.path = process.env.ODAC_WEB_PATH
+      } else if (os.platform() === 'win32' || os.platform() === 'darwin') {
         Odac.core('Config').config.web.path = os.homedir() + '/Odac/'
       } else {
         Odac.core('Config').config.web.path = '/var/odac/'

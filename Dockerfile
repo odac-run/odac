@@ -41,6 +41,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Set environment
 ENV NODE_ENV=production
 ENV HOME=/app/storage
+ENV ODAC_WEB_PATH=/app/sites
 
 # Volumes for persistence
 VOLUME ["/app/storage", "/app/sites"]
