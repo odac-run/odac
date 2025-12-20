@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+npm-debug.log
+
+# Testing
+coverage/
+test/
+*.test.js
+
+# Development
+.git/
+.github/
+.husky/
+.kiro/
+.vscode/
+.secret/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Logs
+*.log
+semantic.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~

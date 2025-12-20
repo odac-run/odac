@@ -121,7 +121,12 @@ Powered by [⚡ Odac](https://odac.run)
         changelogFile: 'CHANGELOG.md'
       }
     ],
-    '@semantic-release/npm',
+    [
+      '@semantic-release/npm',
+      {
+        npmPublish: false
+      }
+    ],
     [
       '@semantic-release/git',
       {
