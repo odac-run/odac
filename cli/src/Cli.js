@@ -4,8 +4,8 @@ const childProcess = require('child_process')
 const readline = require('readline')
 
 class Cli {
-  #backgrounds = {red: 41, green: 42, yellow: 43, blue: 44, magenta: 45, white: 47, gray: 100}
-  colors = {red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, white: 37, gray: 90}
+  #backgrounds = { red: 41, green: 42, yellow: 43, blue: 44, magenta: 45, white: 47, gray: 100 }
+  colors = { red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, white: 37, gray: 90 }
   rl
   boot() {
     if (!this.booting) this.booting = true
@@ -60,7 +60,7 @@ class Cli {
       output = begin + output + end
     }
     if (!raw) {
-      if (text == 'Odac') output = this.color(output, 'magenta')
+      if (text == 'ODAC') output = this.color(output, 'magenta')
       if (text == __('Running')) output = this.color(output, 'green')
       if (text == '\u2713') output = this.color(output, 'green')
       if (text == '\u2717') output = this.color(output, 'red')
@@ -97,7 +97,7 @@ class Cli {
       result += lines.join('\n')
     }
 
-    return {result: result, space: space}
+    return { result: result, space: space }
   }
 
   async help(commands) {
@@ -151,7 +151,7 @@ class Cli {
   }
 
   async init() {
-    console.log('\n', this.#format('Odac'), '\n')
+    console.log('\n', this.#format('ODAC'), '\n')
     if (!(await Odac.cli('Connector').check())) await this.boot()
     let args = process.argv.slice(2)
     let cmds = process.argv.slice(2)
