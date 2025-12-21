@@ -122,12 +122,17 @@ class Web {
     }
     progress('directory', 'progress', __('Setting up website files for %s...', domain))
 
-    childProcess.execSync('npm link odac', {cwd: web.path})
-    if (fs.existsSync(web.path + '/node_modules/.bin')) fs.rmSync(web.path + '/node_modules/.bin', {recursive: true})
-    if (!fs.existsSync(web.path + '/node_modules')) fs.mkdirSync(web.path + '/node_modules')
-
-    // Copy web template files
-    fs.cpSync(__dirname + '/../../web/', web.path, {recursive: true})
+    if (Odac.server('Container').available) {
+      // Run commands via Docker ephemeral container
+      Odac.server('Container').exec(web.path, 'npm init -y')
+      Odac.server('Container').exec(web.path, 'npm i odac')
+      Odac.server('Container').exec(web.path, './node_modules/.bin/odac init')
+    } else {
+      // Run directly on host
+      childProcess.execSync('npm init -y', {cwd: web.path})
+      childProcess.execSync('npm i odac', {cwd: web.path})
+      childProcess.execSync('./node_modules/.bin/odac init', {cwd: web.path})
+    }
 
     // Process package.json template after copying
     const packageJsonPath = path.join(web.path, 'package.json')
@@ -140,7 +145,9 @@ class Web {
       fs.writeFileSync(packageJsonPath, packageTemplate)
     }
     progress('directory', 'success', __('Website files for %s set.', domain))
-    return Odac.server('Api').result(true, __('Website %s1 created at %s2.', web.domain, web.path))
+    // If Docker is available, we don't need to do anything else here.
+    // The start() method will handle container creation.
+    return Odac.server('Api').result(true, __('Website %s created at %s.', web.domain, web.path))
   }
 
   async delete(domain) {
@@ -151,7 +158,12 @@ class Web {
 
     // Stop process if running
     if (website.pid) {
-      Odac.core('Process').stop(website.pid)
+      if (Odac.server('Container').available) {
+        Odac.server('Container').remove(domain)
+      } else {
+        Odac.core('Process').stop(website.pid)
+      }
+
       delete this.#watcher[website.pid]
       if (website.port) {
         delete this.#ports[website.port]
@@ -410,11 +422,38 @@ class Web {
     } while (using)
     Odac.core('Config').config.websites[domain].port = port
     this.#ports[port] = true
-    var child = childProcess.spawn('odac', ['framework', 'run', port], {
-      cwd: Odac.core('Config').config.websites[domain].path
-    })
+
+    let child
+    let isDocker = false
+
+    if (Odac.server('Container').available) {
+      if (Odac.server('Container').isRunning(domain)) {
+        // Already running, just attach logs
+        isDocker = true
+        child = Odac.server('Container').logs(domain)
+        log('Web container re-attached for ' + domain)
+      } else {
+        // Run via Docker
+        const success = Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path)
+        if (success) {
+          isDocker = true
+          child = Odac.server('Container').logs(domain)
+          log('Web container started for ' + domain)
+        } else {
+          error('Failed to start container for ' + domain)
+          return
+        }
+      }
+    } else {
+      // Run Local
+      child = childProcess.spawn('odac', ['framework', 'run', port], {
+        cwd: Odac.core('Config').config.websites[domain].path
+      })
+      log('Web server started for ' + domain + ' with PID ' + child.pid)
+    }
+
     let pid = child.pid
-    log('Web server started for ' + domain + ' with PID ' + pid)
+
     child.stdout.on('data', data => {
       if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
       this.#logs.log[domain] +=
@@ -449,8 +488,15 @@ class Web {
         this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
       if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
     })
+
     child.on('exit', () => {
-      error('Child process exited for ' + domain)
+      error((isDocker ? 'Container log stream' : 'Child process') + ' exited for ' + domain)
+
+      if (isDocker) {
+        // If the log stream ended, the container likely stopped or crashed
+        Odac.server('Container').stop(domain)
+      }
+
       if (!Odac.core('Config').config.websites[domain]) return
       Odac.core('Config').config.websites[domain].pid = null
       Odac.core('Config').config.websites[domain].updated = Date.now()
@@ -480,7 +526,11 @@ class Web {
     for (const domain of Object.keys(Odac.core('Config').config.websites ?? {})) {
       let website = Odac.core('Config').config.websites[domain]
       if (website.pid) {
-        Odac.core('Process').stop(website.pid)
+        if (Odac.server('Container').available) {
+          Odac.server('Container').stop(domain)
+        } else {
+          Odac.core('Process').stop(website.pid)
+        }
         website.pid = null
         this.set(domain, website)
       }
