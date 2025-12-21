@@ -1,13 +1,22 @@
 const {log, error} = Odac.core('Log', false).init('Container')
-const childProcess = require('child_process')
+const Docker = require('dockerode')
 const path = require('path')
 
 class Container {
+  #docker
+
   constructor() {
     if (!Odac.core('Config').config.container) Odac.core('Config').config.container = {}
 
+    // Initialize dockerode using default socket or from env DOCKER_HOST
+    this.#docker = new Docker()
+
+    this.#checkAvailability()
+  }
+
+  async #checkAvailability() {
     try {
-      childProcess.execSync('docker -v', {stdio: 'ignore'})
+      await this.#docker.ping()
       Odac.core('Config').config.container.available = true
       log('Docker is available')
     } catch {
@@ -17,7 +26,7 @@ class Container {
   }
 
   get available() {
-    return Odac.core('Config').config.container.available
+    return Odac.core('Config').config.container.available ?? false
   }
 
   /**
@@ -26,11 +35,9 @@ class Container {
    */
   #resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) return localPath
-    // If path starts with /app, replace it with ODAC_HOST_ROOT
     if (localPath.startsWith('/app')) {
       return path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
     }
-    // If path is relative (e.g. ./sites/...), make it absolute and transform
     if (!path.isAbsolute(localPath)) {
       const absPath = path.resolve(localPath)
       if (absPath.startsWith('/app')) {
@@ -42,21 +49,27 @@ class Container {
 
   /**
    * Executes a command inside a temporary ephemeral container
-   * @param {string} volumePath - Host directory to mount (from container's perspective)
+   * @param {string} volumePath - Host directory to mount
    * @param {string} command - Command to execute
    */
-  exec(volumePath, command) {
+  async exec(volumePath, command) {
     if (!this.available) return false
 
     const hostPath = this.#resolveHostPath(volumePath)
 
-    const cmd = ['run', '--rm', '-v', `${hostPath}:/app`, '-w', '/app', 'node:lts-alpine', 'sh', '-c', command]
-
+    // We use run with remove: true to mimic 'docker run --rm'
     try {
-      childProcess.execFileSync('docker', cmd, {stdio: 'inherit'})
+      // Stream output to stdout/stderr
+      await this.#docker.run('node:lts-alpine', ['sh', '-c', command], [process.stdout, process.stderr], {
+        HostConfig: {
+          Binds: [`${hostPath}:/app`],
+          AutoRemove: true
+        },
+        WorkingDir: '/app'
+      })
       return true
-    } catch (e) {
-      error(`Container exec error: ${e.message}`)
+    } catch (err) {
+      error(`Container exec error: ${err.message}`)
       return false
     }
   }
@@ -67,58 +80,58 @@ class Container {
    * @param {number} port - External port (Host Port)
    * @param {string} volumePath - Host project directory
    */
-  run(name, port, volumePath) {
+  async run(name, port, volumePath) {
     if (!this.available) return false
 
-    // Clean up old container if exists
-    this.remove(name)
+    await this.remove(name)
 
-    // Internal port used by the app inside container
     const internalPort = 1071
     const hostPath = this.#resolveHostPath(volumePath)
 
-    const cmd = [
-      'run',
-      '-d',
-      '--name',
-      name,
-      '--restart',
-      'unless-stopped',
-      '-p',
-      `${port}:${internalPort}`,
-      '-v',
-      `${hostPath}:/app`,
-      '-w',
-      '/app',
-      'node:lts-alpine',
-      'sh',
-      '-c',
-      `npm install && node ./node_modules/odac/index.js`
-    ]
-
     try {
       log(`Starting container for ${name}...`)
-      childProcess.execFileSync('docker', cmd)
+
+      const container = await this.#docker.createContainer({
+        Image: 'node:lts-alpine',
+        Cmd: ['sh', '-c', 'npm install && node ./node_modules/odac/index.js'],
+        name: name,
+        WorkingDir: '/app',
+        HostConfig: {
+          RestartPolicy: {Name: 'unless-stopped'},
+          Binds: [`${hostPath}:/app`],
+          PortBindings: {
+            [`${internalPort}/tcp`]: [{HostPort: String(port)}]
+          }
+        },
+        ExposedPorts: {
+          [`${internalPort}/tcp`]: {}
+        }
+      })
+
+      await container.start()
       return true
-    } catch (e) {
-      error(`Failed to start container for ${name}: ${e.message}`)
+    } catch (err) {
+      error(`Failed to start container for ${name}: ${err.message}`)
       return false
     }
   }
 
-  stop(name) {
+  async stop(name) {
     if (!this.available) return
     try {
-      childProcess.execSync(`docker stop ${name}`, {stdio: 'ignore'})
+      const container = this.#docker.getContainer(name)
+      await container.stop()
     } catch {
       /* ignore */
     }
   }
 
-  remove(name) {
+  async remove(name) {
     if (!this.available) return
     try {
-      childProcess.execSync(`docker rm -f ${name}`, {stdio: 'ignore'})
+      const container = this.#docker.getContainer(name)
+      // Force remove equivalent
+      await container.remove({force: true})
     } catch {
       /* ignore */
     }
@@ -127,29 +140,45 @@ class Container {
   /**
    * Streams container logs
    * @param {string} name
-   * @returns {ChildProcess}
+   * @returns {Promise<import('stream').Readable>}
    */
-  logs(name) {
+  async logs(name) {
     if (!this.available) return null
-    return childProcess.spawn('docker', ['logs', '-f', name])
+    try {
+      const container = this.#docker.getContainer(name)
+      // Follow logs, include stdout and stderr
+      const stream = await container.logs({
+        follow: true,
+        stdout: true,
+        stderr: true
+      })
+      return stream
+    } catch {
+      return null
+    }
   }
 
   /**
    * Checks if container is running
    * @param {string} name
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  isRunning(name) {
+  async isRunning(name) {
     if (!this.available) return false
     try {
-      const output = childProcess
-        .execSync(`docker inspect --format='{{.State.Running}}' ${name}`, {stdio: ['ignore', 'pipe', 'ignore']})
-        .toString()
-        .trim()
-      return output === 'true'
+      const container = this.#docker.getContainer(name)
+      const data = await container.inspect()
+      return data.State.Running
     } catch {
       return false
     }
+  }
+
+  /**
+   * Returns the Docker instance
+   */
+  get docker() {
+    return this.#docker
   }
 }
 
