@@ -264,7 +264,6 @@ describe('Config', () => {
       intervalCallback()
 
       const wroteWeb = mockFs.writeFileSync.mock.calls.some(c => c[0].includes('web.json.tmp'))
-      const wroteServer = mockFs.writeFileSync.mock.calls.some(c => c[0].includes('server.json.tmp'))
 
       expect(wroteWeb).toBe(true)
       // Server might be written if OS/arch update happened during init, let's reset mocks before change
