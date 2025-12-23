@@ -482,7 +482,7 @@ class Web {
 
     // Dockerode returns a stream that doesn't have a pid property (it is undefined)
     // We use a dummy PID for internal tracking if check fails
-    let pid = child.pid || (Math.random() * 100000) | 0
+    let pid = child.pid || domain
 
     // Dockerode streams handling
     if (isDocker && child) {
