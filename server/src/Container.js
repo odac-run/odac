@@ -52,7 +52,7 @@ class Container {
    * @param {string} volumePath - Host directory to mount
    * @param {string} command - Command to execute
    */
-  async exec(volumePath, command) {
+  async exec(volumePath, command, extraBinds = []) {
     if (!this.available) return false
 
     const hostPath = this.#resolveHostPath(volumePath)
@@ -62,7 +62,7 @@ class Container {
       // Stream output to stdout/stderr
       await this.#docker.run('node:lts-alpine', ['sh', '-c', command], [process.stdout, process.stderr], {
         HostConfig: {
-          Binds: [`${hostPath}:/app`],
+          Binds: [`${hostPath}:/app`, ...extraBinds],
           AutoRemove: true
         },
         WorkingDir: '/app'
@@ -80,13 +80,19 @@ class Container {
    * @param {number} port - External port (Host Port)
    * @param {string} volumePath - Host project directory
    */
-  async run(name, port, volumePath) {
+  async run(name, port, volumePath, extraBinds = []) {
     if (!this.available) return false
 
     await this.remove(name)
 
     const internalPort = 1071
     const hostPath = this.#resolveHostPath(volumePath)
+
+    const bindings = [`${hostPath}:/app`]
+
+    if (extraBinds && Array.isArray(extraBinds)) {
+      bindings.push(...extraBinds)
+    }
 
     try {
       log(`Starting container for ${name}...`)
@@ -98,7 +104,7 @@ class Container {
         WorkingDir: '/app',
         HostConfig: {
           RestartPolicy: {Name: 'unless-stopped'},
-          Binds: [`${hostPath}:/app`],
+          Binds: bindings,
           PortBindings: {
             [`${internalPort}/tcp`]: [{HostPort: String(port)}]
           }

@@ -434,7 +434,8 @@ class Web {
         log('Web container re-attached for ' + domain)
       } else {
         // Run via Docker
-        const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path)
+        const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
+        const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds)
         if (success) {
           isDocker = true
           child = await Odac.server('Container').logs(domain)
