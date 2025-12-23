@@ -1,6 +1,5 @@
 const fs = require('fs')
 const os = require('os')
-const path = require('path')
 
 // Mock fs and os modules
 jest.mock('fs')
