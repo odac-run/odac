@@ -25,7 +25,7 @@ class DNS {
       const cleanCmd = cmd.replace(/sudo\s+/g, '')
       // Use nsenter to execute on host (PID 1)
       // Requires pid: host, privileged: true in docker-compose
-      const nsenterCmd = `nsenter -t 1 -m -u -n -i sh -c "${cleanCmd.replace(/"/g, '\\"')}"`
+      const nsenterCmd = `nsenter -t 1 -m -u -n -i sh -c "${cleanCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
       return execSync(nsenterCmd, {...options, encoding: 'utf8'})
     }
 
