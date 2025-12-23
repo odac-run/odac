@@ -2,6 +2,9 @@ const {log, error} = Odac.core('Log', false).init('Container')
 const Docker = require('dockerode')
 const path = require('path')
 
+const DEFAULT_IMAGE = 'node:lts-alpine'
+const DEFAULT_START_CMD = 'npm install && node ./node_modules/odac/index.js'
+
 class Container {
   #docker
 
@@ -95,7 +98,7 @@ class Container {
     if (!this.available) return false
 
     const hostPath = this.#resolveHostPath(volumePath)
-    const image = 'node:lts-alpine'
+    const image = DEFAULT_IMAGE
 
     // We use run with remove: true to mimic 'docker run --rm'
     try {
@@ -182,11 +185,11 @@ class Container {
 
     try {
       log(`Starting container for ${name}...`)
-      await this.#ensureImage('node:lts-alpine')
+      await this.#ensureImage(DEFAULT_IMAGE)
 
       const container = await this.#docker.createContainer({
-        Image: 'node:lts-alpine',
-        Cmd: ['sh', '-c', 'npm install && node ./node_modules/odac/index.js'],
+        Image: DEFAULT_IMAGE,
+        Cmd: ['sh', '-c', DEFAULT_START_CMD],
         name: name,
         WorkingDir: '/app',
         HostConfig: {
