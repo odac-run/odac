@@ -486,13 +486,41 @@ class Web {
 
     // Dockerode streams handling
     if (isDocker && child) {
-      // child is a stream here
-      // Note: Raw dockerode stream might contain header bytes, we treat it as plain text stream for now.
-      child.on('data', data => {
-        // Simplified handling, treating stdout/stderr mixed for now as we didn't demux
+      const stdoutStream = new (require('stream').PassThrough)()
+      const stderrStream = new (require('stream').PassThrough)()
+
+      Odac.server('Container').docker.modem.demuxStream(child, stdoutStream, stderrStream)
+
+      stdoutStream.on('data', data => {
         if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
         this.#logs.log[domain] += '[LOG][' + Date.now() + '] ' + data.toString().trim() + '\n'
+        if (this.#logs.log[domain].length > 100000)
+          this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
+          Odac.core('Config').config.websites[domain].status = 'running'
       })
+
+      stderrStream.on('data', data => {
+        if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+
+        this.#logs.log[domain] +=
+          '[ERR][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[ERR][' + Date.now() + '] ') +
+          '\n'
+
+        this.#logs.err[domain] += data.toString()
+        if (this.#logs.err[domain].length > 100000)
+          this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
+      })
+
       child.on('end', () => {
         // Handle exit
         child.emit('exit')
