@@ -33,8 +33,19 @@ class Container {
    * Resolves container path to host path (for DooD support)
    * @param {string} localPath
    */
+  /**
+   * Resolves container path to host path (for DooD support)
+   * @param {string} localPath
+   */
   #resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) return localPath
+
+    // Handle .odac paths to parent directory if in ODAC_DEV mode
+    if (process.env.ODAC_DEV === 'true' && localPath.includes('.odac/')) {
+      const relPath = localPath.substring(localPath.indexOf('.odac/'))
+      return path.join(path.dirname(process.env.ODAC_HOST_ROOT), relPath)
+    }
+
     if (localPath.startsWith('/app')) {
       return path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
     }
@@ -48,6 +59,37 @@ class Container {
   }
 
   /**
+   * Helper to pull image if not exists
+   */
+  async #ensureImage(imageName) {
+    try {
+      const image = this.#docker.getImage(imageName)
+      const inspect = await image.inspect().catch(() => null)
+      if (!inspect) {
+        log(`Pulling image ${imageName}...`)
+        await new Promise((resolve, reject) => {
+          this.#docker.pull(imageName, (err, stream) => {
+            if (err) return reject(err)
+            this.#docker.modem.followProgress(stream, onFinished, onProgress)
+
+            function onFinished(err, output) {
+              if (err) return reject(err)
+              resolve(output)
+            }
+            function onProgress() {
+              // Optional: log progress
+            }
+          })
+        })
+        log(`Image ${imageName} pulled successfully.`)
+      }
+    } catch (err) {
+      error(`Failed to pull image ${imageName}: ${err.message}`)
+      throw err
+    }
+  }
+
+  /**
    * Executes a command inside a temporary ephemeral container
    * @param {string} volumePath - Host directory to mount
    * @param {string} command - Command to execute
@@ -56,11 +98,14 @@ class Container {
     if (!this.available) return false
 
     const hostPath = this.#resolveHostPath(volumePath)
+    const image = 'node:lts-alpine'
 
     // We use run with remove: true to mimic 'docker run --rm'
     try {
+      await this.#ensureImage(image)
+
       // Stream output to stdout/stderr
-      await this.#docker.run('node:lts-alpine', ['sh', '-c', command], [process.stdout, process.stderr], {
+      await this.#docker.run(image, ['sh', '-c', command], [process.stdout, process.stderr], {
         HostConfig: {
           Binds: [`${hostPath}:/app`, ...extraBinds],
           AutoRemove: true
@@ -70,6 +115,50 @@ class Container {
       return true
     } catch (err) {
       error(`Container exec error: ${err.message}`)
+      return false
+    }
+  }
+
+  /**
+   * Executes a command inside an existing running container
+   * @param {string} name - Container name
+   * @param {string} command - Command to execute
+   */
+  async execInContainer(name, command) {
+    if (!this.available) return false
+
+    try {
+      const container = this.#docker.getContainer(name)
+      if (!(await this.isRunning(name))) {
+        error(`Container ${name} is not running`)
+        return false
+      }
+
+      // Create exec instance
+      const exec = await container.exec({
+        Cmd: ['sh', '-c', command],
+        AttachStdout: true,
+        AttachStderr: true
+      })
+
+      // Start exec and stream output
+      const stream = await exec.start({})
+
+      // Dockerode returns a stream which might be multiplexed (header+payload)
+      // For simplicity in this context, we just pipe it to process stdout/stderr
+      // In a robust implementation, we should demux it
+      container.modem.demuxStream(stream, process.stdout, process.stderr)
+
+      // Wait for command completion
+      return new Promise(resolve => {
+        stream.on('end', () => resolve(true))
+        stream.on('error', err => {
+          error(`Exec stream error: ${err.message}`)
+          resolve(false)
+        })
+      })
+    } catch (err) {
+      error(`Failed to exec command in ${name}: ${err.message}`)
       return false
     }
   }
@@ -96,6 +185,7 @@ class Container {
 
     try {
       log(`Starting container for ${name}...`)
+      await this.#ensureImage('node:lts-alpine')
 
       const container = await this.#docker.createContainer({
         Image: 'node:lts-alpine',

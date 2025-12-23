@@ -123,30 +123,57 @@ class Web {
     progress('directory', 'progress', __('Setting up website files for %s...', domain))
 
     if (Odac.server('Container').available) {
-      // Run commands via Docker ephemeral container
-      await Odac.server('Container').exec(web.path, 'npm init -y')
-      await Odac.server('Container').exec(web.path, 'npm i odac')
-      await Odac.server('Container').exec(web.path, './node_modules/.bin/odac init')
+      // Create package.json manually for Docker environment
+      const packageJson = {
+        name: domain.replace(/\./g, '-'),
+        version: '1.0.0',
+        description: '',
+        main: 'index.js',
+        scripts: {
+          test: 'echo "Error: no test specified" && exit 1'
+        },
+        keywords: [],
+        author: '',
+        license: 'ISC',
+        dependencies: {
+          odac: 'latest'
+        }
+      }
+      fs.writeFileSync(path.join(web.path, 'package.json'), JSON.stringify(packageJson, null, 2))
+
+      progress('directory', 'success', __('Website files for %s set.', domain))
+
+      // Start the container immediately
+      progress('container', 'progress', __('Starting container for %s...', domain))
+      await this.start(domain)
+
+      // Wait for container to be ready (giving it some time for npm install)
+      // Note: In a production system we should poll for readiness
+      await new Promise(resolve => setTimeout(resolve, 5000))
+
+      // Run odac init inside the running container
+      progress('setup', 'progress', __('Running initial setup for %s...', domain))
+      await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
+      progress('setup', 'success', __('Initial setup completed.'))
     } else {
       // Run directly on host
       childProcess.execSync('npm init -y', {cwd: web.path})
       childProcess.execSync('npm i odac', {cwd: web.path})
       childProcess.execSync('./node_modules/.bin/odac init', {cwd: web.path})
+
+      // Process package.json template after copying
+      const packageJsonPath = path.join(web.path, 'package.json')
+      if (fs.existsSync(packageJsonPath)) {
+        let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
+
+        // Replace template variables
+        packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
+
+        fs.writeFileSync(packageJsonPath, packageTemplate)
+      }
+      progress('directory', 'success', __('Website files for %s set.', domain))
     }
 
-    // Process package.json template after copying
-    const packageJsonPath = path.join(web.path, 'package.json')
-    if (fs.existsSync(packageJsonPath)) {
-      let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
-
-      // Replace template variables
-      packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
-
-      fs.writeFileSync(packageJsonPath, packageTemplate)
-    }
-    progress('directory', 'success', __('Website files for %s set.', domain))
-    // If Docker is available, we don't need to do anything else here.
-    // The start() method will handle container creation.
     return Odac.server('Api').result(true, __('Website %s created at %s.', web.domain, web.path))
   }
 
