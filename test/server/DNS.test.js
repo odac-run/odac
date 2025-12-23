@@ -960,9 +960,6 @@ describe('DNS Module', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
 
-      // Mock CAA function
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
-
       // Add CAA record
       DNS.record({name: 'example.com', type: 'CAA', value: '0 issue letsencrypt.org'})
 
@@ -974,22 +971,20 @@ describe('DNS Module', () => {
 
       requestHandler(mockRequest, mockResponse)
 
-      expect(dns.CAA).toHaveBeenCalledWith({
-        name: 'example.com',
-        flags: 0,
-        tag: 'issue',
-        value: 'letsencrypt.org',
-        ttl: 3600
-      })
+      expect(mockResponse.answer).toHaveLength(1)
+      const record = mockResponse.answer[0]
+      expect(record.name).toBe('example.com')
+      expect(record.type).toBe(257)
+      expect(record.class).toBe(1)
+      expect(record.ttl).toBe(3600)
+      expect(Buffer.isBuffer(record.data)).toBe(true)
+      expect(record.data.length).toBeGreaterThan(0)
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
     it('should add default CAA records when none exist', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
-
-      // Mock CAA function
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
 
       // Initialize CAA array but leave it empty
       mockConfig.config.websites['example.com'].DNS.CAA = []
@@ -1003,20 +998,16 @@ describe('DNS Module', () => {
       requestHandler(mockRequest, mockResponse)
 
       // Should add default Let's Encrypt CAA records
-      expect(dns.CAA).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'example.com',
-          tag: 'issue',
-          value: 'letsencrypt.org'
-        })
-      )
-      expect(dns.CAA).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'example.com',
-          tag: 'issuewild',
-          value: 'letsencrypt.org'
-        })
-      )
+      expect(mockResponse.answer).toHaveLength(2)
+
+      const issueRecord = mockResponse.answer.find(r => r.data.toString().includes('issue'))
+      expect(issueRecord).toBeDefined()
+      expect(issueRecord.type).toBe(257)
+
+      const issuewildRecord = mockResponse.answer.find(r => r.data.toString().includes('issuewild'))
+      expect(issuewildRecord).toBeDefined()
+      expect(issuewildRecord.type).toBe(257)
+
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
@@ -1063,7 +1054,6 @@ describe('DNS Module', () => {
     it('should handle malformed CAA records gracefully', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
 
       // Add malformed CAA record (missing parts)
       mockConfig.config.websites['example.com'].DNS.CAA = [
@@ -1149,7 +1139,6 @@ describe('DNS Module', () => {
     it('should handle null records in CAA processing', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
 
       // Add null record
       mockConfig.config.websites['example.com'].DNS.CAA = [null, {name: 'example.com', value: '0 issue letsencrypt.org'}]
@@ -1162,7 +1151,8 @@ describe('DNS Module', () => {
       requestHandler(mockRequest, mockResponse)
 
       // Should process valid record and skip null
-      expect(dns.CAA).toHaveBeenCalled()
+      expect(mockResponse.answer).toHaveLength(1)
+      expect(mockResponse.answer[0].type).toBe(257)
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
