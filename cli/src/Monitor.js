@@ -9,12 +9,14 @@ class Monitor {
   #height
   #logs = {content: [], mtime: null, selected: null, watched: []}
   #logging = false
-  #modules = ['api', 'config', 'dns', 'hub', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web']
+  #modules = ['api', 'config', 'dns', 'hub', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web', 'app']
   #printing = false
   #selected = 0
   #services = []
+  #activeApps = []
   #watch = []
   #websites = {}
+  #apps = {}
   #width
 
   constructor() {
@@ -160,17 +162,22 @@ class Monitor {
     this.#logging = true
     this.#logs.selected = this.#selected
     let file = null
-    if (this.#selected < this.#domains.length) {
+
+    const domainsCount = this.#domains.length
+    const servicesCount = this.#services.length
+
+    if (this.#selected < domainsCount) {
       file = os.homedir() + '/.odac/logs/' + this.#domains[this.#selected] + '.log'
-    } else if (this.#selected - this.#domains.length < this.#services.length) {
-      file = os.homedir() + '/.odac/logs/' + this.#services[this.#selected - this.#domains.length].name + '.log'
+    } else if (this.#selected < domainsCount + servicesCount) {
+      file = os.homedir() + '/.odac/logs/' + this.#services[this.#selected - domainsCount].name + '.log'
     } else {
       this.#logging = false
       return
     }
+
     let log = ''
     let mtime = null
-    if (fs.existsSync(file)) {
+    if (file && fs.existsSync(file)) {
       mtime = fs.statSync(file).mtime
       if (this.#selected == this.#logs.selected && mtime == this.#logs.mtime) return
       log = fs.readFileSync(file, 'utf8')
@@ -265,6 +272,9 @@ class Monitor {
     process.stdin.setEncoding('utf8')
     process.stdin.on('data', chunk => {
       const buffer = Buffer.from(chunk)
+
+      const totalItems = this.#domains.length + this.#services.length + this.#activeApps.length
+
       if (buffer.length >= 6 && buffer[0] === 0x1b && buffer[1] === 0x5b && buffer[2] === 0x4d) {
         // Mouse wheel up
         if (buffer[3] === 96) {
@@ -275,7 +285,7 @@ class Monitor {
         }
         // Mouse wheel down
         if (buffer[3] === 97) {
-          if (this.#selected + 1 < this.#domains.length + this.#services.length) {
+          if (this.#selected + 1 < totalItems) {
             this.#selected++
             this.#monitor()
           }
@@ -291,13 +301,36 @@ class Monitor {
             if (c1 % 1 != 0) c1 = Math.floor(c1)
             if (c1 > 50) c1 = 50
             if (x > 1 && x < c1 && y < this.#height - 4) {
-              if (this.#domains[y - 2]) this.#selected = y - 2
-              else if (this.#services[y - 2 - (this.#domains.length ? 1 : 0) - this.#domains.length])
-                this.#selected = y - 2 - (this.#domains.length ? 1 : 0)
-              let index = this.#watch.indexOf(this.#selected)
-              if (index > -1) this.#watch.splice(index, 1)
-              else this.#watch.push(this.#selected)
-              this.#monitor()
+              const clickedIndex = y - 2
+              let targetIndex = -1
+              let currentLine = 0
+
+              if (this.#domains.length > 0) {
+                if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#domains.length) {
+                  targetIndex = clickedIndex - currentLine
+                }
+                currentLine += this.#domains.length
+                if (this.#services.length > 0 || this.#activeApps.length > 0) currentLine++
+              }
+
+              if (targetIndex === -1 && this.#services.length > 0) {
+                if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#services.length) {
+                  targetIndex = this.#domains.length + (clickedIndex - currentLine)
+                }
+                currentLine += this.#services.length
+                if (this.#activeApps.length > 0) currentLine++
+              }
+
+              if (targetIndex === -1 && this.#activeApps.length > 0) {
+                if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#activeApps.length) {
+                  targetIndex = this.#domains.length + this.#services.length + (clickedIndex - currentLine)
+                }
+              }
+
+              if (targetIndex !== -1) {
+                this.#selected = targetIndex
+                this.#monitor()
+              }
             }
           }
         }
@@ -313,7 +346,7 @@ class Monitor {
       // Up/Down arrow keys
       if (buffer.length === 3 && buffer[0] === 27 && buffer[1] === 91) {
         if (buffer[2] === 65 && this.#selected > 0) this.#selected-- // up
-        if (buffer[2] === 66 && this.#selected + 1 < this.#domains.length + this.#services.length) this.#selected++ // down
+        if (buffer[2] === 66 && this.#selected + 1 < totalItems) this.#selected++ // down
         this.#monitor()
       }
       process.stdout.write('\x1b[?25l')
@@ -324,83 +357,175 @@ class Monitor {
   #monitor() {
     if (this.#printing) return
     this.#printing = true
-    this.#websites = Odac.core('Config').config.websites ?? []
+    this.#websites = Odac.core('Config').config.websites ?? {}
     this.#services = Odac.core('Config').config.services ?? []
+    this.#apps = Odac.core('Config').config.app ?? {}
+
     this.#domains = Object.keys(this.#websites)
+    this.#activeApps = Object.keys(this.#apps)
+
     this.#width = process.stdout.columns - 3
     this.#height = process.stdout.rows
     this.#load()
     let c1 = (this.#width / 12) * 3
     if (c1 % 1 != 0) c1 = Math.floor(c1)
     if (c1 > 50) c1 = 50
+
     let result = ''
     result += Odac.cli('Cli').color('┌', 'gray')
-    let service = -1
+
     if (this.#domains.length) {
       result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
       let title = Odac.cli('Cli').color(__('Websites'), null)
       result += ' ' + Odac.cli('Cli').color(title) + ' '
       result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
     } else if (this.#services.length) {
-      result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
-      let title = Odac.cli('Cli').color(__('Services'), null)
-      result += ' ' + Odac.cli('Cli').color(title) + ' '
-      result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-      service++
-    } else {
-      result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
-    }
-    result += Odac.cli('Cli').color('┬', 'gray')
-    result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
-    result += Odac.cli('Cli').color('┐\n', 'gray')
-    for (let i = 0; i < this.#height - 3; i++) {
-      if (this.#domains[i]) {
-        result += Odac.cli('Cli').color('│', 'gray')
-        result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, i == this.#selected)
-        result += Odac.cli('Cli').color(
-          Odac.cli('Cli').spacing(this.#domains[i] ? this.#domains[i] : '', c1 - 3),
-          i == this.#selected ? 'blue' : 'white',
-          i == this.#selected ? 'white' : null,
-          i == this.#selected ? 'bold' : null
-        )
-        result += Odac.cli('Cli').color('│', 'gray')
-      } else if (this.#services.length && service == -1) {
-        result += Odac.cli('Cli').color('├', 'gray')
-        result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+      result += Odac.cli('Cli').color('─'.repeat(this.#services.length ? 5 : c1), 'gray')
+      if (this.#services.length) {
         let title = Odac.cli('Cli').color(__('Services'), null)
         result += ' ' + Odac.cli('Cli').color(title) + ' '
         result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-        result += Odac.cli('Cli').color('┤', 'gray')
-        service++
-      } else if (service >= 0 && service < this.#services.length) {
-        result += Odac.cli('Cli').color('│', 'gray')
-        result += Odac.cli('Cli').icon(this.#services[service].status ?? null, i - 1 == this.#selected)
-        result += Odac.cli('Cli').color(
-          Odac.cli('Cli').spacing(this.#services[service].name, c1 - 3),
-          i - 1 == this.#selected ? 'blue' : 'white',
-          i - 1 == this.#selected ? 'white' : null,
-          i - 1 == this.#selected ? 'bold' : null
-        )
-        result += Odac.cli('Cli').color('│', 'gray')
-        service++
-      } else {
-        result += Odac.cli('Cli').color('│', 'gray')
-        result += ' '.repeat(c1)
-        result += Odac.cli('Cli').color('│', 'gray')
       }
-      if (this.#logs.selected == this.#selected) {
-        result += Odac.cli('Cli').spacing(this.#logs.content[i] ? this.#logs.content[i] : ' ', this.#width - c1)
+    } else if (this.#activeApps.length) {
+      result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+      let title = Odac.cli('Cli').color(__('Apps'), null)
+      result += ' ' + Odac.cli('Cli').color(title) + ' '
+      result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+    } else {
+      result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
+    }
+
+    result += Odac.cli('Cli').color('┬', 'gray')
+    result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
+    result += Odac.cli('Cli').color('┐\n', 'gray')
+
+    let renderedLines = 0
+    let globalIndex = 0
+
+    // WEBSITES
+    for (let i = 0; i < this.#domains.length; i++) {
+      if (renderedLines >= this.#height - 3) break
+      result += Odac.cli('Cli').color('│', 'gray')
+      result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, globalIndex == this.#selected)
+      result += Odac.cli('Cli').color(
+        Odac.cli('Cli').spacing(this.#domains[i] ? this.#domains[i] : '', c1 - 3),
+        globalIndex == this.#selected ? 'blue' : 'white',
+        globalIndex == this.#selected ? 'white' : null,
+        globalIndex == this.#selected ? 'bold' : null
+      )
+      result += Odac.cli('Cli').color('│', 'gray')
+
+      if (this.#logs.selected == globalIndex) {
+        result += Odac.cli('Cli').spacing(this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' ', this.#width - c1)
       } else {
         result += ' '.repeat(this.#width - c1)
       }
       result += Odac.cli('Cli').color('│\n', 'gray')
+
+      globalIndex++
+      renderedLines++
     }
+
+    // SERVICES SEPARATOR
+    if (this.#services.length > 0 && (this.#domains.length > 0 || this.#activeApps.length > 0)) {
+      if (renderedLines < this.#height - 3) {
+        result += Odac.cli('Cli').color(this.#domains.length > 0 ? '├' : '│', 'gray')
+        result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+        let title = Odac.cli('Cli').color(__('Services'), null)
+        result += ' ' + Odac.cli('Cli').color(title) + ' '
+        result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+        result += Odac.cli('Cli').color(this.#domains.length > 0 ? '┤' : '│', 'gray')
+        result += ' '.repeat(this.#width - c1)
+        result += Odac.cli('Cli').color('│\n', 'gray')
+        renderedLines++
+      }
+    }
+
+    // SERVICES
+    for (let i = 0; i < this.#services.length; i++) {
+      if (renderedLines >= this.#height - 3) break
+      result += Odac.cli('Cli').color('│', 'gray')
+      result += Odac.cli('Cli').icon(this.#services[i].status ?? null, globalIndex == this.#selected)
+      result += Odac.cli('Cli').color(
+        Odac.cli('Cli').spacing(this.#services[i].name, c1 - 3),
+        globalIndex == this.#selected ? 'blue' : 'white',
+        globalIndex == this.#selected ? 'white' : null,
+        globalIndex == this.#selected ? 'bold' : null
+      )
+      result += Odac.cli('Cli').color('│', 'gray')
+
+      if (this.#logs.selected == globalIndex) {
+        result += Odac.cli('Cli').spacing(this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' ', this.#width - c1)
+      } else {
+        result += ' '.repeat(this.#width - c1)
+      }
+      result += Odac.cli('Cli').color('│\n', 'gray')
+      globalIndex++
+      renderedLines++
+    }
+
+    // APPS SEPARATOR
+    if (this.#activeApps.length > 0) {
+      if (renderedLines < this.#height - 3) {
+        const hasPrev = this.#domains.length > 0 || this.#services.length > 0
+        result += Odac.cli('Cli').color(hasPrev ? '├' : '│', 'gray')
+        result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
+        let title = Odac.cli('Cli').color(__('Apps'), null)
+        result += ' ' + Odac.cli('Cli').color(title) + ' '
+        result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
+        if (hasPrev) {
+          result += Odac.cli('Cli').color('┤', 'gray')
+        } else {
+          result += Odac.cli('Cli').color('│', 'gray')
+        }
+        result += ' '.repeat(this.#width - c1)
+        result += Odac.cli('Cli').color('│\n', 'gray')
+        renderedLines++
+      }
+    }
+
+    // APPS
+    for (let i = 0; i < this.#activeApps.length; i++) {
+      if (renderedLines >= this.#height - 3) break
+      const appName = this.#activeApps[i]
+      const app = this.#apps[appName]
+
+      result += Odac.cli('Cli').color('│', 'gray')
+      result += Odac.cli('Cli').icon(app.status ?? null, globalIndex == this.#selected)
+      result += Odac.cli('Cli').color(
+        Odac.cli('Cli').spacing(appName, c1 - 3),
+        globalIndex == this.#selected ? 'blue' : 'white',
+        globalIndex == this.#selected ? 'white' : null,
+        globalIndex == this.#selected ? 'bold' : null
+      )
+      result += Odac.cli('Cli').color('│', 'gray')
+
+      if (this.#logs.selected == globalIndex) {
+        result += Odac.cli('Cli').spacing(this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' ', this.#width - c1)
+      } else {
+        result += ' '.repeat(this.#width - c1)
+      }
+      result += Odac.cli('Cli').color('│\n', 'gray')
+      globalIndex++
+      renderedLines++
+    }
+
+    // FILL EMPTY LINES
+    while (renderedLines < this.#height - 3) {
+      result += Odac.cli('Cli').color('│', 'gray')
+      result += ' '.repeat(c1)
+      result += Odac.cli('Cli').color('│', 'gray')
+      result += ' '.repeat(this.#width - c1)
+      result += Odac.cli('Cli').color('│\n', 'gray')
+      renderedLines++
+    }
+
     result += Odac.cli('Cli').color('└', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
     result += Odac.cli('Cli').color('┴', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┘\n', 'gray')
-    let shortcuts = '↑/↓ ' + __('Navigate') + ' | Ctrl+C ' + __('Exit')
+    let shortcuts = '↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | Ctrl+C ' + __('Exit')
     result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
     result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {

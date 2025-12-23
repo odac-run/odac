@@ -11,12 +11,12 @@ class App {
   }
 
   init() {
-    if (!Odac.core('Config').config.apps) Odac.core('Config').config.apps = {}
+    if (!Odac.core('Config').config.app) Odac.core('Config').config.app = {}
   }
 
   // Check and restart apps if needed (Watchdog)
   check() {
-    const apps = Odac.core('Config').config.apps
+    const apps = Odac.core('Config').config.app
     for (const [name, app] of Object.entries(apps)) {
       Odac.server('Container')
         .isRunning(name)
@@ -43,7 +43,7 @@ class App {
   }
 
   async list() {
-    const apps = Odac.core('Config').config.apps
+    const apps = Odac.core('Config').config.app
     if (Object.keys(apps).length === 0) {
       return Odac.server('Api').result(false, __('No installed apps found.'))
     }
@@ -56,12 +56,12 @@ class App {
   }
 
   async delete(name) {
-    if (!Odac.core('Config').config.apps[name]) {
+    if (!Odac.core('Config').config.app[name]) {
       return Odac.server('Api').result(false, __('App %s not found.', name))
     }
 
     await Odac.server('Container').remove(name)
-    delete Odac.core('Config').config.apps[name]
+    delete Odac.core('Config').config.app[name]
 
     return Odac.server('Api').result(true, __('App %s deleted.', name))
   }
@@ -122,7 +122,7 @@ class App {
     let name = recipe.name
     let validName = name
     let counter = 1
-    while (Odac.core('Config').config.apps[validName]) {
+    while (Odac.core('Config').config.app[validName]) {
       validName = `${name}-${counter}`
       counter++
     }
@@ -188,15 +188,15 @@ class App {
       created: Date.now(),
       status: 'installing'
     }
-    Odac.core('Config').config.apps[name] = appConfig
+    Odac.core('Config').config.app[name] = appConfig
 
     progress('container', 'progress', __('Starting container %s...', name))
 
     try {
       await this.#start(name, appConfig)
-      Odac.core('Config').config.apps[name].status = 'running'
+      Odac.core('Config').config.app[name].status = 'running'
     } catch (err) {
-      Odac.core('Config').config.apps[name].status = 'errored'
+      Odac.core('Config').config.app[name].status = 'errored'
       return Odac.server('Api').result(false, err.message)
     }
 

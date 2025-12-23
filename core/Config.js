@@ -28,7 +28,8 @@ class Config {
     dns: ['dns'],
     api: ['api'],
     firewall: ['firewall'],
-    hub: ['hub']
+    hub: ['hub'],
+    app: ['app']
   }
 
   // Initialize default configuration for module keys
