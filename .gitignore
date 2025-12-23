@@ -50,9 +50,5 @@ jest-*
 
 .secret/
 .odac/
-docker-compose.dev.yaml
-scripts/
-data/
-sites/
 docker-compose.dev.yml
 .agent/
