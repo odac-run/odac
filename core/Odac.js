@@ -3,6 +3,14 @@ class Odac {
   constructor() {
     this._registry = new Map()
     this._singletons = new Map()
+    process.stdout.on('error', err => {
+      if (err.code === 'EPIPE') return
+      throw err
+    })
+    process.stderr.on('error', err => {
+      if (err.code === 'EPIPE') return
+      throw err
+    })
   }
 
   #instantiate(value) {

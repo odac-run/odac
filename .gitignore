@@ -49,3 +49,6 @@ jest-*
 .kiro/specs/*
 
 .secret/
+.odac/
+docker-compose.dev.yml
+.agent/

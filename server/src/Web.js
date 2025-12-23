@@ -86,7 +86,7 @@ class Web {
     })
   }
 
-  create(domain, progress) {
+  async create(domain, progress) {
     let web = {}
     for (const iterator of ['http://', 'https://', 'ftp://', 'www.']) {
       if (domain.startsWith(iterator)) domain = domain.replace(iterator, '')
@@ -122,25 +122,64 @@ class Web {
     }
     progress('directory', 'progress', __('Setting up website files for %s...', domain))
 
-    childProcess.execSync('npm link odac', {cwd: web.path})
-    if (fs.existsSync(web.path + '/node_modules/.bin')) fs.rmSync(web.path + '/node_modules/.bin', {recursive: true})
-    if (!fs.existsSync(web.path + '/node_modules')) fs.mkdirSync(web.path + '/node_modules')
+    if (Odac.server('Container').available) {
+      // Create package.json manually for Docker environment
+      const packageJson = {
+        name: domain.replace(/\./g, '-'),
+        version: '1.0.0',
+        description: '',
+        main: 'index.js',
+        scripts: {
+          test: 'echo "Error: no test specified" && exit 1'
+        },
+        keywords: [],
+        author: '',
+        license: 'ISC',
+        dependencies: {
+          odac: 'latest'
+        }
+      }
+      fs.writeFileSync(path.join(web.path, 'package.json'), JSON.stringify(packageJson, null, 2))
 
-    // Copy web template files
-    fs.cpSync(__dirname + '/../../web/', web.path, {recursive: true})
+      progress('directory', 'success', __('Website files for %s set.', domain))
 
-    // Process package.json template after copying
-    const packageJsonPath = path.join(web.path, 'package.json')
-    if (fs.existsSync(packageJsonPath)) {
-      let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
+      // Start the container immediately
+      progress('container', 'progress', __('Starting container for %s...', domain))
+      await this.start(domain)
 
-      // Replace template variables
-      packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
+      // Wait for container to be ready (giving it some time for npm install)
+      // Note: In a production system we should poll for readiness
+      await new Promise(resolve => setTimeout(resolve, 5000))
 
-      fs.writeFileSync(packageJsonPath, packageTemplate)
+      // Run odac init inside the running container
+      progress('setup', 'progress', __('Running initial setup for %s...', domain))
+      await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
+      progress('setup', 'success', __('Initial setup completed.'))
+    } else {
+      // Run directly on host
+      childProcess.execSync('npm init -y', {cwd: web.path})
+      childProcess.execSync('npm i odac', {cwd: web.path})
+      childProcess.execSync('./node_modules/.bin/odac init', {cwd: web.path})
+
+      // Process package.json template after copying
+      const packageJsonPath = path.join(web.path, 'package.json')
+      try {
+        let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
+
+        // Replace template variables
+        packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
+
+        fs.writeFileSync(packageJsonPath, packageTemplate)
+      } catch (err) {
+        // Prepare package.json if it doesn't exist or ignore read errors
+        if (err.code === 'ENOENT') {
+          // Optional: handle missing file if critical, or just ignore as before
+        }
+      }
+      progress('directory', 'success', __('Website files for %s set.', domain))
     }
-    progress('directory', 'success', __('Website files for %s set.', domain))
-    return Odac.server('Api').result(true, __('Website %s1 created at %s2.', web.domain, web.path))
+
+    return Odac.server('Api').result(true, __('Website %s created at %s.', web.domain, web.path))
   }
 
   async delete(domain) {
@@ -151,7 +190,12 @@ class Web {
 
     // Stop process if running
     if (website.pid) {
-      Odac.core('Process').stop(website.pid)
+      if (Odac.server('Container').available) {
+        await Odac.server('Container').remove(domain)
+      } else {
+        Odac.core('Process').stop(website.pid)
+      }
+
       delete this.#watcher[website.pid]
       if (website.port) {
         delete this.#ports[website.port]
@@ -410,59 +454,142 @@ class Web {
     } while (using)
     Odac.core('Config').config.websites[domain].port = port
     this.#ports[port] = true
-    var child = childProcess.spawn('odac', ['framework', 'run', port], {
-      cwd: Odac.core('Config').config.websites[domain].path
-    })
-    let pid = child.pid
-    log('Web server started for ' + domain + ' with PID ' + pid)
-    child.stdout.on('data', data => {
-      if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
-      this.#logs.log[domain] +=
-        '[LOG][' +
-        Date.now() +
-        '] ' +
-        data
-          .toString()
-          .trim()
-          .split('\n')
-          .join('\n[LOG][' + Date.now() + '] ') +
-        '\n'
-      if (this.#logs.log[domain].length > 100000)
-        this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
-      if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
-        Odac.core('Config').config.websites[domain].status = 'running'
-    })
-    child.stderr.on('data', data => {
-      if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
-      this.#logs.log[domain] +=
-        '[ERR][' +
-        Date.now() +
-        '] ' +
-        data
-          .toString()
-          .trim()
-          .split('\n')
-          .join('\n[ERR][' + Date.now() + '] ') +
-        '\n'
-      this.#logs.err[domain] += data.toString()
-      if (this.#logs.err[domain].length > 100000)
-        this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
-      if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
-    })
-    child.on('exit', () => {
-      error('Child process exited for ' + domain)
-      if (!Odac.core('Config').config.websites[domain]) return
-      Odac.core('Config').config.websites[domain].pid = null
-      Odac.core('Config').config.websites[domain].updated = Date.now()
-      if (Odac.core('Config').config.websites[domain].status == 'errored') {
-        Odac.core('Config').config.websites[domain].status = 'errored'
-        this.#error_counts[domain] = this.#error_counts[domain] ?? 0
-        this.#error_counts[domain]++
-      } else Odac.core('Config').config.websites[domain].status = 'stopped'
-      this.#watcher[pid] = false
-      delete this.#ports[Odac.core('Config').config.websites[domain].port]
-      this.#active[domain] = false
-    })
+
+    let child
+    let isDocker = false
+
+    if (Odac.server('Container').available) {
+      if (await Odac.server('Container').isRunning(domain)) {
+        // Already running, just attach logs
+        isDocker = true
+        child = await Odac.server('Container').logs(domain)
+        log('Web container re-attached for ' + domain)
+      } else {
+        // Run via Docker
+        const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
+        const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds)
+        if (success) {
+          isDocker = true
+          child = await Odac.server('Container').logs(domain)
+          log('Web container started for ' + domain)
+        } else {
+          error('Failed to start container for ' + domain)
+          return
+        }
+      }
+    } else {
+      // Run Local
+      child = childProcess.spawn('odac', ['framework', 'run', port], {
+        cwd: Odac.core('Config').config.websites[domain].path
+      })
+      log('Web server started for ' + domain + ' with PID ' + child.pid)
+    }
+
+    // Dockerode returns a stream that doesn't have a pid property (it is undefined)
+    // We use a dummy PID for internal tracking if check fails
+    let pid = child.pid || domain
+
+    // Dockerode streams handling
+    if (isDocker && child) {
+      const stdoutStream = new (require('stream').PassThrough)()
+      const stderrStream = new (require('stream').PassThrough)()
+
+      Odac.server('Container').docker.modem.demuxStream(child, stdoutStream, stderrStream)
+
+      stdoutStream.on('data', data => {
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+        this.#logs.log[domain] += '[LOG][' + Date.now() + '] ' + data.toString().trim() + '\n'
+        if (this.#logs.log[domain].length > 100000)
+          this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
+          Odac.core('Config').config.websites[domain].status = 'running'
+      })
+
+      stderrStream.on('data', data => {
+        if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+
+        this.#logs.log[domain] +=
+          '[ERR][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[ERR][' + Date.now() + '] ') +
+          '\n'
+
+        this.#logs.err[domain] += data.toString()
+        if (this.#logs.err[domain].length > 100000)
+          this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
+      })
+
+      child.on('end', () => {
+        // Handle exit
+        child.emit('exit')
+      })
+    } else if (child) {
+      // Child Process standard handling
+      child.stdout.on('data', data => {
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+        this.#logs.log[domain] +=
+          '[LOG][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[LOG][' + Date.now() + '] ') +
+          '\n'
+        if (this.#logs.log[domain].length > 100000)
+          this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
+          Odac.core('Config').config.websites[domain].status = 'running'
+      })
+      child.stderr.on('data', data => {
+        if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
+        this.#logs.log[domain] +=
+          '[ERR][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[ERR][' + Date.now() + '] ') +
+          '\n'
+        this.#logs.err[domain] += data.toString()
+        if (this.#logs.err[domain].length > 100000)
+          this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
+      })
+    }
+
+    if (child) {
+      child.on('exit', () => {
+        error((isDocker ? 'Container log stream' : 'Child process') + ' exited for ' + domain)
+
+        if (isDocker) {
+          // If the log stream ended, the container likely stopped or crashed
+          Odac.server('Container').stop(domain)
+        }
+
+        if (!Odac.core('Config').config.websites[domain]) return
+        Odac.core('Config').config.websites[domain].pid = null
+        Odac.core('Config').config.websites[domain].updated = Date.now()
+        if (Odac.core('Config').config.websites[domain].status == 'errored') {
+          Odac.core('Config').config.websites[domain].status = 'errored'
+          this.#error_counts[domain] = this.#error_counts[domain] ?? 0
+          this.#error_counts[domain]++
+        } else Odac.core('Config').config.websites[domain].status = 'stopped'
+        this.#watcher[pid] = false
+        delete this.#ports[Odac.core('Config').config.websites[domain].port]
+        this.#active[domain] = false
+      })
+    }
 
     Odac.core('Config').config.websites[domain].pid = pid
     Odac.core('Config').config.websites[domain].started = Date.now()
@@ -480,7 +607,11 @@ class Web {
     for (const domain of Object.keys(Odac.core('Config').config.websites ?? {})) {
       let website = Odac.core('Config').config.websites[domain]
       if (website.pid) {
-        Odac.core('Process').stop(website.pid)
+        if (Odac.server('Container').available) {
+          Odac.server('Container').stop(domain)
+        } else {
+          Odac.core('Process').stop(website.pid)
+        }
         website.pid = null
         this.set(domain, website)
       }

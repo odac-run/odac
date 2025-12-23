@@ -4,8 +4,8 @@ const childProcess = require('child_process')
 const readline = require('readline')
 
 class Cli {
-  #backgrounds = { red: 41, green: 42, yellow: 43, blue: 44, magenta: 45, white: 47, gray: 100 }
-  colors = { red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, white: 37, gray: 90 }
+  #backgrounds = {red: 41, green: 42, yellow: 43, blue: 44, magenta: 45, white: 47, gray: 100}
+  colors = {red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, white: 37, gray: 90}
   rl
   boot() {
     if (!this.booting) this.booting = true
@@ -97,7 +97,7 @@ class Cli {
       result += lines.join('\n')
     }
 
-    return { result: result, space: space }
+    return {result: result, space: space}
   }
 
   async help(commands) {

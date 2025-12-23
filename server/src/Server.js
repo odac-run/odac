@@ -8,6 +8,7 @@ class Server {
     Odac.server('Mail')
     Odac.server('Api')
     Odac.server('Hub')
+    Odac.server('Container')
     setTimeout(function () {
       setInterval(function () {
         Odac.server('Service').check()
