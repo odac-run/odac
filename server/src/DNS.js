@@ -859,7 +859,7 @@ nameserver 8.8.4.4
         const value = caaParts.slice(2).join(' ')
 
         response.answer.push(
-          dns.CAA({
+          this.#createCAARecord({
             name: record.name,
             flags: flags,
             tag: tag,
@@ -877,7 +877,7 @@ nameserver 8.8.4.4
     try {
       // Add default CAA records allowing Let's Encrypt
       response.answer.push(
-        dns.CAA({
+        this.#createCAARecord({
           name: questionName,
           flags: 0,
           tag: 'issue',
@@ -886,7 +886,7 @@ nameserver 8.8.4.4
         })
       )
       response.answer.push(
-        dns.CAA({
+        this.#createCAARecord({
           name: questionName,
           flags: 0,
           tag: 'issuewild',
@@ -897,6 +897,31 @@ nameserver 8.8.4.4
       log("Added default CAA records for Let's Encrypt to response for:", questionName)
     } catch (err) {
       error('Error adding default CAA records:', err.message)
+    }
+  }
+
+  #createCAARecord(opts) {
+    const flags = opts.flags || 0
+    const tag = opts.tag
+    const value = opts.value
+
+    const flagsBuf = Buffer.alloc(1)
+    flagsBuf.writeUInt8(flags, 0)
+
+    const tagBuf = Buffer.from(tag)
+    const tagLenBuf = Buffer.alloc(1)
+    tagLenBuf.writeUInt8(tagBuf.length, 0)
+
+    const valueBuf = Buffer.from(value)
+
+    const data = Buffer.concat([flagsBuf, tagLenBuf, tagBuf, valueBuf])
+
+    return {
+      name: opts.name,
+      type: dns.consts.NAME_TO_QTYPE.CAA || 257,
+      class: 1, // IN
+      ttl: opts.ttl || 3600,
+      data: data
     }
   }
 
