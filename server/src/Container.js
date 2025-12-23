@@ -19,9 +19,9 @@ class Container {
       await this.#docker.ping()
       Odac.core('Config').config.container.available = true
       log('Docker is available')
-    } catch {
+    } catch (err) {
       Odac.core('Config').config.container.available = false
-      error('Docker is not available')
+      error(`Docker is not available: ${err.message}`)
     }
   }
 
@@ -217,8 +217,10 @@ class Container {
     try {
       const container = this.#docker.getContainer(name)
       await container.stop()
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to stop container ${name}: ${err.message}`)
+      }
     }
   }
 
@@ -228,8 +230,10 @@ class Container {
       const container = this.#docker.getContainer(name)
       // Force remove equivalent
       await container.remove({force: true})
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to remove container ${name}: ${err.message}`)
+      }
     }
   }
 
@@ -249,7 +253,10 @@ class Container {
         stderr: true
       })
       return stream
-    } catch {
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get logs for ${name}: ${err.message}`)
+      }
       return null
     }
   }
@@ -265,7 +272,10 @@ class Container {
       const container = this.#docker.getContainer(name)
       const data = await container.inspect()
       return data.State.Running
-    } catch {
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to check if running ${name}: ${err.message}`)
+      }
       return false
     }
   }
