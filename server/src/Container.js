@@ -33,10 +33,7 @@ class Container {
    * Resolves container path to host path (for DooD support)
    * @param {string} localPath
    */
-  /**
-   * Resolves container path to host path (for DooD support)
-   * @param {string} localPath
-   */
+
   #resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) return localPath
 
