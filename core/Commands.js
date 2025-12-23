@@ -45,6 +45,47 @@ module.exports = {
     }
   },
 
+  app: {
+    title: 'APP',
+    sub: {
+      install: {
+        description: 'Install a new 3rd party application',
+        args: ['-t', '--type'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+
+          if (!type) {
+            console.log('Available official apps: mysql, redis, postgres')
+            type = await cli.question(__('Enter the app type or repo (e.g. mysql): '))
+          }
+
+          await Odac.cli('Connector').call({
+            action: 'app.install',
+            data: [type]
+          })
+        }
+      },
+      delete: {
+        description: 'Delete an installed application',
+        args: ['-n', '--name'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let name = cli.parseArg(args, ['-n', '--name']) || args[0]
+          if (!name) name = await cli.question(__('Enter the app name: '))
+
+          await Odac.cli('Connector').call({
+            action: 'app.delete',
+            data: [name]
+          })
+        }
+      },
+      list: {
+        description: 'List installed applications',
+        action: async () => Odac.cli('Connector').call({action: 'app.list'})
+      }
+    }
+  },
   mail: {
     title: 'MAIL',
     sub: {

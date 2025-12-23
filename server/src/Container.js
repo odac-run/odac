@@ -2,9 +2,6 @@ const {log, error} = Odac.core('Log', false).init('Container')
 const Docker = require('dockerode')
 const path = require('path')
 
-const DEFAULT_IMAGE = 'node:lts-alpine'
-const DEFAULT_START_CMD = 'npm install && node ./node_modules/odac/index.js'
-
 class Container {
   #docker
 
@@ -22,9 +19,9 @@ class Container {
       await this.#docker.ping()
       Odac.core('Config').config.container.available = true
       log('Docker is available')
-    } catch (err) {
+    } catch {
       Odac.core('Config').config.container.available = false
-      error(`Docker is not available: ${err.message}`)
+      error('Docker is not available')
     }
   }
 
@@ -36,7 +33,6 @@ class Container {
    * Resolves container path to host path (for DooD support)
    * @param {string} localPath
    */
-
   #resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) return localPath
 
@@ -98,7 +94,7 @@ class Container {
     if (!this.available) return false
 
     const hostPath = this.#resolveHostPath(volumePath)
-    const image = DEFAULT_IMAGE
+    const image = 'node:lts-alpine'
 
     // We use run with remove: true to mimic 'docker run --rm'
     try {
@@ -185,11 +181,11 @@ class Container {
 
     try {
       log(`Starting container for ${name}...`)
-      await this.#ensureImage(DEFAULT_IMAGE)
+      await this.#ensureImage('node:lts-alpine')
 
       const container = await this.#docker.createContainer({
-        Image: DEFAULT_IMAGE,
-        Cmd: ['sh', '-c', DEFAULT_START_CMD],
+        Image: 'node:lts-alpine',
+        Cmd: ['sh', '-c', 'npm install && node ./node_modules/odac/index.js'],
         name: name,
         WorkingDir: '/app',
         HostConfig: {
@@ -212,15 +208,84 @@ class Container {
     }
   }
 
+  /**
+   * Generic method to run any app container
+   * @param {string} name - Unique container name
+   * @param {Object} options - Configuration options
+   * @param {string} options.image - Docker image name
+   * @param {Array} options.ports - Array of port mappings [{host: 3000, container: 80}]
+   * @param {Array} options.volumes - Array of volume mappings [{host: '/path', container: '/data'}]
+   * @param {Object} options.env - Environment variables {KEY: 'VALUE'}
+   * @param {Array} options.cmd - Command to run (optional)
+   */
+  async runApp(name, options) {
+    if (!this.available) return false
+
+    await this.remove(name)
+
+    const bindings = []
+    if (options.volumes) {
+      for (const vol of options.volumes) {
+        const hostPath = this.#resolveHostPath(vol.host)
+        bindings.push(`${hostPath}:${vol.container}`)
+      }
+    }
+
+    const portBindings = {}
+    const exposedPorts = {}
+
+    if (options.ports) {
+      for (const port of options.ports) {
+        const portKey = `${port.container}/tcp`
+        portBindings[portKey] = [{HostPort: String(port.host)}]
+        exposedPorts[portKey] = {}
+      }
+    }
+
+    const envArr = []
+    if (options.env) {
+      for (const [key, val] of Object.entries(options.env)) {
+        envArr.push(`${key}=${val}`)
+      }
+    }
+
+    try {
+      log(`Starting app container ${name} (${options.image})...`)
+      await this.#ensureImage(options.image)
+
+      const containerConfig = {
+        Image: options.image,
+        name: name,
+        Env: envArr,
+        HostConfig: {
+          RestartPolicy: {Name: 'unless-stopped'},
+          Binds: bindings,
+          PortBindings: portBindings
+        },
+        ExposedPorts: exposedPorts
+      }
+
+      if (options.cmd) {
+        containerConfig.Cmd = options.cmd
+      }
+
+      const container = await this.#docker.createContainer(containerConfig)
+
+      await container.start()
+      return true
+    } catch (err) {
+      error(`Failed to start app container ${name}: ${err.message}`)
+      throw err
+    }
+  }
+
   async stop(name) {
     if (!this.available) return
     try {
       const container = this.#docker.getContainer(name)
       await container.stop()
-    } catch (err) {
-      if (err.statusCode !== 404) {
-        error(`Failed to stop container ${name}: ${err.message}`)
-      }
+    } catch {
+      /* ignore */
     }
   }
 
@@ -230,10 +295,8 @@ class Container {
       const container = this.#docker.getContainer(name)
       // Force remove equivalent
       await container.remove({force: true})
-    } catch (err) {
-      if (err.statusCode !== 404) {
-        error(`Failed to remove container ${name}: ${err.message}`)
-      }
+    } catch {
+      /* ignore */
     }
   }
 
@@ -253,10 +316,7 @@ class Container {
         stderr: true
       })
       return stream
-    } catch (err) {
-      if (err.statusCode !== 404) {
-        error(`Failed to get logs for ${name}: ${err.message}`)
-      }
+    } catch {
       return null
     }
   }
@@ -272,10 +332,7 @@ class Container {
       const container = this.#docker.getContainer(name)
       const data = await container.inspect()
       return data.State.Running
-    } catch (err) {
-      if (err.statusCode !== 404) {
-        error(`Failed to check if running ${name}: ${err.message}`)
-      }
+    } catch {
       return false
     }
   }

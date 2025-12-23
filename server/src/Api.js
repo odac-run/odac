@@ -18,7 +18,10 @@ class Api {
     'subdomain.list': (...args) => Odac.server('Subdomain').list(...args),
     'web.create': (...args) => Odac.server('Web').create(...args),
     'web.delete': (...args) => Odac.server('Web').delete(...args),
-    'web.list': (...args) => Odac.server('Web').list(...args)
+    'web.list': (...args) => Odac.server('Web').list(...args),
+    'app.install': (...args) => Odac.server('App').install(...args),
+    'app.delete': (...args) => Odac.server('App').delete(...args),
+    'app.list': (...args) => Odac.server('App').list(...args)
   }
   #connections = {}
 
