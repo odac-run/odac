@@ -163,13 +163,18 @@ class Web {
 
       // Process package.json template after copying
       const packageJsonPath = path.join(web.path, 'package.json')
-      if (fs.existsSync(packageJsonPath)) {
+      try {
         let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
 
         // Replace template variables
         packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
 
         fs.writeFileSync(packageJsonPath, packageTemplate)
+      } catch (err) {
+        // Prepare package.json if it doesn't exist or ignore read errors
+        if (err.code === 'ENOENT') {
+          // Optional: handle missing file if critical, or just ignore as before
+        }
       }
       progress('directory', 'success', __('Website files for %s set.', domain))
     }
