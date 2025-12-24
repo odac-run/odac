@@ -1,18 +1,12 @@
 const {log, error} = Odac.core('Log', false).init('Service')
-
-const childProcess = require('child_process')
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
+const net = require('net')
+const nodeCrypto = require('crypto')
 
 class Service {
   #services = []
-  #watcher = {}
   #loaded = false
-  #logs = {}
-  #errs = {}
-  #error_counts = {}
-  #active = {}
 
   #get(id) {
     if (!this.#loaded && this.#services.length == 0) {
@@ -25,197 +19,312 @@ class Service {
     return false
   }
 
-  #add(file) {
+  #add(file, type = 'script') {
     let name = path.basename(file)
-    if (name.substr(-3) == '.js') name = name.substr(0, name.length - 3)
+    // If it's a script, remove extension for name
+    if (
+      type === 'script' &&
+      (name.endsWith('.js') || name.endsWith('.py') || name.endsWith('.php') || name.endsWith('.sh') || name.endsWith('.rb'))
+    ) {
+      name = name.split('.').slice(0, -1).join('.')
+    }
+
+    // Check if name exists, if so append number
+    let uniqueName = name
+    let counter = 1
+    while (this.#get(uniqueName)) {
+      uniqueName = `${name}-${counter}`
+      counter++
+    }
+    name = uniqueName
+
     let service = {
       id: this.#services.length,
-      name: path.basename(file),
+      name: name,
       file: file,
-      active: true
+      type: type, // 'script' or 'container'
+      active: true,
+      created: Date.now()
     }
     this.#services.push(service)
-    this.#services[service.id] = service
+    // Map both by index and potentially other lookups if needed, but array is safer
     Odac.core('Config').config.services = this.#services
-    return true
+    return service
   }
 
   #set(id, key, value) {
     let service = this.#get(id)
-    let index = this.#services.indexOf(service)
     if (service) {
       if (typeof key == 'object') {
         for (const k in key) service[k] = key[k]
       } else {
         service[key] = value
       }
-    } else {
-      return false
+      Odac.core('Config').config.services = this.#services
+      return true
     }
-    this.#services[index] = service
-    Odac.core('Config').config.services = this.#services
+    return false
   }
 
   async check() {
     this.#services = Odac.core('Config').config.services ?? []
     for (const service of this.#services) {
       if (service.active) {
-        if (!service.pid) {
+        // If it's a script or app container, check if it's running in Docker
+        const isRunning = await Odac.server('Container').isRunning(service.name)
+
+        if (!isRunning && service.status === 'running') {
+          log('Service %s is not running in Docker. Restarting...', service.name)
           this.#run(service.id)
-        } else {
-          if (!this.#watcher[service.pid]) {
-            log('Service %s (PID %s) is not running. Restarting...', service.name, service.pid)
-            Odac.core('Process').stop(service.pid)
-            this.#run(service.id)
-            this.#set(service.id, 'pid', null)
-          }
+        } else if (!isRunning && service.status !== 'stopped' && service.status !== 'errored') {
+          // Initial start or recovery
+          this.#run(service.id)
         }
       }
-      if (this.#logs[service.id])
-        fs.writeFile(os.homedir() + '/.odac/logs/' + service.name + '.log', this.#logs[service.id], 'utf8', function (err) {
-          if (err) error(err)
-        })
-      if (this.#errs[service.id])
-        fs.writeFile(os.homedir() + '/.odac/logs/' + service.name + '.err.log', this.#errs[service.id], 'utf8', function (err) {
-          if (err) error(err)
-        })
     }
   }
 
   async delete(id) {
     return new Promise(resolve => {
-      let service = this.#get(id)
-      if (service) {
-        this.stop(service.id)
-        this.#services = this.#services.filter(s => s.id != service.id)
-        Odac.core('Config').config.services = this.#services
-        return resolve(Odac.server('Api').result(true, __('Service %s deleted successfully.', service.name)))
-      } else {
-        return resolve(Odac.server('Api').result(false, __('Service %s not found.', id)))
+      this.#deleteService(id, resolve)
+    })
+  }
+
+  async #deleteService(id, resolve) {
+    let service = this.#get(id)
+    if (service) {
+      await this.stop(service.id)
+      this.#services = this.#services.filter(s => s.name != service.name && s.id != service.id)
+      Odac.core('Config').config.services = this.#services
+
+      // Also remove the container
+      await Odac.server('Container').remove(service.name)
+
+      return resolve(Odac.server('Api').result(true, __('Service %s deleted successfully.', service.name)))
+    } else {
+      return resolve(Odac.server('Api').result(false, __('Service %s not found.', id)))
+    }
+  }
+
+  async #run(id) {
+    const service = this.#get(id)
+    if (!service) return
+
+    log('Starting service %s (Type: %s)...', service.name, service.type)
+    this.#set(id, {status: 'starting', updated: Date.now()})
+
+    try {
+      if (service.type === 'script') {
+        await this.#runScript(service)
+      } else if (service.type === 'container') {
+        await this.#runContainer(service)
+      }
+
+      this.#set(id, {status: 'running', started: Date.now()})
+      return true
+    } catch (err) {
+      error('Failed to start service %s: %s', service.name, err.message)
+      this.#set(id, {status: 'errored', updated: Date.now()})
+      return false
+    }
+  }
+
+  async #runScript(service) {
+    const filePath = service.file
+    const dir = path.dirname(filePath)
+    const filename = path.basename(filePath)
+    const ext = path.extname(filename)
+
+    let image = 'node:lts-alpine'
+    let cmd = ['node', filename]
+
+    if (ext === '.py') {
+      image = 'python:alpine'
+      cmd = ['python3', '-u', filename] // -u for unbuffered output
+    } else if (ext === '.php') {
+      image = 'php:cli-alpine'
+      cmd = ['php', filename]
+    } else if (ext === '.rb') {
+      image = 'ruby:alpine'
+      cmd = ['ruby', filename]
+    } else if (ext === '.sh') {
+      image = 'alpine:latest'
+      cmd = ['sh', filename]
+    }
+
+    // Use the generic runApp from Container
+    await Odac.server('Container').runApp(service.name, {
+      image: image,
+      cmd: cmd,
+      volumes: [{host: dir, container: '/app'}],
+      env: {
+        ODAC_SERVICE: 'true'
       }
     })
   }
 
-  async #run(id) {
-    if (this.#active[id]) return
-    this.#active[id] = true
-    let service = this.#get(id)
-    if (!service) return
-    log('Service %s is not running. Starting...', service.name)
-    if (this.#error_counts[id] > 10) {
-      this.#active[id] = false
-      log('Service %s has exceeded the maximum error limit. Please check the logs for more details.', service.name)
-      return
-    }
-    if ((service.status == 'errored' || service.status == 'stopped') && Date.now() - service.updated < this.#error_counts[id] * 1000) {
-      this.#active[id] = false
-      log('Service %s is in a cooldown period.', service.name)
-      return
-    }
-    log('Starting service %s...', service.name)
-    this.#set(id, 'updated', Date.now())
-    var child = childProcess.spawn('node', [service.file], {
-      cwd: path.dirname(service.file)
+  async #runContainer(service) {
+    // For third-party apps like mysql, redis
+    await Odac.server('Container').runApp(service.name, {
+      image: service.image,
+      ports: service.ports,
+      volumes: service.volumes,
+      env: service.env
     })
-    let pid = child.pid
-    child.stdout.on('data', data => {
-      if (!this.#logs[id]) this.#logs[id] = ''
-      this.#logs[id] +=
-        '[LOG][' +
-        Date.now() +
-        '] ' +
-        data
-          .toString()
-          .trim()
-          .split('\n')
-          .join('\n[LOG][' + Date.now() + '] ') +
-        '\n'
-      if (this.#logs[id].length > 1000000) this.#logs[id] = this.#logs[id].substr(this.#logs[id].length - 1000000)
-    })
-    child.stderr.on('data', data => {
-      if (!this.#errs[id]) this.#errs[id] = ''
-      this.#logs[id] +=
-        '[ERR][' +
-        Date.now() +
-        '] ' +
-        data
-          .toString()
-          .trim()
-          .split('\n')
-          .join('\n[ERR][' + Date.now() + '] ') +
-        '\n'
-      this.#errs[id] += data.toString()
-      if (this.#errs[id].length > 1000000) this.#errs[id] = this.#errs[id].substr(this.#errs[id].length - 1000000)
-      this.#set(id, {
-        status: 'errored',
-        updated: Date.now()
-      })
-    })
-    child.on('exit', () => {
-      if (this.#get(service.id).status == 'running') {
-        this.#set(id, {
-          pid: null,
-          started: null,
-          status: 'stopped',
-          updated: Date.now()
-        })
-      }
-      this.#watcher[pid] = false
-      this.#error_counts[id] = this.#error_counts[id] ?? 0
-      this.#error_counts[id]++
-      this.#active[id] = false
-    })
-    this.#set(id, {
-      active: true,
-      pid: pid,
-      started: Date.now(),
-      status: 'running'
-    })
-    this.#watcher[pid] = true
   }
 
   async init() {
     log('Initializing services...')
     this.#services = Odac.core('Config').config.services ?? []
-    for (const service of this.#services) {
-      fs.readFile(os.homedir() + '/.odac/logs/' + service.name + '.log', 'utf8', (err, data) => {
-        if (!err) this.#logs[service.id] = data.toString()
-      })
-    }
     this.#loaded = true
   }
 
   async start(file) {
     return new Promise(resolve => {
-      if (file && file.length > 0) {
-        file = path.resolve(file)
-        if (fs.existsSync(file)) {
-          if (!this.#get(file)) {
-            this.#add(file)
-            return resolve(Odac.server('Api').result(true, __('Service %s added successfully.', file)))
-          } else {
-            return resolve(Odac.server('Api').result(false, __('Service %s already exists.', file)))
-          }
-        } else {
-          return resolve(Odac.server('Api').result(false, __('Service file %s not found.', file)))
-        }
-      } else {
-        return resolve(Odac.server('Api').result(false, __('Service file not specified.')))
-      }
+      this.#startService(file, resolve)
     })
   }
 
-  stop(id) {
+  async #startService(file, resolve) {
+    if (file && file.length > 0) {
+      file = path.resolve(file)
+      if (fs.existsSync(file)) {
+        // Check if already exists by file path
+        const existing = this.#services.find(s => s.file === file)
+
+        if (!existing) {
+          const service = this.#add(file, 'script')
+          await this.#run(service.id)
+          return resolve(Odac.server('Api').result(true, __('Service %s added successfully.', file)))
+        } else {
+          // If exists but stopped, restart
+          if (existing.status !== 'running') {
+            await this.#run(existing.id)
+            return resolve(Odac.server('Api').result(true, __('Service %s started successfully.', existing.name)))
+          }
+          return resolve(Odac.server('Api').result(false, __('Service %s already exists and is running.', file)))
+        }
+      } else {
+        return resolve(Odac.server('Api').result(false, __('Service file %s not found.', file)))
+      }
+    } else {
+      return resolve(Odac.server('Api').result(false, __('Service file not specified.')))
+    }
+  }
+
+  async install(type) {
+    log('Installing app: %s', type)
+    let recipe
+    try {
+      recipe = await this.#fetchRecipe(type)
+    } catch {
+      // Fallbacks
+      if (type === 'mysql') {
+        recipe = {
+          name: 'mysql',
+          image: 'mysql:8.0',
+          ports: [{container: 3306, host: 'auto'}],
+          volumes: [{container: '/var/lib/mysql', host: 'data'}],
+          env: {MYSQL_ROOT_PASSWORD: {generate: true, length: 16}, MYSQL_DATABASE: 'odac'}
+        }
+      } else if (type === 'postgres') {
+        recipe = {
+          name: 'postgres',
+          image: 'postgres:15-alpine',
+          ports: [{container: 5432, host: 'auto'}],
+          volumes: [{container: '/var/lib/postgresql/data', host: 'data'}],
+          env: {POSTGRES_PASSWORD: {generate: true, length: 16}, POSTGRES_DB: 'odac'}
+        }
+      } else if (type === 'redis') {
+        recipe = {
+          name: 'redis',
+          image: 'redis:alpine',
+          ports: [{container: 6379, host: 'auto'}],
+          volumes: [{container: '/data', host: 'data'}],
+          env: {}
+        }
+      } else {
+        return Odac.server('Api').result(false, __('Could not find recipe for %s', type))
+      }
+    }
+
+    let name = recipe.name
+    let counter = 1
+    while (this.#get(name)) {
+      name = `${recipe.name}-${counter}`
+      counter++
+    }
+
+    const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+    if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
+
+    const volumes = []
+    if (recipe.volumes) {
+      for (const vol of recipe.volumes) {
+        let host = vol.host
+        if (host === 'data') {
+          host = path.join(appDir, 'data')
+          if (!fs.existsSync(host)) fs.mkdirSync(host, {recursive: true})
+        }
+        volumes.push({host, container: vol.container})
+      }
+    }
+
+    const ports = []
+    if (recipe.ports) {
+      for (const port of recipe.ports) {
+        let hostPort = port.host
+        if (hostPort === 'auto') hostPort = await this.#findPort(30000)
+        ports.push({host: hostPort, container: port.container})
+      }
+    }
+
+    const env = {}
+    if (recipe.env) {
+      for (const [k, v] of Object.entries(recipe.env)) {
+        if (typeof v === 'object' && v.generate) {
+          env[k] = this.#generatePassword(v.length || 16)
+        } else {
+          env[k] = v
+        }
+      }
+    }
+
+    const service = {
+      id: this.#services.length,
+      name: name,
+      type: 'container',
+      image: recipe.image,
+      ports: ports,
+      volumes: volumes,
+      env: env,
+      active: true,
+      created: Date.now(),
+      status: 'installing'
+    }
+    this.#services.push(service)
+    Odac.core('Config').config.services = this.#services
+
+    try {
+      if (await this.#run(service.id)) {
+        return Odac.server('Api').result(true, __('App %s installed successfully.', name))
+      } else {
+        throw new Error('Failed to start service container. Check logs for details.')
+      }
+    } catch (e) {
+      // Rollback: remove service if installation failed
+      this.#services = this.#services.filter(s => s.id !== service.id)
+      Odac.core('Config').config.services = this.#services
+
+      return Odac.server('Api').result(false, e.message)
+    }
+  }
+
+  async stop(id) {
     let service = this.#get(id)
     if (service) {
-      if (service.pid) {
-        Odac.core('Process').stop(service.pid)
-        this.#set(id, 'pid', null)
-        this.#set(id, 'started', null)
-        this.#set(id, 'active', false)
-      } else {
-        log(__('Service %s is not running.', id))
-      }
+      await Odac.server('Container').stop(service.name)
+      this.#set(id, {status: 'stopped', active: false, pid: null})
     } else {
       log(__('Service %s not found.', id))
     }
@@ -223,22 +332,33 @@ class Service {
 
   async status() {
     let services = Odac.core('Config').config.services ?? []
+    const containerServer = Odac.server('Container')
+
     for (const service of services) {
-      if (service.status == 'running') {
-        var uptime = Date.now() - service.started
-        let seconds = Math.floor(uptime / 1000)
-        let minutes = Math.floor(seconds / 60)
-        let hours = Math.floor(minutes / 60)
-        let days = Math.floor(hours / 24)
-        seconds %= 60
-        minutes %= 60
-        hours %= 24
-        let uptimeString = ''
-        if (days) uptimeString += days + 'd '
-        if (hours) uptimeString += hours + 'h '
-        if (minutes) uptimeString += minutes + 'm '
-        if (seconds) uptimeString += seconds + 's'
-        service.uptime = uptimeString
+      const isRunning = await containerServer.isRunning(service.name)
+      if (isRunning) {
+        service.status = 'running'
+        if (service.started) {
+          var uptime = Date.now() - service.started
+          let seconds = Math.floor(uptime / 1000)
+          let minutes = Math.floor(seconds / 60)
+          let hours = Math.floor(minutes / 60)
+          let days = Math.floor(hours / 24)
+          seconds %= 60
+          minutes %= 60
+          hours %= 24
+          let uptimeString = ''
+          if (days) uptimeString += days + 'd '
+          if (hours) uptimeString += hours + 'h '
+          if (minutes) uptimeString += minutes + 'm '
+          if (seconds) uptimeString += seconds + 's'
+          service.uptime = uptimeString
+        } else {
+          service.uptime = 'Running'
+        }
+      } else {
+        service.status = 'stopped'
+        service.uptime = '-'
       }
     }
     return services
@@ -246,6 +366,38 @@ class Service {
 
   async list() {
     return Odac.server('Api').result(true, await this.status())
+  }
+
+  async #fetchRecipe() {
+    throw new Error('Remote recipes not implemented yet')
+  }
+
+  #generatePassword(length) {
+    return nodeCrypto
+      .randomBytes(Math.ceil(length / 2))
+      .toString('hex')
+      .slice(0, length)
+  }
+
+  async #findPort(start) {
+    let port = start
+    while (await this.#isPortInUse(port)) port++
+    return port
+  }
+
+  #isPortInUse(port) {
+    return new Promise(resolve => {
+      const server = net.createServer()
+      server.once('error', err => {
+        if (err.code === 'EADDRINUSE') resolve(true)
+        else resolve(false)
+      })
+      server.once('listening', () => {
+        server.close()
+        resolve(false)
+      })
+      server.listen(port, '127.0.0.1')
+    })
   }
 }
 
