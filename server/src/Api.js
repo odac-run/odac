@@ -74,7 +74,7 @@ class Api {
       })
     })
 
-    server.listen(1453)
+    server.listen(1453, '127.0.0.1')
   }
 
   send(id, process, status, message) {
