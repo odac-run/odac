@@ -192,7 +192,7 @@ class Container {
           RestartPolicy: {Name: 'unless-stopped'},
           Binds: bindings,
           PortBindings: {
-            [`${internalPort}/tcp`]: [{HostPort: String(port)}]
+            [`${internalPort}/tcp`]: [{HostPort: String(port), HostIp: '127.0.0.1'}]
           }
         },
         ExposedPorts: {
@@ -237,7 +237,7 @@ class Container {
     if (options.ports) {
       for (const port of options.ports) {
         const portKey = `${port.container}/tcp`
-        portBindings[portKey] = [{HostPort: String(port.host)}]
+        portBindings[portKey] = [{HostPort: String(port.host), HostIp: '127.0.0.1'}]
         exposedPorts[portKey] = {}
       }
     }
