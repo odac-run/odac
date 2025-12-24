@@ -365,7 +365,20 @@ class Service {
   }
 
   async list() {
-    return Odac.server('Api').result(true, await this.status())
+    const services = await this.status()
+    if (services.length === 0) return Odac.server('Api').result(false, __('No services found.'))
+
+    let output = []
+    output.push(String('NAME').padEnd(20) + String('TYPE').padEnd(15) + String('STATUS').padEnd(15) + String('UPTIME'))
+    output.push('-'.repeat(60))
+
+    for (const service of services) {
+      let status = service.status || 'stopped'
+      let uptime = service.uptime || '-'
+      output.push(String(service.name).padEnd(20) + String(service.type).padEnd(15) + String(status).padEnd(15) + String(uptime))
+    }
+
+    return Odac.server('Api').result(true, output.join('\n'))
   }
 
   async #fetchRecipe() {
