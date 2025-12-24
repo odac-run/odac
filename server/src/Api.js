@@ -11,6 +11,8 @@ class Api {
     'mail.send': (...args) => Odac.server('Mail').send(...args),
     'service.start': (...args) => Odac.server('Service').start(...args),
     'service.delete': (...args) => Odac.server('Service').delete(...args),
+    'service.list': (...args) => Odac.server('Service').list(...args),
+    'service.install': (...args) => Odac.server('Service').install(...args),
     'server.stop': () => Odac.server('Server').stop(),
     'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
     'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),
@@ -18,10 +20,7 @@ class Api {
     'subdomain.list': (...args) => Odac.server('Subdomain').list(...args),
     'web.create': (...args) => Odac.server('Web').create(...args),
     'web.delete': (...args) => Odac.server('Web').delete(...args),
-    'web.list': (...args) => Odac.server('Web').list(...args),
-    'app.install': (...args) => Odac.server('App').install(...args),
-    'app.delete': (...args) => Odac.server('App').delete(...args),
-    'app.list': (...args) => Odac.server('App').list(...args)
+    'web.list': (...args) => Odac.server('Web').list(...args)
   }
   #connections = {}
 

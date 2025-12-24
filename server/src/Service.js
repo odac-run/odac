@@ -243,6 +243,10 @@ class Service {
     }
     return services
   }
+
+  async list() {
+    return Odac.server('Api').result(true, await this.status())
+  }
 }
 
 module.exports = new Service()

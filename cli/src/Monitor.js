@@ -10,15 +10,13 @@ class Monitor {
   #height
   #logs = {content: [], mtime: null, selected: null, watched: [], lastFetch: 0}
   #logging = false
-  #modules = ['api', 'config', 'dns', 'hub', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web', 'app']
+  #modules = ['api', 'config', 'dns', 'hub', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web']
   #printing = false
   #selected = 0
   #services = []
   #maxStatsLen = {cpu: 0, mem: 0}
-  #activeApps = []
   #watch = []
   #websites = {}
-  #apps = {}
   #width
   #stats = {}
 
@@ -168,7 +166,6 @@ class Monitor {
 
     const domainsCount = this.#domains.length
     const servicesCount = this.#services.length
-    const appsCount = this.#activeApps.length
 
     if (this.#selected < domainsCount) {
       const domain = this.#domains[this.#selected]
@@ -178,12 +175,12 @@ class Monitor {
       }
       file = os.homedir() + '/.odac/logs/' + domain + '.log'
     } else if (this.#selected < domainsCount + servicesCount) {
-      file = os.homedir() + '/.odac/logs/' + this.#services[this.#selected - domainsCount].name + '.log'
-    } else if (this.#selected < domainsCount + servicesCount + appsCount) {
-      // Apps - fetch from docker
-      const appName = this.#activeApps[this.#selected - domainsCount - servicesCount]
-      this.#fetchDockerLogs(appName)
-      return
+      // Services are now all containers
+      const service = this.#services[this.#selected - domainsCount]
+      if (service && service.name) {
+        this.#fetchDockerLogs(service.name)
+        return
+      }
     } else {
       this.#logging = false
       return
@@ -326,10 +323,6 @@ class Monitor {
               color = 'red'
             }
 
-            // Clean up [LOG]/[ERR] tags if present to avoid duplication or keep them styled
-            // The previous file based parser relied on [LOG][timestamp] format.
-            // Here we have real timestamps. Let's format nicely.
-
             return Odac.cli('Cli').color(`[${formattedDate}]`, color, 'bold') + ' ' + content
           })
           .slice(-(this.#height - 4))
@@ -357,7 +350,7 @@ class Monitor {
     process.stdin.on('data', chunk => {
       const buffer = Buffer.from(chunk)
 
-      const totalItems = this.#domains.length + this.#services.length + this.#activeApps.length
+      const totalItems = this.#domains.length + this.#services.length
 
       if (buffer.length >= 6 && buffer[0] === 0x1b && buffer[1] === 0x5b && buffer[2] === 0x4d) {
         // Mouse wheel up
@@ -394,20 +387,12 @@ class Monitor {
                   targetIndex = clickedIndex - currentLine
                 }
                 currentLine += this.#domains.length
-                if (this.#services.length > 0 || this.#activeApps.length > 0) currentLine++
+                if (this.#services.length > 0) currentLine++
               }
 
               if (targetIndex === -1 && this.#services.length > 0) {
                 if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#services.length) {
                   targetIndex = this.#domains.length + (clickedIndex - currentLine)
-                }
-                currentLine += this.#services.length
-                if (this.#activeApps.length > 0) currentLine++
-              }
-
-              if (targetIndex === -1 && this.#activeApps.length > 0) {
-                if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#activeApps.length) {
-                  targetIndex = this.#domains.length + this.#services.length + (clickedIndex - currentLine)
                 }
               }
 
@@ -457,16 +442,10 @@ class Monitor {
       for (const line of lines) {
         const [name, cpu, mem] = line.split('|')
         if (name && cpu && mem) {
-          // Mem usage format is often "50MiB / 1GiB", we just want the first part
-          // Also strip decimals for cleaner UI
           let memUsage = mem.split('/')[0].trim()
           let cpuUsage = cpu.trim()
 
-          // Remove decimals from Mem (e.g. 50.5MiB -> 50MiB) and standardize units (MiB -> MB)
           memUsage = memUsage.replace(/(\d+)\.\d+([a-zA-Z]+)/, '$1$2').replace('iB', 'B')
-
-          // Remove decimals from CPU (e.g. 0.05% -> 0%) unless it is 0.00%
-          // Actually user requested no decimals for both
           cpuUsage = cpuUsage.replace(/(\d+)\.\d+%/, '$1%')
 
           if (cpuUsage.length > maxCpuLen) maxCpuLen = cpuUsage.length
@@ -482,7 +461,6 @@ class Monitor {
   #getSelectedItem() {
     const domainsCount = this.#domains.length
     const servicesCount = this.#services.length
-    const appsCount = this.#activeApps.length
 
     if (this.#selected < domainsCount) {
       const name = this.#domains[this.#selected]
@@ -491,11 +469,9 @@ class Monitor {
     } else if (this.#selected < domainsCount + servicesCount) {
       const index = this.#selected - domainsCount
       const service = this.#services[index]
-      return {type: 'service', name: service.name, container: null}
-    } else if (this.#selected < domainsCount + servicesCount + appsCount) {
-      const index = this.#selected - domainsCount - servicesCount
-      const name = this.#activeApps[index]
-      return {type: 'app', name, container: name}
+      if (service) {
+        return {type: 'service', name: service.name, container: service.name}
+      }
     }
     return null
   }
@@ -566,10 +542,8 @@ class Monitor {
     this.#printing = true
     this.#websites = Odac.core('Config').config.websites ?? {}
     this.#services = Odac.core('Config').config.services ?? []
-    this.#apps = Odac.core('Config').config.app ?? {}
 
     this.#domains = Object.keys(this.#websites)
-    this.#activeApps = Object.keys(this.#apps)
 
     this.#width = process.stdout.columns - 3
     this.#height = process.stdout.rows
@@ -593,11 +567,6 @@ class Monitor {
         result += ' ' + Odac.cli('Cli').color(title) + ' '
         result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
       }
-    } else if (this.#activeApps.length) {
-      result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
-      let title = Odac.cli('Cli').color(__('Apps'), null)
-      result += ' ' + Odac.cli('Cli').color(title) + ' '
-      result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
     } else {
       result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
     }
@@ -650,7 +619,7 @@ class Monitor {
     }
 
     // SERVICES SEPARATOR
-    if (this.#services.length > 0 && (this.#domains.length > 0 || this.#activeApps.length > 0)) {
+    if (this.#services.length > 0 && this.#domains.length > 0) {
       if (renderedLines < this.#height - 4) {
         result += Odac.cli('Cli').color(this.#domains.length > 0 ? '├' : '│', 'gray')
         result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
@@ -668,70 +637,23 @@ class Monitor {
     // SERVICES
     for (let i = 0; i < this.#services.length; i++) {
       if (renderedLines >= this.#height - 4) break
-      result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(this.#services[i].status ?? null, globalIndex == this.#selected)
-      result += Odac.cli('Cli').color(
-        Odac.cli('Cli').spacing(this.#services[i].name, c1 - 4),
-        globalIndex == this.#selected ? 'blue' : 'white',
-        globalIndex == this.#selected ? 'white' : null,
-        globalIndex == this.#selected ? 'bold' : null
-      )
-      result += Odac.cli('Cli').color('│', 'gray')
-
-      if (this.#logs.selected == globalIndex) {
-        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
-        result += this.#safeLog(logLine, this.#width - c1)
-      } else {
-        result += ' '.repeat(this.#width - c1)
-      }
-      result += Odac.cli('Cli').color('│\n', 'gray')
-      globalIndex++
-      renderedLines++
-    }
-
-    // APPS SEPARATOR
-    if (this.#activeApps.length > 0) {
-      if (renderedLines < this.#height - 4) {
-        const hasPrev = this.#domains.length > 0 || this.#services.length > 0
-        result += Odac.cli('Cli').color(hasPrev ? '├' : '│', 'gray')
-        result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
-        let title = Odac.cli('Cli').color(__('Apps'), null)
-        result += ' ' + Odac.cli('Cli').color(title) + ' '
-        result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-        if (hasPrev) {
-          result += Odac.cli('Cli').color('┤', 'gray')
-        } else {
-          result += Odac.cli('Cli').color('│', 'gray')
-        }
-        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
-        result += this.#safeLog(logLine, this.#width - c1)
-        result += Odac.cli('Cli').color('│\n', 'gray')
-        renderedLines++
-      }
-    }
-
-    // APPS
-    for (let i = 0; i < this.#activeApps.length; i++) {
-      if (renderedLines >= this.#height - 4) break
-
-      const appName = this.#activeApps[i]
-      const app = this.#apps[appName]
 
       let stats = ''
-      if (this.#stats[appName]) {
-        const s = this.#stats[appName]
+      const srvName = this.#services[i].name
+      if (this.#stats[srvName]) {
+        const s = this.#stats[srvName]
         stats = `[${s.mem.padEnd(this.#maxStatsLen.mem, ' ')}| ${s.cpu.padStart(this.#maxStatsLen.cpu, ' ')}]`
       }
 
       result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(app.status ?? null, globalIndex == this.#selected)
+      result += Odac.cli('Cli').icon(this.#services[i].status ?? null, globalIndex == this.#selected)
 
-      const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length)) // -5 for icon + padding
-      let displayText = appName.length > maxLen ? appName.substr(0, maxLen) : appName
-      displayText = displayText.padEnd(maxLen, ' ')
+      const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length))
+      let display = srvName.length > maxLen ? srvName.substr(0, maxLen) : srvName
+      display = display.padEnd(maxLen, ' ')
 
       result += Odac.cli('Cli').color(
-        displayText,
+        display,
         globalIndex == this.#selected ? 'blue' : 'white',
         globalIndex == this.#selected ? 'white' : null,
         globalIndex == this.#selected ? 'bold' : null
@@ -743,8 +665,12 @@ class Monitor {
 
       result += Odac.cli('Cli').color(' │', 'gray')
 
-      const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
-      result += this.#safeLog(logLine, this.#width - c1)
+      if (this.#logs.selected == globalIndex) {
+        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+        result += this.#safeLog(logLine, this.#width - c1)
+      } else {
+        result += ' '.repeat(this.#width - c1)
+      }
       result += Odac.cli('Cli').color('│\n', 'gray')
       globalIndex++
       renderedLines++
