@@ -201,17 +201,8 @@ class App {
     }
 
     let infoMsg = __('App %s installed successfully.', name)
-    // Append auto-generated passwords to the message
-    const generatedKeys = Object.keys(recipe.docker.environment || {}).filter(
-      k => typeof recipe.docker.environment[k] === 'object' && recipe.docker.environment[k].generate
-    )
-
-    if (generatedKeys.length > 0) {
-      infoMsg += '\n\n' + __('Generated Credentials:')
-      for (const key of generatedKeys) {
-        infoMsg += `\n  ${key}: ${env[key]}`
-      }
-    }
+    // Credentials are not logged to console for security
+    // They are available in the config file
 
     // Append ports
     if (ports.length > 0) {
