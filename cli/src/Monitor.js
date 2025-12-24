@@ -2,22 +2,25 @@ require('../../core/Odac.js')
 
 const fs = require('fs')
 const os = require('os')
+const {exec} = require('child_process')
 
 class Monitor {
   #current = ''
   #domains = []
   #height
-  #logs = {content: [], mtime: null, selected: null, watched: []}
+  #logs = {content: [], mtime: null, selected: null, watched: [], lastFetch: 0}
   #logging = false
   #modules = ['api', 'config', 'dns', 'hub', 'mail', 'server', 'service', 'ssl', 'subdomain', 'web', 'app']
   #printing = false
   #selected = 0
   #services = []
+  #maxStatsLen = {cpu: 0, mem: 0}
   #activeApps = []
   #watch = []
   #websites = {}
   #apps = {}
   #width
+  #stats = {}
 
   constructor() {
     process.stdout.write(process.platform === 'win32' ? `title Odac Debug\n` : `\x1b]2;Odac Debug\x1b\x5c`)
@@ -146,7 +149,7 @@ class Monitor {
     result += Odac.cli('Cli').color('┴', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┘\n', 'gray')
-    let shortcuts = '↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | Ctrl+C ' + __('Exit')
+    let shortcuts = 'Mouse | ↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | R ' + __('Restart') + ' | Ctrl+C ' + __('Exit')
     result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
     result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {
@@ -165,11 +168,22 @@ class Monitor {
 
     const domainsCount = this.#domains.length
     const servicesCount = this.#services.length
+    const appsCount = this.#activeApps.length
 
     if (this.#selected < domainsCount) {
-      file = os.homedir() + '/.odac/logs/' + this.#domains[this.#selected] + '.log'
+      const domain = this.#domains[this.#selected]
+      if (this.#websites[domain]?.container) {
+        this.#fetchDockerLogs(this.#websites[domain].container)
+        return
+      }
+      file = os.homedir() + '/.odac/logs/' + domain + '.log'
     } else if (this.#selected < domainsCount + servicesCount) {
       file = os.homedir() + '/.odac/logs/' + this.#services[this.#selected - domainsCount].name + '.log'
+    } else if (this.#selected < domainsCount + servicesCount + appsCount) {
+      // Apps - fetch from docker
+      const appName = this.#activeApps[this.#selected - domainsCount - servicesCount]
+      this.#fetchDockerLogs(appName)
+      return
     } else {
       this.#logging = false
       return
@@ -198,7 +212,7 @@ class Monitor {
         }
         return line
       })
-      .slice(-this.#height + 4)
+      .slice(-(this.#height - 4))
     this.#logs.mtime = mtime
     this.#logging = false
   }
@@ -254,16 +268,86 @@ class Monitor {
         }
         return line
       })
-      .slice(-this.#height + 4)
+      .slice(-(this.#height - 4))
 
     this.#logs.mtime = mtime
     this.#logs.watched = [...this.#watch]
     this.#logging = false
   }
 
+  #fetchDockerLogs(containerName) {
+    // Check if we are restarting this container
+    if (this.#logs.restarting && this.#logs.restarting[containerName]) {
+      this.#logs.content = [this.#logs.restarting[containerName]]
+      this.#logging = false
+      return
+    }
+
+    // Throttle fetching docker logs to avoid flicker and heavy load
+    const now = Date.now()
+    if (this.#logs.selected === this.#selected && now - this.#logs.lastFetch < 1000) {
+      // Use cached content if less than 1sec
+      this.#logging = false
+      return
+    }
+
+    const cmd = `docker logs -t --tail ${this.#height} ${containerName} 2>&1`
+    exec(cmd, (error, stdout) => {
+      if (error) {
+        this.#logs.content = [Odac.cli('Cli').color('Error fetching logs: ' + error.message, 'red')]
+      } else {
+        this.#logs.content = stdout
+          .replace(/\r\n/g, '\n')
+          .trim()
+          .split('\n')
+          .filter(l => l)
+          .map(line => {
+            // Docker -t output format: 2024-12-24T11:22:33.444444444Z Content...
+            const firstSpace = line.indexOf(' ')
+            if (firstSpace === -1) return line
+
+            const rawDate = line.substring(0, firstSpace)
+            let content = line.substring(firstSpace + 1)
+
+            // Try parse date
+            const date = new Date(rawDate)
+            let formattedDate = ''
+            if (!isNaN(date.getTime())) {
+              formattedDate = Odac.cli('Cli').formatDate(date)
+            } else {
+              // If not a valid date, maybe it wasn't a timestamped line (shouldn't happen with -t)
+              return line
+            }
+
+            let color = 'green'
+
+            // Heuristic to detect error logs if not explicitly marked
+            if (content.includes('[ERR]') || content.toLowerCase().includes('error')) {
+              color = 'red'
+            }
+
+            // Clean up [LOG]/[ERR] tags if present to avoid duplication or keep them styled
+            // The previous file based parser relied on [LOG][timestamp] format.
+            // Here we have real timestamps. Let's format nicely.
+
+            return Odac.cli('Cli').color(`[${formattedDate}]`, color, 'bold') + ' ' + content
+          })
+          .slice(-(this.#height - 4))
+        this.#logs.lastFetch = now
+      }
+      this.#logging = false
+      this.#monitor()
+    })
+  }
+
   monit() {
     this.#monitor()
     setInterval(() => this.#monitor(), 250)
+
+    // Update stats every 2 seconds
+    setInterval(() => this.#fetchStats(), 2000)
+    // Initial fetch
+    this.#fetchStats()
 
     // Mouse event handler
     process.stdout.write('\x1b[?25l')
@@ -336,6 +420,14 @@ class Monitor {
         }
       }
 
+      // R (Restart)
+      if (buffer.length === 1 && (buffer[0] === 114 || buffer[0] === 82)) {
+        const item = this.#getSelectedItem()
+        if (item && item.container) {
+          this.#restartContainer(item.container)
+        }
+      }
+
       // Ctrl+C
       if (buffer.length === 1 && buffer[0] === 3) {
         process.stdout.write('\x1b[?25h')
@@ -352,6 +444,121 @@ class Monitor {
       process.stdout.write('\x1b[?25l')
       process.stdout.write('\x1b[?1000h')
     })
+  }
+
+  #fetchStats() {
+    exec('docker stats --no-stream --format "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}"', (error, stdout) => {
+      if (error) return
+      const lines = stdout.trim().split('\n')
+
+      let maxCpuLen = 0
+      let maxMemLen = 0
+
+      for (const line of lines) {
+        const [name, cpu, mem] = line.split('|')
+        if (name && cpu && mem) {
+          // Mem usage format is often "50MiB / 1GiB", we just want the first part
+          // Also strip decimals for cleaner UI
+          let memUsage = mem.split('/')[0].trim()
+          let cpuUsage = cpu.trim()
+
+          // Remove decimals from Mem (e.g. 50.5MiB -> 50MiB) and standardize units (MiB -> MB)
+          memUsage = memUsage.replace(/(\d+)\.\d+([a-zA-Z]+)/, '$1$2').replace('iB', 'B')
+
+          // Remove decimals from CPU (e.g. 0.05% -> 0%) unless it is 0.00%
+          // Actually user requested no decimals for both
+          cpuUsage = cpuUsage.replace(/(\d+)\.\d+%/, '$1%')
+
+          if (cpuUsage.length > maxCpuLen) maxCpuLen = cpuUsage.length
+          if (memUsage.length > maxMemLen) maxMemLen = memUsage.length
+
+          this.#stats[name] = {cpu: cpuUsage, mem: memUsage}
+        }
+      }
+      this.#maxStatsLen = {cpu: maxCpuLen, mem: maxMemLen}
+    })
+  }
+
+  #getSelectedItem() {
+    const domainsCount = this.#domains.length
+    const servicesCount = this.#services.length
+    const appsCount = this.#activeApps.length
+
+    if (this.#selected < domainsCount) {
+      const name = this.#domains[this.#selected]
+      const container = this.#websites[name]?.container || name
+      return {type: 'website', name, container}
+    } else if (this.#selected < domainsCount + servicesCount) {
+      const index = this.#selected - domainsCount
+      const service = this.#services[index]
+      return {type: 'service', name: service.name, container: null}
+    } else if (this.#selected < domainsCount + servicesCount + appsCount) {
+      const index = this.#selected - domainsCount - servicesCount
+      const name = this.#activeApps[index]
+      return {type: 'app', name, container: name}
+    }
+    return null
+  }
+
+  #restartContainer(name) {
+    if (!this.#logs.restarting) this.#logs.restarting = {}
+    this.#logs.restarting[name] = Odac.cli('Cli').color(`Restarting ${name}...`, 'yellow')
+    this.#monitor()
+
+    exec(`docker restart ${name}`, err => {
+      if (err) {
+        this.#logs.restarting[name] = Odac.cli('Cli').color(`Error restarting ${name}: ${err.message}`, 'red')
+      } else {
+        this.#logs.restarting[name] = Odac.cli('Cli').color(`Successfully restarted ${name}`, 'green')
+      }
+      this.#monitor()
+
+      setTimeout(() => {
+        if (this.#logs.restarting && this.#logs.restarting[name]) {
+          delete this.#logs.restarting[name]
+          this.#monitor()
+        }
+      }, 2000)
+    })
+  }
+
+  #safeLog(log, maxWidth) {
+    if (!log) return ' '.repeat(maxWidth)
+    let content = log.replace(/\r/g, '').replace(/\t/g, '  ')
+
+    const ansiRegex =
+      /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]|[\u001b\u009b]].+?(?:[\u0007]|[\u001b\u009b]\\)/g // eslint-disable-line no-control-regex
+
+    let currentLen = 0
+    let lastIterIndex = 0
+    let result = ''
+    let match
+
+    while ((match = ansiRegex.exec(content)) !== null) {
+      const textBefore = content.substring(lastIterIndex, match.index)
+      if (currentLen + textBefore.length > maxWidth) {
+        const remaining = maxWidth - currentLen
+        result += textBefore.substring(0, remaining)
+        return result + '\x1b[0m'
+      }
+      result += textBefore
+      currentLen += textBefore.length
+
+      result += match[0]
+      lastIterIndex = ansiRegex.lastIndex
+    }
+
+    const tail = content.substring(lastIterIndex)
+    if (currentLen + tail.length > maxWidth) {
+      const remaining = maxWidth - currentLen
+      result += tail.substring(0, remaining)
+      return result + '\x1b[0m'
+    }
+
+    result += tail
+    currentLen += tail.length
+
+    return result + ' '.repeat(Math.max(0, maxWidth - currentLen))
   }
 
   #monitor() {
@@ -404,22 +611,38 @@ class Monitor {
 
     // WEBSITES
     for (let i = 0; i < this.#domains.length; i++) {
-      if (renderedLines >= this.#height - 3) break
+      if (renderedLines >= this.#height - 4) break
+
+      let stats = ''
+      const containerName = this.#websites[this.#domains[i]].container || this.#domains[i]
+      if (this.#stats[containerName]) {
+        const s = this.#stats[containerName]
+        stats = `[${s.mem.padEnd(this.#maxStatsLen.mem, ' ')}| ${s.cpu.padStart(this.#maxStatsLen.cpu, ' ')}]`
+      }
+
       result += Odac.cli('Cli').color('│', 'gray')
       result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, globalIndex == this.#selected)
+
+      const name = this.#domains[i] || ''
+      const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length)) // -5 for icon + padding
+      let display = name.length > maxLen ? name.substr(0, maxLen) : name
+      display = display.padEnd(maxLen, ' ')
+
       result += Odac.cli('Cli').color(
-        Odac.cli('Cli').spacing(this.#domains[i] ? this.#domains[i] : '', c1 - 3),
+        display,
         globalIndex == this.#selected ? 'blue' : 'white',
         globalIndex == this.#selected ? 'white' : null,
         globalIndex == this.#selected ? 'bold' : null
       )
-      result += Odac.cli('Cli').color('│', 'gray')
 
-      if (this.#logs.selected == globalIndex) {
-        result += Odac.cli('Cli').spacing(this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' ', this.#width - c1)
-      } else {
-        result += ' '.repeat(this.#width - c1)
-      }
+      const statsColor = globalIndex == this.#selected ? 'blue' : 'cyan'
+      if (stats) result += Odac.cli('Cli').color(stats, statsColor, globalIndex == this.#selected ? 'white' : null)
+      result += Odac.cli('Cli').color(' ', 'white', globalIndex == this.#selected ? 'white' : null)
+
+      result += Odac.cli('Cli').color(' │', 'gray')
+
+      const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+      result += this.#safeLog(logLine, this.#width - c1)
       result += Odac.cli('Cli').color('│\n', 'gray')
 
       globalIndex++
@@ -428,14 +651,15 @@ class Monitor {
 
     // SERVICES SEPARATOR
     if (this.#services.length > 0 && (this.#domains.length > 0 || this.#activeApps.length > 0)) {
-      if (renderedLines < this.#height - 3) {
+      if (renderedLines < this.#height - 4) {
         result += Odac.cli('Cli').color(this.#domains.length > 0 ? '├' : '│', 'gray')
         result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
         let title = Odac.cli('Cli').color(__('Services'), null)
         result += ' ' + Odac.cli('Cli').color(title) + ' '
         result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
         result += Odac.cli('Cli').color(this.#domains.length > 0 ? '┤' : '│', 'gray')
-        result += ' '.repeat(this.#width - c1)
+        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+        result += this.#safeLog(logLine, this.#width - c1)
         result += Odac.cli('Cli').color('│\n', 'gray')
         renderedLines++
       }
@@ -443,11 +667,11 @@ class Monitor {
 
     // SERVICES
     for (let i = 0; i < this.#services.length; i++) {
-      if (renderedLines >= this.#height - 3) break
+      if (renderedLines >= this.#height - 4) break
       result += Odac.cli('Cli').color('│', 'gray')
       result += Odac.cli('Cli').icon(this.#services[i].status ?? null, globalIndex == this.#selected)
       result += Odac.cli('Cli').color(
-        Odac.cli('Cli').spacing(this.#services[i].name, c1 - 3),
+        Odac.cli('Cli').spacing(this.#services[i].name, c1 - 4),
         globalIndex == this.#selected ? 'blue' : 'white',
         globalIndex == this.#selected ? 'white' : null,
         globalIndex == this.#selected ? 'bold' : null
@@ -455,7 +679,8 @@ class Monitor {
       result += Odac.cli('Cli').color('│', 'gray')
 
       if (this.#logs.selected == globalIndex) {
-        result += Odac.cli('Cli').spacing(this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' ', this.#width - c1)
+        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+        result += this.#safeLog(logLine, this.#width - c1)
       } else {
         result += ' '.repeat(this.#width - c1)
       }
@@ -466,7 +691,7 @@ class Monitor {
 
     // APPS SEPARATOR
     if (this.#activeApps.length > 0) {
-      if (renderedLines < this.#height - 3) {
+      if (renderedLines < this.#height - 4) {
         const hasPrev = this.#domains.length > 0 || this.#services.length > 0
         result += Odac.cli('Cli').color(hasPrev ? '├' : '│', 'gray')
         result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
@@ -478,7 +703,8 @@ class Monitor {
         } else {
           result += Odac.cli('Cli').color('│', 'gray')
         }
-        result += ' '.repeat(this.#width - c1)
+        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+        result += this.#safeLog(logLine, this.#width - c1)
         result += Odac.cli('Cli').color('│\n', 'gray')
         renderedLines++
       }
@@ -486,36 +712,53 @@ class Monitor {
 
     // APPS
     for (let i = 0; i < this.#activeApps.length; i++) {
-      if (renderedLines >= this.#height - 3) break
+      if (renderedLines >= this.#height - 4) break
+
       const appName = this.#activeApps[i]
       const app = this.#apps[appName]
 
+      let stats = ''
+      if (this.#stats[appName]) {
+        const s = this.#stats[appName]
+        stats = `[${s.mem.padEnd(this.#maxStatsLen.mem, ' ')}| ${s.cpu.padStart(this.#maxStatsLen.cpu, ' ')}]`
+      }
+
       result += Odac.cli('Cli').color('│', 'gray')
       result += Odac.cli('Cli').icon(app.status ?? null, globalIndex == this.#selected)
+
+      const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length)) // -5 for icon + padding
+      let displayText = appName.length > maxLen ? appName.substr(0, maxLen) : appName
+      displayText = displayText.padEnd(maxLen, ' ')
+
       result += Odac.cli('Cli').color(
-        Odac.cli('Cli').spacing(appName, c1 - 3),
+        displayText,
         globalIndex == this.#selected ? 'blue' : 'white',
         globalIndex == this.#selected ? 'white' : null,
         globalIndex == this.#selected ? 'bold' : null
       )
-      result += Odac.cli('Cli').color('│', 'gray')
 
-      if (this.#logs.selected == globalIndex) {
-        result += Odac.cli('Cli').spacing(this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' ', this.#width - c1)
-      } else {
-        result += ' '.repeat(this.#width - c1)
-      }
+      const statsColor = globalIndex == this.#selected ? 'blue' : 'cyan'
+      if (stats) result += Odac.cli('Cli').color(stats, statsColor, globalIndex == this.#selected ? 'white' : null)
+      result += Odac.cli('Cli').color(' ', 'white', globalIndex == this.#selected ? 'white' : null)
+
+      result += Odac.cli('Cli').color(' │', 'gray')
+
+      const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+      result += this.#safeLog(logLine, this.#width - c1)
       result += Odac.cli('Cli').color('│\n', 'gray')
       globalIndex++
       renderedLines++
     }
 
     // FILL EMPTY LINES
-    while (renderedLines < this.#height - 3) {
+    while (renderedLines < this.#height - 4) {
       result += Odac.cli('Cli').color('│', 'gray')
       result += ' '.repeat(c1)
       result += Odac.cli('Cli').color('│', 'gray')
-      result += ' '.repeat(this.#width - c1)
+
+      const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+      result += this.#safeLog(logLine, this.#width - c1)
+
       result += Odac.cli('Cli').color('│\n', 'gray')
       renderedLines++
     }
@@ -525,7 +768,7 @@ class Monitor {
     result += Odac.cli('Cli').color('┴', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┘\n', 'gray')
-    let shortcuts = '↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | Ctrl+C ' + __('Exit')
+    let shortcuts = 'Mouse | ↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | R ' + __('Restart') + ' | Ctrl+C ' + __('Exit')
     result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
     result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
     if (result !== this.#current) {
