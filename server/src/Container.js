@@ -165,7 +165,7 @@ class Container {
    * @param {number} port - External port (Host Port)
    * @param {string} volumePath - Host project directory
    */
-  async run(name, port, volumePath, extraBinds = []) {
+  async run(name, port, volumePath, extraBinds = [], options = {}) {
     if (!this.available) return false
 
     await this.remove(name)
@@ -192,7 +192,7 @@ class Container {
           RestartPolicy: {Name: 'unless-stopped'},
           Binds: bindings,
           PortBindings: {
-            [`${internalPort}/tcp`]: [{HostPort: String(port), HostIp: '127.0.0.1'}]
+            [`${internalPort}/tcp`]: [{HostPort: String(port), HostIp: options && options.ip ? options.ip : '127.0.0.1'}]
           }
         },
         ExposedPorts: {
