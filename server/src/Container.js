@@ -237,7 +237,8 @@ class Container {
     if (options.ports) {
       for (const port of options.ports) {
         const portKey = `${port.container}/tcp`
-        portBindings[portKey] = [{HostPort: String(port.host), HostIp: '127.0.0.1'}]
+        const bindIp = port.ip || '127.0.0.1'
+        portBindings[portKey] = [{HostPort: String(port.host), HostIp: bindIp}]
         exposedPorts[portKey] = {}
       }
     }
