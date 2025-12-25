@@ -3,6 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const net = require('net')
 const nodeCrypto = require('crypto')
+const childProcess = require('child_process')
 
 class Service {
   #services = []
@@ -70,11 +71,21 @@ class Service {
     this.#services = Odac.core('Config').config.services ?? []
     for (const service of this.#services) {
       if (service.active) {
-        // If it's a script or app container, check if it's running in Docker
-        const isRunning = await Odac.server('Container').isRunning(service.name)
+        // If it's a script or app container, check if it's running
+        let isRunning = false
+        if (service.type === 'container' || Odac.server('Container').available) {
+          isRunning = await Odac.server('Container').isRunning(service.name)
+        } else if (service.type === 'script' && service.pid) {
+          try {
+            process.kill(service.pid, 0)
+            isRunning = true
+          } catch {
+            isRunning = false
+          }
+        }
 
         if (!isRunning && service.status === 'running') {
-          log('Service %s is not running in Docker. Restarting...', service.name)
+          log('Service %s is not running. Restarting...', service.name)
           this.#run(service.id)
         } else if (!isRunning && service.status !== 'stopped' && service.status !== 'errored') {
           // Initial start or recovery
@@ -135,6 +146,57 @@ class Service {
     const filename = path.basename(filePath)
     const ext = path.extname(filename)
 
+    // Bare-metal execution if Container is not available
+    if (!Odac.server('Container').available) {
+      let cmd = 'node'
+      let args = [filename]
+
+      if (ext === '.py') {
+        cmd = 'python3'
+        args = ['-u', filename]
+      } else if (ext === '.php') {
+        cmd = 'php'
+        args = [filename]
+      } else if (ext === '.rb') {
+        cmd = 'ruby'
+        args = [filename]
+      } else if (ext === '.sh') {
+        cmd = 'sh'
+        args = [filename]
+      }
+
+      log(`Spawning local process for ${service.name}: ${cmd} ${args.join(' ')}`)
+
+      const child = childProcess.spawn(cmd, args, {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {...process.env, ODAC_SERVICE: 'true'}
+      })
+
+      // Update service with PID
+      this.#set(service.id, {pid: child.pid})
+
+      child.stdout.on('data', data => {
+        log(`[${service.name}] ${data.toString().trim()}`)
+      })
+
+      child.stderr.on('data', data => {
+        error(`[${service.name}] ${data.toString().trim()}`)
+      })
+
+      child.on('exit', (code, signal) => {
+        log(`Service ${service.name} exited with code ${code} signal ${signal}`)
+        this.#set(service.id, {status: 'stopped', pid: null, active: false})
+      })
+
+      child.on('error', err => {
+        error(`Failed to start local service ${service.name}: ${err.message}`)
+        this.#set(service.id, {status: 'errored', pid: null})
+      })
+
+      return
+    }
+
     let image = 'node:lts-alpine'
     let cmd = ['node', filename]
 
@@ -164,6 +226,9 @@ class Service {
   }
 
   async #runContainer(service) {
+    if (!Odac.server('Container').available) {
+      throw new Error('Docker is not available via Container service.')
+    }
     // For third-party apps like mysql, redis
     await Odac.server('Container').runApp(service.name, {
       image: service.image,
@@ -323,7 +388,15 @@ class Service {
   async stop(id) {
     let service = this.#get(id)
     if (service) {
-      await Odac.server('Container').stop(service.name)
+      if (service.type === 'container' || (Odac.server('Container').available && !service.pid)) {
+        await Odac.server('Container').stop(service.name)
+      } else if (service.pid) {
+        try {
+          process.kill(service.pid)
+        } catch {
+          /* ignore if already dead */
+        }
+      }
       this.#set(id, {status: 'stopped', active: false, pid: null})
     } else {
       log(__('Service %s not found.', id))
