@@ -424,6 +424,14 @@ class Mail {
     let serv = new SMTPServer(options)
     serv.listen(25)
     serv.on('error', err => log('SMTP Server Error: ', err))
+    // Handle socket errors to prevent crash
+    if (serv.server) {
+      serv.server.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('SMTP Socket Error:', err)
+        })
+      })
+    }
     const imap = new server(options)
     imap.listen(143)
     options.SNICallback = (hostname, callback) => {
@@ -460,6 +468,14 @@ class Mail {
     this.#server_smtp = new SMTPServer(options)
     this.#server_smtp.listen(465)
     this.#server_smtp.on('error', err => error('SMTP Server Error: ', err))
+    // Handle socket errors to prevent crash
+    if (this.#server_smtp.server) {
+      this.#server_smtp.server.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('SMTP Secure Socket Error:', err)
+        })
+      })
+    }
     const imap_sec = new server(options)
     imap_sec.listen(993)
   }
