@@ -185,7 +185,11 @@ class Container {
 
       const container = await this.#docker.createContainer({
         Image: 'node:lts-alpine',
-        Cmd: ['sh', '-c', 'npm install && node ./node_modules/odac/index.js'],
+        Cmd: [
+          'sh',
+          '-c',
+          'if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then npm install; fi && node ./node_modules/odac/index.js'
+        ],
         name: name,
         WorkingDir: '/app',
         HostConfig: {
