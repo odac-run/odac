@@ -172,7 +172,7 @@ class smtp {
     let lineLength = 0
 
     for (const byte of buffer) {
-      if ((byte >= 33 && byte <= 60) || (byte >= 62 && byte <= 126) || byte === 9 || byte === 32) {
+      if ((byte >= 33 && byte <= 45) || (byte >= 47 && byte <= 60) || (byte >= 62 && byte <= 126) || byte === 9 || byte === 32) {
         if (lineLength + 1 > 75) {
           result += '=\r\n'
           lineLength = 0
