@@ -199,6 +199,13 @@ class Container {
       bindings.push(...extraBinds)
     }
 
+    const envArr = []
+    if (options && options.env) {
+      for (const [key, val] of Object.entries(options.env)) {
+        envArr.push(`${key}=${val}`)
+      }
+    }
+
     try {
       const networkName = 'odac-network'
       await this.#ensureNetwork(networkName)
@@ -215,13 +222,15 @@ class Container {
         ],
         name: name,
         WorkingDir: '/app',
+        Env: envArr,
         HostConfig: {
           RestartPolicy: {Name: 'unless-stopped'},
           Binds: bindings,
           PortBindings: {
             [`${internalPort}/tcp`]: [{HostPort: String(port), HostIp: options && options.ip ? options.ip : '127.0.0.1'}]
           },
-          NetworkMode: networkName
+          NetworkMode: networkName,
+          ExtraHosts: ['host.docker.internal:host-gateway']
         },
         ExposedPorts: {
           [`${internalPort}/tcp`]: {}
@@ -367,6 +376,27 @@ class Container {
       return data.State.Running
     } catch {
       return false
+    }
+  }
+
+  /**
+   * Returns the container IP address
+   * @param {string} name
+   * @returns {Promise<string|null>}
+   */
+  async getIP(name) {
+    if (!this.available) return null
+    try {
+      const container = this.#docker.getContainer(name)
+      const data = await container.inspect()
+      // Try to get IP from odac-network first, then fallback to first available network
+      const networks = data.NetworkSettings.Networks
+      if (networks['odac-network']) {
+        return networks['odac-network'].IPAddress
+      }
+      return Object.values(networks)[0]?.IPAddress || null
+    } catch {
+      return null
     }
   }
 

@@ -23,6 +23,15 @@ class Api {
     'web.list': (...args) => Odac.server('Web').list(...args)
   }
   #connections = {}
+  #allowed = new Set()
+
+  allow(ip) {
+    this.#allowed.add(ip)
+  }
+
+  disallow(ip) {
+    this.#allowed.delete(ip)
+  }
 
   init() {
     if (!Odac.core('Config').config.api) Odac.core('Config').config.api = {}
@@ -32,8 +41,12 @@ class Api {
     const server = net.createServer()
 
     server.on('connection', socket => {
-      // Only allow localhost
-      if (socket.remoteAddress !== '::ffff:127.0.0.1' && socket.remoteAddress !== '127.0.0.1') {
+      // Allow localhost and explicitly allowed IPs (e.g. containers)
+      const ip = socket.remoteAddress.replace(/^.*:/, '') // handle ::ffff: prefix
+      const isLocal = ip === '127.0.0.1' || ip === '::1'
+
+      if (!isLocal && !this.#allowed.has(ip)) {
+        Odac.core('Log').log('Api', `Blocking connection from unauthorized IP: ${ip}`)
         socket.destroy()
         return
       }
@@ -74,7 +87,7 @@ class Api {
       })
     })
 
-    server.listen(1453, '127.0.0.1')
+    server.listen(1453, '0.0.0.0')
   }
 
   send(id, process, status, message) {
