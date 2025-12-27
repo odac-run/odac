@@ -493,6 +493,7 @@ class Web {
 
         // Whitelist container IP for API access
         const containerIP = await Odac.server('Container').getIP(domain)
+        Odac.core('Config').config.websites[domain].container = domain
         if (containerIP) {
           Odac.server('Api').allow(containerIP)
           Odac.core('Config').config.websites[domain].containerIP = containerIP
