@@ -459,39 +459,32 @@ class Web {
     let isDocker = false
 
     if (Odac.server('Container').available) {
-      if (await Odac.server('Container').isRunning(domain)) {
-        // Already running, just attach logs
+      // Run via Docker
+      const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
+      const env = {
+        ODAC_API_HOST: 'host.docker.internal',
+        ODAC_API_PORT: 1453,
+        ODAC_API_KEY: Odac.core('Config').config.api.auth
+      }
+      const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
+        env
+      })
+      if (success) {
         isDocker = true
         child = await Odac.server('Container').logs(domain)
-        log('Web container re-attached for ' + domain)
+
+        // Whitelist container IP for API access
+        const containerIP = await Odac.server('Container').getIP(domain)
+        if (containerIP) {
+          Odac.server('Api').allow(containerIP)
+          Odac.core('Config').config.websites[domain].containerIP = containerIP
+          log(`Whitelisted API access for ${domain} (${containerIP})`)
+        }
+
+        log('Web container started for ' + domain)
       } else {
-        // Run via Docker
-        const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
-        const env = {
-          ODAC_API_HOST: 'host.docker.internal',
-          ODAC_API_PORT: 1453,
-          ODAC_API_KEY: Odac.core('Config').config.api.auth
-        }
-        const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
-          env
-        })
-        if (success) {
-          isDocker = true
-          child = await Odac.server('Container').logs(domain)
-
-          // Whitelist container IP for API access
-          const containerIP = await Odac.server('Container').getIP(domain)
-          if (containerIP) {
-            Odac.server('Api').allow(containerIP)
-            Odac.core('Config').config.websites[domain].containerIP = containerIP
-            log(`Whitelisted API access for ${domain} (${containerIP})`)
-          }
-
-          log('Web container started for ' + domain)
-        } else {
-          error('Failed to start container for ' + domain)
-          return
-        }
+        error('Failed to start container for ' + domain)
+        return
       }
     } else {
       // Run Local
