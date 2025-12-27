@@ -25,6 +25,26 @@ class Container {
     }
   }
 
+  /**
+   * Ensures that the specified docker network exists
+   * @param {string} networkName
+   */
+  async #ensureNetwork(networkName) {
+    try {
+      const networks = await this.#docker.listNetworks()
+      const found = networks.find(n => n.Name === networkName)
+      if (!found) {
+        log(`Creating network ${networkName}...`)
+        await this.#docker.createNetwork({
+          Name: networkName,
+          Driver: 'bridge'
+        })
+      }
+    } catch (err) {
+      error(`Failed to ensure network ${networkName}: ${err.message}`)
+    }
+  }
+
   get available() {
     return Odac.core('Config').config.container.available ?? false
   }
@@ -180,6 +200,9 @@ class Container {
     }
 
     try {
+      const networkName = 'odac-network'
+      await this.#ensureNetwork(networkName)
+
       log(`Starting container for ${name}...`)
       await this.#ensureImage('node:lts-alpine')
 
@@ -197,7 +220,8 @@ class Container {
           Binds: bindings,
           PortBindings: {
             [`${internalPort}/tcp`]: [{HostPort: String(port), HostIp: options && options.ip ? options.ip : '127.0.0.1'}]
-          }
+          },
+          NetworkMode: networkName
         },
         ExposedPorts: {
           [`${internalPort}/tcp`]: {}
@@ -255,6 +279,9 @@ class Container {
     }
 
     try {
+      const networkName = 'odac-network'
+      await this.#ensureNetwork(networkName)
+
       log(`Starting app container ${name} (${options.image})...`)
       await this.#ensureImage(options.image)
 
@@ -265,7 +292,8 @@ class Container {
         HostConfig: {
           RestartPolicy: {Name: 'unless-stopped'},
           Binds: bindings,
-          PortBindings: portBindings
+          PortBindings: portBindings,
+          NetworkMode: networkName
         },
         ExposedPorts: exposedPorts
       }

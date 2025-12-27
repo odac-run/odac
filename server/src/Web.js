@@ -213,7 +213,7 @@ class Web {
   }
 
   index(req, res) {
-    res.write('Odac Server')
+    res.write('ODAC Server')
     res.end()
   }
 
