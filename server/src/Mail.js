@@ -128,6 +128,7 @@ class Mail {
     let publicKeyPem = forge.pki.publicKeyToPem(keys.publicKey)
     if (!fs.existsSync(os.homedir() + '/.odac/cert/dkim')) fs.mkdirSync(os.homedir() + '/.odac/cert/dkim', {recursive: true})
     fs.writeFileSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.key', privateKeyPem)
+    fs.chmodSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.key', 0o600)
     fs.writeFileSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.pub', publicKeyPem)
     publicKeyPem = publicKeyPem
       .replace('-----BEGIN PUBLIC KEY-----', '')

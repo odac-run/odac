@@ -226,6 +226,8 @@ class smtp {
 
     if (connection && connection.socket.readyState === 'open') {
       connection.lastUsed = Date.now()
+      // Remove default error listener added when pooling
+      connection.socket.removeAllListeners('error')
       log('Connection Pool', `Reusing connection to ${key}`)
       return connection.socket
     }
@@ -250,6 +252,22 @@ class smtp {
       }
       this.connectionPool.delete(oldestKey)
     }
+
+    // Clean up listeners before pooling to prevent memory leaks
+    socket.removeAllListeners('timeout')
+    socket.removeAllListeners('data')
+    socket.removeAllListeners('error')
+
+    // Add a default error listener to catch background errors while allowed in pool
+    socket.on('error', err => {
+      log('Connection Pool', `Background socket error for ${key}: ${err.message}`)
+      this.connectionPool.delete(key)
+      try {
+        socket.destroy()
+      } catch {
+        // Ignore cleanup errors
+      }
+    })
 
     this.connectionPool.set(key, {
       socket: socket,

@@ -55,13 +55,6 @@ class Container {
    */
   #resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) return localPath
-
-    // Handle .odac paths to parent directory if in ODAC_DEV mode
-    if (process.env.ODAC_DEV === 'true' && localPath.includes('.odac/')) {
-      const relPath = localPath.substring(localPath.indexOf('.odac/'))
-      return path.join(path.dirname(process.env.ODAC_HOST_ROOT), relPath)
-    }
-
     if (localPath.startsWith('/app')) {
       return path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
     }
@@ -141,13 +134,12 @@ class Container {
    * @param {string} command - Command to execute
    */
   async execInContainer(name, command) {
-    if (!this.available) return false
+    if (!this.available) throw new Error('Docker not available')
 
     try {
       const container = this.#docker.getContainer(name)
       if (!(await this.isRunning(name))) {
-        error(`Container ${name} is not running`)
-        return false
+        throw new Error(`Container ${name} is not running`)
       }
 
       // Create exec instance
@@ -160,22 +152,41 @@ class Container {
       // Start exec and stream output
       const stream = await exec.start({})
 
-      // Dockerode returns a stream which might be multiplexed (header+payload)
-      // For simplicity in this context, we just pipe it to process stdout/stderr
-      // In a robust implementation, we should demux it
-      container.modem.demuxStream(stream, process.stdout, process.stderr)
+      return new Promise((resolve, reject) => {
+        let output = ''
+        let errorOutput = ''
 
-      // Wait for command completion
-      return new Promise(resolve => {
-        stream.on('end', () => resolve(true))
-        stream.on('error', err => {
-          error(`Exec stream error: ${err.message}`)
-          resolve(false)
+        container.modem.demuxStream(
+          stream,
+          {
+            write: chunk => {
+              output += chunk.toString('utf8')
+            }
+          },
+          {
+            write: chunk => {
+              errorOutput += chunk.toString('utf8')
+            }
+          }
+        )
+
+        stream.on('end', async () => {
+          try {
+            const data = await exec.inspect()
+            if (data.ExitCode !== 0) {
+              reject(new Error(`Command failed (Exit Code ${data.ExitCode}): ${errorOutput || output}`))
+            } else {
+              resolve(output)
+            }
+          } catch (e) {
+            reject(e)
+          }
         })
+
+        stream.on('error', reject)
       })
     } catch (err) {
-      error(`Failed to exec command in ${name}: ${err.message}`)
-      return false
+      throw new Error(`Failed to exec command in ${name}: ${err.message}`)
     }
   }
 
@@ -194,6 +205,13 @@ class Container {
     const hostPath = this.#resolveHostPath(volumePath)
 
     const bindings = [`${hostPath}:/app`]
+
+    // Mount API socket directory for container communication (bypasses network issues)
+    const socketDir = Odac.server('Api').hostSocketDir
+    if (socketDir) {
+      const hostSocketDir = this.#resolveHostPath(socketDir)
+      bindings.push(`${hostSocketDir}:/run/odac:ro`)
+    }
 
     if (extraBinds && Array.isArray(extraBinds)) {
       bindings.push(...extraBinds)
@@ -218,7 +236,7 @@ class Container {
         Cmd: [
           'sh',
           '-c',
-          'if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then npm install; fi && node ./node_modules/odac/index.js'
+          'if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then npm install; fi; if [ ! -d route ]; then while [ ! -d route ]; do node ./node_modules/odac/index.js; echo "Waiting for project init..."; sleep 5; done; fi; exec node ./node_modules/odac/index.js'
         ],
         name: name,
         WorkingDir: '/app',

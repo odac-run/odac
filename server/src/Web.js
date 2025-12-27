@@ -147,13 +147,30 @@ class Web {
       progress('container', 'progress', __('Starting container for %s...', domain))
       await this.start(domain)
 
-      // Wait for container to be ready (giving it some time for npm install)
-      // Note: In a production system we should poll for readiness
-      await new Promise(resolve => setTimeout(resolve, 5000))
+      // Wait for odac to be installed (poll for binary existence)
+      // npm install runs at container startup, we need to wait for it to finish
+      progress('setup', 'progress', __('Waiting for dependencies installation...'))
+      let installed = false
+      for (let i = 0; i < 60; i++) {
+        // Max 120 seconds
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        try {
+          // Check if odac bin exists by trying to get version
+          await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac --version')
+          installed = true
+          break
+        } catch {
+          // Ignore error, probably not installed yet or container not ready
+        }
+      }
 
-      // Run odac init inside the running container
-      progress('setup', 'progress', __('Running initial setup for %s...', domain))
-      await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
+      if (installed) {
+        progress('setup', 'progress', __('Running initial setup for %s...', domain))
+        await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
+        progress('setup', 'success', __('Initial setup completed.'))
+      } else {
+        progress('setup', 'error', __('Dependency installation timed out. Please check container logs.'))
+      }
       progress('setup', 'success', __('Initial setup completed.'))
     } else {
       // Run directly on host
@@ -464,7 +481,8 @@ class Web {
       const env = {
         ODAC_API_HOST: 'host.docker.internal',
         ODAC_API_PORT: 1453,
-        ODAC_API_KEY: Odac.core('Config').config.api.auth
+        ODAC_API_KEY: Odac.core('Config').config.api.auth,
+        ODAC_API_SOCKET: '/run/odac/api.sock'
       }
       const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
         env
