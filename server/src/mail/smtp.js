@@ -168,17 +168,35 @@ class smtp {
   }
 
   #encodeQuotedPrintable(str) {
-    return (
-      str
-        // eslint-disable-next-line no-control-regex
-        .replace(/[=\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\xFF]/g, match => {
-          return '=' + match.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')
-        })
-        .replace(/[ \t]+$/gm, match => {
-          return match.replace(/./g, char => '=' + char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
-        })
-        .replace(/(.{75})/g, '$1=\r\n')
-    )
+    const buffer = Buffer.from(str, 'utf-8')
+    let result = ''
+    let lineLength = 0
+
+    for (const byte of buffer) {
+      if ((byte >= 33 && byte <= 60) || (byte >= 62 && byte <= 126) || byte === 9 || byte === 32) {
+        if (lineLength + 1 > 75) {
+          result += '=\r\n'
+          lineLength = 0
+        }
+        result += String.fromCharCode(byte)
+        lineLength++
+      } else if (byte === 13 || byte === 10) {
+        result += String.fromCharCode(byte)
+        lineLength = 0
+      } else {
+        const encoded = '=' + byte.toString(16).toUpperCase().padStart(2, '0')
+        if (lineLength + 3 > 75) {
+          result += '=\r\n'
+          lineLength = 0
+        }
+        result += encoded
+        lineLength += 3
+      }
+    }
+
+    return result.replace(/[ \t]+$/gm, match => {
+      return match.replace(/./g, char => '=' + char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
+    })
   }
 
   #encodeBase64(buffer) {
