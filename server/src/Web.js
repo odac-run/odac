@@ -61,7 +61,15 @@ class Web {
         this.start(domain)
       }
       if (this.#logs.log[domain]) {
-        fs.writeFile(os.homedir() + '/.odac/logs/' + domain + '.log', this.#logs.log[domain], function (err) {
+        const logDir = path.join(os.homedir(), '.odac', 'logs')
+        if (!fs.existsSync(logDir)) {
+          try {
+            fs.mkdirSync(logDir, {recursive: true})
+          } catch (e) {
+            log(e)
+          }
+        }
+        fs.writeFile(path.join(logDir, domain + '.log'), this.#logs.log[domain], function (err) {
           if (err) log(err)
         })
       }
