@@ -210,8 +210,9 @@ class Mail {
     const self = this
     let options = {
       logger: true,
+      tls: {minVersion: 'TLSv1.2'},
       secure: false,
-      banner: 'Odac',
+      banner: 'ODAC',
       size: 1024 * 1024 * 10,
       authOptional: true,
       onConnect(session, callback) {
@@ -502,6 +503,7 @@ class Mail {
           cert: fs.readFileSync(ssl.cert)
         }
       }
+      sslOptions.minVersion = 'TLSv1.2'
       const ctx = tls.createSecureContext(sslOptions)
       this.#sslCache.set(hostname, ctx)
       callback(null, ctx)

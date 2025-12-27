@@ -27,8 +27,7 @@ class smtp {
       dnsTimeout: 10000, // 10 seconds
       rateLimitPerHour: 1000,
       tls: {
-        minVersion: 'TLSv1.1', // More flexible minimum
-        secureProtocol: 'TLS_method', // Auto-negotiation
+        minVersion: 'TLSv1.2',
         ciphers: [
           'ECDHE-RSA-AES256-GCM-SHA384',
           'ECDHE-RSA-AES128-GCM-SHA256',
@@ -361,7 +360,7 @@ class smtp {
                   port: port,
                   rejectUnauthorized: false,
                   timeout: this.config.timeout,
-                  minVersion: 'TLSv1.1'
+                  minVersion: 'TLSv1.2'
                 })
                 fallbackSocket.on('secureConnect', async () => {
                   log('Fallback SSL connection successful on port 465')
@@ -436,7 +435,7 @@ class smtp {
                       socket: socket,
                       servername: host,
                       rejectUnauthorized: false,
-                      minVersion: 'TLSv1.1'
+                      minVersion: 'TLSv1.2'
                     })
                     fallbackSocket.on('secureConnect', () => {
                       log('Fallback TLS connection successful')
