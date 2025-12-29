@@ -154,6 +154,8 @@ class Monitor {
       this.#current = result
       process.stdout.write('\x1Bc')
       process.stdout.write(result)
+      process.stdout.write('\x1b[?25l')
+      process.stdout.write('\x1b[?1000h')
     }
     this.#printing = false
   }
@@ -702,6 +704,8 @@ class Monitor {
       process.stdout.clearLine(0)
       process.stdout.write('\x1Bc')
       process.stdout.write(result)
+      process.stdout.write('\x1b[?25l')
+      process.stdout.write('\x1b[?1000h')
     }
     this.#printing = false
   }
