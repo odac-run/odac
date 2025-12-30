@@ -282,35 +282,8 @@ class Service {
     let recipe
     try {
       recipe = await this.#fetchRecipe(type)
-    } catch {
-      // Fallbacks
-      if (type === 'mysql') {
-        recipe = {
-          name: 'mysql',
-          image: 'mysql:8.0',
-          ports: [{container: 3306, host: 'auto'}],
-          volumes: [{container: '/var/lib/mysql', host: 'data'}],
-          env: {MYSQL_ROOT_PASSWORD: {generate: true, length: 16}, MYSQL_DATABASE: 'odac'}
-        }
-      } else if (type === 'postgres') {
-        recipe = {
-          name: 'postgres',
-          image: 'postgres:15-alpine',
-          ports: [{container: 5432, host: 'auto'}],
-          volumes: [{container: '/var/lib/postgresql/data', host: 'data'}],
-          env: {POSTGRES_PASSWORD: {generate: true, length: 16}, POSTGRES_DB: 'odac'}
-        }
-      } else if (type === 'redis') {
-        recipe = {
-          name: 'redis',
-          image: 'redis:alpine',
-          ports: [{container: 6379, host: 'auto'}],
-          volumes: [{container: '/data', host: 'data'}],
-          env: {}
-        }
-      } else {
-        return Odac.server('Api').result(false, __('Could not find recipe for %s', type))
-      }
+    } catch (e) {
+      return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', type, e))
     }
 
     let name = recipe.name
@@ -454,8 +427,8 @@ class Service {
     return Odac.server('Api').result(true, output.join('\n'))
   }
 
-  async #fetchRecipe() {
-    throw new Error('Remote recipes not implemented yet')
+  async #fetchRecipe(type) {
+    return await Odac.server('Hub').getApp(type)
   }
 
   #generatePassword(length) {
