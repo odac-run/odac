@@ -13,7 +13,7 @@ class DNS {
   #types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SOA', 'CAA']
   #udp
   #requestCount = new Map() // Rate limiting
-  #rateLimit = 100 // requests per minute per IP
+  #rateLimit = 2500 // requests per minute per IP
   #rateLimitWindow = 60000 // 1 minute
 
   #execHost(cmd, options = {}) {
