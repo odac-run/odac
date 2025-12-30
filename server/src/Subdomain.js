@@ -17,10 +17,9 @@ class Subdomain {
     let fulldomain = [subdomain, domain].join('.')
     if (Odac.core('Config').config.websites[domain].subdomain.includes(subdomain))
       return Odac.server('Api').result(false, await __('Subdomain %s already exists.', fulldomain))
-    Odac.server('DNS').record({name: fulldomain, type: 'A'}, {name: 'www.' + fulldomain, type: 'CNAME'}, {name: fulldomain, type: 'MX'})
+    Odac.server('DNS').record({name: fulldomain, type: 'A'}, {name: fulldomain, type: 'MX'})
     let websites = Odac.core('Config').config.websites
     websites[domain].subdomain.push(subdomain)
-    websites[domain].subdomain.push('www.' + subdomain)
     websites[domain].subdomain.sort()
     Odac.core('Config').config.websites = websites
     Odac.server('SSL').renew(domain)
@@ -45,9 +44,9 @@ class Subdomain {
     let fulldomain = [subdomain, domain].join('.')
     if (!Odac.core('Config').config.websites[domain].subdomain.includes(subdomain))
       return Odac.server('Api').result(false, await __('Subdomain %s not found.', fulldomain))
-    Odac.server('DNS').delete({name: fulldomain, type: 'A'}, {name: 'www.' + fulldomain, type: 'CNAME'}, {name: fulldomain, type: 'MX'})
+    Odac.server('DNS').delete({name: fulldomain, type: 'A'}, {name: fulldomain, type: 'MX'})
     let websites = Odac.core('Config').config.websites
-    websites[domain].subdomain = websites[domain].subdomain.filter(s => s != subdomain && s != 'www.' + subdomain)
+    websites[domain].subdomain = websites[domain].subdomain.filter(s => s != subdomain)
     Odac.core('Config').config.websites = websites
     return Odac.server('Api').result(true, await __('Subdomain %s1 deleted successfully from domain %s2.', fulldomain, domain))
   }
