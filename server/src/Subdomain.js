@@ -17,7 +17,7 @@ class Subdomain {
     let fulldomain = [subdomain, domain].join('.')
     if (Odac.core('Config').config.websites[domain].subdomain.includes(subdomain))
       return Odac.server('Api').result(false, await __('Subdomain %s already exists.', fulldomain))
-    Odac.server('DNS').record({name: fulldomain, type: 'A'}, {name: fulldomain, type: 'MX'})
+    Odac.server('DNS').record({name: fulldomain, type: 'A'})
     let websites = Odac.core('Config').config.websites
     websites[domain].subdomain.push(subdomain)
     websites[domain].subdomain.sort()
@@ -44,7 +44,7 @@ class Subdomain {
     let fulldomain = [subdomain, domain].join('.')
     if (!Odac.core('Config').config.websites[domain].subdomain.includes(subdomain))
       return Odac.server('Api').result(false, await __('Subdomain %s not found.', fulldomain))
-    Odac.server('DNS').delete({name: fulldomain, type: 'A'}, {name: fulldomain, type: 'MX'})
+    Odac.server('DNS').delete({name: fulldomain, type: 'A'})
     let websites = Odac.core('Config').config.websites
     websites[domain].subdomain = websites[domain].subdomain.filter(s => s != subdomain)
     Odac.core('Config').config.websites = websites
