@@ -2,7 +2,7 @@ require('../../core/Odac.js')
 
 const fs = require('fs')
 const os = require('os')
-const {exec} = require('child_process')
+const {execFile} = require('child_process')
 
 class Monitor {
   #current = ''
@@ -290,12 +290,13 @@ class Monitor {
       return
     }
 
-    const cmd = `docker logs -t --tail ${this.#height} ${containerName} 2>&1`
-    exec(cmd, (error, stdout) => {
-      if (error) {
+    execFile('docker', ['logs', '-t', '--tail', String(this.#height), containerName], (error, stdout, stderr) => {
+      const output = stdout + stderr
+
+      if (error && !output) {
         this.#logs.content = [Odac.cli('Cli').color('Error fetching logs: ' + error.message, 'red')]
       } else {
-        this.#logs.content = stdout
+        this.#logs.content = output
           .replace(/\r\n/g, '\n')
           .trim()
           .split('\n')
@@ -434,7 +435,7 @@ class Monitor {
   }
 
   #fetchStats() {
-    exec('docker stats --no-stream --format "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}"', (error, stdout) => {
+    execFile('docker', ['stats', '--no-stream', '--format', '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}'], (error, stdout) => {
       if (error) return
       const lines = stdout.trim().split('\n')
 
@@ -483,7 +484,7 @@ class Monitor {
     this.#logs.restarting[name] = Odac.cli('Cli').color(`Restarting ${name}...`, 'yellow')
     this.#monitor()
 
-    exec(`docker restart ${name}`, err => {
+    execFile('docker', ['restart', name], err => {
       if (err) {
         this.#logs.restarting[name] = Odac.cli('Cli').color(`Error restarting ${name}: ${err.message}`, 'red')
       } else {
