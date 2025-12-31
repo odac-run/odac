@@ -12,7 +12,11 @@ jest.mock('fs', () => ({
 // Mock process.mainModule to avoid Config initialization issues
 process.mainModule = {path: '/mock/node_modules/odac/bin'}
 
-// Import the module to ensure global setup
+// Clear any mock Odac set by jest.setup.js so we can test the real one
+delete global.Odac
+delete global.__
+
+// Import the real module to ensure global setup
 require('../../core/Odac.js')
 
 describe('Odac', () => {
