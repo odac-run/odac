@@ -28,7 +28,6 @@ func NewProxy() *Proxy {
 		websites: make(map[string]config.Website),
 		sslCache: make(map[string]*tls.Certificate),
 	}
-    // ...
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
