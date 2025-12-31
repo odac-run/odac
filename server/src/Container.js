@@ -344,8 +344,10 @@ class Container {
     try {
       const container = this.#docker.getContainer(name)
       await container.stop()
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (err.statusCode !== 404 && err.statusCode !== 304) {
+        error(`Failed to stop container ${name}: ${err.message}`)
+      }
     }
   }
 
@@ -355,8 +357,10 @@ class Container {
       const container = this.#docker.getContainer(name)
       // Force remove equivalent
       await container.remove({force: true})
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to remove container ${name}: ${err.message}`)
+      }
     }
   }
 
@@ -376,7 +380,10 @@ class Container {
         stderr: true
       })
       return stream
-    } catch {
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get logs for ${name}: ${err.message}`)
+      }
       return null
     }
   }
@@ -392,7 +399,10 @@ class Container {
       const container = this.#docker.getContainer(name)
       const data = await container.inspect()
       return data.State.Running
-    } catch {
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to check if running ${name}: ${err.message}`)
+      }
       return false
     }
   }
@@ -413,7 +423,10 @@ class Container {
         return networks['odac-network'].IPAddress
       }
       return Object.values(networks)[0]?.IPAddress || null
-    } catch {
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get IP for ${name}: ${err.message}`)
+      }
       return null
     }
   }
