@@ -179,7 +179,6 @@ class Web {
       } else {
         progress('setup', 'error', __('Dependency installation timed out. Please check container logs.'))
       }
-      progress('setup', 'success', __('Initial setup completed.'))
     } else {
       // Run directly on host
       childProcess.execSync('npm init -y', {cwd: web.path})
