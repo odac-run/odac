@@ -555,6 +555,19 @@ class Monitor {
     if (c1 % 1 != 0) c1 = Math.floor(c1)
     if (c1 > 50) c1 = 50
 
+    const ctx = {renderedLines: 0, globalIndex: 0}
+
+    let result = this.#renderHeader(c1)
+    result += this.#renderWebsites(c1, ctx)
+    result += this.#renderServicesSeparator(c1, ctx)
+    result += this.#renderServices(c1, ctx)
+    result += this.#renderEmptyLines(c1, ctx)
+    result += this.#renderFooter(c1)
+
+    this.#finalizeRender(result)
+  }
+
+  #renderHeader(c1) {
     let result = ''
     result += Odac.cli('Cli').color('┌', 'gray')
 
@@ -577,13 +590,13 @@ class Monitor {
     result += Odac.cli('Cli').color('┬', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┐\n', 'gray')
+    return result
+  }
 
-    let renderedLines = 0
-    let globalIndex = 0
-
-    // WEBSITES
+  #renderWebsites(c1, ctx) {
+    let result = ''
     for (let i = 0; i < this.#domains.length; i++) {
-      if (renderedLines >= this.#height - 4) break
+      if (ctx.renderedLines >= this.#height - 4) break
 
       let stats = ''
       const containerName = this.#websites[this.#domains[i]].container || this.#domains[i]
@@ -593,7 +606,7 @@ class Monitor {
       }
 
       result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, globalIndex == this.#selected)
+      result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, ctx.globalIndex == this.#selected)
 
       const name = this.#domains[i] || ''
       const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length)) // -5 for icon + padding
@@ -602,44 +615,50 @@ class Monitor {
 
       result += Odac.cli('Cli').color(
         display,
-        globalIndex == this.#selected ? 'blue' : 'white',
-        globalIndex == this.#selected ? 'white' : null,
-        globalIndex == this.#selected ? 'bold' : null
+        ctx.globalIndex == this.#selected ? 'blue' : 'white',
+        ctx.globalIndex == this.#selected ? 'white' : null,
+        ctx.globalIndex == this.#selected ? 'bold' : null
       )
 
-      const statsColor = globalIndex == this.#selected ? 'blue' : 'cyan'
-      if (stats) result += Odac.cli('Cli').color(stats, statsColor, globalIndex == this.#selected ? 'white' : null)
-      result += Odac.cli('Cli').color(' ', 'white', globalIndex == this.#selected ? 'white' : null)
+      const statsColor = ctx.globalIndex == this.#selected ? 'blue' : 'cyan'
+      if (stats) result += Odac.cli('Cli').color(stats, statsColor, ctx.globalIndex == this.#selected ? 'white' : null)
+      result += Odac.cli('Cli').color(' ', 'white', ctx.globalIndex == this.#selected ? 'white' : null)
 
       result += Odac.cli('Cli').color(' │', 'gray')
 
-      const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+      const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
       result += this.#safeLog(logLine, this.#width - c1)
       result += Odac.cli('Cli').color('│\n', 'gray')
 
-      globalIndex++
-      renderedLines++
+      ctx.globalIndex++
+      ctx.renderedLines++
     }
+    return result
+  }
 
-    // SERVICES SEPARATOR
+  #renderServicesSeparator(c1, ctx) {
+    let result = ''
     if (this.#services.length > 0 && this.#domains.length > 0) {
-      if (renderedLines < this.#height - 4) {
+      if (ctx.renderedLines < this.#height - 4) {
         result += Odac.cli('Cli').color(this.#domains.length > 0 ? '├' : '│', 'gray')
         result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
         let title = Odac.cli('Cli').color(__('Services'), null)
         result += ' ' + Odac.cli('Cli').color(title) + ' '
         result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
         result += Odac.cli('Cli').color(this.#domains.length > 0 ? '┤' : '│', 'gray')
-        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+        const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
         result += this.#safeLog(logLine, this.#width - c1)
         result += Odac.cli('Cli').color('│\n', 'gray')
-        renderedLines++
+        ctx.renderedLines++
       }
     }
+    return result
+  }
 
-    // SERVICES
+  #renderServices(c1, ctx) {
+    let result = ''
     for (let i = 0; i < this.#services.length; i++) {
-      if (renderedLines >= this.#height - 4) break
+      if (ctx.renderedLines >= this.#height - 4) break
 
       let stats = ''
       const srvName = this.#services[i].name
@@ -649,7 +668,7 @@ class Monitor {
       }
 
       result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(this.#services[i].status ?? null, globalIndex == this.#selected)
+      result += Odac.cli('Cli').icon(this.#services[i].status ?? null, ctx.globalIndex == this.#selected)
 
       const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length))
       let display = srvName.length > maxLen ? srvName.substr(0, maxLen) : srvName
@@ -657,46 +676,57 @@ class Monitor {
 
       result += Odac.cli('Cli').color(
         display,
-        globalIndex == this.#selected ? 'blue' : 'white',
-        globalIndex == this.#selected ? 'white' : null,
-        globalIndex == this.#selected ? 'bold' : null
+        ctx.globalIndex == this.#selected ? 'blue' : 'white',
+        ctx.globalIndex == this.#selected ? 'white' : null,
+        ctx.globalIndex == this.#selected ? 'bold' : null
       )
 
-      const statsColor = globalIndex == this.#selected ? 'blue' : 'cyan'
-      if (stats) result += Odac.cli('Cli').color(stats, statsColor, globalIndex == this.#selected ? 'white' : null)
-      result += Odac.cli('Cli').color(' ', 'white', globalIndex == this.#selected ? 'white' : null)
+      const statsColor = ctx.globalIndex == this.#selected ? 'blue' : 'cyan'
+      if (stats) result += Odac.cli('Cli').color(stats, statsColor, ctx.globalIndex == this.#selected ? 'white' : null)
+      result += Odac.cli('Cli').color(' ', 'white', ctx.globalIndex == this.#selected ? 'white' : null)
 
       result += Odac.cli('Cli').color(' │', 'gray')
 
-      if (this.#logs.selected == globalIndex) {
-        const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+      if (this.#logs.selected == ctx.globalIndex) {
+        const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
         result += this.#safeLog(logLine, this.#width - c1)
       } else {
         result += ' '.repeat(this.#width - c1)
       }
       result += Odac.cli('Cli').color('│\n', 'gray')
-      globalIndex++
-      renderedLines++
+      ctx.globalIndex++
+      ctx.renderedLines++
     }
+    return result
+  }
 
-    // FILL EMPTY LINES
-    while (renderedLines < this.#height - 4) {
+  #renderEmptyLines(c1, ctx) {
+    let result = ''
+    while (ctx.renderedLines < this.#height - 4) {
       result += Odac.cli('Cli').color('│', 'gray')
       result += ' '.repeat(c1)
       result += Odac.cli('Cli').color('│', 'gray')
 
-      const logLine = this.#logs.content[renderedLines] ? this.#logs.content[renderedLines] : ' '
+      const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
       result += this.#safeLog(logLine, this.#width - c1)
 
       result += Odac.cli('Cli').color('│\n', 'gray')
-      renderedLines++
+      ctx.renderedLines++
     }
+    return result
+  }
 
+  #renderFooter(c1) {
+    let result = ''
     result += Odac.cli('Cli').color('└', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
     result += Odac.cli('Cli').color('┴', 'gray')
     result += Odac.cli('Cli').color('─'.repeat(this.#width - c1), 'gray')
     result += Odac.cli('Cli').color('┘\n', 'gray')
+    return result
+  }
+
+  #finalizeRender(result) {
     let shortcuts = 'Mouse | ↑/↓ ' + __('Navigate') + ' | ↵ ' + __('Select') + ' | R ' + __('Restart') + ' | Ctrl+C ' + __('Exit')
     result += Odac.cli('Cli').color(' ODAC', 'magenta', 'bold')
     result += Odac.cli('Cli').color(Odac.cli('Cli').spacing(shortcuts, this.#width + 1 - 'ODAC'.length, 'right'), 'gray')
