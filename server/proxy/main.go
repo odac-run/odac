@@ -133,13 +133,3 @@ func main() {
 
 	log.Println("ODAC Proxy shutting down...")
 }
-
-// Make sure Server implements ServeHTTP by adding Method in Api.go or here if used as Handler directly
-// api.Server implementation in previous step has HandleConfig but needs to implement http.Handler if we used it as such.
-// In api.go I used NewServeMux inside ListenAndServe.
-// I should adjust api.go to expose the handler or use it properly in Start.
-// Since I did custom net.Listen here, I need to pass the mux to http.Serve.
-// Let's refactor api.go slightly in next tool call or fix it right here by assuming api.Server has a Handler method?
-// Actually in api.go I wrote `ListenAndServe` which does `http.ListenAndServe(addr, mux)`.
-// Here I want `http.Serve(listener, handler)`.
-// So I should let `api.Server` create the handler.
