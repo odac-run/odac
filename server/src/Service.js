@@ -4,6 +4,7 @@ const path = require('path')
 const net = require('net')
 const nodeCrypto = require('crypto')
 const childProcess = require('child_process')
+const os = require('os')
 
 class Service {
   #services = []
@@ -165,6 +166,12 @@ class Service {
         args = [filename]
       }
 
+      // Create a write stream for the log file
+      const logDir = path.join(os.homedir(), '.odac', 'logs')
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
+      const logFile = path.join(logDir, `${service.name}.log`)
+      const logStream = fs.createWriteStream(logFile, {flags: 'a'})
+
       log(`Spawning local process for ${service.name}: ${cmd} ${args.join(' ')}`)
 
       const child = childProcess.spawn(cmd, args, {
@@ -177,20 +184,24 @@ class Service {
       this.#set(service.id, {pid: child.pid})
 
       child.stdout.on('data', data => {
-        log(`[${service.name}] ${data.toString().trim()}`)
+        logStream.write(`[LOG] [${new Date().getTime()}] ${data}`)
       })
 
       child.stderr.on('data', data => {
-        error(`[${service.name}] ${data.toString().trim()}`)
+        logStream.write(`[ERR] [${new Date().getTime()}] ${data}`)
       })
 
       child.on('exit', (code, signal) => {
         log(`Service ${service.name} exited with code ${code} signal ${signal}`)
+        logStream.write(`[LOG] [${new Date().getTime()}] Service exited with code ${code} signal ${signal}\n`)
+        logStream.end()
         this.#set(service.id, {status: 'stopped', pid: null, active: false})
       })
 
       child.on('error', err => {
         error(`Failed to start local service ${service.name}: ${err.message}`)
+        logStream.write(`[ERR] [${new Date().getTime()}] Failed to start service: ${err.message}\n`)
+        logStream.end()
         this.#set(service.id, {status: 'errored', pid: null})
       })
 
