@@ -48,7 +48,7 @@ func main() {
 			log.Fatalf("Failed to start API listener on %s: %v", socketPath, err)
 		}
 
-		if err := os.Chmod(socketPath, 0777); err != nil {
+		if err := os.Chmod(socketPath, 0660); err != nil {
 			log.Printf("Warning: Failed to chmod socket: %v", err)
 		}
 		log.Printf("Control API listening on unix:%s", socketPath)
