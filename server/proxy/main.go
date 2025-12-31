@@ -122,7 +122,7 @@ func main() {
 		}
 
 		if err := server.ListenAndServeTLS("", ""); err != nil {
-			log.Printf("HTTPS server failed: %v", err)
+			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	}()
 
