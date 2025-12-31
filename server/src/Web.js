@@ -6,6 +6,7 @@ const fs = require('fs')
 const net = require('net')
 const os = require('os')
 const path = require('path')
+const axios = require('axios')
 
 const WebFirewall = require('./Web/Firewall.js')
 
@@ -393,7 +394,6 @@ class Web {
     }
 
     try {
-      const axios = require('axios')
       if (this.#proxySocketPath) {
         // Unix Socket Request
         await axios.post('http://localhost/config', config, {
