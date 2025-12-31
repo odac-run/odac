@@ -1453,7 +1453,7 @@ describe('Web', () => {
 
       Web.index(req, res)
 
-      expect(res.write).toHaveBeenCalledWith('Odac Server')
+      expect(res.write).toHaveBeenCalledWith('ODAC Server')
       expect(res.end).toHaveBeenCalled()
     })
   })
