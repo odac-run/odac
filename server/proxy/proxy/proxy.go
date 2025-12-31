@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,15 @@ const (
 	// when routing requests to Docker containers via their network IP
 	internalContainerPort = "1071"
 )
+
+// debugMode enables verbose debug logging when PROXY_DEBUG environment variable is set
+var debugMode = os.Getenv("PROXY_DEBUG") != ""
+
+func debugLog(format string, args ...interface{}) {
+	if debugMode {
+		log.Printf(format, args...)
+	}
+}
 
 type Proxy struct {
 	websites     map[string]config.Website
@@ -169,10 +179,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // GetCertificate implements tls.Config.GetCertificate
 func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := hello.ServerName
-	log.Printf("[DEBUG] TLS Handshake for SNI: %s", host)
+	debugLog("[DEBUG] TLS Handshake for SNI: %s", host)
 
 	if host == "" {
-		log.Printf("[DEBUG] SNI is empty")
+		debugLog("[DEBUG] SNI is empty")
 		return nil, nil // Fallback to default cert if any
 	}
 	
@@ -181,7 +191,7 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	// Check cache
 	if cert, ok := p.sslCache[host]; ok {
 		p.mu.RUnlock()
-		log.Printf("[DEBUG] Found cached cert for %s", host)
+		debugLog("[DEBUG] Found cached cert for %s", host)
 		return cert, nil
 	}
 	p.mu.RUnlock()
@@ -192,16 +202,16 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	if !exists || website.Cert.SSL.Key == "" || website.Cert.SSL.Cert == "" {
 		// Fallback to Global SSL
 		if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
-			log.Printf("[DEBUG] Fallback to Global SSL for %s (Key: %s, Cert: %s)", host, p.globalSSL.Key, p.globalSSL.Cert)
+			debugLog("[DEBUG] Fallback to Global SSL for %s (Key: %s, Cert: %s)", host, p.globalSSL.Key, p.globalSSL.Cert)
 			certKey = p.globalSSL.Key
 			certFile = p.globalSSL.Cert
 			source = "global"
 		} else {
-			log.Printf("[DEBUG] No cert found for %s and no global fallback available", host)
+			debugLog("[DEBUG] No cert found for %s and no global fallback available", host)
 			return nil, nil // No specific cert found and no global fallback
 		}
 	} else {
-		log.Printf("[DEBUG] Found specific cert for %s (Key: %s, Cert: %s)", host, website.Cert.SSL.Key, website.Cert.SSL.Cert)
+		debugLog("[DEBUG] Found specific cert for %s (Key: %s, Cert: %s)", host, website.Cert.SSL.Key, website.Cert.SSL.Cert)
 		certKey = website.Cert.SSL.Key
 		certFile = website.Cert.SSL.Cert
 		source = "site"
@@ -216,7 +226,7 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 		return cert, nil
 	}
 	
-	log.Printf("[DEBUG] Loading cert files for %s from %s...", host, source)
+	debugLog("[DEBUG] Loading cert files for %s from %s...", host, source)
 	cert, err := tls.LoadX509KeyPair(certFile, certKey)
 	if err != nil {
 		log.Printf("[ERROR] Failed to load SSL for %s (Key: %s, Cert: %s): %v", host, certKey, certFile, err)
@@ -224,6 +234,6 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	}
 	
 	p.sslCache[host] = &cert
-	log.Printf("[DEBUG] Successfully loaded and cached cert for %s", host)
+	debugLog("[DEBUG] Successfully loaded and cached cert for %s", host)
 	return &cert, nil
 }
