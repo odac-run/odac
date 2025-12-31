@@ -70,7 +70,10 @@
     "prepare": "husky || true",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "release": "semantic-release"
+    "release": "semantic-release",
+    "build:proxy": "cd server/proxy && go build -o ../../bin/odac-proxy",
+    "build:proxy:linux": "cd server/proxy && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../../bin/odac-proxy",
+    "build:proxy:linux:arm": "cd server/proxy && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../../bin/odac-proxy"
   },
   "lint-staged": {
     "*.js": [

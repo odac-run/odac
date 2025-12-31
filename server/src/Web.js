@@ -1,53 +1,36 @@
-const {log, error} = Odac.core('Log', false).init('Web')
+const noop = () => {}
+const {log, error} = typeof Odac !== 'undefined' && Odac.core ? Odac.core('Log', false).init('Web') : {log: noop, error: noop}
 
 const childProcess = require('child_process')
 const fs = require('fs')
-const http = require('http')
-const https = require('https')
-const http2 = require('http2')
 const net = require('net')
 const os = require('os')
 const path = require('path')
-const tls = require('tls')
 
-const WebProxy = require('./Web/Proxy.js')
 const WebFirewall = require('./Web/Firewall.js')
-const WebSocketProxy = require('./Web/WebSocket.js')
 
 class Web {
   #active = {}
   #error_counts = {}
   #loaded = false
-  #log
-  #logs = {log: {}, err: {}}
-  #sslCache = new Map()
-  #ports = {}
-  #proxy
   #firewall
-  #server_http
-  #server_https
   #started = {}
   #watcher = {}
+  #logs = {log: {}, err: {}}
+  #ports = {}
+  #proxy
 
-  #wsProxy
+  #proxyProcess = null
+  #proxySocketPath = null
+  #proxyApiPort = null
 
   constructor() {
-    this.#log = log
-    this.#proxy = new WebProxy(this.#log)
     this.#firewall = new WebFirewall()
-    this.#wsProxy = new WebSocketProxy(this.#log)
   }
 
-  clearSSLCache(domain) {
-    if (domain) {
-      for (const key of this.#sslCache.keys()) {
-        if (key === domain || key.endsWith('.' + domain)) {
-          this.#sslCache.delete(key)
-        }
-      }
-    } else {
-      this.#sslCache.clear()
-    }
+  clearSSLCache() {
+    // Deprecated: SSL cache is now managed by Go Proxy
+    // We could implement an API call to clear Go cache if needed
   }
 
   check() {
@@ -233,6 +216,7 @@ class Web {
     delete this.#active[domain]
     delete this.#started[domain]
 
+    this.syncConfig()
     return Odac.server('Api').result(true, __('Website %s deleted.', domain))
   }
 
@@ -255,6 +239,9 @@ class Web {
         Odac.core('Config').config.web.path = '/var/odac/'
       }
     }
+
+    // Start Go Proxy with a slight delay to ensure config loads or immediate
+    this.spawnProxy()
   }
 
   async list() {
@@ -320,129 +307,115 @@ class Web {
     }
   }
 
-  server() {
-    if (!this.#loaded) return setTimeout(() => this.server(), 1000)
-    if (Object.keys(Odac.core('Config').config.websites ?? {}).length == 0) return
+  spawnProxy() {
+    if (this.#proxyProcess) return
 
-    if (!this.#server_http) {
-      this.#server_http = http.createServer((req, res) => this.request(req, res, false))
-      this.#server_http.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head, false))
-      this.#server_http.on('error', err => {
-        log(`HTTP server error: ${err.message}`)
-        if (err.code === 'EADDRINUSE') {
-          log('Port 80 is already in use')
-        }
-      })
-      this.#server_http.listen(80)
+    // Determine mechanism based on OS
+    const isWindows = os.platform() === 'win32'
+    const proxyName = isWindows ? 'odac-proxy.exe' : 'odac-proxy'
+    const binPath = path.resolve(__dirname, '../../bin', proxyName)
+
+    if (!fs.existsSync(binPath)) {
+      error(`Go proxy binary not found at ${binPath}. Please run 'go build -o bin/${proxyName} ./server/proxy'`)
+      return
     }
 
-    let ssl = Odac.core('Config').config.ssl ?? {}
-    if (!this.#server_https && ssl && ssl.key && ssl.cert && fs.existsSync(ssl.key) && fs.existsSync(ssl.cert)) {
-      const useHttp2 = Odac.core('Config').config.http2 !== false
+    let env = {...process.env}
 
-      const serverOptions = {
-        SNICallback: (hostname, callback) => {
-          try {
-            const cached = this.#sslCache.get(hostname)
-            if (cached) return callback(null, cached)
+    if (!isWindows) {
+      this.#proxySocketPath = path.join(os.tmpdir(), `odac-proxy-${process.pid}.sock`)
+      env.ODAC_SOCKET_PATH = this.#proxySocketPath
+      log(`Starting Go Proxy (Socket: ${this.#proxySocketPath})...`)
+    } else {
+      this.#proxySocketPath = null
+      log(`Starting Go Proxy (TCP Mode)...`)
+    }
 
-            let sslOptions
-            while (!Odac.core('Config').config.websites[hostname] && hostname.includes('.'))
-              hostname = hostname.split('.').slice(1).join('.')
-            let website = Odac.core('Config').config.websites[hostname]
-            if (
-              website &&
-              website.cert &&
-              website.cert.ssl &&
-              website.cert.ssl.key &&
-              website.cert.ssl.cert &&
-              fs.existsSync(website.cert.ssl.key) &&
-              fs.existsSync(website.cert.ssl.cert)
-            ) {
-              sslOptions = {
-                key: fs.readFileSync(website.cert.ssl.key),
-                cert: fs.readFileSync(website.cert.ssl.cert)
-              }
-            } else {
-              sslOptions = {
-                key: fs.readFileSync(ssl.key),
-                cert: fs.readFileSync(ssl.cert)
-              }
-            }
-            const ctx = tls.createSecureContext(sslOptions)
-            this.#sslCache.set(hostname, ctx)
-            callback(null, ctx)
-          } catch (err) {
-            log(`SSL certificate error for ${hostname}: ${err.message}`)
-            callback(err)
-          }
-        },
-        key: fs.readFileSync(ssl.key),
-        cert: fs.readFileSync(ssl.cert),
-        sessionTimeout: 300,
-        ciphers:
-          'TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:' +
-          'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:' +
-          'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:' +
-          'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305',
-        honorCipherOrder: true
-      }
+    this.#proxyProcess = childProcess.spawn(binPath, [], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: env
+    })
 
-      if (useHttp2) {
-        serverOptions.allowHTTP1 = true
-        this.#server_https = http2.createSecureServer(serverOptions, (req, res) => {
-          this.request(req, res, true)
-        })
-        log('HTTPS server starting with HTTP/2 support enabled')
+    this.#proxyProcess.stdout.on('data', data => {
+      const output = data.toString()
+      if (this.#proxySocketPath) {
+        // Unix Socket Mode: Just log
+        log(`[Proxy] ${output.trim()}`)
       } else {
-        this.#server_https = https.createServer(serverOptions, (req, res) => {
-          this.request(req, res, true)
-        })
-        log('HTTPS server starting with HTTP/1.1 only')
-      }
-
-      this.#server_https.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head, true))
-      this.#server_https.on('error', err => {
-        log(`HTTPS server error: ${err.message}`)
-        if (err.code === 'EADDRINUSE') {
-          log('Port 443 is already in use')
+        // TCP Mode: Look for port
+        const match = output.match(/ODAC_PROXY_PORT=(\d+)/)
+        if (match) {
+          this.#proxyApiPort = parseInt(match[1])
+          log(`Go Proxy Control API listening on port ${this.#proxyApiPort}`)
+          this.syncConfig()
+        } else {
+          log(`[Proxy] ${output.trim()}`)
         }
-      })
+      }
+    })
 
-      this.#server_https.listen(443)
+    this.#proxyProcess.stderr.on('data', data => {
+      error(`[Proxy Error] ${data.toString().trim()}`)
+    })
+
+    this.#proxyProcess.on('exit', code => {
+      error(`Go Proxy exited with code ${code}`)
+      this.#proxyProcess = null
+      this.#proxyApiPort = null
+      // Cleanup socket
+      if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+        try {
+          fs.unlinkSync(this.#proxySocketPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    })
+
+    // Give proxy a moment to create the socket then initial sync
+    if (!isWindows) setTimeout(() => this.syncConfig(), 500)
+  }
+
+  async syncConfig() {
+    if (!this.#proxyProcess) return
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return
+
+    // Ensure socket exists before sending
+    if (this.#proxySocketPath && !fs.existsSync(this.#proxySocketPath)) {
+      // Socket not ready yet
+      return
+    }
+
+    const config = {
+      websites: Odac.core('Config').config.websites || {},
+      firewall: Odac.core('Config').config.firewall || {enabled: true},
+      ssl: Odac.core('Config').config.ssl || null
+    }
+
+    try {
+      const axios = require('axios')
+      if (this.#proxySocketPath) {
+        // Unix Socket Request
+        await axios.post('http://localhost/config', config, {
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        // TCP Request
+        await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/config`, config)
+      }
+    } catch (e) {
+      error(`Failed to sync config to proxy: ${e.message}`)
     }
   }
 
-  #handleUpgrade(req, socket, head, secure) {
-    let host = req.headers.host
-    if (!host) {
-      socket.destroy()
-      return
-    }
-
-    if (host.includes(':')) {
-      host = host.split(':')[0]
-    }
-
-    let matchedHost = host
-    while (!Odac.core('Config').config.websites[matchedHost] && matchedHost.includes('.')) {
-      matchedHost = matchedHost.split('.').slice(1).join('.')
-    }
-
-    const website = Odac.core('Config').config.websites[matchedHost]
-    if (!website || !website.pid || !this.#watcher[website.pid]) {
-      socket.destroy()
-      return
-    }
-
-    if (!secure) {
-      socket.write('HTTP/1.1 301 Moved Permanently\r\nLocation: wss://' + host + req.url + '\r\n\r\n')
-      socket.destroy()
-      return
-    }
-
-    this.#wsProxy.upgrade(req, socket, head, website, host)
+  server() {
+    // Legacy server method replaced by Go Proxy
+    // Only kept if called by check() repeatedly
+    if (!this.#proxyProcess) this.spawnProxy()
   }
+
+  // Removed #handleUpgrade as it is handled by Go Proxy
 
   set(domain, data) {
     Odac.core('Config').config.websites[domain] = data
@@ -489,7 +462,8 @@ class Web {
         ODAC_API_HOST: 'host.docker.internal',
         ODAC_API_PORT: 1453,
         ODAC_API_KEY: Odac.core('Config').config.api.auth,
-        ODAC_API_SOCKET: '/run/odac/api.sock'
+        ODAC_API_SOCKET: '/run/odac/api.sock',
+        ODAC_HOST: '0.0.0.0'
       }
       const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
         env
@@ -638,6 +612,7 @@ class Web {
     Odac.core('Config').config.websites[domain].status = 'running'
     this.#watcher[pid] = true
     this.#started[domain] = Date.now()
+    this.syncConfig()
   }
 
   async status() {
@@ -658,6 +633,15 @@ class Web {
         this.set(domain, website)
       }
     }
+    this.syncConfig()
+  }
+
+  // Test helper
+  reset() {
+    this.#proxyProcess = null
+    this.#proxySocketPath = null
+    this.#proxyApiPort = null
+    if (this.#firewall && this.#firewall.reset) this.#firewall.reset()
   }
 }
 
