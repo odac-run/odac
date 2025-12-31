@@ -21,7 +21,15 @@ describe('Api', () => {
       init: jest.fn().mockReturnValue({
         log: mockLog,
         error: mockError
-      })
+      }),
+      log: mockLog,
+      error: mockError
+    })
+
+    // Ensure log method exists on the core Log mock
+    Object.assign(global.Odac.core('Log'), {
+      log: mockLog,
+      error: mockError
     })
 
     // Mock the net module at the module level
@@ -70,9 +78,8 @@ describe('Api', () => {
 
       Api.init()
 
-      expect(net.createServer).toHaveBeenCalled()
-      expect(mockServer.listen).toHaveBeenCalledWith(1453)
-      expect(mockServer.on).toHaveBeenCalledWith('connection', expect.any(Function))
+      expect(net.createServer).toHaveBeenCalledWith(expect.any(Function))
+      expect(mockServer.listen).toHaveBeenCalledWith(1453, '127.0.0.1')
     })
 
     it('should generate auth token', () => {
@@ -98,14 +105,14 @@ describe('Api', () => {
 
       Api.init()
 
-      // Get the connection handler
-      const connectionCall = mockServer.on.mock.calls.find(call => call[0] === 'connection')
-      connectionHandler = connectionCall ? connectionCall[1] : null
+      // Get the connection handler directly from the createServer call (first call is TCP server)
+      // Api.js: const tcpServer = net.createServer(socket => handleConnection(socket, false))
+      connectionHandler = net.createServer.mock.calls.length > 0 ? net.createServer.mock.calls[0][0] : null
     })
 
     it('should accept connections from localhost IPv4', () => {
       if (!connectionHandler) {
-        fail('Connection handler not found')
+        throw new Error('Connection handler not found')
         return
       }
 
@@ -124,7 +131,7 @@ describe('Api', () => {
 
     it('should accept connections from localhost IPv6', () => {
       if (!connectionHandler) {
-        fail('Connection handler not found')
+        throw new Error('Connection handler not found')
         return
       }
 
@@ -143,7 +150,7 @@ describe('Api', () => {
 
     it('should reject connections from non-localhost addresses', () => {
       if (!connectionHandler) {
-        fail('Connection handler not found')
+        throw new Error('Connection handler not found')
         return
       }
 
@@ -161,7 +168,7 @@ describe('Api', () => {
 
     it('should reject connections from external IPv6 addresses', () => {
       if (!connectionHandler) {
-        fail('Connection handler not found')
+        throw new Error('Connection handler not found')
         return
       }
 
@@ -179,7 +186,7 @@ describe('Api', () => {
 
     it('should clean up connection on close', () => {
       if (!connectionHandler) {
-        fail('Connection handler not found')
+        throw new Error('Connection handler not found')
         return
       }
 
@@ -221,12 +228,11 @@ describe('Api', () => {
 
       Api.init()
 
-      // Get the connection handler
-      const connectionCall = mockServer.on.mock.calls.find(call => call[0] === 'connection')
-      connectionHandler = connectionCall ? connectionCall[1] : null
+      // Get the connection handler from createServer call
+      connectionHandler = net.createServer.mock.calls.length > 0 ? net.createServer.mock.calls[0][0] : null
 
       if (!connectionHandler) {
-        fail('Connection handler not found')
+        throw new Error('Connection handler not found')
         return
       }
 
@@ -247,7 +253,7 @@ describe('Api', () => {
 
     it('should return invalid_json error for malformed JSON', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -260,7 +266,7 @@ describe('Api', () => {
 
     it('should return unauthorized error for missing auth token', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -277,7 +283,7 @@ describe('Api', () => {
 
     it('should return unauthorized error for invalid auth token', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -295,7 +301,7 @@ describe('Api', () => {
 
     it('should return unknown_action error for invalid action', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -313,7 +319,7 @@ describe('Api', () => {
 
     it('should return unknown_action error for missing action', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -330,7 +336,7 @@ describe('Api', () => {
 
     it('should execute valid mail.create command', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -353,7 +359,7 @@ describe('Api', () => {
 
     it('should execute valid service.start command', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -375,7 +381,7 @@ describe('Api', () => {
 
     it('should execute valid server.stop command', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -397,7 +403,7 @@ describe('Api', () => {
 
     it('should handle command execution errors', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -419,7 +425,7 @@ describe('Api', () => {
 
     it('should handle commands with no data parameter', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -441,7 +447,7 @@ describe('Api', () => {
 
     it('should execute all mail commands', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -483,7 +489,7 @@ describe('Api', () => {
 
     it('should execute all subdomain commands', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -525,7 +531,7 @@ describe('Api', () => {
 
     it('should execute all web commands', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -567,7 +573,7 @@ describe('Api', () => {
 
     it('should execute ssl.renew command', async () => {
       if (!dataHandler) {
-        fail('Data handler not found')
+        throw new Error('Data handler not found')
         return
       }
 
@@ -624,8 +630,8 @@ describe('Api', () => {
       Api.init()
 
       // Set up a connection
-      const connectionCall = mockServer.on.mock.calls.find(call => call[0] === 'connection')
-      const connectionHandler = connectionCall[1]
+      // Get handler from createServer call
+      const connectionHandler = net.createServer.mock.calls.length > 0 ? net.createServer.mock.calls[0][0] : null
 
       const mockSocket = {
         remoteAddress: '127.0.0.1',
