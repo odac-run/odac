@@ -61,7 +61,15 @@ class Web {
         this.start(domain)
       }
       if (this.#logs.log[domain]) {
-        fs.writeFile(os.homedir() + '/.odac/logs/' + domain + '.log', this.#logs.log[domain], function (err) {
+        const logDir = path.join(os.homedir(), '.odac', 'logs')
+        if (!fs.existsSync(logDir)) {
+          try {
+            fs.mkdirSync(logDir, {recursive: true})
+          } catch (e) {
+            log(e)
+          }
+        }
+        fs.writeFile(path.join(logDir, domain + '.log'), this.#logs.log[domain], function (err) {
           if (err) log(err)
         })
       }
@@ -147,14 +155,30 @@ class Web {
       progress('container', 'progress', __('Starting container for %s...', domain))
       await this.start(domain)
 
-      // Wait for container to be ready (giving it some time for npm install)
-      // Note: In a production system we should poll for readiness
-      await new Promise(resolve => setTimeout(resolve, 5000))
+      // Wait for odac to be installed (poll for binary existence)
+      // npm install runs at container startup, we need to wait for it to finish
+      progress('setup', 'progress', __('Waiting for dependencies installation...'))
+      let installed = false
+      for (let i = 0; i < 60; i++) {
+        // Max 120 seconds
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        try {
+          // Check if odac bin exists by trying to get version
+          await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac --version')
+          installed = true
+          break
+        } catch {
+          // Ignore error, probably not installed yet or container not ready
+        }
+      }
 
-      // Run odac init inside the running container
-      progress('setup', 'progress', __('Running initial setup for %s...', domain))
-      await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
-      progress('setup', 'success', __('Initial setup completed.'))
+      if (installed) {
+        progress('setup', 'progress', __('Running initial setup for %s...', domain))
+        await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
+        progress('setup', 'success', __('Initial setup completed.'))
+      } else {
+        progress('setup', 'error', __('Dependency installation timed out. Please check container logs.'))
+      }
     } else {
       // Run directly on host
       childProcess.execSync('npm init -y', {cwd: web.path})
@@ -213,7 +237,7 @@ class Web {
   }
 
   index(req, res) {
-    res.write('Odac Server')
+    res.write('ODAC Server')
     res.end()
   }
 
@@ -459,23 +483,34 @@ class Web {
     let isDocker = false
 
     if (Odac.server('Container').available) {
-      if (await Odac.server('Container').isRunning(domain)) {
-        // Already running, just attach logs
+      // Run via Docker
+      const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
+      const env = {
+        ODAC_API_HOST: 'host.docker.internal',
+        ODAC_API_PORT: 1453,
+        ODAC_API_KEY: Odac.core('Config').config.api.auth,
+        ODAC_API_SOCKET: '/run/odac/api.sock'
+      }
+      const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
+        env
+      })
+      if (success) {
         isDocker = true
         child = await Odac.server('Container').logs(domain)
-        log('Web container re-attached for ' + domain)
-      } else {
-        // Run via Docker
-        const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
-        const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds)
-        if (success) {
-          isDocker = true
-          child = await Odac.server('Container').logs(domain)
-          log('Web container started for ' + domain)
-        } else {
-          error('Failed to start container for ' + domain)
-          return
+
+        // Whitelist container IP for API access
+        const containerIP = await Odac.server('Container').getIP(domain)
+        Odac.core('Config').config.websites[domain].container = domain
+        if (containerIP) {
+          Odac.server('Api').allow(containerIP)
+          Odac.core('Config').config.websites[domain].containerIP = containerIP
+          log(`Whitelisted API access for ${domain} (${containerIP})`)
         }
+
+        log('Web container started for ' + domain)
+      } else {
+        error('Failed to start container for ' + domain)
+        return
       }
     } else {
       // Run Local
@@ -587,6 +622,13 @@ class Web {
         } else Odac.core('Config').config.websites[domain].status = 'stopped'
         this.#watcher[pid] = false
         delete this.#ports[Odac.core('Config').config.websites[domain].port]
+
+        // Cleanup whitelisted IP
+        if (Odac.core('Config').config.websites[domain].containerIP) {
+          Odac.server('Api').disallow(Odac.core('Config').config.websites[domain].containerIP)
+          delete Odac.core('Config').config.websites[domain].containerIP
+        }
+
         this.#active[domain] = false
       })
     }

@@ -73,7 +73,7 @@ describe('Commands', () => {
       expect(Commands.help.description).toBe('List all available commands')
       expect(Commands.monit.description).toBe('Monitor Website or Service')
       expect(Commands.restart.description).toBe('Restart Odac Server')
-      expect(Commands.run.description).toBe('Add a new Service')
+      expect(Commands.run.description).toBe('Run a script or file as a service')
     })
   })
 

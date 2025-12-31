@@ -580,6 +580,9 @@ class Hub {
         })
     })
   }
+  async getApp(name) {
+    return this.call('app', {name: name})
+  }
 }
 
 module.exports = new Hub()

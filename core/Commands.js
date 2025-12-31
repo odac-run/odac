@@ -25,26 +25,6 @@ module.exports = {
     description: 'List all available commands',
     action: async () => Odac.cli('Cli').help()
   },
-  monit: {
-    description: 'Monitor Website or Service',
-    action: async () => Odac.cli('Monitor').monit()
-  },
-  restart: {
-    description: 'Restart Odac Server',
-    action: async () => Odac.cli('Cli').boot()
-  },
-  run: {
-    args: ['file'],
-    description: 'Add a new Service',
-    action: async args => {
-      let service = args[0]
-      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
-        service = path.resolve() + '/' + service
-      }
-      await Odac.cli('Connector').call({action: 'service.start', data: [service]})
-    }
-  },
-
   mail: {
     title: 'MAIL',
     sub: {
@@ -119,6 +99,64 @@ module.exports = {
       }
     }
   },
+  monit: {
+    description: 'Monitor Website or Service',
+    action: async () => Odac.cli('Monitor').monit()
+  },
+  restart: {
+    description: 'Restart Odac Server',
+    action: async () => Odac.cli('Cli').boot()
+  },
+  run: {
+    args: ['file'],
+    description: 'Run a script or file as a service',
+    action: async args => {
+      let service = args[0]
+      if (!service) return console.log(__('Please specify a file to run.'))
+
+      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
+        service = path.resolve() + '/' + service
+      }
+      await Odac.cli('Connector').call({action: 'service.start', data: [service]})
+    }
+  },
+  service: {
+    title: 'SERVICE',
+    sub: {
+      install: {
+        description: 'Install a new 3rd party application (mysql, postgres, etc.)',
+        args: ['-t', '--type'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+
+          if (!type) {
+            console.log('Available official apps: mysql, redis, postgres')
+            type = await cli.question(__('Enter the app type or repo (e.g. mysql): '))
+          }
+
+          await Odac.cli('Connector').call({
+            action: 'service.install',
+            data: [type]
+          })
+        }
+      },
+      delete: {
+        description: 'Delete a Service',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let service = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!service) service = await cli.question(__('Enter the Service ID or Name: '))
+          await Odac.cli('Connector').call({action: 'service.delete', data: [service]})
+        }
+      },
+      list: {
+        description: 'List all services',
+        action: async () => Odac.cli('Connector').call({action: 'service.list'})
+      }
+    }
+  },
   ssl: {
     title: 'SSL',
     sub: {
@@ -131,21 +169,6 @@ module.exports = {
           if (!domain) domain = await cli.question(__('Enter the domain name: '))
 
           await Odac.cli('Connector').call({action: 'ssl.renew', data: [domain]})
-        }
-      }
-    }
-  },
-  service: {
-    title: 'SERVICE',
-    sub: {
-      delete: {
-        description: 'Delete a Service',
-        args: ['-i', '--id'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let service = cli.parseArg(args, ['-i', '--id'])
-          if (!service) service = await cli.question(__('Enter the Service ID or Name: '))
-          await Odac.cli('Connector').call({action: 'service.delete', data: [service]})
         }
       }
     }
