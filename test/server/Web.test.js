@@ -12,9 +12,6 @@ jest.mock('net')
 jest.mock('os')
 jest.mock('path')
 jest.mock('tls')
-jest.mock('axios', () => ({
-  post: jest.fn(() => Promise.resolve())
-}))
 
 const childProcess = require('child_process')
 const fs = require('fs')
@@ -24,7 +21,6 @@ const net = require('net')
 const os = require('os')
 const path = require('path')
 const tls = require('tls')
-const axios = require('axios')
 
 // Import test utilities
 const {mockOdac} = require('./__mocks__/globalOdac')
