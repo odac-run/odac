@@ -236,7 +236,7 @@ class Container {
         Cmd: [
           'sh',
           '-c',
-          'if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then npm install; fi; if [ ! -d route ]; then while [ ! -d route ]; do node ./node_modules/odac/index.js; echo "Waiting for project init..."; sleep 5; done; fi; exec node ./node_modules/odac/index.js'
+          'if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then npm install; fi; if [ ! -d route ]; then i=0; while [ ! -d route ] && [ $i -lt 24 ]; do node ./node_modules/odac/index.js; echo "Waiting for project init..."; sleep 5; i=$((i+1)); done; if [ ! -d route ]; then echo "Timeout waiting for project init"; exit 1; fi; fi; exec node ./node_modules/odac/index.js'
         ],
         name: name,
         WorkingDir: '/app',
