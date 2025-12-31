@@ -15,6 +15,12 @@ import (
 	"odac-proxy/config"
 )
 
+const (
+	// internalContainerPort is the port used for inter-container communication
+	// when routing requests to Docker containers via their network IP
+	internalContainerPort = "1071"
+)
+
 type Proxy struct {
 	websites     map[string]config.Website
 	sslCache     map[string]*tls.Certificate
@@ -77,9 +83,9 @@ func (p *Proxy) director(req *http.Request) {
 
 	if website.ContainerIP != "" {
 		targetIP = website.ContainerIP
-		// Fix: Use internal container port (1071) instead of host-mapped port (60000+)
+		// Use internal container port instead of host-mapped port (60000+)
 		// when communicating via Docker network IP
-		targetPort = "1071"
+		targetPort = internalContainerPort
 	}
 	
 	// Important: req.URL.Scheme is often empty for incoming server requests
