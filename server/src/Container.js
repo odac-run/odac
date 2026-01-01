@@ -244,9 +244,6 @@ class Container {
         HostConfig: {
           RestartPolicy: {Name: 'unless-stopped'},
           Binds: bindings,
-          PortBindings: {
-            [`${internalPort}/tcp`]: [{HostPort: String(port), HostIp: options && options.ip ? options.ip : '127.0.0.1'}]
-          },
           NetworkMode: networkName,
           ExtraHosts: ['host.docker.internal:host-gateway']
         },
