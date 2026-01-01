@@ -333,7 +333,7 @@ class Web {
     }
 
     this.#proxyProcess = childProcess.spawn(binPath, [], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: env
     })
 
@@ -357,6 +357,12 @@ class Web {
 
     this.#proxyProcess.stderr.on('data', data => {
       error(`[Proxy Error] ${data.toString().trim()}`)
+    })
+
+    this.#proxyProcess.on('error', err => {
+      error(`Failed to spawn Go Proxy: ${err.message}`)
+      this.#proxyProcess = null
+      this.#proxyApiPort = null
     })
 
     this.#proxyProcess.on('exit', code => {
