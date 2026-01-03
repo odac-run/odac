@@ -16,6 +16,7 @@ class Hub {
     this.lastNetworkTime = null
     this.lastCpuStats = null
     this.checkCounter = 0
+    this.nextReconnectTime = 0
   }
 
   isAuthenticated() {
@@ -25,37 +26,22 @@ class Hub {
   check() {
     this.checkCounter = (this.checkCounter + 1) % POLLING_INTERVAL_SECONDS
 
-    if (this.websocket || this.checkCounter !== 0) {
-      return
-    }
-
     const hub = Odac.core('Config').config.hub
     if (!hub || !hub.token) {
       return
     }
 
-    const status = this.getSystemStatus()
-    status.timestamp = Math.floor(Date.now() / 1000)
+    if (!this.websocket) {
+      if (Date.now() >= this.nextReconnectTime) {
+        this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
+        this.connectWebSocket('wss://hub.odac.run/ws', hub.token)
+      }
+      return
+    }
 
-    this.call('status', status)
-      .then(response => {
-        if (!response.authenticated) {
-          log('Server not authenticated: %s', response.reason || 'unknown')
-          if (response.reason === 'token_invalid' || response.reason === 'signature_invalid') {
-            log('Authentication credentials invalid, clearing config')
-            delete Odac.core('Config').config.hub
-          }
-          return
-        }
-
-        if (response.websocket && !this.websocket) {
-          log('WebSocket requested by cloud')
-          this.connectWebSocket(response.websocketUrl, response.websocketToken)
-        }
-      })
-      .catch(error => {
-        log('Failed to report status: %s', error)
-      })
+    if (this.checkCounter === 0) {
+      this.sendWebSocketStatus()
+    }
   }
 
   connectWebSocket(url, token) {
@@ -86,6 +72,8 @@ class Hub {
       this.websocket.on('close', () => {
         log('WebSocket disconnected')
         this.websocket = null
+        // Reconnect after random delay (5-20s) to prevent thundering herd
+        this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
       })
 
       this.websocket.on('error', error => {
@@ -134,6 +122,10 @@ class Hub {
 
       if (message.type === 'disconnect') {
         log('Cloud requested disconnect: %s', message.reason || 'unknown')
+        if (message.reason === 'token_invalid' || message.reason === 'signature_invalid') {
+          log('Authentication credentials invalid, clearing config')
+          delete Odac.core('Config').config.hub
+        }
         this.disconnectWebSocket()
         return
       }
