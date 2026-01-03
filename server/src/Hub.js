@@ -39,9 +39,11 @@ class Hub {
       return
     }
 
+    /*
     if (this.checkCounter === 0) {
       this.sendWebSocketStatus()
     }
+    */
   }
 
   connectWebSocket(url, token) {
@@ -52,17 +54,19 @@ class Hub {
 
     try {
       const WebSocket = require('ws')
-      const wsUrl = `${url}?token=${token}`
 
       log('Connecting to WebSocket: %s', url)
-      this.websocket = new WebSocket(wsUrl, {
-        rejectUnauthorized: true
+      this.websocket = new WebSocket(url, {
+        rejectUnauthorized: true,
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
       })
 
       this.websocket.on('open', () => {
         log('WebSocket connected')
         this.websocketReconnectAttempts = 0
-        this.sendWebSocketStatus()
+        this.sendInitialHandshake()
       })
 
       this.websocket.on('message', data => {
@@ -91,6 +95,75 @@ class Hub {
       this.websocket.close()
       this.websocket = null
     }
+  }
+
+  async sendInitialHandshake() {
+    if (!this.websocket || this.websocket.readyState !== 1) {
+      return
+    }
+
+    let containers = []
+    if (Odac.server('Container').available) {
+      containers = await Odac.server('Container').list()
+    }
+
+    const formattedContainers = containers.map(c => ({
+      id: c.id,
+      name: c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown',
+      image: c.image,
+      state: c.state,
+      status: c.status,
+      created: c.created,
+      ports: (c.ports || []).map(p => ({
+        private: p.PrivatePort,
+        public: p.PublicPort,
+        type: p.Type
+      }))
+    }))
+
+    const cpus = os.cpus()
+    const system = {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      uptime: os.uptime(),
+      load: os.loadavg(),
+      memory: {
+        total: Math.floor(os.totalmem() / 1024),
+        free: Math.floor(os.freemem() / 1024)
+      },
+      cpu: {
+        count: cpus.length,
+        model: cpus.length > 0 ? cpus[0].model : 'unknown'
+      },
+      container_engine: Odac.server('Container').available
+    }
+
+    if (os.platform() === 'linux') {
+      const distro = this.getLinuxDistro()
+      if (distro && distro.name) {
+        system.release = `${distro.name} ${distro.version}`
+      }
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000)
+    const payload = {
+      type: 'connect_info',
+      data: {
+        system: system,
+        containers: formattedContainers
+      },
+      timestamp: timestamp
+    }
+
+    payload.signature = this.signWebSocketMessage({
+      type: payload.type,
+      data: payload.data,
+      timestamp: timestamp
+    })
+
+    this.websocket.send(JSON.stringify(payload))
   }
 
   sendWebSocketStatus() {

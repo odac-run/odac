@@ -405,6 +405,29 @@ class Container {
   }
 
   /**
+   * Lists all containers
+   * @returns {Promise<Array>}
+   */
+  async list() {
+    if (!this.available) return []
+    try {
+      const containers = await this.#docker.listContainers({all: true})
+      return containers.map(c => ({
+        id: c.Id.substring(0, 12),
+        names: c.Names,
+        image: c.Image,
+        state: c.State,
+        status: c.Status,
+        created: c.Created,
+        ports: c.Ports
+      }))
+    } catch (err) {
+      error(`Failed to list containers: ${err.message}`)
+      return []
+    }
+  }
+
+  /**
    * Returns the container IP address
    * @param {string} name
    * @returns {Promise<string|null>}
