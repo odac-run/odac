@@ -108,36 +108,43 @@ class Hub {
 
     const websites = Odac.core('Config').config.websites || {}
 
-    const formattedContainers = containers.map(c => {
-      const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
-      const app = {
-        type: 'service',
-        framework: c.image || 'unknown'
-      }
+    const services = Odac.core('Config').config.services || []
 
-      // Check if it's a website
-      if (websites[name]) {
-        app.type = 'website'
-        app.domain = name
-        // Future: Check package.json for framework (next.js, nuxt, etc)
-        app.framework = 'odac'
-      }
+    const formattedContainers = containers
+      .filter(c => {
+        const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+        return websites[name] || services.find(s => s.name === name)
+      })
+      .map(c => {
+        const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+        const app = {
+          type: 'service',
+          framework: c.image || 'unknown'
+        }
 
-      return {
-        id: c.id,
-        name: name,
-        image: c.image,
-        state: c.state,
-        status: c.status,
-        created: c.created,
-        app: app,
-        ports: (c.ports || []).map(p => ({
-          private: p.PrivatePort,
-          public: p.PublicPort,
-          type: p.Type
-        }))
-      }
-    })
+        // Check if it's a website
+        if (websites[name]) {
+          app.type = 'website'
+          app.domain = name
+          // Future: Check package.json for framework (next.js, nuxt, etc)
+          app.framework = 'odac'
+        }
+
+        return {
+          id: c.id,
+          name: name,
+          image: c.image,
+          state: c.state,
+          status: c.status,
+          created: c.created,
+          app: app,
+          ports: (c.ports || []).map(p => ({
+            private: p.PrivatePort,
+            public: p.PublicPort,
+            type: p.Type
+          }))
+        }
+      })
 
     const cpus = os.cpus()
     const system = {
