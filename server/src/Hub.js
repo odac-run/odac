@@ -39,11 +39,10 @@ class Hub {
       return
     }
 
-    /*
-    if (this.checkCounter === 0) {
-      this.sendWebSocketStatus()
+    // TEST MODE: Send full data every 10 seconds
+    if (this.checkCounter % 10 === 0) {
+      this.sendInitialHandshake()
     }
-    */
   }
 
   connectWebSocket(url, token) {
@@ -107,19 +106,38 @@ class Hub {
       containers = await Odac.server('Container').list()
     }
 
-    const formattedContainers = containers.map(c => ({
-      id: c.id,
-      name: c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown',
-      image: c.image,
-      state: c.state,
-      status: c.status,
-      created: c.created,
-      ports: (c.ports || []).map(p => ({
-        private: p.PrivatePort,
-        public: p.PublicPort,
-        type: p.Type
-      }))
-    }))
+    const websites = Odac.core('Config').config.websites || {}
+
+    const formattedContainers = containers.map(c => {
+      const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+      const app = {
+        type: 'service',
+        framework: c.image || 'unknown'
+      }
+
+      // Check if it's a website
+      if (websites[name]) {
+        app.type = 'website'
+        app.domain = name
+        // Future: Check package.json for framework (next.js, nuxt, etc)
+        app.framework = 'odac'
+      }
+
+      return {
+        id: c.id,
+        name: name,
+        image: c.image,
+        state: c.state,
+        status: c.status,
+        created: c.created,
+        app: app,
+        ports: (c.ports || []).map(p => ({
+          private: p.PrivatePort,
+          public: p.PublicPort,
+          type: p.Type
+        }))
+      }
+    })
 
     const cpus = os.cpus()
     const system = {
@@ -218,6 +236,8 @@ class Hub {
     }
 
     const payload = JSON.stringify({type: message.type, data: message.data, timestamp: message.timestamp})
+    // DEBUG: Log the payload being signed to debug HMAC issues
+    // log('Signing payload: %s', payload)
     return nodeCrypto.createHmac('sha256', hub.secret).update(payload).digest('hex')
   }
 
