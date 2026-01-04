@@ -97,6 +97,13 @@ class Api {
         }
       })
 
+      socket.on('error', error => {
+        if (error.code !== 'ECONNRESET') {
+          Odac.core('Log').log('Api', `Socket error: ${error.message}`)
+        }
+        delete this.#connections[id]
+      })
+
       socket.on('close', () => {
         delete this.#connections[id]
       })
