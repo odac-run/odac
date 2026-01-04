@@ -5,8 +5,6 @@ const nodeCrypto = require('crypto')
 const os = require('os')
 const fs = require('fs')
 
-const POLLING_INTERVAL_SECONDS = 60
-
 class Hub {
   constructor() {
     this.websocket = null
@@ -17,6 +15,8 @@ class Hub {
     this.lastCpuStats = null
     this.checkCounter = 0
     this.nextReconnectTime = 0
+    this.statsInterval = 60
+    this.handshakeInterval = 60
   }
 
   isAuthenticated() {
@@ -24,7 +24,10 @@ class Hub {
   }
 
   check() {
-    this.checkCounter = (this.checkCounter + 1) % POLLING_INTERVAL_SECONDS
+    this.checkCounter = this.checkCounter + 1
+
+    // Reset counter to avoid overflow, though highly unlikely with basic ints
+    if (this.checkCounter > 3600) this.checkCounter = 1
 
     const hub = Odac.core('Config').config.hub
     if (!hub || !hub.token) {
@@ -39,8 +42,15 @@ class Hub {
       return
     }
 
-    // TEST MODE: Send full data every 10 seconds
-    if (this.checkCounter % 10 === 0) {
+    // Dynamic stats interval
+    if (this.checkCounter % this.statsInterval === 0) {
+      log('Sending container stats (Interval: %ds)...', this.statsInterval)
+      this.sendContainerStats()
+    }
+
+    // Dynamic handshake/full info interval
+    if (this.checkCounter % this.handshakeInterval === 0) {
+      log('Sending initial handshake (Interval: %ds)...', this.handshakeInterval)
       this.sendInitialHandshake()
     }
   }
@@ -209,6 +219,55 @@ class Hub {
     this.websocket.send(JSON.stringify(message))
   }
 
+  async sendContainerStats() {
+    if (!this.websocket || this.websocket.readyState !== 1) {
+      return
+    }
+
+    if (!Odac.server('Container').available) {
+      return
+    }
+
+    const containers = await Odac.server('Container').list()
+    const websites = Odac.core('Config').config.websites || {}
+    const services = Odac.core('Config').config.services || []
+
+    // Filter relevant containers
+    const relevantContainers = containers.filter(c => {
+      const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+      return websites[name] || services.find(s => s.name === name)
+    })
+
+    if (relevantContainers.length === 0) return
+
+    const statsData = {}
+
+    for (const c of relevantContainers) {
+      const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+      const stats = await Odac.server('Container').getStats(c.id)
+      if (stats) {
+        statsData[name] = stats
+      }
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000)
+    const payload = {
+      type: 'container_stats',
+      data: statsData,
+      timestamp: timestamp
+    }
+
+    payload.signature = this.signWebSocketMessage({
+      type: payload.type,
+      data: payload.data,
+      timestamp: timestamp
+    })
+
+    if (this.websocket && this.websocket.readyState === 1) {
+      this.websocket.send(JSON.stringify(payload))
+    }
+  }
+
   handleWebSocketMessage(data) {
     try {
       const message = JSON.parse(data.toString())
@@ -272,7 +331,56 @@ class Hub {
   }
 
   processCommand(command) {
+    if (!command || !command.action) {
+      log('Invalid command structure received')
+      return
+    }
+
     log('Processing command: %s', command.action)
+
+    switch (command.action) {
+      case 'configure':
+        this.#handleConfigure(command.payload)
+        break
+      default:
+        log('Unknown command action: %s', command.action)
+    }
+  }
+
+  #handleConfigure(payload) {
+    if (!this.validateSchema(payload, {intervals: 'object'})) {
+      log('Invalid configure payload')
+      return
+    }
+
+    const {intervals} = payload
+    if (intervals) {
+      if (intervals.stats) this.statsInterval = intervals.stats
+      if (intervals.handshake) this.handshakeInterval = intervals.handshake
+      log('Configuration updated: stats=%ds, handshake=%ds', this.statsInterval, this.handshakeInterval)
+    }
+  }
+
+  /**
+   * Validates data against a simple schema
+   * @param {Object} data - Data to validate
+   * @param {Object} schema - Key-Type mapping (e.g. {token: 'string', count: 'number'})
+   * @returns {boolean}
+   */
+  validateSchema(data, schema) {
+    if (!data || typeof data !== 'object') return false
+
+    for (const [key, type] of Object.entries(schema)) {
+      if (data[key] === undefined) {
+        log('Validation failed: Missing key %s', key)
+        return false
+      }
+      if (typeof data[key] !== type) {
+        log('Validation failed: Key %s expected %s, got %s', key, type, typeof data[key])
+        return false
+      }
+    }
+    return true
   }
 
   getSystemStatus() {
@@ -575,6 +683,11 @@ class Hub {
     try {
       log('Calling hub API for authentication...')
       const response = await this.call('auth', data)
+
+      if (!this.validateSchema(response, {token: 'string', secret: 'string'})) {
+        throw new Error(__('Invalid authentication response format'))
+      }
+
       let token = response.token
       let secret = response.secret
       log('Token received: %s...', token ? token.substring(0, 8) : 'none')
