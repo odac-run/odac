@@ -50,6 +50,14 @@ class DNS {
   init() {
     this.#udp = dns.createServer()
     this.#tcp = dns.createTCPServer()
+    // Patch native-dns TCP server to handle connection errors
+    if (this.#tcp._socket) {
+      this.#tcp._socket.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('DNS TCP Socket Error:', err.message)
+        })
+      })
+    }
     this.#getExternalIP()
     this.#publish()
   }

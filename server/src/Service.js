@@ -458,6 +458,9 @@ class Service {
   #isPortInUse(port) {
     return new Promise(resolve => {
       const server = net.createServer()
+      server.on('connection', socket => {
+        socket.on('error', () => {})
+      })
       server.once('error', err => {
         if (err.code === 'EADDRINUSE') resolve(true)
         else resolve(false)
