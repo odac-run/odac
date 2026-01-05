@@ -17,6 +17,8 @@ class Hub {
     this.nextReconnectTime = 0
     this.statsInterval = 60
     this.handshakeInterval = 60
+    this.pingInterval = null
+    this.isAlive = false
   }
 
   isAuthenticated() {
@@ -75,7 +77,13 @@ class Hub {
       this.websocket.on('open', () => {
         log('WebSocket connected')
         this.websocketReconnectAttempts = 0
+        this.isAlive = true
+        this.startHeartbeat()
         this.sendInitialHandshake()
+      })
+
+      this.websocket.on('pong', () => {
+        this.isAlive = true
       })
 
       this.websocket.on('message', data => {
@@ -84,6 +92,7 @@ class Hub {
 
       this.websocket.on('close', () => {
         log('WebSocket disconnected')
+        this.stopHeartbeat()
         this.websocket = null
         // Reconnect after random delay (5-20s) to prevent thundering herd
         this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
@@ -101,8 +110,35 @@ class Hub {
   disconnectWebSocket() {
     if (this.websocket) {
       log('Disconnecting WebSocket')
+      this.stopHeartbeat()
       this.websocket.close()
       this.websocket = null
+    }
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat()
+    this.pingInterval = setInterval(() => {
+      if (!this.websocket) return
+
+      if (this.isAlive === false) {
+        log('WebSocket connection dead (no pong), terminating...')
+        this.websocket.terminate()
+        return
+      }
+
+      this.isAlive = false
+      // WebSocket.OPEN is 1
+      if (this.websocket.readyState === 1) {
+        this.websocket.ping()
+      }
+    }, 30000)
+  }
+
+  stopHeartbeat() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
     }
   }
 
