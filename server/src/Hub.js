@@ -234,7 +234,9 @@ class Hub {
       timestamp: timestamp
     })
 
-    this.websocket.send(JSON.stringify(payload))
+    if (this.websocket && this.websocket.readyState === 1) {
+      this.websocket.send(JSON.stringify(payload))
+    }
   }
 
   sendWebSocketStatus() {
