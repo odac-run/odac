@@ -29,6 +29,7 @@ class Firewall {
         windowMs: config.rateLimit?.windowMs ?? 60000, // 1 minute
         max: config.rateLimit?.max ?? 300 // limit each IP to 300 requests per windowMs
       },
+      maxWsPerIp: config.maxWsPerIp ?? 50, // Default 50 concurrent WS per IP
       blacklist: new Set(config.blacklist || []),
       whitelist: new Set(config.whitelist || [])
     }

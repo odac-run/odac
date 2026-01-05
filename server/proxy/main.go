@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +21,17 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("Starting ODAC Proxy...")
+
+	// Increase file descriptor limit
+	var rLimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err == nil {
+		rLimit.Cur = rLimit.Max
+		if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+			log.Printf("Error setting rlimit: %v", err)
+		} else {
+			log.Printf("File descriptor limit set to: %d", rLimit.Cur)
+		}
+	}
 
 	// Initialize components
 	cfg := config.Firewall{Enabled: true} // Default
@@ -36,8 +49,8 @@ func main() {
 		}
 	}()
 
-	// Stack middleware: Firewall -> Proxy
-	handler := fw.Check(prx)
+	// Stack middleware: Firewall -> Timeout -> Proxy
+	handler := fw.Check(timeoutMiddleware(prx))
 
 	// Check for Socket Environment Variable
 	socketPath := os.Getenv("ODAC_SOCKET_PATH")
@@ -97,7 +110,7 @@ func main() {
 			Addr:         ":80",
 			Handler:      handler,
 			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			// WriteTimeout: 0, // Removed for WebSockets
 			IdleTimeout:  120 * time.Second,
 		}
 		if err := server.ListenAndServe(); err != nil {
@@ -128,7 +141,7 @@ func main() {
 			Handler:      handler,
 			TLSConfig:    tlsConfig,
 			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			// WriteTimeout: 0, // Removed for WebSockets
 			IdleTimeout:  120 * time.Second,
 		}
 
@@ -143,4 +156,30 @@ func main() {
 	<-c
 
 	log.Println("ODAC Proxy shutting down...")
+}
+
+// timeoutMiddleware handles timeouts for regular HTTP requests while allowing
+// infinite duration for WebSockets and SSE (Server-Sent Events).
+func timeoutMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Check for WebSocket Upgrade
+		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. Check for Server-Sent Events (SSE)
+		if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. Regular HTTP Requests
+		// Apply a 30-second hard limit to prevent zombie connections.
+		// If the backend doesn't respond in time, context will be canceled.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
