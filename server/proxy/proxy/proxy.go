@@ -184,12 +184,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.mu.RLock()
-	_, exists := p.resolveWebsite(host)
+	website, exists := p.resolveWebsite(host)
+	// Check SSL availability (Site-specific or Global)
+	hasSSL := (website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "") || 
+			  (p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "")
 	p.mu.RUnlock()
 
 	if !exists {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("Odac Server"))
+		w.Write([]byte("ODAC Server"))
+		return
+	}
+
+	// Security: Force HTTPS if SSL is configured and available
+	// Exception: Do not force HTTPS for IPs and localhost
+	isIP := net.ParseIP(host) != nil
+	isLocalhost := host == "localhost"
+
+	if r.TLS == nil && hasSSL && !isIP && !isLocalhost {
+		targetHost := r.Host
+		if strings.Contains(targetHost, ":") {
+			targetHost, _, _ = net.SplitHostPort(targetHost)
+		}
+		url := "https://" + targetHost + r.URL.RequestURI()
+		http.Redirect(w, r, url, http.StatusMovedPermanently)
 		return
 	}
 
