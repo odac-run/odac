@@ -47,6 +47,12 @@ func (f *Firewall) UpdateConfig(cfg config.Firewall) {
 	f.whitelistMap = sliceToMap(cfg.Whitelist)
 }
 
+func (f *Firewall) GetRequestTimeout() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.config.RequestTimeout
+}
+
 func (f *Firewall) startCleanupLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	for {

@@ -49,8 +49,10 @@ func main() {
 		}
 	}()
 
-	// Stack middleware: Firewall -> Timeout -> Proxy
-	handler := fw.Check(timeoutMiddleware(prx))
+	// Stack middleware: Firewall -> Proxy
+	// We removed timeoutMiddleware because robust timeout handling is now done 
+	// via http.Transport (ResponseHeaderTimeout) and http.Server (IdleTimeout, ReadHeaderTimeout).
+	handler := fw.Check(prx)
 
 	// Check for Socket Environment Variable
 	socketPath := os.Getenv("ODAC_SOCKET_PATH")
@@ -107,11 +109,12 @@ func main() {
 	go func() {
 		log.Println("Starting HTTP server on :80")
 		server := &http.Server{
-			Addr:         ":80",
-			Handler:      handler,
-			ReadTimeout:  10 * time.Second,
-			// WriteTimeout: 0, // Removed for WebSockets
-			IdleTimeout:  120 * time.Second,
+			Addr:              ":80",
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
+			ReadTimeout:       0,                // Unlimited for large uploads (rely on TCP keepalive)
+			WriteTimeout:      0,                // Unlimited for large downloads (streaming)
+			IdleTimeout:       120 * time.Second,
 		}
 		if err := server.ListenAndServe(); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
@@ -137,12 +140,13 @@ func main() {
 		}
 
 		server := &http.Server{
-			Addr:         ":443",
-			Handler:      handler,
-			TLSConfig:    tlsConfig,
-			ReadTimeout:  10 * time.Second,
-			// WriteTimeout: 0, // Removed for WebSockets
-			IdleTimeout:  120 * time.Second,
+			Addr:              ":443",
+			Handler:           handler,
+			TLSConfig:         tlsConfig,
+			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
+			ReadTimeout:       0,                // Unlimited for large uploads
+			WriteTimeout:      0,                // Unlimited for large downloads
+			IdleTimeout:       120 * time.Second,
 		}
 
 		if err := server.ListenAndServeTLS("", ""); err != nil {
@@ -158,28 +162,4 @@ func main() {
 	log.Println("ODAC Proxy shutting down...")
 }
 
-// timeoutMiddleware handles timeouts for regular HTTP requests while allowing
-// infinite duration for WebSockets and SSE (Server-Sent Events).
-func timeoutMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 1. Check for WebSocket Upgrade
-		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
-			next.ServeHTTP(w, r)
-			return
-		}
 
-		// 2. Check for Server-Sent Events (SSE)
-		if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// 3. Regular HTTP Requests
-		// Apply a 30-second hard limit to prevent zombie connections.
-		// If the backend doesn't respond in time, context will be canceled.
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}

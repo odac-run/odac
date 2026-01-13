@@ -33,10 +33,11 @@ type SSL struct {
 type Firewall struct {
 	Enabled    bool           `json:"enabled"`
 	RateLimit  RateLimit      `json:"rateLimit"`
-	MaxWSPerIP int            `json:"maxWsPerIp"` // Max concurrent WebSockets per IP
-	Blacklist  []string       `json:"blacklist"`
-	Whitelist  []string       `json:"whitelist"`
-}
+	MaxWSPerIP     int            `json:"maxWsPerIp"`     // Max concurrent WebSockets per IP
+	RequestTimeout int            `json:"requestTimeout"` // Timeout for regular HTTP requests in seconds
+	Blacklist      []string       `json:"blacklist"`
+	Whitelist      []string       `json:"whitelist"`
+}}
 
 // RateLimit configuration
 type RateLimit struct {
