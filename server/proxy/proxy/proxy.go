@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"log"
 	"net"
 	"net/http"
@@ -77,6 +79,23 @@ func (p *Proxy) UpdateConfig(websites map[string]config.Website, globalSSL *conf
 }
 
 func (p *Proxy) director(req *http.Request) {
+	req.Header.Del("X-Forwarded-For")
+	req.Header.Del("X-Real-IP")
+	req.Header.Del("X-Forwarded-Proto")
+	req.Header.Del("Proxy")
+	req.Header.Del("Client-IP")
+	req.Header.Del("X-Remote-IP")
+	req.Header.Del("X-Remote-Addr")
+	req.Header.Del("X-Client-IP")
+	req.Header.Del("X-Originating-IP")
+
+	if req.Header.Get("X-Request-ID") == "" {
+		uuid := make([]byte, 16)
+		if _, err := rand.Read(uuid); err == nil {
+			req.Header.Set("X-Request-ID", hex.EncodeToString(uuid))
+		}
+	}
+
 	host := req.Host
 	if strings.Contains(host, ":") {
 		host, _, _ = net.SplitHostPort(host)
@@ -95,28 +114,27 @@ func (p *Proxy) director(req *http.Request) {
 
 	if website.ContainerIP != "" {
 		targetIP = website.ContainerIP
-		// Use internal container port instead of host-mapped port (60000+)
-		// when communicating via Docker network IP
 		targetPort = internalContainerPort
 	}
 	
-	// Important: req.URL.Scheme is often empty for incoming server requests
 	req.URL.Scheme = "http"
 	req.URL.Host = net.JoinHostPort(targetIP, targetPort)
 	
 	if _, ok := req.Header["User-Agent"]; !ok {
-		// explicitly disable User-Agent so it's not set to default value
 		req.Header.Set("User-Agent", "")
 	}
 
-	// Add ODAC headers
 	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err == nil {
 		req.Header.Set("X-Odac-Connection-RemoteAddress", remoteIP)
+		req.Header.Set("X-Real-IP", remoteIP)
 	}
 	
 	if req.TLS != nil {
 		req.Header.Set("X-Odac-Connection-Ssl", "true")
+		req.Header.Set("X-Forwarded-Proto", "https")
+	} else {
+		req.Header.Set("X-Forwarded-Proto", "http")
 	}
 
 	if strings.ToLower(req.Header.Get("Connection")) == "upgrade" &&
