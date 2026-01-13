@@ -37,7 +37,7 @@ type Firewall struct {
 	RequestTimeout int            `json:"requestTimeout"` // Timeout for regular HTTP requests in seconds
 	Blacklist      []string       `json:"blacklist"`
 	Whitelist      []string       `json:"whitelist"`
-}}
+}
 
 // RateLimit configuration
 type RateLimit struct {

@@ -67,6 +67,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "lint:go": "cd server/proxy && go fmt ./... && go vet ./...",
     "prepare": "husky || true",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
@@ -80,6 +81,9 @@
       "eslint --fix",
       "prettier --write",
       "jest --bail --findRelatedTests --passWithNoTests"
+    ],
+    "*.go": [
+      "cd server/proxy && go fmt ./... && go vet ./..."
     ]
   }
 }
