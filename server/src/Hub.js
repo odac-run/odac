@@ -5,8 +5,6 @@ const nodeCrypto = require('crypto')
 const os = require('os')
 const fs = require('fs')
 
-const POLLING_INTERVAL_SECONDS = 60
-
 class Hub {
   constructor() {
     this.websocket = null
@@ -16,6 +14,11 @@ class Hub {
     this.lastNetworkTime = null
     this.lastCpuStats = null
     this.checkCounter = 0
+    this.nextReconnectTime = 0
+    this.statsInterval = 60
+    this.handshakeInterval = 60
+    this.pingInterval = null
+    this.isAlive = false
   }
 
   isAuthenticated() {
@@ -23,39 +26,35 @@ class Hub {
   }
 
   check() {
-    this.checkCounter = (this.checkCounter + 1) % POLLING_INTERVAL_SECONDS
+    this.checkCounter = this.checkCounter + 1
 
-    if (this.websocket || this.checkCounter !== 0) {
-      return
-    }
+    // Reset counter to avoid overflow, though highly unlikely with basic ints
+    if (this.checkCounter > 3600) this.checkCounter = 1
 
     const hub = Odac.core('Config').config.hub
     if (!hub || !hub.token) {
       return
     }
 
-    const status = this.getSystemStatus()
-    status.timestamp = Math.floor(Date.now() / 1000)
+    if (!this.websocket) {
+      if (Date.now() >= this.nextReconnectTime) {
+        this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
+        this.connectWebSocket('wss://hub.odac.run/ws', hub.token)
+      }
+      return
+    }
 
-    this.call('status', status)
-      .then(response => {
-        if (!response.authenticated) {
-          log('Server not authenticated: %s', response.reason || 'unknown')
-          if (response.reason === 'token_invalid' || response.reason === 'signature_invalid') {
-            log('Authentication credentials invalid, clearing config')
-            delete Odac.core('Config').config.hub
-          }
-          return
-        }
+    // Dynamic stats interval
+    if (this.checkCounter % this.statsInterval === 0) {
+      log('Sending container stats (Interval: %ds)...', this.statsInterval)
+      this.sendContainerStats()
+    }
 
-        if (response.websocket && !this.websocket) {
-          log('WebSocket requested by cloud')
-          this.connectWebSocket(response.websocketUrl, response.websocketToken)
-        }
-      })
-      .catch(error => {
-        log('Failed to report status: %s', error)
-      })
+    // Dynamic handshake/full info interval
+    if (this.checkCounter % this.handshakeInterval === 0) {
+      log('Sending initial handshake (Interval: %ds)...', this.handshakeInterval)
+      this.sendInitialHandshake()
+    }
   }
 
   connectWebSocket(url, token) {
@@ -66,17 +65,25 @@ class Hub {
 
     try {
       const WebSocket = require('ws')
-      const wsUrl = `${url}?token=${token}`
 
       log('Connecting to WebSocket: %s', url)
-      this.websocket = new WebSocket(wsUrl, {
-        rejectUnauthorized: true
+      this.websocket = new WebSocket(url, {
+        rejectUnauthorized: true,
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
       })
 
       this.websocket.on('open', () => {
         log('WebSocket connected')
         this.websocketReconnectAttempts = 0
-        this.sendWebSocketStatus()
+        this.isAlive = true
+        this.startHeartbeat()
+        this.sendInitialHandshake()
+      })
+
+      this.websocket.on('pong', () => {
+        this.isAlive = true
       })
 
       this.websocket.on('message', data => {
@@ -85,7 +92,10 @@ class Hub {
 
       this.websocket.on('close', () => {
         log('WebSocket disconnected')
+        this.stopHeartbeat()
         this.websocket = null
+        // Reconnect after random delay (5-20s) to prevent thundering herd
+        this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
       })
 
       this.websocket.on('error', error => {
@@ -100,8 +110,132 @@ class Hub {
   disconnectWebSocket() {
     if (this.websocket) {
       log('Disconnecting WebSocket')
+      this.stopHeartbeat()
       this.websocket.close()
       this.websocket = null
+    }
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat()
+    this.pingInterval = setInterval(() => {
+      if (!this.websocket) return
+
+      if (this.isAlive === false) {
+        log('WebSocket connection dead (no pong), terminating...')
+        this.websocket.terminate()
+        return
+      }
+
+      this.isAlive = false
+      // WebSocket.OPEN is 1
+      if (this.websocket.readyState === 1) {
+        this.websocket.ping()
+      }
+    }, 30000)
+  }
+
+  stopHeartbeat() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
+  }
+
+  async sendInitialHandshake() {
+    if (!this.websocket || this.websocket.readyState !== 1) {
+      return
+    }
+
+    let containers = []
+    if (Odac.server('Container').available) {
+      containers = await Odac.server('Container').list()
+    }
+
+    const websites = Odac.core('Config').config.websites || {}
+
+    const services = Odac.core('Config').config.services || []
+
+    const formattedContainers = containers
+      .filter(c => {
+        const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+        return websites[name] || services.find(s => s.name === name)
+      })
+      .map(c => {
+        const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+        const app = {
+          type: 'service',
+          framework: c.image || 'unknown'
+        }
+
+        // Check if it's a website
+        if (websites[name]) {
+          app.type = 'website'
+          app.domain = name
+          // Future: Check package.json for framework (next.js, nuxt, etc)
+          app.framework = 'odac'
+        }
+
+        return {
+          id: c.id,
+          name: name,
+          image: c.image,
+          state: c.state,
+          status: c.status,
+          created: c.created,
+          app: app,
+          ports: (c.ports || []).map(p => ({
+            private: p.PrivatePort,
+            public: p.PublicPort,
+            type: p.Type
+          }))
+        }
+      })
+
+    const cpus = os.cpus()
+    const system = {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      uptime: os.uptime(),
+      load: os.loadavg(),
+      memory: {
+        total: Math.floor(os.totalmem() / 1024),
+        free: Math.floor(os.freemem() / 1024)
+      },
+      cpu: {
+        count: cpus.length,
+        model: cpus.length > 0 ? cpus[0].model : 'unknown'
+      },
+      container_engine: Odac.server('Container').available
+    }
+
+    if (os.platform() === 'linux') {
+      const distro = this.getLinuxDistro()
+      if (distro && distro.name) {
+        system.release = `${distro.name} ${distro.version}`
+      }
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000)
+    const payload = {
+      type: 'connect_info',
+      data: {
+        system: system,
+        containers: formattedContainers
+      },
+      timestamp: timestamp
+    }
+
+    payload.signature = this.signWebSocketMessage({
+      type: payload.type,
+      data: payload.data,
+      timestamp: timestamp
+    })
+
+    if (this.websocket && this.websocket.readyState === 1) {
+      this.websocket.send(JSON.stringify(payload))
     }
   }
 
@@ -123,6 +257,55 @@ class Hub {
     this.websocket.send(JSON.stringify(message))
   }
 
+  async sendContainerStats() {
+    if (!this.websocket || this.websocket.readyState !== 1) {
+      return
+    }
+
+    if (!Odac.server('Container').available) {
+      return
+    }
+
+    const containers = await Odac.server('Container').list()
+    const websites = Odac.core('Config').config.websites || {}
+    const services = Odac.core('Config').config.services || []
+
+    // Filter relevant containers
+    const relevantContainers = containers.filter(c => {
+      const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+      return websites[name] || services.find(s => s.name === name)
+    })
+
+    if (relevantContainers.length === 0) return
+
+    const statsData = {}
+
+    for (const c of relevantContainers) {
+      const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
+      const stats = await Odac.server('Container').getStats(c.id)
+      if (stats) {
+        statsData[name] = stats
+      }
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000)
+    const payload = {
+      type: 'container_stats',
+      data: statsData,
+      timestamp: timestamp
+    }
+
+    payload.signature = this.signWebSocketMessage({
+      type: payload.type,
+      data: payload.data,
+      timestamp: timestamp
+    })
+
+    if (this.websocket && this.websocket.readyState === 1) {
+      this.websocket.send(JSON.stringify(payload))
+    }
+  }
+
   handleWebSocketMessage(data) {
     try {
       const message = JSON.parse(data.toString())
@@ -134,6 +317,10 @@ class Hub {
 
       if (message.type === 'disconnect') {
         log('Cloud requested disconnect: %s', message.reason || 'unknown')
+        if (message.reason === 'token_invalid' || message.reason === 'signature_invalid') {
+          log('Authentication credentials invalid, clearing config')
+          delete Odac.core('Config').config.hub
+        }
         this.disconnectWebSocket()
         return
       }
@@ -153,6 +340,8 @@ class Hub {
     }
 
     const payload = JSON.stringify({type: message.type, data: message.data, timestamp: message.timestamp})
+    // DEBUG: Log the payload being signed to debug HMAC issues
+    // log('Signing payload: %s', payload)
     return nodeCrypto.createHmac('sha256', hub.secret).update(payload).digest('hex')
   }
 
@@ -180,7 +369,56 @@ class Hub {
   }
 
   processCommand(command) {
+    if (!command || !command.action) {
+      log('Invalid command structure received')
+      return
+    }
+
     log('Processing command: %s', command.action)
+
+    switch (command.action) {
+      case 'configure':
+        this.#handleConfigure(command.payload)
+        break
+      default:
+        log('Unknown command action: %s', command.action)
+    }
+  }
+
+  #handleConfigure(payload) {
+    if (!this.validateSchema(payload, {intervals: 'object'})) {
+      log('Invalid configure payload')
+      return
+    }
+
+    const {intervals} = payload
+    if (intervals) {
+      if (intervals.stats) this.statsInterval = intervals.stats
+      if (intervals.handshake) this.handshakeInterval = intervals.handshake
+      log('Configuration updated: stats=%ds, handshake=%ds', this.statsInterval, this.handshakeInterval)
+    }
+  }
+
+  /**
+   * Validates data against a simple schema
+   * @param {Object} data - Data to validate
+   * @param {Object} schema - Key-Type mapping (e.g. {token: 'string', count: 'number'})
+   * @returns {boolean}
+   */
+  validateSchema(data, schema) {
+    if (!data || typeof data !== 'object') return false
+
+    for (const [key, type] of Object.entries(schema)) {
+      if (data[key] === undefined) {
+        log('Validation failed: Missing key %s', key)
+        return false
+      }
+      if (typeof data[key] !== type) {
+        log('Validation failed: Key %s expected %s, got %s', key, type, typeof data[key])
+        return false
+      }
+    }
+    return true
   }
 
   getSystemStatus() {
@@ -483,6 +721,11 @@ class Hub {
     try {
       log('Calling hub API for authentication...')
       const response = await this.call('auth', data)
+
+      if (!this.validateSchema(response, {token: 'string', secret: 'string'})) {
+        throw new Error(__('Invalid authentication response format'))
+      }
+
       let token = response.token
       let secret = response.secret
       log('Token received: %s...', token ? token.substring(0, 8) : 'none')

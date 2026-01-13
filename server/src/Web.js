@@ -69,6 +69,9 @@ class Web {
   checkPort(port) {
     return new Promise(resolve => {
       const server = net.createServer()
+      server.on('connection', socket => {
+        socket.on('error', () => {})
+      })
       server.once('error', () => resolve(false))
       server.once('listening', () => {
         server.close()

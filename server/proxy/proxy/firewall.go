@@ -16,6 +16,7 @@ type Firewall struct {
 	blacklistMap  map[string]struct{}
 	whitelistMap  map[string]struct{}
 	requestCounts map[string]*requestRecord
+	wsCounts      map[string]int // Active WebSocket connections per IP
 	mu            sync.RWMutex
 	stopCleanup   chan struct{}
 }
@@ -31,6 +32,7 @@ func NewFirewall(cfg config.Firewall) *Firewall {
 		blacklistMap:  sliceToMap(cfg.Blacklist),
 		whitelistMap:  sliceToMap(cfg.Whitelist),
 		requestCounts: make(map[string]*requestRecord),
+		wsCounts:      make(map[string]int),
 		stopCleanup:   make(chan struct{}),
 	}
 	go f.startCleanupLoop()
@@ -43,6 +45,12 @@ func (f *Firewall) UpdateConfig(cfg config.Firewall) {
 	f.config = cfg
 	f.blacklistMap = sliceToMap(cfg.Blacklist)
 	f.whitelistMap = sliceToMap(cfg.Whitelist)
+}
+
+func (f *Firewall) GetRequestTimeout() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.config.RequestTimeout
 }
 
 func (f *Firewall) startCleanupLoop() {
@@ -154,6 +162,35 @@ func (f *Firewall) Check(next http.Handler) http.Handler {
 				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 				return
 			}
+		}
+
+
+		// WebSocket Connection Limit
+		isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+		
+		if isWebSocket && f.config.MaxWSPerIP > 0 {
+			f.mu.Lock()
+			currentWS := f.wsCounts[ip]
+			
+			if currentWS >= f.config.MaxWSPerIP {
+				f.mu.Unlock()
+				log.Printf("Blocked WebSocket from %s: Max concurrent connections (%d) reached", ip, f.config.MaxWSPerIP)
+				http.Error(w, "Too Many WebSocket Connections", http.StatusTooManyRequests)
+				return
+			}
+			
+			f.wsCounts[ip]++
+			f.mu.Unlock()
+			
+			// Decrement on completion
+			defer func() {
+				f.mu.Lock()
+				f.wsCounts[ip]--
+				if f.wsCounts[ip] <= 0 {
+					delete(f.wsCounts, ip)
+				}
+				f.mu.Unlock()
+			}()
 		}
 
 		next.ServeHTTP(w, r)

@@ -86,10 +86,10 @@ describe('Hub', () => {
       expect(Hub.checkCounter).toBe(2)
     })
 
-    it('should reset counter after reaching 60', () => {
-      Hub.checkCounter = 59
+    it('should reset counter after reaching 3600', () => {
+      Hub.checkCounter = 3600
       Hub.check()
-      expect(Hub.checkCounter).toBe(0)
+      expect(Hub.checkCounter).toBe(1)
     })
 
     it('should skip API call when counter is not 0', async () => {
@@ -101,8 +101,9 @@ describe('Hub', () => {
       })
 
       Hub.checkCounter = 1
+      Hub.websocket = {readyState: 1, send: jest.fn()}
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      expect(Hub.websocket.send).not.toHaveBeenCalled()
     })
 
     it('should skip API call when websocket is connected', async () => {
@@ -113,10 +114,11 @@ describe('Hub', () => {
         }
       })
 
-      Hub.websocket = {readyState: 1}
+      Hub.websocket = {readyState: 1, send: jest.fn()}
       Hub.checkCounter = 0
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      // Interval is 60, checkCounter becomes 1, so 1 % 60 != 0
+      expect(Hub.websocket.send).not.toHaveBeenCalled()
     })
   })
 
@@ -131,7 +133,8 @@ describe('Hub', () => {
       })
 
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      await Hub.check()
+      expect(Hub.websocket).toBeNull()
     })
 
     it('should return early if no token', async () => {
@@ -139,106 +142,121 @@ describe('Hub', () => {
         config: {hub: {}}
       })
 
+      // Mock call to ensure no connection attempt
+      const WebSocket = require('ws')
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      expect(WebSocket).not.toHaveBeenCalled()
     })
 
-    it('should send status to hub when counter is 0', async () => {
+    it('should send status to hub when interval matches', async () => {
       jest.useRealTimers()
 
       mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
-          server: {started: Date.now()}
+          server: {started: Date.now()},
+          websites: {'test-container': {}},
+          services: []
         }
       })
 
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {authenticated: true}
-        }
+      mockOdac.setMock('server', 'Container', {
+        available: true,
+        list: jest.fn().mockResolvedValue([{id: '123', names: ['/test-container'], image: 'image'}]),
+        getStats: jest.fn().mockResolvedValue({cpu: 10, memory: 100})
       })
 
+      Hub.websocket = {
+        readyState: 1,
+        send: jest.fn(),
+        on: jest.fn()
+      }
+
+      // statsInterval is 60
       Hub.checkCounter = 59
-      Hub.check()
+      await Hub.check()
 
-      await new Promise(resolve => setImmediate(resolve))
-      expect(axios.post).toHaveBeenCalled()
+      // Wait for async operations to complete
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      expect(Hub.websocket.send).toHaveBeenCalled()
+
+      const sendCalls = Hub.websocket.send.mock.calls
+      const hasStats = sendCalls.some(call => call[0].includes('container_stats'))
+      expect(hasStats).toBe(true)
 
       jest.useFakeTimers()
     })
 
-    it('should handle authentication failure', async () => {
-      jest.useRealTimers()
-
+    it('should connect to websocket if not connected', async () => {
       mockOdac.setMock('core', 'Config', {
         config: {
-          hub: {token: 'invalid-token', secret: 'test-secret'},
-          server: {started: Date.now()}
+          hub: {token: 'test-token', secret: 'test-secret'}
         }
       })
 
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {authenticated: false, reason: 'token_invalid'}
-        }
-      })
+      const WebSocket = require('ws')
+      WebSocket.mockClear()
 
-      Hub.checkCounter = 59
-      Hub.check()
+      Hub.websocket = null
+      Hub.nextReconnectTime = 0
 
-      await new Promise(resolve => setImmediate(resolve))
-      expect(mockLog).toHaveBeenCalledWith('Server not authenticated: %s', 'token_invalid')
+      await Hub.check()
 
-      jest.useFakeTimers()
+      expect(WebSocket).toHaveBeenCalledWith(
+        'wss://hub.odac.run/ws',
+        expect.objectContaining({
+          headers: {Authorization: 'Bearer test-token'}
+        })
+      )
     })
 
-    it('should clear config on invalid token', async () => {
-      jest.useRealTimers()
-
+    it('should clear config on invalid token message', () => {
       const config = {
         hub: {token: 'invalid-token', secret: 'test-secret'},
         server: {started: Date.now()}
       }
       mockOdac.setMock('core', 'Config', {config})
 
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {authenticated: false, reason: 'token_invalid'}
-        }
+      Hub.websocket = {
+        close: jest.fn(),
+        terminate: jest.fn()
+      }
+      Hub.stopHeartbeat = jest.fn()
+
+      const disconnectMsg = JSON.stringify({
+        type: 'disconnect',
+        reason: 'token_invalid',
+        timestamp: Math.floor(Date.now() / 1000)
       })
 
-      Hub.checkCounter = 59
-      Hub.check()
+      // We need to bypass signature verification for this test or mock it
+      jest.spyOn(Hub, 'verifyWebSocketMessage').mockReturnValue(true)
 
-      await new Promise(resolve => setImmediate(resolve))
+      Hub.handleWebSocketMessage(disconnectMsg)
+
       expect(config.hub).toBeUndefined()
-
-      jest.useFakeTimers()
+      expect(Hub.websocket).toBeNull()
     })
 
-    it('should handle check errors gracefully', async () => {
-      jest.useRealTimers()
-
+    it('should handle websocket connection errors', async () => {
       mockOdac.setMock('core', 'Config', {
         config: {
-          hub: {token: 'test-token', secret: 'test-secret'},
-          server: {started: Date.now()}
+          hub: {token: 'test-token', secret: 'test-secret'}
         }
       })
 
-      axios.post.mockRejectedValue(new Error('Network error'))
+      const WebSocket = require('ws')
+      WebSocket.mockImplementation(() => {
+        throw new Error('Connection failed')
+      })
 
-      Hub.checkCounter = 59
-      Hub.check()
+      Hub.websocket = null
+      Hub.nextReconnectTime = 0
 
-      await new Promise(resolve => setImmediate(resolve))
-      expect(mockLog).toHaveBeenCalledWith('Failed to report status: %s', 'Network error')
+      await Hub.check()
 
-      jest.useFakeTimers()
+      expect(mockLog).toHaveBeenCalledWith('Failed to connect WebSocket: %s', 'Connection failed')
     })
   })
 

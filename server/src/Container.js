@@ -405,6 +405,29 @@ class Container {
   }
 
   /**
+   * Lists all containers
+   * @returns {Promise<Array>}
+   */
+  async list() {
+    if (!this.available) return []
+    try {
+      const containers = await this.#docker.listContainers({all: true})
+      return containers.map(c => ({
+        id: c.Id.substring(0, 12),
+        names: c.Names,
+        image: c.Image,
+        state: c.State,
+        status: c.Status,
+        created: c.Created,
+        ports: c.Ports
+      }))
+    } catch (err) {
+      error(`Failed to list containers: ${err.message}`)
+      return []
+    }
+  }
+
+  /**
    * Returns the container IP address
    * @param {string} name
    * @returns {Promise<string|null>}
@@ -423,6 +446,61 @@ class Container {
     } catch (err) {
       if (err.statusCode !== 404) {
         error(`Failed to get IP for ${name}: ${err.message}`)
+      }
+      return null
+    }
+  }
+
+  /**
+   * Returns container statistics (CPU, Memory, Network)
+   * @param {string} name
+   * @returns {Promise<Object|null>}
+   */
+  async getStats(name) {
+    if (!this.available) return null
+    try {
+      const container = this.#docker.getContainer(name)
+      const stats = await container.stats({stream: false})
+
+      let cpuPercent = 0.0
+      const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage
+      const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage
+      const onlineCpus = stats.cpu_stats.online_cpus || stats.cpu_stats.cpu_usage.percpu_usage?.length || 1
+
+      if (systemDelta > 0 && cpuDelta > 0) {
+        cpuPercent = (cpuDelta / systemDelta) * onlineCpus * 100.0
+      }
+
+      const memUsage = stats.memory_stats.usage || 0
+      const memLimit = stats.memory_stats.limit || 0
+      const memPercent = memLimit > 0 ? (memUsage / memLimit) * 100.0 : 0
+
+      let rxBytes = 0
+      let txBytes = 0
+      if (stats.networks) {
+        for (const net of Object.values(stats.networks)) {
+          rxBytes += net.rx_bytes
+          txBytes += net.tx_bytes
+        }
+      }
+
+      return {
+        cpu_percent: parseFloat(cpuPercent.toFixed(2)),
+        memory: {
+          usage: memUsage,
+          limit: memLimit,
+          percent: parseFloat(memPercent.toFixed(2))
+        },
+        network: {
+          rx_bytes: rxBytes,
+          tx_bytes: txBytes
+        },
+        pids: stats.pids_stats.current || 0,
+        timestamp: Date.now()
+      }
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get stats for ${name}: ${err.message}`)
       }
       return null
     }

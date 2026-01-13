@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +21,17 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("Starting ODAC Proxy...")
+
+	// Increase file descriptor limit
+	var rLimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err == nil {
+		rLimit.Cur = rLimit.Max
+		if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+			log.Printf("Error setting rlimit: %v", err)
+		} else {
+			log.Printf("File descriptor limit set to: %d", rLimit.Cur)
+		}
+	}
 
 	// Initialize components
 	cfg := config.Firewall{Enabled: true} // Default
@@ -37,6 +50,8 @@ func main() {
 	}()
 
 	// Stack middleware: Firewall -> Proxy
+	// We removed timeoutMiddleware because robust timeout handling is now done 
+	// via http.Transport (ResponseHeaderTimeout) and http.Server (IdleTimeout, ReadHeaderTimeout).
 	handler := fw.Check(prx)
 
 	// Check for Socket Environment Variable
@@ -94,11 +109,12 @@ func main() {
 	go func() {
 		log.Println("Starting HTTP server on :80")
 		server := &http.Server{
-			Addr:         ":80",
-			Handler:      handler,
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  120 * time.Second,
+			Addr:              ":80",
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
+			ReadTimeout:       0,                // Unlimited for large uploads (rely on TCP keepalive)
+			WriteTimeout:      0,                // Unlimited for large downloads (streaming)
+			IdleTimeout:       120 * time.Second,
 		}
 		if err := server.ListenAndServe(); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
@@ -124,12 +140,13 @@ func main() {
 		}
 
 		server := &http.Server{
-			Addr:         ":443",
-			Handler:      handler,
-			TLSConfig:    tlsConfig,
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  120 * time.Second,
+			Addr:              ":443",
+			Handler:           handler,
+			TLSConfig:         tlsConfig,
+			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
+			ReadTimeout:       0,                // Unlimited for large uploads
+			WriteTimeout:      0,                // Unlimited for large downloads
+			IdleTimeout:       120 * time.Second,
 		}
 
 		if err := server.ListenAndServeTLS("", ""); err != nil {
@@ -144,3 +161,5 @@ func main() {
 
 	log.Println("ODAC Proxy shutting down...")
 }
+
+

@@ -51,10 +51,12 @@ func NewProxy() *Proxy {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   1000,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second, // Timeout if backend server doesn't send headers in time
 	}
 
 	p.reverseProxy = &httputil.ReverseProxy{

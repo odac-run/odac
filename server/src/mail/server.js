@@ -14,6 +14,11 @@ class server {
   listen(port) {
     if (!port) port = 993
     const server = tls.createServer(this.options)
+    server.on('connection', socket => {
+      socket.on('error', err => {
+        if (err.code !== 'ECONNRESET') log('Socket error: ' + err)
+      })
+    })
     server.on('secureConnection', socket => {
       log('New connection from ' + socket.remoteAddress)
       socket.id = Math.random().toString(36).substring(7)
