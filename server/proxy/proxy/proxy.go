@@ -270,8 +270,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		encoding = "gzip"
 	}
 
-	// Use compression wrapper if supported
-	if encoding != "" {
+	// Skip compression for WebSocket connections
+	isWebSocket := strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
+		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+
+	// Use compression wrapper if supported (skip for WebSocket)
+	if encoding != "" && !isWebSocket {
 		cw := newCompressionResponseWriter(w, encoding)
 		// Ensure compressor is closed to flush remaining bytes and write footer
 		defer cw.Close()
@@ -325,8 +329,11 @@ func (cw *compressionResponseWriter) WriteHeader(code int) {
 		contentLength, _ = strconv.ParseInt(contentLengthStr, 10, 64)
 	}
 
-	// Decide whether to compress based on type and size
-	if isCompressible(contentType) && (contentLength == -1 || contentLength > 1024) {
+	// Skip compression for SSE (Server-Sent Events) streams
+	isSSE := strings.HasPrefix(contentType, "text/event-stream")
+
+	// Decide whether to compress based on type and size (skip for SSE)
+	if isCompressible(contentType) && !isSSE && (contentLength == -1 || contentLength > 1024) {
 		cw.shouldCompress = true
 
 		cw.Header().Del("Content-Length")
