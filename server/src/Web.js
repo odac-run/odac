@@ -497,8 +497,32 @@ class Web {
       }
     } else {
       // Run Local
+      const websitePath = Odac.core('Config').config.websites[domain].path
+      try {
+        const packageJsonPath = path.join(websitePath, 'package.json')
+        if (fs.existsSync(packageJsonPath)) {
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+          if (pkg.scripts && pkg.scripts.build) {
+            log('Building website ' + domain + '...')
+            await new Promise((resolve, reject) => {
+              const buildChild = childProcess.spawn('npm', ['run', 'build'], {
+                cwd: websitePath,
+                stdio: 'ignore'
+              })
+              buildChild.on('close', code => {
+                if (code === 0) resolve()
+                else reject(new Error('Build failed with code ' + code))
+              })
+              buildChild.on('error', err => reject(err))
+            })
+          }
+        }
+      } catch (e) {
+        error('Failed to build website ' + domain + ': ' + e.message)
+      }
+
       child = childProcess.spawn('odac', ['framework', 'run', port], {
-        cwd: Odac.core('Config').config.websites[domain].path
+        cwd: websitePath
       })
       log('Web server started for ' + domain + ' with PID ' + child.pid)
     }
