@@ -521,7 +521,24 @@ class Web {
         error('Failed to build website ' + domain + ': ' + e.message)
       }
 
-      child = childProcess.spawn('odac', ['framework', 'run', port], {
+      let startCommand = 'odac'
+      let startArgs = ['framework', 'run', port]
+
+      try {
+        const packageJsonPath = path.join(websitePath, 'package.json')
+        if (fs.existsSync(packageJsonPath)) {
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+          if (pkg.scripts && pkg.scripts.start) {
+            log('Starting website ' + domain + ' using npm run start...')
+            startCommand = 'npm'
+            startArgs = ['run', 'start', '--', port]
+          }
+        }
+      } catch {
+        // Ignore JSON errors or read errors, fallback to default
+      }
+
+      child = childProcess.spawn(startCommand, startArgs, {
         cwd: websitePath
       })
       log('Web server started for ' + domain + ' with PID ' + child.pid)
