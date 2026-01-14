@@ -233,10 +233,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	acceptEncoding := r.Header.Get("Accept-Encoding")
 	var encoding string
 
+	var wantsBr, wantsGzip bool
+	for _, v := range strings.Split(acceptEncoding, ",") {
+		v = strings.TrimSpace(v)
+		parts := strings.SplitN(v, ";", 2)
+		enc := parts[0]
+
+		// Respect q=0, which means "not acceptable"
+		if len(parts) > 1 && strings.Contains(parts[1], "q=0") {
+			continue
+		}
+
+		switch enc {
+		case "br":
+			wantsBr = true
+		case "gzip":
+			wantsGzip = true
+		}
+	}
+
 	// Prioritize Brotli
-	if strings.Contains(acceptEncoding, "br") {
+	if wantsBr {
 		encoding = "br"
-	} else if strings.Contains(acceptEncoding, "gzip") {
+	} else if wantsGzip {
 		encoding = "gzip"
 	}
 
