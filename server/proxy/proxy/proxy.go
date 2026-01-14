@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"github.com/klauspost/compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
+
 	"odac-proxy/config"
 )
 
@@ -22,6 +27,26 @@ const (
 	// internalContainerPort is the port used for inter-container communication
 	// when routing requests to Docker containers via their network IP
 	internalContainerPort = "1071"
+)
+
+// Define buffer pools to reduce GC pressure and memory allocation
+var (
+	gzipPool = sync.Pool{
+		New: func() interface{} {
+			return gzip.NewWriter(io.Discard)
+		},
+	}
+	brotliPool = sync.Pool{
+		New: func() interface{} {
+			return brotli.NewWriterLevel(io.Discard, 4)
+		},
+	}
+	zstdPool = sync.Pool{
+		New: func() interface{} {
+			w, _ := zstd.NewWriter(io.Discard, zstd.WithEncoderLevel(zstd.SpeedDefault))
+			return w
+		},
+	}
 )
 
 // debugMode enables verbose debug logging when PROXY_DEBUG environment variable is set
@@ -211,7 +236,195 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compression negotiation
+	acceptEncoding := r.Header.Get("Accept-Encoding")
+	var encoding string
+
+	var wantsZstd, wantsBr, wantsGzip bool
+	for _, v := range strings.Split(acceptEncoding, ",") {
+		v = strings.TrimSpace(v)
+		parts := strings.SplitN(v, ";", 2)
+		enc := parts[0]
+
+		// Respect q=0, which means "not acceptable"
+		if len(parts) > 1 && strings.Contains(parts[1], "q=0") {
+			continue
+		}
+
+		switch enc {
+		case "zstd":
+			wantsZstd = true
+		case "br":
+			wantsBr = true
+		case "gzip":
+			wantsGzip = true
+		}
+	}
+
+	// Priority: zstd > br > gzip
+	if wantsZstd {
+		encoding = "zstd"
+	} else if wantsBr {
+		encoding = "br"
+	} else if wantsGzip {
+		encoding = "gzip"
+	}
+
+	// Use compression wrapper if supported
+	if encoding != "" {
+		cw := newCompressionResponseWriter(w, encoding)
+		// Ensure compressor is closed to flush remaining bytes and write footer
+		defer cw.Close()
+
+		p.reverseProxy.ServeHTTP(cw, r)
+		return
+	}
+
 	p.reverseProxy.ServeHTTP(w, r)
+}
+
+// compressionResponseWriter wraps http.ResponseWriter to handle compression
+type compressionResponseWriter struct {
+	w              http.ResponseWriter
+	encoding       string
+	compressor     io.WriteCloser
+	wroteHeader    bool
+	shouldCompress bool
+	code           int
+}
+
+func newCompressionResponseWriter(w http.ResponseWriter, encoding string) *compressionResponseWriter {
+	return &compressionResponseWriter{
+		w:        w,
+		encoding: encoding,
+	}
+}
+
+func (cw *compressionResponseWriter) Header() http.Header {
+	return cw.w.Header()
+}
+
+func (cw *compressionResponseWriter) WriteHeader(code int) {
+	if cw.wroteHeader {
+		return
+	}
+	cw.wroteHeader = true
+	cw.code = code
+
+	// Avoid double compression if backend already compressed the response
+	if cw.Header().Get("Content-Encoding") != "" {
+		cw.w.WriteHeader(code)
+		return
+	}
+
+	contentType := cw.Header().Get("Content-Type")
+	contentLengthStr := cw.Header().Get("Content-Length")
+
+	var contentLength int64 = -1
+	if contentLengthStr != "" {
+		contentLength, _ = strconv.ParseInt(contentLengthStr, 10, 64)
+	}
+
+	// Decide whether to compress based on type and size
+	if isCompressible(contentType) && (contentLength == -1 || contentLength > 1024) {
+		cw.shouldCompress = true
+
+		cw.Header().Del("Content-Length")
+		cw.Header().Set("Vary", "Accept-Encoding")
+
+		switch cw.encoding {
+		case "zstd":
+			cw.Header().Set("Content-Encoding", "zstd")
+			w := zstdPool.Get().(*zstd.Encoder)
+			w.Reset(cw.w)
+			cw.compressor = w
+		case "br":
+			cw.Header().Set("Content-Encoding", "br")
+			w := brotliPool.Get().(*brotli.Writer)
+			w.Reset(cw.w)
+			cw.compressor = w
+		case "gzip":
+			cw.Header().Set("Content-Encoding", "gzip")
+			w := gzipPool.Get().(*gzip.Writer)
+			w.Reset(cw.w)
+			cw.compressor = w
+		}
+	}
+
+	cw.w.WriteHeader(code)
+}
+
+func (cw *compressionResponseWriter) Write(b []byte) (int, error) {
+	if !cw.wroteHeader {
+		cw.WriteHeader(http.StatusOK)
+	}
+
+	if cw.shouldCompress && cw.compressor != nil {
+		return cw.compressor.Write(b)
+	}
+	return cw.w.Write(b)
+}
+
+func (cw *compressionResponseWriter) Flush() {
+	if cw.shouldCompress && cw.compressor != nil {
+		switch w := cw.compressor.(type) {
+		case *zstd.Encoder:
+			w.Flush()
+		case *brotli.Writer:
+			w.Flush()
+		case *gzip.Writer:
+			w.Flush()
+		}
+	}
+	if f, ok := cw.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (cw *compressionResponseWriter) Close() error {
+	if !cw.shouldCompress || cw.compressor == nil {
+		return nil
+	}
+
+	err := cw.compressor.Close()
+
+	// Reset and return to pool
+	switch w := cw.compressor.(type) {
+	case *zstd.Encoder:
+		w.Reset(io.Discard)
+		zstdPool.Put(w)
+	case *brotli.Writer:
+		w.Reset(io.Discard)
+		brotliPool.Put(w)
+	case *gzip.Writer:
+		w.Reset(io.Discard)
+		gzipPool.Put(w)
+	}
+
+	return err
+}
+
+// isCompressible checks if the content type is suitable for compression
+func isCompressible(contentType string) bool {
+	// Clean up content type
+	if idx := strings.Index(contentType, ";"); idx != -1 {
+		contentType = contentType[:idx]
+	}
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+
+	// Allowlist
+	switch contentType {
+	case "text/html", "text/css", "text/javascript", "application/javascript",
+		"application/json", "application/xml", "image/svg+xml", "text/plain":
+		return true
+	}
+
+	// Check prefixes
+	if strings.HasPrefix(contentType, "text/") || strings.HasPrefix(contentType, "font/") {
+		return true
+	}
+
+	return false
 }
 
 // GetCertificate implements tls.Config.GetCertificate
