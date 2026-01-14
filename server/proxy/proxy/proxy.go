@@ -382,31 +382,26 @@ func (cw *compressionResponseWriter) Flush() {
 }
 
 func (cw *compressionResponseWriter) Close() error {
-	if cw.shouldCompress && cw.compressor != nil {
-		err := cw.compressor.Close()
-
-		// Reset and return to pool
-		switch cw.encoding {
-		case "zstd":
-			if w, ok := cw.compressor.(*zstd.Encoder); ok {
-				w.Reset(io.Discard)
-				zstdPool.Put(w)
-			}
-		case "br":
-			if w, ok := cw.compressor.(*brotli.Writer); ok {
-				w.Reset(io.Discard)
-				brotliPool.Put(w)
-			}
-		case "gzip":
-			if w, ok := cw.compressor.(*gzip.Writer); ok {
-				w.Reset(io.Discard)
-				gzipPool.Put(w)
-			}
-		}
-
-		return err
+	if !cw.shouldCompress || cw.compressor == nil {
+		return nil
 	}
-	return nil
+
+	err := cw.compressor.Close()
+
+	// Reset and return to pool
+	switch w := cw.compressor.(type) {
+	case *zstd.Encoder:
+		w.Reset(io.Discard)
+		zstdPool.Put(w)
+	case *brotli.Writer:
+		w.Reset(io.Discard)
+		brotliPool.Put(w)
+	case *gzip.Writer:
+		w.Reset(io.Discard)
+		gzipPool.Put(w)
+	}
+
+	return err
 }
 
 // isCompressible checks if the content type is suitable for compression
