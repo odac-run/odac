@@ -1,7 +1,7 @@
 package proxy
 
 import (
-	"compress/gzip"
+	"github.com/klauspost/compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 
 	"odac-proxy/config"
 )
@@ -38,6 +39,12 @@ var (
 	brotliPool = sync.Pool{
 		New: func() interface{} {
 			return brotli.NewWriterLevel(io.Discard, 4)
+		},
+	}
+	zstdPool = sync.Pool{
+		New: func() interface{} {
+			w, _ := zstd.NewWriter(io.Discard, zstd.WithEncoderLevel(zstd.SpeedDefault))
+			return w
 		},
 	}
 )
@@ -233,7 +240,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	acceptEncoding := r.Header.Get("Accept-Encoding")
 	var encoding string
 
-	var wantsBr, wantsGzip bool
+	var wantsZstd, wantsBr, wantsGzip bool
 	for _, v := range strings.Split(acceptEncoding, ",") {
 		v = strings.TrimSpace(v)
 		parts := strings.SplitN(v, ";", 2)
@@ -245,6 +252,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch enc {
+		case "zstd":
+			wantsZstd = true
 		case "br":
 			wantsBr = true
 		case "gzip":
@@ -252,8 +261,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Prioritize Brotli
-	if wantsBr {
+	// Priority: zstd > br > gzip
+	if wantsZstd {
+		encoding = "zstd"
+	} else if wantsBr {
 		encoding = "br"
 	} else if wantsGzip {
 		encoding = "gzip"
@@ -321,17 +332,19 @@ func (cw *compressionResponseWriter) WriteHeader(code int) {
 		cw.Header().Del("Content-Length")
 		cw.Header().Set("Vary", "Accept-Encoding")
 
-		if cw.encoding == "br" {
+		switch cw.encoding {
+		case "zstd":
+			cw.Header().Set("Content-Encoding", "zstd")
+			w := zstdPool.Get().(*zstd.Encoder)
+			w.Reset(cw.w)
+			cw.compressor = w
+		case "br":
 			cw.Header().Set("Content-Encoding", "br")
-			
-			// Get Brotli writer from pool
 			w := brotliPool.Get().(*brotli.Writer)
 			w.Reset(cw.w)
 			cw.compressor = w
-		} else if cw.encoding == "gzip" {
+		case "gzip":
 			cw.Header().Set("Content-Encoding", "gzip")
-			
-			// Get Gzip writer from pool
 			w := gzipPool.Get().(*gzip.Writer)
 			w.Reset(cw.w)
 			cw.compressor = w
@@ -354,14 +367,13 @@ func (cw *compressionResponseWriter) Write(b []byte) (int, error) {
 
 func (cw *compressionResponseWriter) Flush() {
 	if cw.shouldCompress && cw.compressor != nil {
-		if f, ok := cw.compressor.(http.Flusher); ok {
-			f.Flush()
-		} else if f, ok := cw.compressor.(*gzip.Writer); ok {
-			f.Flush()
-		}
-		
-		if f, ok := cw.compressor.(*brotli.Writer); ok {
-			f.Flush()
+		switch w := cw.compressor.(type) {
+		case *zstd.Encoder:
+			w.Flush()
+		case *brotli.Writer:
+			w.Flush()
+		case *gzip.Writer:
+			w.Flush()
 		}
 	}
 	if f, ok := cw.w.(http.Flusher); ok {
@@ -374,18 +386,24 @@ func (cw *compressionResponseWriter) Close() error {
 		err := cw.compressor.Close()
 
 		// Reset and return to pool
-		if cw.encoding == "br" {
+		switch cw.encoding {
+		case "zstd":
+			if w, ok := cw.compressor.(*zstd.Encoder); ok {
+				w.Reset(io.Discard)
+				zstdPool.Put(w)
+			}
+		case "br":
 			if w, ok := cw.compressor.(*brotli.Writer); ok {
 				w.Reset(io.Discard)
 				brotliPool.Put(w)
 			}
-		} else if cw.encoding == "gzip" {
+		case "gzip":
 			if w, ok := cw.compressor.(*gzip.Writer); ok {
 				w.Reset(io.Discard)
 				gzipPool.Put(w)
 			}
 		}
-		
+
 		return err
 	}
 	return nil
