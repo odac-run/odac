@@ -3,6 +3,50 @@ require('./Odac.js')
 const path = require('path')
 
 module.exports = {
+  auth: {
+    args: ['key', '-k', '--key'],
+    description: 'Define your server to your Odac account',
+    action: async args => {
+      const cli = Odac.cli('Cli')
+      let key = cli.parseArg(args, ['-k', '--key']) || args[0]
+      if (!key) key = await cli.question(__('Enter your authentication key: '))
+
+      await Odac.cli('Connector').call({
+        action: 'auth',
+        data: [key]
+      })
+    }
+  },
+  debug: {
+    description: 'Debug Odac Server',
+    action: async () => Odac.cli('Monitor').debug()
+  },
+  help: {
+    description: 'List all available commands',
+    action: async () => Odac.cli('Cli').help()
+  },
+  monit: {
+    description: 'Monitor Website or Service',
+    action: async () => Odac.cli('Monitor').monit()
+  },
+  restart: {
+    description: 'Restart Odac Server',
+    action: async () => Odac.cli('Cli').boot()
+  },
+  run: {
+    args: ['file'],
+    description: 'Run a script or file as a service',
+    action: async args => {
+      let service = args[0]
+      if (!service) return console.log(__('Please specify a file to run.'))
+
+      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
+        service = path.resolve() + '/' + service
+      }
+      await Odac.cli('Connector').call({action: 'app.start', data: [service]})
+    }
+  },
+
   app: {
     title: 'APP',
     sub: {
@@ -39,28 +83,6 @@ module.exports = {
         action: async () => Odac.cli('Connector').call({action: 'app.list'})
       }
     }
-  },
-  auth: {
-    args: ['key', '-k', '--key'],
-    description: 'Define your server to your Odac account',
-    action: async args => {
-      const cli = Odac.cli('Cli')
-      let key = cli.parseArg(args, ['-k', '--key']) || args[0]
-      if (!key) key = await cli.question(__('Enter your authentication key: '))
-
-      await Odac.cli('Connector').call({
-        action: 'auth',
-        data: [key]
-      })
-    }
-  },
-  debug: {
-    description: 'Debug Odac Server',
-    action: async () => Odac.cli('Monitor').debug()
-  },
-  help: {
-    description: 'List all available commands',
-    action: async () => Odac.cli('Cli').help()
   },
   mail: {
     title: 'MAIL',
@@ -136,28 +158,6 @@ module.exports = {
       }
     }
   },
-  monit: {
-    description: 'Monitor Website or Service',
-    action: async () => Odac.cli('Monitor').monit()
-  },
-  restart: {
-    description: 'Restart Odac Server',
-    action: async () => Odac.cli('Cli').boot()
-  },
-  run: {
-    args: ['file'],
-    description: 'Run a script or file as a service',
-    action: async args => {
-      let service = args[0]
-      if (!service) return console.log(__('Please specify a file to run.'))
-
-      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
-        service = path.resolve() + '/' + service
-      }
-      await Odac.cli('Connector').call({action: 'app.start', data: [service]})
-    }
-  },
-
   ssl: {
     title: 'SSL',
     sub: {
