@@ -37,13 +37,16 @@ module.exports = {
     args: ['file'],
     description: 'Run a script or file as a service',
     action: async args => {
-      let service = args[0]
-      if (!service) return console.log(__('Please specify a file to run.'))
+      let filePath = args[0]
+      if (!filePath) return console.log(__('Please specify a file to run.'))
 
-      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
-        service = path.resolve() + '/' + service
+      // Check for Windows path manually to support cross-platform tests
+      const isWindowsAbsolute = /^[a-zA-Z]:\\|^\\\\/.test(filePath)
+
+      if (!path.isAbsolute(filePath) && !isWindowsAbsolute) {
+        filePath = path.resolve(filePath)
       }
-      await Odac.cli('Connector').call({action: 'app.start', data: [service]})
+      await Odac.cli('Connector').call({action: 'app.start', data: [filePath]})
     }
   },
 
