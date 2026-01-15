@@ -121,7 +121,7 @@ class MockOdac {
         stop: jest.fn(),
         list: jest.fn(),
         status: jest.fn(),
-        install: jest.fn(),
+        create: jest.fn(),
         delete: jest.fn()
       },
       Subdomain: {
