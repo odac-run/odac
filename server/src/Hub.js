@@ -4,6 +4,7 @@ const axios = require('axios')
 const nodeCrypto = require('crypto')
 const os = require('os')
 const fs = require('fs')
+const https = require('https')
 
 class Hub {
   constructor() {
@@ -18,7 +19,16 @@ class Hub {
     this.statsInterval = 60
     this.handshakeInterval = 60
     this.pingInterval = null
+
     this.isAlive = false
+
+    this.agent = new https.Agent({
+      rejectUnauthorized: true,
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+      maxSockets: 25,
+      timeout: 30000
+    })
   }
 
   isAuthenticated() {
@@ -771,9 +781,7 @@ class Hub {
       axios
         .post(url, data, {
           headers,
-          httpsAgent: new (require('https').Agent)({
-            rejectUnauthorized: true
-          })
+          httpsAgent: this.agent
         })
         .then(response => {
           log('Raw response received for %s', action)
