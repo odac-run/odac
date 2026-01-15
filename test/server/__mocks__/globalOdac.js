@@ -114,13 +114,15 @@ class MockOdac {
         start: jest.fn(),
         stop: jest.fn()
       },
-      Service: {
+      App: {
         init: jest.fn(),
         add: jest.fn(),
         start: jest.fn(),
         stop: jest.fn(),
         list: jest.fn(),
-        status: jest.fn()
+        status: jest.fn(),
+        create: jest.fn(),
+        delete: jest.fn()
       },
       Subdomain: {
         init: jest.fn(),

@@ -357,24 +357,24 @@ describe('Api', () => {
       expect(mockSocket.destroy).toHaveBeenCalled()
     })
 
-    it('should execute valid service.start command', async () => {
+    it('should execute valid app.start command', async () => {
       if (!dataHandler) {
         throw new Error('Data handler not found')
         return
       }
 
-      const mockServiceService = global.Odac.server('Service')
-      mockServiceService.start.mockResolvedValue(Api.result(true, 'Service started'))
+      const mockAppService = global.Odac.server('App')
+      mockAppService.start.mockResolvedValue(Api.result(true, 'App started'))
 
       const payload = JSON.stringify({
         auth: global.Odac.core('Config').config.api.auth,
-        action: 'service.start',
-        data: ['my-service.js']
+        action: 'app.start',
+        data: ['my-app.js']
       })
 
       await dataHandler(Buffer.from(payload))
 
-      expect(mockServiceService.start).toHaveBeenCalledWith('my-service.js', expect.any(Function))
+      expect(mockAppService.start).toHaveBeenCalledWith('my-app.js', expect.any(Function))
       expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"result":true'))
       expect(mockSocket.destroy).toHaveBeenCalled()
     })

@@ -1,4 +1,4 @@
-const {log, error} = Odac.core('Log', false).init('Service')
+const {log, error} = Odac.core('Log', false).init('Mail')
 
 const bcrypt = require('bcrypt')
 const SMTPServer = require('smtp-server').SMTPServer

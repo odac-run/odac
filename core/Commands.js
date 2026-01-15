@@ -25,6 +25,67 @@ module.exports = {
     description: 'List all available commands',
     action: async () => Odac.cli('Cli').help()
   },
+  monit: {
+    description: 'Monitor Website or Service',
+    action: async () => Odac.cli('Monitor').monit()
+  },
+  restart: {
+    description: 'Restart Odac Server',
+    action: async () => Odac.cli('Cli').boot()
+  },
+  run: {
+    args: ['file'],
+    description: 'Run a script or file as a service',
+    action: async args => {
+      let filePath = args[0]
+      if (!filePath) return console.log(__('Please specify a file to run.'))
+
+      // Check for Windows path manually to support cross-platform tests
+      const isWindowsAbsolute = /^[a-zA-Z]:\\|^\\\\/.test(filePath)
+
+      if (!path.isAbsolute(filePath) && !isWindowsAbsolute) {
+        filePath = path.resolve(filePath)
+      }
+      await Odac.cli('Connector').call({action: 'app.start', data: [filePath]})
+    }
+  },
+
+  app: {
+    title: 'APP',
+    sub: {
+      create: {
+        description: 'Create a new application',
+        args: ['-t', '--type'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+
+          if (!type) {
+            type = await cli.question(__('Enter the app type or repo: '))
+          }
+
+          await Odac.cli('Connector').call({
+            action: 'app.create',
+            data: [type]
+          })
+        }
+      },
+      delete: {
+        description: 'Delete an App',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+          await Odac.cli('Connector').call({action: 'app.delete', data: [app]})
+        }
+      },
+      list: {
+        description: 'List all apps',
+        action: async () => Odac.cli('Connector').call({action: 'app.list'})
+      }
+    }
+  },
   mail: {
     title: 'MAIL',
     sub: {
@@ -96,64 +157,6 @@ module.exports = {
             data: [email, password, confirmPassword]
           })
         }
-      }
-    }
-  },
-  monit: {
-    description: 'Monitor Website or Service',
-    action: async () => Odac.cli('Monitor').monit()
-  },
-  restart: {
-    description: 'Restart Odac Server',
-    action: async () => Odac.cli('Cli').boot()
-  },
-  run: {
-    args: ['file'],
-    description: 'Run a script or file as a service',
-    action: async args => {
-      let service = args[0]
-      if (!service) return console.log(__('Please specify a file to run.'))
-
-      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
-        service = path.resolve() + '/' + service
-      }
-      await Odac.cli('Connector').call({action: 'service.start', data: [service]})
-    }
-  },
-  service: {
-    title: 'SERVICE',
-    sub: {
-      install: {
-        description: 'Install a new 3rd party application (mysql, postgres, etc.)',
-        args: ['-t', '--type'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
-
-          if (!type) {
-            console.log('Available official apps: mysql, redis, postgres')
-            type = await cli.question(__('Enter the app type or repo (e.g. mysql): '))
-          }
-
-          await Odac.cli('Connector').call({
-            action: 'service.install',
-            data: [type]
-          })
-        }
-      },
-      delete: {
-        description: 'Delete a Service',
-        args: ['-i', '--id'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let service = cli.parseArg(args, ['-i', '--id']) || args[0]
-          if (!service) service = await cli.question(__('Enter the Service ID or Name: '))
-          await Odac.cli('Connector').call({action: 'service.delete', data: [service]})
-        }
-      },
-      list: {
-        description: 'List all services',
-        action: async () => Odac.cli('Connector').call({action: 'service.list'})
       }
     }
   },

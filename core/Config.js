@@ -29,7 +29,7 @@ class Config {
     api: ['api'],
     firewall: ['firewall'],
     hub: ['hub'],
-    app: ['app']
+    app: ['apps']
   }
 
   // Initialize default configuration for module keys
