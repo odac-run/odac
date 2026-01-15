@@ -58,8 +58,7 @@ module.exports = {
           let type = cli.parseArg(args, ['-t', '--type']) || args[0]
 
           if (!type) {
-            console.log('Available official apps: mysql, redis, postgres')
-            type = await cli.question(__('Enter the app type or repo (e.g. mysql): '))
+            type = await cli.question(__('Enter the app type or repo: '))
           }
 
           await Odac.cli('Connector').call({
