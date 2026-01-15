@@ -23,7 +23,7 @@ class Api {
     'app.start': (...args) => Odac.server('App').start(...args),
     'app.delete': (...args) => Odac.server('App').delete(...args),
     'app.list': (...args) => Odac.server('App').list(...args),
-    'app.install': (...args) => Odac.server('App').install(...args),
+    'app.create': (...args) => Odac.server('App').create(...args),
     'mail.create': (...args) => Odac.server('Mail').create(...args),
     'mail.delete': (...args) => Odac.server('Mail').delete(...args),
     'mail.list': (...args) => Odac.server('Mail').list(...args),

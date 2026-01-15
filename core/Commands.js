@@ -6,8 +6,8 @@ module.exports = {
   app: {
     title: 'APP',
     sub: {
-      install: {
-        description: 'Install a new application',
+      create: {
+        description: 'Create a new application',
         args: ['-t', '--type'],
         action: async args => {
           const cli = Odac.cli('Cli')
@@ -19,7 +19,7 @@ module.exports = {
           }
 
           await Odac.cli('Connector').call({
-            action: 'app.install',
+            action: 'app.create',
             data: [type]
           })
         }

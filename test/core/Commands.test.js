@@ -157,6 +157,70 @@ describe('Commands', () => {
     })
   })
 
+  describe('app commands', () => {
+    describe('create', () => {
+      it('should create app with provided type', async () => {
+        const args = []
+        mockCli.parseArg.mockReturnValue('mysql')
+
+        await Commands.app.sub.create.action(args)
+
+        expect(mockConnector.call).toHaveBeenCalledWith({
+          action: 'app.create',
+          data: ['mysql']
+        })
+      })
+
+      it('should prompt for type when not provided', async () => {
+        const args = []
+        mockCli.parseArg.mockReturnValue(null)
+        mockCli.question.mockResolvedValue('redis')
+
+        await Commands.app.sub.create.action(args)
+
+        expect(mockCli.question).toHaveBeenCalledWith(expect.stringContaining('Enter the app type'))
+        expect(mockConnector.call).toHaveBeenCalledWith({
+          action: 'app.create',
+          data: ['redis']
+        })
+      })
+    })
+
+    describe('delete', () => {
+      it('should delete app', async () => {
+        const args = []
+        mockCli.parseArg.mockReturnValue('app-id')
+
+        await Commands.app.sub.delete.action(args)
+
+        expect(mockConnector.call).toHaveBeenCalledWith({
+          action: 'app.delete',
+          data: ['app-id']
+        })
+      })
+
+      it('should prompt for app id when not provided', async () => {
+        const args = []
+        mockCli.parseArg.mockReturnValue(null)
+        mockCli.question.mockResolvedValue('app-id')
+
+        await Commands.app.sub.delete.action(args)
+
+        expect(mockCli.question).toHaveBeenCalledWith('Enter the App ID or Name: ')
+      })
+    })
+
+    describe('list', () => {
+      it('should list all apps', async () => {
+        await Commands.app.sub.list.action()
+
+        expect(mockConnector.call).toHaveBeenCalledWith({
+          action: 'app.list'
+        })
+      })
+    })
+  })
+
   describe('mail commands', () => {
     describe('create', () => {
       it('should create mail account with provided credentials', async () => {
@@ -468,6 +532,14 @@ describe('Commands', () => {
   })
 
   describe('command structure validation', () => {
+    it('should have correct app command structure', () => {
+      expect(Commands.app.title).toBe('APP')
+      expect(Commands.app.sub).toBeDefined()
+      expect(Commands.app.sub.create).toBeDefined()
+      expect(Commands.app.sub.delete).toBeDefined()
+      expect(Commands.app.sub.list).toBeDefined()
+    })
+
     it('should have correct mail command structure', () => {
       expect(Commands.mail.title).toBe('MAIL')
       expect(Commands.mail.sub).toBeDefined()

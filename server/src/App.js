@@ -288,8 +288,8 @@ class App {
     }
   }
 
-  async install(type) {
-    log('Installing app: %s', type)
+  async create(type) {
+    log('Creating app from recipe: %s', type)
     let recipe
     try {
       recipe = await this.#fetchRecipe(type)
@@ -356,12 +356,12 @@ class App {
 
     try {
       if (await this.#run(app.id)) {
-        return Odac.server('Api').result(true, __('App %s installed successfully.', name))
+        return Odac.server('Api').result(true, __('App %s created successfully.', name))
       } else {
         throw new Error('Failed to start app container. Check logs for details.')
       }
     } catch (e) {
-      // Rollback: remove app if installation failed
+      // Rollback: remove app if creation failed
       this.#apps = this.#apps.filter(s => s.id !== app.id)
       Odac.core('Config').config.apps = this.#apps
 
