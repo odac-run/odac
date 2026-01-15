@@ -369,6 +369,14 @@ class App {
     }
   }
 
+  async stopAll() {
+    log('Stopping all apps...')
+    const appsToStop = [...this.#apps]
+    for (const app of appsToStop) {
+      await this.stop(app.id)
+    }
+  }
+
   async stop(id) {
     let app = this.#get(id)
     if (app) {
