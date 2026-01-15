@@ -37,7 +37,7 @@ describe('Hub', () => {
         hub: null,
         server: {started: Date.now()},
         websites: {},
-        services: [],
+        apps: [],
         mail: {accounts: {}}
       }
     })
@@ -156,7 +156,7 @@ describe('Hub', () => {
           hub: {token: 'test-token', secret: 'test-secret'},
           server: {started: Date.now()},
           websites: {'test-container': {}},
-          services: []
+          apps: []
         }
       })
 
@@ -344,7 +344,7 @@ describe('Hub', () => {
             'example.com': {},
             'test.com': {}
           },
-          services: ['web', 'mail'],
+          apps: ['web', 'mail'],
           mail: {
             accounts: {
               'user@example.com': {},
@@ -357,7 +357,7 @@ describe('Hub', () => {
       const services = Hub.getServicesInfo()
 
       expect(services.websites).toBe(2)
-      expect(services.services).toBe(2)
+      expect(services.apps).toBe(2)
       expect(services.mail).toBe(2)
     })
 
@@ -367,7 +367,7 @@ describe('Hub', () => {
       const services = Hub.getServicesInfo()
 
       expect(services.websites).toBe(0)
-      expect(services.services).toBe(0)
+      expect(services.apps).toBe(0)
       expect(services.mail).toBe(0)
     })
   })

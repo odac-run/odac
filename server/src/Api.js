@@ -20,15 +20,16 @@ class Api {
   }
   #commands = {
     auth: (...args) => Odac.server('Hub').auth(...args),
+    'app.start': (...args) => Odac.server('App').start(...args),
+    'app.delete': (...args) => Odac.server('App').delete(...args),
+    'app.list': (...args) => Odac.server('App').list(...args),
+    'app.install': (...args) => Odac.server('App').install(...args),
     'mail.create': (...args) => Odac.server('Mail').create(...args),
     'mail.delete': (...args) => Odac.server('Mail').delete(...args),
     'mail.list': (...args) => Odac.server('Mail').list(...args),
     'mail.password': (...args) => Odac.server('Mail').password(...args),
     'mail.send': (...args) => Odac.server('Mail').send(...args),
-    'service.start': (...args) => Odac.server('Service').start(...args),
-    'service.delete': (...args) => Odac.server('Service').delete(...args),
-    'service.list': (...args) => Odac.server('Service').list(...args),
-    'service.install': (...args) => Odac.server('Service').install(...args),
+
     'server.stop': () => Odac.server('Server').stop(),
     'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
     'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),

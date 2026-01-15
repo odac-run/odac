@@ -140,7 +140,7 @@ describe('Commands', () => {
       await Commands.run.action(args)
 
       expect(mockConnector.call).toHaveBeenCalledWith({
-        action: 'service.start',
+        action: 'app.start',
         data: ['/absolute/path/service.js']
       })
     })
@@ -151,7 +151,7 @@ describe('Commands', () => {
       await Commands.run.action(args)
 
       expect(mockConnector.call).toHaveBeenCalledWith({
-        action: 'service.start',
+        action: 'app.start',
         data: [expect.stringContaining('relative/service.js')]
       })
     })
@@ -519,7 +519,7 @@ describe('Commands', () => {
       await Commands.run.action(args)
 
       expect(mockConnector.call).toHaveBeenCalledWith({
-        action: 'service.start',
+        action: 'app.start',
         data: ['C:\\Windows\\service.js']
       })
     })
@@ -530,7 +530,7 @@ describe('Commands', () => {
       await Commands.run.action(args)
 
       expect(mockConnector.call).toHaveBeenCalledWith({
-        action: 'service.start',
+        action: 'app.start',
         data: ['\\\\server\\share\\service.js']
       })
     })

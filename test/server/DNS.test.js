@@ -60,6 +60,11 @@ describe('DNS Module', () => {
       SOA: jest.fn(data => ({type: 'SOA', ...data}))
     }))
 
+    // Mock child_process for system commands
+    jest.doMock('child_process', () => ({
+      execSync: jest.fn().mockReturnValue('')
+    }))
+
     // Mock axios module
     jest.doMock('axios', () => ({
       get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
@@ -86,6 +91,7 @@ describe('DNS Module', () => {
     cleanupGlobalMocks()
     jest.resetModules()
     jest.dontMock('native-dns')
+    jest.dontMock('child_process')
     jest.dontMock('axios')
   })
 

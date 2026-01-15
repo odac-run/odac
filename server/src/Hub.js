@@ -164,17 +164,17 @@ class Hub {
 
     const websites = Odac.core('Config').config.websites || {}
 
-    const services = Odac.core('Config').config.services || []
+    const apps = Odac.core('Config').config.apps || []
 
     const formattedContainers = containers
       .filter(c => {
         const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
-        return websites[name] || services.find(s => s.name === name)
+        return websites[name] || apps.find(s => s.name === name)
       })
       .map(c => {
         const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
         const app = {
-          type: 'service',
+          type: 'app',
           framework: c.image || 'unknown'
         }
 
@@ -278,12 +278,12 @@ class Hub {
 
     const containers = await Odac.server('Container').list()
     const websites = Odac.core('Config').config.websites || {}
-    const services = Odac.core('Config').config.services || []
+    const apps = Odac.core('Config').config.apps || []
 
     // Filter relevant containers
     const relevantContainers = containers.filter(c => {
       const name = c.names && c.names.length > 0 ? c.names[0].replace(/^\//, '') : 'unknown'
-      return websites[name] || services.find(s => s.name === name)
+      return websites[name] || apps.find(s => s.name === name)
     })
 
     if (relevantContainers.length === 0) return
@@ -459,19 +459,19 @@ class Hub {
       const config = Odac.core('Config').config
 
       const websites = config.websites ? Object.keys(config.websites).length : 0
-      const services = config.services ? config.services.length : 0
+      const apps = config.apps ? config.apps.length : 0
       const mailAccounts = config.mail && config.mail.accounts ? Object.keys(config.mail.accounts).length : 0
 
       return {
         websites: websites,
-        services: services,
+        apps: apps,
         mail: mailAccounts
       }
     } catch (error) {
       log('Failed to get services info: %s', error.message)
       return {
         websites: 0,
-        services: 0,
+        apps: 0,
         mail: 0
       }
     }

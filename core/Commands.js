@@ -3,6 +3,43 @@ require('./Odac.js')
 const path = require('path')
 
 module.exports = {
+  app: {
+    title: 'APP',
+    sub: {
+      install: {
+        description: 'Install a new application',
+        args: ['-t', '--type'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+
+          if (!type) {
+            console.log('Available official apps: mysql, redis, postgres')
+            type = await cli.question(__('Enter the app type or repo (e.g. mysql): '))
+          }
+
+          await Odac.cli('Connector').call({
+            action: 'app.install',
+            data: [type]
+          })
+        }
+      },
+      delete: {
+        description: 'Delete an App',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+          await Odac.cli('Connector').call({action: 'app.delete', data: [app]})
+        }
+      },
+      list: {
+        description: 'List all apps',
+        action: async () => Odac.cli('Connector').call({action: 'app.list'})
+      }
+    }
+  },
   auth: {
     args: ['key', '-k', '--key'],
     description: 'Define your server to your Odac account',
@@ -117,46 +154,10 @@ module.exports = {
       if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
         service = path.resolve() + '/' + service
       }
-      await Odac.cli('Connector').call({action: 'service.start', data: [service]})
+      await Odac.cli('Connector').call({action: 'app.start', data: [service]})
     }
   },
-  service: {
-    title: 'SERVICE',
-    sub: {
-      install: {
-        description: 'Install a new 3rd party application (mysql, postgres, etc.)',
-        args: ['-t', '--type'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
 
-          if (!type) {
-            console.log('Available official apps: mysql, redis, postgres')
-            type = await cli.question(__('Enter the app type or repo (e.g. mysql): '))
-          }
-
-          await Odac.cli('Connector').call({
-            action: 'service.install',
-            data: [type]
-          })
-        }
-      },
-      delete: {
-        description: 'Delete a Service',
-        args: ['-i', '--id'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let service = cli.parseArg(args, ['-i', '--id']) || args[0]
-          if (!service) service = await cli.question(__('Enter the Service ID or Name: '))
-          await Odac.cli('Connector').call({action: 'service.delete', data: [service]})
-        }
-      },
-      list: {
-        description: 'List all services',
-        action: async () => Odac.cli('Connector').call({action: 'service.list'})
-      }
-    }
-  },
   ssl: {
     title: 'SSL',
     sub: {

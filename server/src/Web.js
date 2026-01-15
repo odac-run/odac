@@ -387,6 +387,7 @@ class Web {
   }
 
   async syncConfig() {
+    if (typeof Odac === 'undefined') return
     if (!this.#proxyProcess) return
     if (!this.#proxySocketPath && !this.#proxyApiPort) return
 

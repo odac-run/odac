@@ -2,7 +2,7 @@ class Server {
   constructor() {
     Odac.core('Config').config.server.pid = process.pid
     Odac.core('Config').config.server.started = Date.now()
-    Odac.server('Service')
+    Odac.server('App')
     Odac.server('DNS')
     Odac.server('Web')
     Odac.server('Mail')
@@ -11,7 +11,7 @@ class Server {
     Odac.server('Container')
     setTimeout(function () {
       setInterval(function () {
-        Odac.server('Service').check()
+        Odac.server('App').check()
         Odac.server('SSL').check()
         Odac.server('Web').check()
         Odac.server('Mail').check()
@@ -21,7 +21,7 @@ class Server {
   }
 
   stop() {
-    Odac.server('Service').stopAll()
+    Odac.server('App').stopAll()
     Odac.server('Web').stopAll()
   }
 }
