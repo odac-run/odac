@@ -3,24 +3,17 @@ const {log} = Odac.core('Log', false).init('Hub')
 const axios = require('axios')
 const nodeCrypto = require('crypto')
 const os = require('os')
-const fs = require('fs')
 const https = require('https')
+
+const System = require('./Hub/System')
+const {WebSocketClient, MessageSigner} = require('./Hub/WebSocket')
 
 class Hub {
   constructor() {
-    this.websocket = null
-    this.websocketReconnectAttempts = 0
-    this.maxReconnectAttempts = 5
-    this.lastNetworkStats = null
-    this.lastNetworkTime = null
-    this.lastCpuStats = null
+    this.ws = new WebSocketClient()
     this.checkCounter = 0
-    this.nextReconnectTime = 0
     this.statsInterval = 60
     this.handshakeInterval = 60
-    this.pingInterval = null
-
-    this.isAlive = false
 
     this.agent = new https.Agent({
       rejectUnauthorized: true,
@@ -28,6 +21,12 @@ class Hub {
       keepAliveMsecs: 1000,
       maxSockets: 25,
       timeout: 30000
+    })
+
+    this.ws.setHandlers({
+      onConnect: () => this.sendInitialHandshake(),
+      onMessage: data => this.handleWebSocketMessage(data),
+      onDisconnect: () => {}
     })
   }
 
@@ -37,125 +36,31 @@ class Hub {
 
   check() {
     this.checkCounter = this.checkCounter + 1
-
-    // Reset counter to avoid overflow, though highly unlikely with basic ints
     if (this.checkCounter > 3600) this.checkCounter = 1
 
     const hub = Odac.core('Config').config.hub
-    if (!hub || !hub.token) {
-      return
-    }
+    if (!hub || !hub.token) return
 
-    if (!this.websocket) {
-      if (Date.now() >= this.nextReconnectTime) {
-        this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
-        this.connectWebSocket('wss://hub.odac.run/ws', hub.token)
+    if (!this.ws.connected) {
+      if (this.ws.shouldReconnect()) {
+        this.ws.connect('wss://hub.odac.run/ws', hub.token)
       }
       return
     }
 
-    // Dynamic stats interval
     if (this.checkCounter % this.statsInterval === 0) {
       log('Sending container stats (Interval: %ds)...', this.statsInterval)
       this.sendContainerStats()
     }
 
-    // Dynamic handshake/full info interval
     if (this.checkCounter % this.handshakeInterval === 0) {
       log('Sending initial handshake (Interval: %ds)...', this.handshakeInterval)
       this.sendInitialHandshake()
     }
   }
 
-  connectWebSocket(url, token) {
-    if (this.websocket) {
-      log('WebSocket already connected')
-      return
-    }
-
-    try {
-      const WebSocket = require('ws')
-
-      log('Connecting to WebSocket: %s', url)
-      this.websocket = new WebSocket(url, {
-        rejectUnauthorized: true,
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      })
-
-      this.websocket.on('open', () => {
-        log('WebSocket connected')
-        this.websocketReconnectAttempts = 0
-        this.isAlive = true
-        this.startHeartbeat()
-        this.sendInitialHandshake()
-      })
-
-      this.websocket.on('pong', () => {
-        this.isAlive = true
-      })
-
-      this.websocket.on('message', data => {
-        this.handleWebSocketMessage(data)
-      })
-
-      this.websocket.on('close', () => {
-        log('WebSocket disconnected')
-        this.stopHeartbeat()
-        this.websocket = null
-        // Reconnect after random delay (5-20s) to prevent thundering herd
-        this.nextReconnectTime = Date.now() + 5000 + Math.floor(Math.random() * 15000)
-      })
-
-      this.websocket.on('error', error => {
-        log('WebSocket error: %s', error.message)
-      })
-    } catch (error) {
-      log('Failed to connect WebSocket: %s', error.message)
-      this.websocket = null
-    }
-  }
-
-  disconnectWebSocket() {
-    if (this.websocket) {
-      log('Disconnecting WebSocket')
-      this.stopHeartbeat()
-      this.websocket.close()
-      this.websocket = null
-    }
-  }
-
-  startHeartbeat() {
-    this.stopHeartbeat()
-    this.pingInterval = setInterval(() => {
-      if (!this.websocket) return
-
-      if (this.isAlive === false) {
-        log('WebSocket connection dead (no pong), terminating...')
-        this.websocket.terminate()
-        return
-      }
-
-      this.isAlive = false
-      // WebSocket.OPEN is 1
-      if (this.websocket.readyState === 1) {
-        this.websocket.ping()
-      }
-    }, 30000)
-  }
-
-  stopHeartbeat() {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval)
-      this.pingInterval = null
-    }
-  }
-
   async sendInitialHandshake() {
-    if (!this.websocket || this.websocket.readyState !== 1) {
-      return
-    }
+    if (!this.ws.connected) return
 
     let containers = []
     if (Odac.server('Container').available) {
@@ -202,31 +107,7 @@ class Hub {
         }
       })
 
-    const cpus = os.cpus()
-    const system = {
-      hostname: os.hostname(),
-      platform: os.platform(),
-      arch: os.arch(),
-      release: os.release(),
-      uptime: os.uptime(),
-      load: os.loadavg(),
-      memory: {
-        total: Math.floor(os.totalmem() / 1024),
-        free: Math.floor(os.freemem() / 1024)
-      },
-      cpu: {
-        count: cpus.length,
-        model: cpus.length > 0 ? cpus[0].model : 'unknown'
-      },
-      container_engine: Odac.server('Container').available
-    }
-
-    if (os.platform() === 'linux') {
-      const distro = this.getLinuxDistro()
-      if (distro && distro.name) {
-        system.release = `${distro.name} ${distro.version}`
-      }
-    }
+    const system = System.getSystemInfo()
 
     const timestamp = Math.floor(Date.now() / 1000)
     const payload = {
@@ -244,37 +125,26 @@ class Hub {
       timestamp: timestamp
     })
 
-    if (this.websocket && this.websocket.readyState === 1) {
-      this.websocket.send(JSON.stringify(payload))
-    }
+    this.ws.send(payload)
   }
 
   sendWebSocketStatus() {
-    if (!this.websocket || this.websocket.readyState !== 1) {
-      return
-    }
+    if (!this.ws.connected) return
 
     const status = this.getSystemStatus()
     const timestamp = Math.floor(Date.now() / 1000)
 
-    const message = {
+    this.ws.send({
       type: 'status',
       data: status,
       timestamp: timestamp,
       signature: this.signWebSocketMessage({type: 'status', data: status, timestamp})
-    }
-
-    this.websocket.send(JSON.stringify(message))
+    })
   }
 
   async sendContainerStats() {
-    if (!this.websocket || this.websocket.readyState !== 1) {
-      return
-    }
-
-    if (!Odac.server('Container').available) {
-      return
-    }
+    if (!this.ws.connected) return
+    if (!Odac.server('Container').available) return
 
     const containers = await Odac.server('Container').list()
     const websites = Odac.core('Config').config.websites || {}
@@ -311,9 +181,7 @@ class Hub {
       timestamp: timestamp
     })
 
-    if (this.websocket && this.websocket.readyState === 1) {
-      this.websocket.send(JSON.stringify(payload))
-    }
+    this.ws.send(payload)
   }
 
   handleWebSocketMessage(data) {
@@ -331,7 +199,7 @@ class Hub {
           log('Authentication credentials invalid, clearing config')
           delete Odac.core('Config').config.hub
         }
-        this.disconnectWebSocket()
+        this.ws.disconnect()
         return
       }
 
@@ -345,37 +213,12 @@ class Hub {
 
   signWebSocketMessage(message) {
     const hub = Odac.core('Config').config.hub
-    if (!hub || !hub.secret) {
-      return null
-    }
-
-    const payload = JSON.stringify({type: message.type, data: message.data, timestamp: message.timestamp})
-    // DEBUG: Log the payload being signed to debug HMAC issues
-    // log('Signing payload: %s', payload)
-    return nodeCrypto.createHmac('sha256', hub.secret).update(payload).digest('hex')
+    return MessageSigner.sign(message, hub?.secret)
   }
 
   verifyWebSocketMessage(message) {
-    const {type, data, timestamp, signature} = message
-
-    if (!signature || !timestamp) {
-      log('Missing signature or timestamp in WebSocket message')
-      return false
-    }
-
-    const now = Math.floor(Date.now() / 1000)
-    if (Math.abs(now - timestamp) > 300) {
-      log('WebSocket message timestamp too old or in future')
-      return false
-    }
-
-    const expectedSignature = this.signWebSocketMessage({type, data, timestamp})
-    if (signature !== expectedSignature) {
-      log('Invalid WebSocket message signature')
-      return false
-    }
-
-    return true
+    const hub = Odac.core('Config').config.hub
+    return MessageSigner.verify(message, hub?.secret)
   }
 
   processCommand(command) {
@@ -432,279 +275,11 @@ class Hub {
   }
 
   getSystemStatus() {
-    const memoryInfo = this.getMemoryUsage()
-    const diskInfo = this.getDiskUsage()
-    const networkInfo = this.getNetworkUsage()
-    const servicesInfo = this.getServicesInfo()
-
-    const serverStarted = Odac.core('Config').config.server.started
-    const odacUptime = serverStarted ? Math.floor((Date.now() - serverStarted) / 1000) : 0
-
-    return {
-      cpu: this.getCpuUsage(),
-      memory: memoryInfo,
-      disk: diskInfo,
-      network: networkInfo,
-      services: servicesInfo,
-      uptime: odacUptime,
-      hostname: os.hostname(),
-      platform: os.platform(),
-      arch: os.arch(),
-      node: process.version
-    }
-  }
-
-  getServicesInfo() {
-    try {
-      const config = Odac.core('Config').config
-
-      const websites = config.websites ? Object.keys(config.websites).length : 0
-      const apps = config.apps ? config.apps.length : 0
-      const mailAccounts = config.mail && config.mail.accounts ? Object.keys(config.mail.accounts).length : 0
-
-      return {
-        websites: websites,
-        apps: apps,
-        mail: mailAccounts
-      }
-    } catch (error) {
-      log('Failed to get services info: %s', error.message)
-      return {
-        websites: 0,
-        apps: 0,
-        mail: 0
-      }
-    }
-  }
-
-  getMemoryUsage() {
-    const totalMem = os.totalmem()
-
-    if (os.platform() === 'darwin') {
-      try {
-        const {execSync} = require('child_process')
-        const output = execSync('vm_stat', {encoding: 'utf8'})
-        const lines = output.split('\n')
-
-        let pageSize = 4096
-        let pagesActive = 0
-        let pagesWired = 0
-        let pagesCompressed = 0
-
-        for (const line of lines) {
-          if (line.includes('page size of')) {
-            pageSize = parseInt(line.match(/(\d+)/)[1])
-          } else if (line.includes('Pages active')) {
-            pagesActive = parseInt(line.match(/:\s*(\d+)/)[1])
-          } else if (line.includes('Pages wired down')) {
-            pagesWired = parseInt(line.match(/:\s*(\d+)/)[1])
-          } else if (line.includes('Pages occupied by compressor')) {
-            pagesCompressed = parseInt(line.match(/:\s*(\d+)/)[1])
-          }
-        }
-
-        const usedMem = (pagesActive + pagesWired + pagesCompressed) * pageSize
-
-        return {
-          used: usedMem,
-          total: totalMem
-        }
-      } catch (error) {
-        log('Failed to get macOS memory usage: %s', error.message)
-      }
-    }
-
-    const freeMem = os.freemem()
-    return {
-      used: totalMem - freeMem,
-      total: totalMem
-    }
-  }
-
-  getDiskUsage() {
-    try {
-      const {execSync} = require('child_process')
-      let command
-
-      if (os.platform() === 'win32') {
-        command = 'wmic logicaldisk get size,freespace,caption'
-      } else {
-        command = "df -k / | tail -1 | awk '{print $2,$3}'"
-      }
-
-      const output = execSync(command, {encoding: 'utf8'})
-
-      if (os.platform() === 'win32') {
-        const lines = output.trim().split('\n')
-        if (lines.length > 1) {
-          const parts = lines[1].trim().split(/\s+/)
-          const free = parseInt(parts[1]) || 0
-          const total = parseInt(parts[2]) || 0
-          return {
-            used: total - free,
-            total: total
-          }
-        }
-      } else {
-        const parts = output.trim().split(/\s+/)
-        const total = parseInt(parts[0]) * 1024
-        const used = parseInt(parts[1]) * 1024
-        return {
-          used: used,
-          total: total
-        }
-      }
-    } catch (error) {
-      log('Failed to get disk usage: %s', error.message)
-    }
-
-    return {
-      used: 0,
-      total: 0
-    }
-  }
-
-  getNetworkUsage() {
-    try {
-      const {execSync} = require('child_process')
-      let command
-
-      if (os.platform() === 'win32') {
-        command = 'netstat -e'
-      } else if (os.platform() === 'darwin') {
-        command = "netstat -ib | grep -e 'en0' | head -1 | awk '{print $7,$10}'"
-      } else {
-        command = "cat /proc/net/dev | grep -E 'eth0|ens|enp' | head -1 | awk '{print $2,$10}'"
-      }
-
-      const output = execSync(command, {encoding: 'utf8', timeout: 5000})
-      let currentStats = {received: 0, sent: 0}
-
-      if (os.platform() === 'win32') {
-        const lines = output.split('\n')
-        for (const line of lines) {
-          if (line.includes('Bytes')) {
-            const parts = line.trim().split(/\s+/)
-            currentStats.received = parseInt(parts[1]) || 0
-            currentStats.sent = parseInt(parts[2]) || 0
-            break
-          }
-        }
-      } else {
-        const parts = output.trim().split(/\s+/)
-        currentStats.received = parseInt(parts[0]) || 0
-        currentStats.sent = parseInt(parts[1]) || 0
-      }
-
-      const now = Date.now()
-
-      if (this.lastNetworkStats && this.lastNetworkTime) {
-        const timeDiff = (now - this.lastNetworkTime) / 1000
-        const receivedDiff = currentStats.received - this.lastNetworkStats.received
-        const sentDiff = currentStats.sent - this.lastNetworkStats.sent
-
-        if (receivedDiff < 0 || sentDiff < 0 || timeDiff <= 0) {
-          this.lastNetworkStats = currentStats
-          this.lastNetworkTime = now
-          return {download: 0, upload: 0}
-        }
-
-        const bandwidth = {
-          download: Math.max(0, Math.round(receivedDiff / timeDiff)),
-          upload: Math.max(0, Math.round(sentDiff / timeDiff))
-        }
-
-        this.lastNetworkStats = currentStats
-        this.lastNetworkTime = now
-
-        return bandwidth
-      }
-
-      this.lastNetworkStats = currentStats
-      this.lastNetworkTime = now
-
-      return {
-        download: 0,
-        upload: 0
-      }
-    } catch (error) {
-      log('Failed to get network usage: %s', error.message)
-    }
-
-    return {
-      download: 0,
-      upload: 0
-    }
-  }
-
-  getCpuUsage() {
-    const cpus = os.cpus()
-    let totalIdle = 0
-    let totalTick = 0
-
-    for (const cpu of cpus) {
-      for (const type in cpu.times) {
-        totalTick += cpu.times[type]
-      }
-      totalIdle += cpu.times.idle
-    }
-
-    const currentStats = {
-      idle: totalIdle,
-      total: totalTick
-    }
-
-    if (!this.lastCpuStats) {
-      this.lastCpuStats = currentStats
-      return 0
-    }
-
-    const idleDiff = currentStats.idle - this.lastCpuStats.idle
-    const totalDiff = currentStats.total - this.lastCpuStats.total
-
-    if (idleDiff < 0 || totalDiff <= 0) {
-      this.lastCpuStats = currentStats
-      return 0
-    }
-
-    const usage = 100 - ~~((100 * idleDiff) / totalDiff)
-
-    this.lastCpuStats = currentStats
-
-    return Math.max(0, Math.min(100, usage))
+    return System.getStatus()
   }
 
   getLinuxDistro() {
-    log('Getting Linux distro info...')
-    if (os.platform() !== 'linux') {
-      log('Platform is not Linux: %s', os.platform())
-      return null
-    }
-
-    try {
-      log('Reading /etc/os-release...')
-      const osRelease = fs.readFileSync('/etc/os-release', 'utf8')
-      const lines = osRelease.split('\n')
-      const distro = {}
-
-      for (const line of lines) {
-        const [key, value] = line.split('=')
-        if (key && value) {
-          distro[key] = value.replace(/"/g, '')
-        }
-      }
-
-      const result = {
-        name: distro.NAME || distro.ID || 'Unknown',
-        version: distro.VERSION_ID || distro.VERSION || 'Unknown',
-        id: distro.ID || 'unknown'
-      }
-      log('Distro detected: %s %s', result.name, result.version)
-      return result
-    } catch (err) {
-      log('Failed to read distro info: %s', err.message)
-      return null
-    }
+    return System.getLinuxDistro()
   }
 
   async auth(code) {
