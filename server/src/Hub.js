@@ -173,9 +173,39 @@ class Hub {
       case 'configure':
         this.#handleConfigure(command.payload)
         break
+      case 'app.create':
+        this.#handleAppCreate(command)
+        break
       default:
         log('Unknown command action: %s', command.action)
     }
+  }
+
+  async #handleAppCreate(command) {
+    const payload = command.payload
+
+    if (!payload) {
+      log('app.create: Missing payload')
+      this.#sendCommandResponse(command.requestId, {
+        success: false,
+        message: 'Missing payload'
+      })
+      return
+    }
+
+    log('Creating app: %j', payload)
+    const result = await Odac.server('App').create(payload)
+
+    this.#sendCommandResponse(command.requestId, result)
+  }
+
+  #sendCommandResponse(requestId, result) {
+    this.#sendSignedMessage('command_response', {
+      requestId,
+      success: result.success,
+      message: result.message,
+      data: result.data
+    })
   }
 
   // Private Helpers

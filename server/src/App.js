@@ -71,19 +71,61 @@ class App {
     return Odac.server('Api').result(false, __('App %s already exists and is running.', file))
   }
 
-  async create(type) {
-    log('Creating app from recipe: %s', type)
+  async create(config) {
+    // Support both string (legacy) and object config
+    // String: create("mysql")
+    // Object: create({type: "app", app: "postgres", name: "postgres-2--xyz"})
+    // Object: create({type: "github", repo: "...", token: "...", name: "myapp"})
+
+    if (typeof config === 'string') {
+      config = {type: 'app', app: config}
+    }
+
+    log('Creating app: %j', config)
+
+    // Validate config
+    if (!config.type) {
+      return Odac.server('Api').result(false, __('Missing config type'))
+    }
+
+    switch (config.type) {
+      case 'app':
+        return this.#createFromRecipe(config)
+      case 'github':
+        return this.#createFromGithub(config)
+      default:
+        return Odac.server('Api').result(false, __('Unknown config type: %s', config.type))
+    }
+  }
+
+  async #createFromRecipe(config) {
+    const {app: appType, name: customName} = config
+
+    if (!appType) {
+      log('createFromRecipe: Missing app type')
+      return Odac.server('Api').result(false, __('Missing app type'))
+    }
+
+    log('createFromRecipe: Fetching recipe for %s', appType)
 
     let recipe
     try {
-      recipe = await Odac.server('Hub').getApp(type)
+      recipe = await Odac.server('Hub').getApp(appType)
+      log('createFromRecipe: Recipe received: %j', recipe)
     } catch (e) {
-      return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', type, e))
+      error('createFromRecipe: Failed to fetch recipe: %s', e)
+      return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', appType, e))
     }
 
-    const name = this.#generateUniqueName(recipe.name)
-    const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+    const name = customName || this.#generateUniqueName(recipe.name)
+    log('createFromRecipe: Using name: %s', name)
 
+    if (this.#get(name)) {
+      log('createFromRecipe: App %s already exists', name)
+      return Odac.server('Api').result(false, __('App %s already exists', name))
+    }
+
+    const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
     if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
 
     const app = {
@@ -99,19 +141,30 @@ class App {
       status: 'installing'
     }
 
+    log('createFromRecipe: App config: %j', app)
+
     this.#apps.push(app)
     this.#saveApps()
 
     try {
+      log('createFromRecipe: Starting app...')
       if (await this.#run(app.id)) {
+        log('createFromRecipe: App started successfully')
         return Odac.server('Api').result(true, __('App %s created successfully.', name))
       }
       throw new Error('Failed to start app container. Check logs for details.')
     } catch (e) {
+      error('createFromRecipe: Failed to start app: %s', e.message)
       this.#apps = this.#apps.filter(s => s.id !== app.id)
       this.#saveApps()
       return Odac.server('Api').result(false, e.message)
     }
+  }
+
+  async #createFromGithub(config) {
+    // TODO: Implement GitHub deployment
+    log('GitHub deployment requested: %j', config)
+    return Odac.server('Api').result(false, __('GitHub deployment not yet implemented'))
   }
 
   async stop(id) {
