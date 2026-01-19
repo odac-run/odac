@@ -91,6 +91,8 @@ class App {
     switch (config.type) {
       case 'app':
         return this.#createFromRecipe(config)
+      case 'git':
+        return this.#createFromGit(config)
       case 'github':
         return this.#createFromGithub(config)
       default:
@@ -162,9 +164,83 @@ class App {
   }
 
   async #createFromGithub(config) {
-    // TODO: Implement GitHub deployment
-    log('GitHub deployment requested: %j', config)
-    return Odac.server('Api').result(false, __('GitHub deployment not yet implemented'))
+    // Legacy - redirect to git
+    return this.#createFromGit(config)
+  }
+
+  async #createFromGit(config) {
+    const {url, token, branch = 'main', name, env = {}} = config
+
+    log('createFromGit: Starting git deployment')
+    log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
+
+    // Validate required fields
+    if (!url) {
+      return Odac.server('Api').result(false, __('Missing git URL'))
+    }
+    if (!name) {
+      return Odac.server('Api').result(false, __('Missing app name'))
+    }
+
+    // Check if name already exists
+    if (this.#get(name)) {
+      return Odac.server('Api').result(false, __('App %s already exists', name))
+    }
+
+    // Create app directory
+    const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+    log('createFromGit: App directory: %s', appDir)
+
+    if (fs.existsSync(appDir)) {
+      log('createFromGit: Removing existing directory')
+      fs.rmSync(appDir, {recursive: true, force: true})
+    }
+    fs.mkdirSync(appDir, {recursive: true})
+
+    // Build git URL with token if provided
+    let gitUrl = url
+    if (token) {
+      // Insert token into URL: https://github.com/... -> https://x-access-token:TOKEN@github.com/...
+      gitUrl = url.replace('https://', `https://x-access-token:${token}@`)
+    }
+
+    try {
+      // Step 1: Clone repository
+      log('createFromGit: Cloning repository...')
+      await Odac.server('Container').cloneRepo(gitUrl, branch, appDir)
+      log('createFromGit: Clone successful')
+
+      // Step 2: Build with Nixpacks (TODO)
+      log('createFromGit: Build step - TODO')
+
+      // Step 3: Create app record
+      const imageName = `odac-app-${name}`
+      const app = {
+        id: this.#apps.length,
+        name,
+        type: 'git',
+        url,
+        branch,
+        image: imageName,
+        env,
+        active: false,
+        created: Date.now(),
+        status: 'cloned'
+      }
+
+      this.#apps.push(app)
+      this.#saveApps()
+
+      log('createFromGit: App record created')
+      return Odac.server('Api').result(true, __('App %s cloned successfully. Build pending.', name))
+    } catch (e) {
+      error('createFromGit: Failed: %s', e.message)
+      // Cleanup on failure
+      if (fs.existsSync(appDir)) {
+        fs.rmSync(appDir, {recursive: true, force: true})
+      }
+      return Odac.server('Api').result(false, e.message)
+    }
   }
 
   async stop(id) {

@@ -138,21 +138,32 @@ class Hub {
     }
   }
 
-  async call(action, data) {
+  async call(action, data, retries = 3) {
     log('Hub API call: %s', action)
 
     const url = `${HUB_URL}/${action}`
     const headers = this.#buildHeaders(action, data)
 
-    try {
-      const response = await axios.post(url, data, {
-        headers,
-        httpsAgent: this.agent
-      })
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const response = await axios.post(url, data, {
+          headers,
+          httpsAgent: this.agent,
+          timeout: 30000
+        })
 
-      return this.#parseResponse(action, response)
-    } catch (error) {
-      return this.#handleApiError(action, error)
+        return this.#parseResponse(action, response)
+      } catch (error) {
+        const isRetryable = error.code === 'EAI_AGAIN' || error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT'
+
+        if (isRetryable && attempt < retries) {
+          log('Hub API call failed (attempt %d/%d): %s - Retrying...', attempt, retries, error.code)
+          await new Promise(r => setTimeout(r, 1000 * attempt))
+          continue
+        }
+
+        return this.#handleApiError(action, error)
+      }
     }
   }
 
@@ -193,10 +204,17 @@ class Hub {
       return
     }
 
-    log('Creating app: %j', payload)
-    const result = await Odac.server('App').create(payload)
-
-    this.#sendCommandResponse(command.requestId, result)
+    try {
+      log('Creating app: %j', payload)
+      const result = await Odac.server('App').create(payload)
+      this.#sendCommandResponse(command.requestId, result)
+    } catch (e) {
+      log('app.create failed: %s', e.message)
+      this.#sendCommandResponse(command.requestId, {
+        success: false,
+        message: e.message
+      })
+    }
   }
 
   #sendCommandResponse(requestId, result) {

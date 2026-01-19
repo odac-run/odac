@@ -129,6 +129,54 @@ class Container {
   }
 
   /**
+   * Clones a git repository into a target directory
+   * @param {string} gitUrl - Git repository URL (with token if private)
+   * @param {string} branch - Branch to clone
+   * @param {string} targetDir - Target directory on host
+   */
+  async cloneRepo(gitUrl, branch, targetDir) {
+    if (!this.available) {
+      throw new Error('Docker is not available')
+    }
+
+    const hostPath = this.#resolveHostPath(targetDir)
+    const image = 'alpine/git'
+
+    log(`Cloning ${branch} branch to ${hostPath}`)
+
+    try {
+      await this.#ensureImage(image)
+
+      // Create container for git clone
+      const container = await this.#docker.createContainer({
+        Image: image,
+        Cmd: ['clone', '--depth', '1', '--branch', branch, gitUrl, '/repo'],
+        Entrypoint: ['git'],
+        HostConfig: {
+          Binds: [`${hostPath}:/repo`],
+          AutoRemove: true
+        }
+      })
+
+      // Start and wait for completion
+      await container.start()
+
+      // Wait for container to finish
+      const result = await container.wait()
+
+      if (result.StatusCode !== 0) {
+        throw new Error(`Git clone failed with exit code ${result.StatusCode}`)
+      }
+
+      log('Repository cloned successfully')
+      return true
+    } catch (err) {
+      error(`Failed to clone repository: ${err.message}`)
+      throw err
+    }
+  }
+
+  /**
    * Executes a command inside an existing running container
    * @param {string} name - Container name
    * @param {string} command - Command to execute
