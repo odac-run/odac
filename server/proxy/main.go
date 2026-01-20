@@ -132,59 +132,56 @@ func main() {
 	}
 
 	// Start HTTP Server (Port 80)
+	httpServer := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	go func() {
 		log.Println("Starting HTTP server on :80")
-		
 		listener, err := listen("tcp", ":80")
 		if err != nil {
 			log.Fatalf("HTTP listener failed: %v", err)
 		}
-
-		server := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       0,
-			WriteTimeout:      0,
-			IdleTimeout:       120 * time.Second,
-		}
-		if err := server.Serve(listener); err != nil {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
 
 	// Start HTTPS Server (Port 443)
+	tlsConfig := &tls.Config{
+		GetCertificate: prx.GetCertificate,
+		NextProtos:     []string{"h2", "http/1.1"},
+		MinVersion:     tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+	}
+
+	httpsServer := &http.Server{
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	go func() {
 		log.Println("Starting HTTPS server on :443")
-		
 		listener, err := listen("tcp", ":443")
 		if err != nil {
 			log.Fatalf("HTTPS listener failed: %v", err)
 		}
-
-		tlsConfig := &tls.Config{
-			GetCertificate: prx.GetCertificate,
-			NextProtos:     []string{"h2", "http/1.1"},
-			MinVersion:     tls.VersionTLS12,
-			CipherSuites: []uint16{
-				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			},
-		}
-
-		server := &http.Server{
-			Handler:           handler,
-			TLSConfig:         tlsConfig,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       0,
-			WriteTimeout:      0,
-			IdleTimeout:       120 * time.Second,
-		}
-
-		if err := server.Serve(tls.NewListener(listener, tlsConfig)); err != nil {
+		if err := httpsServer.Serve(tls.NewListener(listener, tlsConfig)); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	}()
@@ -194,7 +191,24 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
-	log.Println("ODAC Proxy shutting down...")
+	log.Println("ODAC Proxy shutting down gracefully...")
+
+	// Graceful shutdown with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Shutdown both servers
+	go func() {
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+	}()
+
+	if err := httpsServer.Shutdown(ctx); err != nil {
+		log.Printf("HTTPS server shutdown error: %v", err)
+	}
+
+	log.Println("ODAC Proxy stopped.")
 }
 
 
