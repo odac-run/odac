@@ -2,6 +2,8 @@ const {log, error} = Odac.core('Log', false).init('Container')
 const Docker = require('dockerode')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
+const cp = require('child_process')
 
 class Container {
   #docker
@@ -365,9 +367,6 @@ class Container {
 
           try {
             const stream = await container.getArchive({path: '/image.tar'})
-
-            const os = require('os')
-            const cp = require('child_process')
 
             const dlTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'odac-dl-'))
             const tarPath = path.join(dlTempDir, 'output.tar')
