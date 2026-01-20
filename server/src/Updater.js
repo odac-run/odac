@@ -136,11 +136,10 @@ class Updater {
   }
 
   async execute() {
-    log('Launching update container...')
+    log('Launching update process...')
 
     try {
       // 1. Get current container info
-      // Hostname inside container is usually the Container ID (short version)
       const containerId = process.env.HOSTNAME
       const container = this.#docker.getContainer(containerId)
       const info = await container.inspect()
@@ -149,74 +148,91 @@ class Updater {
 
       // 2. Prepare configuration for the new container
       const newName = 'odac-update'
-
       // Clean up previous update attempt if exists
       try {
         const oldUpdater = this.#docker.getContainer(newName)
         await oldUpdater.remove({force: true})
       } catch {
-        // Ignore if not exists
+        /* Ignore */
       }
 
-      // We copy essential configurations: Binds, NetworkMode, Env
       const env = info.Config.Env || []
-
-      // Ensure /var/run/odac is mounted or available
-      // Since we use the same Binds as the old container, and the old container MUST have access to it
-      // (because we created the socket there), we assume it's either a volume or inside the container's writable layer.
-      // IF it's just a path inside container, the NEW container won't see the socket unless we mount a shared volume.
-      // CRITICAL: We need a shared volume for the socket!
-
       const binds = info.HostConfig.Binds || []
-      // Check if we have a bind for /var/run/odac, if not, we must add one dynamically?
-      // Actually, we can just use the Host system's temporary directory if we are in Host Network mode...
-      // BUT, we are in a container.
-      // So, let's assume standard ODAC deployment has a volume for this OR we use /app/storage/run if that's shared.
 
-      // Better approach: Use the existing Docker Socket mount trace or just rely on 'odac-storage' volume.
-      // Let's assume the socket path '/var/run/odac/update.sock' is on a shared volume.
-      // If not, we should use a path we KNOW is shared, like '/app/storage/update.sock'.
-
-      // Let's change the socket path to reside in /app/storage/run/ which is definitely persisted/shared
-      // if volumes are set up correctly.
-
-      // Add special flag for the new instance
-      env.push('ODAC_UPDATE_MODE=true')
-      env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
-
+      // Setup Create Options
       const createOptions = {
         name: newName,
         Image: this.#image,
         Env: env,
         HostConfig: {
           Binds: binds,
-          NetworkMode: 'host', // Critical for SO_REUSEPORT
-          Privileged: true, // Required for Docker management
-          PidMode: 'host',
-          RestartPolicy: {Name: 'no'} // Monitor it manually first
+          Privileged: true,
+          RestartPolicy: {Name: 'unless-stopped'} // Default policy for production
         }
       }
 
-      log('Creating new container: %s', newName)
-      const newContainer = await this.#docker.createContainer(createOptions)
+      // Platform Specific Configuration
+      if (process.platform === 'linux') {
+        // Linux: Zero Downtime Update Strategy via Socket Handover
+        log('Platform: Linux. Using Zero Downtime Update Strategy.')
 
-      log('Starting new container...')
-      await newContainer.start()
+        createOptions.Env.push('ODAC_UPDATE_MODE=true')
+        createOptions.Env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
 
-      log('Update container started successfully. Waiting for handover...')
+        createOptions.HostConfig.NetworkMode = 'host'
+        createOptions.HostConfig.PidMode = 'host'
+        createOptions.HostConfig.RestartPolicy = {Name: 'no'}
 
-      // 4. Start listening for the handshake from the new container
-      try {
-        await this.#createUpdateListener()
-      } catch (e) {
-        log('Handover failed: %s. Rolling back...', e.message)
-        await newContainer.stop().catch(() => {})
-        await newContainer.remove().catch(() => {})
-        throw e
+        log('Creating new container: %s', newName)
+        const newContainer = await this.#docker.createContainer(createOptions)
+
+        log('Starting new container...')
+        await newContainer.start()
+
+        log('Update container started successfully. Waiting for handover...')
+        try {
+          await this.#createUpdateListener()
+        } catch (e) {
+          log('Handover failed: %s. Rolling back...', e.message)
+          await newContainer.stop().catch(() => {})
+          await newContainer.remove().catch(() => {})
+          throw e
+        }
+      } else {
+        // Windows/Mac: Container Swap Strategy via Helper Container
+        log(`Platform: ${process.platform}. Using Container Swap Strategy.`)
+
+        if (info.HostConfig.PortBindings) {
+          createOptions.HostConfig.PortBindings = info.HostConfig.PortBindings
+        }
+
+        log('Creating new container (STOPPED): %s', newName)
+        await this.#docker.createContainer(createOptions)
+
+        // Spawn Runner Container to perform the swap
+        log('Spawning runner container to perform swap...')
+
+        // Command: Wait 5s, Stop Old, Remove Old, Rename New, Start New
+        const cmd = 'sleep 5 && docker stop odac && docker rm odac && docker rename odac-update odac && docker start odac'
+
+        const runnerOptions = {
+          Image: 'docker:cli', // Lightweight docker client
+          HostConfig: {
+            Binds: ['/var/run/docker.sock:/var/run/docker.sock'],
+            AutoRemove: true // Remove runner after execution
+          },
+          Cmd: ['sh', '-c', cmd]
+        }
+
+        // Pull docker:cli just in case
+        await execAsync('docker pull docker:cli')
+
+        const runner = await this.#docker.createContainer(runnerOptions)
+        await runner.start()
+
+        log('Runner spawned. Handing over control and exiting...')
+        process.exit(0)
       }
-
-      // The rest of the logic (handover) is handled by the socket communication
-      // initiated by the NEW container in its startup phase.
     } catch (e) {
       throw new Error(`Failed to execute update: ${e.message}`)
     }
@@ -250,13 +266,10 @@ class Updater {
             try {
               // 1. Remove the failed new container
               try {
-                // Better: Iterate containers or just try to remove 'odac' (which is the new one now)
                 const newOne = this.#docker.getContainer('odac')
                 await newOne.remove({force: true})
                 log('Failed new container removed.')
               } catch {
-                // Ignore removal errors if already gone
-                // It might be named 'odac-update' if rename failed
                 try {
                   const updateOne = this.#docker.getContainer('odac-update')
                   await updateOne.remove({force: true})
@@ -266,11 +279,6 @@ class Updater {
               }
 
               // 2. Restore my name from 'odac-backup' to 'odac'
-              // We need to find our own container.
-              // Assuming we renamed ourselves to 'odac-backup' during the TakeOver phase initiated by New
-              // Wait, TakeOver is done by NEW instance via API.
-              // So if NEW died, WE are named 'odac-backup'.
-
               const myName = 'odac-backup'
               const me = this.#docker.getContainer(myName)
               await me.rename({name: 'odac'})
@@ -327,13 +335,8 @@ class Updater {
     log('Performing handover...')
     // Rename current container (backup)
     // Rename new container (primary)
-    // Since we are inside the container, we can't easily rename ourselves via Docker API
-    // if we don't know our own true ID or name perfectly.
-    // And renaming might be blocked if container is running.
-
-    // Instead of renaming, we rely on the fact that the NEW container
-    // has already started binding ports (SO_REUSEPORT) or will take over.
-    // The most important thing here is to STOP our services.
+    // Since we are inside the container, we rely on the NEW container taking over
+    // while we handle the graceful shutdown of internal services.
 
     log('Stopping internal services...')
     Odac.server('Server').stop() // Stops App, Web, Mail, etc.
