@@ -322,25 +322,41 @@ class Updater {
   async #takeOver() {
     log('Taking over container identity...')
     const targetName = 'odac'
+    const backupName = 'odac-backup'
 
-    // Remove old container
+    // 1. Remove existing backup if any
     try {
-      const oldContainer = this.#docker.getContainer(targetName)
-      await oldContainer.remove({force: true})
-      log('Old container removed.')
+      const backup = this.#docker.getContainer(backupName)
+      await backup.remove({force: true})
+      log('Previous backup removed.')
     } catch (e) {
-      // Ignore 404 (already gone)
       if (e.statusCode !== 404) {
-        log('Warning: Could not remove old container: %s', e.message)
+        log('Warning cleaning backup: %s', e.message)
       }
     }
 
-    // Rename self
+    // 2. Rename old 'odac' to 'odac-backup'
+    try {
+      const oldContainer = this.#docker.getContainer(targetName)
+      await oldContainer.rename({name: backupName})
+      log('Old container renamed to backup.')
+    } catch (e) {
+      // Ignore 404 if 'odac' doesn't exist
+      if (e.statusCode !== 404) {
+        // If rename fails, try to remove it to clear the name 'odac'
+        log('Warning: Could not rename old container to backup: %s. Attempting force remove.', e.message)
+        try {
+          const oldContainer = this.#docker.getContainer(targetName)
+          await oldContainer.remove({force: true})
+        } catch (err) {
+          log('Critical: Failed to remove old container: %s', err.message)
+        }
+      }
+    }
+
+    // 3. Rename self
     try {
       if (process.env.HOSTNAME) {
-        // If we are named 'odac-update', rename to 'odac'
-        // But first, wait a bit to ensure the name is freed by Docker?
-        // remove() represents deletion, so name should be free immediately.
         const me = this.#docker.getContainer(process.env.HOSTNAME)
         await me.rename({name: targetName})
         log('Renamed self to %s', targetName)
