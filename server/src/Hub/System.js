@@ -1,6 +1,8 @@
 const os = require('os')
 const fs = require('fs')
 
+const {error} = Odac.core('Log', false).init('Hub', 'System')
+
 class System {
   #lastNetworkStats = null
   #lastNetworkTime = null
@@ -33,7 +35,8 @@ class System {
         apps: config.apps ? config.apps.length : 0,
         mail: config.mail?.accounts ? Object.keys(config.mail.accounts).length : 0
       }
-    } catch {
+    } catch (e) {
+      error('Failed to get services info: %s', e.message)
       return {websites: 0, apps: 0, mail: 0}
     }
   }
@@ -47,7 +50,8 @@ class System {
         const output = execSync('vm_stat', {encoding: 'utf8'})
         const stats = this.#parseDarwinMemory(output)
         return {used: stats.used, total: totalMem}
-      } catch {
+      } catch (e) {
+        error('Failed to get darwin memory usage: %s', e.message)
         // Fall through to default
       }
     }
@@ -90,7 +94,8 @@ class System {
       }
 
       return this.#parseUnixDisk(execSync("df -k / | tail -1 | awk '{print $2,$3}'", {encoding: 'utf8'}))
-    } catch {
+    } catch (e) {
+      error('Failed to get disk usage: %s', e.message)
       return {used: 0, total: 0}
     }
   }
@@ -142,7 +147,8 @@ class System {
       this.#lastNetworkStats = currentStats
       this.#lastNetworkTime = now
       return {download: 0, upload: 0}
-    } catch {
+    } catch (e) {
+      error('Failed to get network usage: %s', e.message)
       return {download: 0, upload: 0}
     }
   }
