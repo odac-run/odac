@@ -4,6 +4,7 @@ const path = require('path')
 
 class Container {
   #docker
+  #activeBuilds = new Set() // Track active builds to prevent parallel builds for same app
 
   constructor() {
     if (!Odac.core('Config').config.container) Odac.core('Config').config.container = {}
@@ -186,6 +187,12 @@ class Container {
       throw new Error('Docker is not available')
     }
 
+    // Prevent parallel builds for the same image
+    if (this.#activeBuilds.has(imageName)) {
+      throw new Error(`Build already in progress for ${imageName}`)
+    }
+    this.#activeBuilds.add(imageName)
+
     const hostPath = this.#resolveHostPath(sourceDir)
     const image = 'buildpacksio/pack:latest'
 
@@ -271,6 +278,9 @@ class Container {
     } catch (err) {
       error(`Failed to build image: ${err.message}`)
       throw err
+    } finally {
+      // Always clean up the lock, even on error
+      this.#activeBuilds.delete(imageName)
     }
   }
 
