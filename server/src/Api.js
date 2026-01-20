@@ -56,8 +56,10 @@ class Api {
 
   init() {
     if (!Odac.core('Config').config.api) Odac.core('Config').config.api = {}
-    // Regenerate auth token every start
-    Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
+    // Only generate auth token if missing
+    if (!Odac.core('Config').config.api.auth) {
+      Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
+    }
 
     const handleConnection = (socket, skipIpCheck = false) => {
       // IP check for TCP connections only
