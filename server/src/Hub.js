@@ -187,6 +187,13 @@ class Hub {
       case 'app.create':
         this.#handleAppCreate(command)
         break
+      case 'updater.start':
+        try {
+          Odac.server('Updater').start(command)
+        } catch (e) {
+          log('Updater module not found or failed: %s', e.message)
+        }
+        break
       default:
         log('Unknown command action: %s', command.action)
     }
