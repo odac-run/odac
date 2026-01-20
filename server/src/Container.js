@@ -175,6 +175,147 @@ class Container {
       throw err
     }
   }
+  /**
+   * Builds a Docker image from source code using Nixpacks
+   * Nixpacks CLI is automatically downloaded and cached on first use
+   * @param {string} sourceDir - Source directory on host
+   * @param {string} imageName - Name for the built image
+   */
+  async build(sourceDir, imageName) {
+    if (!this.available) {
+      throw new Error('Docker is not available')
+    }
+
+    const hostPath = this.#resolveHostPath(sourceDir)
+    const image = 'buildpacksio/pack:latest'
+
+    log(`Building image ${imageName} from ${hostPath}`)
+
+    try {
+      await this.#ensureImage(image)
+
+      const runBuild = async () => {
+        const container = await this.#docker.createContainer({
+          Image: image,
+          Cmd: [
+            'build',
+            imageName,
+            '--path',
+            '/app',
+            '--builder',
+            'heroku/builder:24',
+            '--trust-builder',
+            '--pull-policy',
+            'if-not-present'
+          ],
+          Env: ['DOCKER_API_VERSION=1.45'],
+          HostConfig: {
+            Binds: [`${hostPath}:/app`, '/var/run/docker.sock:/var/run/docker.sock'],
+            AutoRemove: true
+          }
+        })
+
+        await container.start()
+
+        let buildLogs = ''
+        const stream = await container.logs({
+          follow: true,
+          stdout: true,
+          stderr: true
+        })
+
+        stream.on('data', chunk => {
+          const line = chunk.toString('utf8').trim()
+          if (line) {
+            log(`[build] ${line}`)
+            buildLogs += line + '\n'
+          }
+        })
+
+        const result = await container.wait()
+
+        // Wait a bit for stream to flush
+        await new Promise(resolve => setTimeout(resolve, 500))
+
+        return {exitCode: result.StatusCode, logs: buildLogs}
+      }
+
+      let result = await runBuild()
+
+      // If npm ci failed, try to fix package-lock and retry
+      if (result.exitCode !== 0 && result.logs.includes('npm ci')) {
+        log('[build] npm ci failed - attempting to sync package-lock.json...')
+
+        await this.#syncPackageLock(hostPath)
+
+        log('[build] Retrying build...')
+        result = await runBuild()
+      }
+
+      // If export failed (disk/cache issue), prune and retry
+      if (result.exitCode !== 0 && result.logs.includes('failed to export')) {
+        log('[build] Export failed - cleaning Docker build cache...')
+
+        await this.#pruneBuilderCache()
+
+        log('[build] Retrying build...')
+        result = await runBuild()
+      }
+
+      if (result.exitCode !== 0) {
+        throw new Error(`Build failed with exit code ${result.exitCode}`)
+      }
+
+      log(`Image ${imageName} built successfully`)
+      return true
+    } catch (err) {
+      error(`Failed to build image: ${err.message}`)
+      throw err
+    }
+  }
+
+  /**
+   * Syncs package-lock.json with package.json for Node.js projects
+   * @param {string} hostPath - Path to the app source
+   */
+  async #syncPackageLock(hostPath) {
+    log('[build] Syncing package-lock.json...')
+
+    const nodeImage = 'node:20-alpine'
+    await this.#ensureImage(nodeImage)
+
+    const container = await this.#docker.createContainer({
+      Image: nodeImage,
+      Cmd: ['npm', 'install', '--package-lock-only'],
+      WorkingDir: '/app',
+      HostConfig: {
+        Binds: [`${hostPath}:/app`],
+        AutoRemove: true
+      }
+    })
+
+    await container.start()
+    const result = await container.wait()
+
+    if (result.StatusCode !== 0) {
+      throw new Error('Failed to sync package-lock.json')
+    }
+
+    log('[build] package-lock.json synced successfully')
+    log('[build] TIP: Commit this file to your repository to avoid this step')
+  }
+
+  /**
+   * Prunes Docker builder cache to free up space
+   */
+  async #pruneBuilderCache() {
+    try {
+      await this.#docker.pruneBuilder()
+      log('[build] Builder cache pruned')
+    } catch {
+      log('[build] Could not prune builder cache, continuing anyway')
+    }
+  }
 
   /**
    * Executes a command inside an existing running container

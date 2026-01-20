@@ -200,9 +200,10 @@ class App {
     // Build git URL with token if provided
     let gitUrl = url
     if (token) {
-      // Insert token into URL: https://github.com/... -> https://x-access-token:TOKEN@github.com/...
       gitUrl = url.replace('https://', `https://x-access-token:${token}@`)
     }
+
+    const imageName = `odac-app-${name}`
 
     try {
       // Step 1: Clone repository
@@ -210,11 +211,12 @@ class App {
       await Odac.server('Container').cloneRepo(gitUrl, branch, appDir)
       log('createFromGit: Clone successful')
 
-      // Step 2: Build with Nixpacks (TODO)
-      log('createFromGit: Build step - TODO')
+      // Step 2: Build with Nixpacks
+      log('createFromGit: Building image...')
+      await Odac.server('Container').build(appDir, imageName)
+      log('createFromGit: Build successful')
 
       // Step 3: Create app record
-      const imageName = `odac-app-${name}`
       const app = {
         id: this.#apps.length,
         name,
@@ -223,24 +225,38 @@ class App {
         branch,
         image: imageName,
         env,
-        active: false,
+        active: true,
         created: Date.now(),
-        status: 'cloned'
+        status: 'starting'
       }
 
       this.#apps.push(app)
       this.#saveApps()
 
-      log('createFromGit: App record created')
-      return Odac.server('Api').result(true, __('App %s cloned successfully. Build pending.', name))
+      // Step 4: Run the container
+      log('createFromGit: Starting container...')
+      await this.#runGitApp(app)
+
+      this.#set(app.id, {status: 'running', started: Date.now()})
+      log('createFromGit: App started successfully')
+
+      return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
     } catch (e) {
       error('createFromGit: Failed: %s', e.message)
-      // Cleanup on failure
       if (fs.existsSync(appDir)) {
         fs.rmSync(appDir, {recursive: true, force: true})
       }
       return Odac.server('Api').result(false, e.message)
     }
+  }
+
+  async #runGitApp(app) {
+    await Odac.server('Container').runApp(app.name, {
+      image: app.image,
+      ports: [],
+      volumes: [],
+      env: app.env || {}
+    })
   }
 
   async stop(id) {
