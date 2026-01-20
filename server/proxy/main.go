@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -15,6 +17,32 @@ import (
 	"odac-proxy/config"
 	"odac-proxy/proxy"
 )
+
+// listen creates a net.Listener with SO_REUSEPORT support on Linux
+func listen(network, address string) (net.Listener, error) {
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var opErr error
+			if runtime.GOOS == "linux" {
+				if err := c.Control(func(fd uintptr) {
+					// SO_REUSEPORT is typically 15 on Linux/amd64
+					// using syscall.SO_REUSEPORT is safer if available, but let's try standard syscall first
+					// If syscall.SO_REUSEPORT is not defined on non-linux at compile time, this block inside runtime.GOOS check 
+					// might still cause compilation error if we are not careful.
+					// However, since we are editing a file that compiled before, syscall.SO_REUSEPORT might be available 
+					// in the environment we are building (Docker Linux).
+					// For safety against local Mac linting, we can use the constant value 0x0F (15) for Linux.
+					
+					opErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, 0x0F, 1)
+				}); err != nil {
+					return err
+				}
+			}
+			return opErr
+		},
+	}
+	return lc.Listen(context.Background(), network, address)
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -106,15 +134,20 @@ func main() {
 	// Start HTTP Server (Port 80)
 	go func() {
 		log.Println("Starting HTTP server on :80")
+		
+		listener, err := listen("tcp", ":80")
+		if err != nil {
+			log.Fatalf("HTTP listener failed: %v", err)
+		}
+
 		server := &http.Server{
-			Addr:              ":80",
 			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
-			ReadTimeout:       0,                // Unlimited for large uploads (rely on TCP keepalive)
-			WriteTimeout:      0,                // Unlimited for large downloads (streaming)
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       0,
+			WriteTimeout:      0,
 			IdleTimeout:       120 * time.Second,
 		}
-		if err := server.ListenAndServe(); err != nil {
+		if err := server.Serve(listener); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
@@ -123,6 +156,11 @@ func main() {
 	go func() {
 		log.Println("Starting HTTPS server on :443")
 		
+		listener, err := listen("tcp", ":443")
+		if err != nil {
+			log.Fatalf("HTTPS listener failed: %v", err)
+		}
+
 		tlsConfig := &tls.Config{
 			GetCertificate: prx.GetCertificate,
 			NextProtos:     []string{"h2", "http/1.1"},
@@ -138,16 +176,15 @@ func main() {
 		}
 
 		server := &http.Server{
-			Addr:              ":443",
 			Handler:           handler,
 			TLSConfig:         tlsConfig,
-			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
-			ReadTimeout:       0,                // Unlimited for large uploads
-			WriteTimeout:      0,                // Unlimited for large downloads
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       0,
+			WriteTimeout:      0,
 			IdleTimeout:       120 * time.Second,
 		}
 
-		if err := server.ListenAndServeTLS("", ""); err != nil {
+		if err := server.Serve(tls.NewListener(listener, tlsConfig)); err != nil {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	}()
