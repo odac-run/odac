@@ -257,37 +257,44 @@ class Container {
             TIMEOUT=$((TIMEOUT+1))
           done
           echo "Internal Docker Daemon is ready."
-
-          # 2. Install pack CLI
-          # Simple detection: docker info usually reports Arch
-          ARCH=$(uname -m)
-          PACK_URL=""
-          if [ "$ARCH" = "aarch64" ]; then
-             PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux-arm64.tgz"
-          else
-             PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux.tgz"
-          fi
           
-          if [ -f "/odac-tools/pack" ]; then
-            echo "Using cached pack CLI..."
-            cp /odac-tools/pack /usr/local/bin/pack
-          else
-            echo "Downloading pack CLI from $PACK_URL..."
-            wget -qO- "$PACK_URL" | tar -xz -C /usr/local/bin
-            # Cache it
-            mkdir -p /odac-tools
-            cp /usr/local/bin/pack /odac-tools/pack
-          fi
-          
-          # 3. Build Image
-          echo "Starting pack build..."
-          # Note: We are inside the container, source is at /app
           cd /app
-          pack build ${imageName} --path . --builder heroku/builder:24 --trust-builder --pull-policy if-not-present --verbose
-          BUILD_EXIT=$?
+          BUILD_EXIT=0
+
+          if [ -f "Dockerfile" ]; then
+             echo "Dockerfile found! Using native Docker build..."
+             docker build -t ${imageName} .
+             BUILD_EXIT=$?
+          else
+             echo "No Dockerfile found. Using Cloud Native Buildpacks..."
+             
+             # Install pack CLI (Only needed if no Dockerfile)
+             ARCH=$(uname -m)
+             PACK_URL=""
+             if [ "$ARCH" = "aarch64" ]; then
+                PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux-arm64.tgz"
+             else
+                PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux.tgz"
+             fi
+             
+             if [ -f "/odac-tools/pack" ]; then
+               echo "Using cached pack CLI..."
+               cp /odac-tools/pack /usr/local/bin/pack
+             else
+               echo "Downloading pack CLI from $PACK_URL..."
+               wget -qO- "$PACK_URL" | tar -xz -C /usr/local/bin
+               # Cache it
+               mkdir -p /odac-tools
+               cp /usr/local/bin/pack /odac-tools/pack
+             fi
+             
+             echo "Starting pack build..."
+             pack build ${imageName} --path . --builder heroku/builder:24 --trust-builder --pull-policy if-not-present --verbose
+             BUILD_EXIT=$?
+          fi
           
           if [ $BUILD_EXIT -ne 0 ]; then
-             echo "Pack build failed."
+             echo "Build failed."
              exit $BUILD_EXIT
           fi
           
