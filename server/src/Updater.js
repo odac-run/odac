@@ -6,8 +6,11 @@ const {log, error} = Odac.core('Log', false).init('Updater')
 
 class Updater {
   #updating = false
+  #isUpdateMode = false
   #image = 'odacrun/odac:latest'
   #docker = new Docker({socketPath: '/var/run/docker.sock'})
+  #readyCallbacks = []
+  #isReady = false
 
   /**
    * Initialize Updater.
@@ -21,6 +24,9 @@ class Updater {
       log('Update socket found. Attempting handshake with previous process...')
       try {
         await this.#performHandshake(socketPath)
+        this.#isUpdateMode = true
+        // Handshake successful, performHandshake handles the rest (waiting for handover which triggers callbacks)
+        return
       } catch (e) {
         log('Handshake failed or stale socket: %s. Continuing as normal startup.', e.message)
         // Clean up stale socket
@@ -31,6 +37,34 @@ class Updater {
         }
       }
     }
+
+    // Normal startup (not updating or failed update check)
+    this.#triggerReady()
+  }
+
+  /**
+   * Register a callback to be called when the updater is ready (either immediately or after handover).
+   * @param {Function} cb
+   */
+  onReady(cb) {
+    if (this.#isReady) {
+      cb()
+    } else {
+      this.#readyCallbacks.push(cb)
+    }
+  }
+
+  #triggerReady() {
+    if (this.#isReady) return
+    this.#isReady = true
+    for (const cb of this.#readyCallbacks) {
+      try {
+        cb()
+      } catch (e) {
+        error(e)
+      }
+    }
+    this.#readyCallbacks = []
   }
 
   /**
@@ -50,7 +84,7 @@ class Updater {
     if (sendResponse) sendResponse({success: true, message: 'Update process started'})
 
     try {
-      const available = await this.check()
+      const available = await this.#checkForUpdates()
       if (!available) {
         log('System is up to date.')
         this.#updating = false
@@ -65,7 +99,14 @@ class Updater {
     }
   }
 
+  /**
+   * Check if we are running as an updater instance.
+   */
   async check() {
+    return this.#isUpdateMode
+  }
+
+  async #checkForUpdates() {
     log('Checking for updates...')
     const localId = await this.#getLocalImageId()
 
@@ -308,6 +349,7 @@ class Updater {
           } catch {
             // Ignore
           }
+          this.#triggerReady()
           resolve(true)
         } else if (message.startsWith('HANDOVER_FAILED')) {
           clearTimeout(timeout)

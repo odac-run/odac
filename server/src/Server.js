@@ -1,5 +1,5 @@
 class Server {
-  constructor() {
+  async init() {
     Odac.core('Config').config.server.pid = process.pid
     Odac.core('Config').config.server.started = Date.now()
     Odac.server('App')
@@ -9,7 +9,11 @@ class Server {
     Odac.server('Api')
     Odac.server('Hub')
     Odac.server('Container')
-    Odac.server('Updater')
+
+    Odac.server('Updater').onReady(() => {
+      Odac.server('Mail').start()
+    })
+
     setTimeout(function () {
       setInterval(function () {
         Odac.server('App').check()
