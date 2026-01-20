@@ -17,6 +17,9 @@ class Mail {
   #counts = {}
   #db
   #server_smtp
+  #server_smtp_insecure
+  #server_imap
+  #server_imap_sec
   #started = false
   #sslCache = new Map()
   #blocked = new Map()
@@ -207,6 +210,11 @@ class Mail {
       this.#db.run(`CREATE INDEX IF NOT EXISTS idx_email  ON mail_box      (email);`)
       this.#db.run(`CREATE INDEX IF NOT EXISTS idx_title  ON mail_box      (title);`)
     })
+  }
+
+  start() {
+    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
+
     const self = this
     let options = {
       logger: true,
@@ -464,19 +472,19 @@ class Mail {
         error('Error:', err)
       }
     }
-    let serv = new SMTPServer(options)
-    serv.listen(25)
-    serv.on('error', err => log('SMTP Server Error: ', err))
+    this.#server_smtp_insecure = new SMTPServer(options)
+    this.#server_smtp_insecure.listen(25)
+    this.#server_smtp_insecure.on('error', err => log('SMTP Server Error: ', err))
     // Handle socket errors to prevent crash
-    if (serv.server) {
-      serv.server.on('connection', socket => {
+    if (this.#server_smtp_insecure.server) {
+      this.#server_smtp_insecure.server.on('connection', socket => {
         socket.on('error', err => {
           if (err.code !== 'ECONNRESET') error('SMTP Socket Error:', err)
         })
       })
     }
-    const imap = new server(options)
-    imap.listen(143)
+    this.#server_imap = new server(options)
+    this.#server_imap.listen(143)
     options.SNICallback = (hostname, callback) => {
       const cached = this.#sslCache.get(hostname)
       if (cached) return callback(null, cached)
@@ -517,7 +525,6 @@ class Mail {
       }
       error('SMTP Server Error: ', err)
     })
-    // Handle socket errors to prevent crash
     if (this.#server_smtp.server) {
       this.#server_smtp.server.on('connection', socket => {
         socket.on('error', err => {
@@ -525,8 +532,31 @@ class Mail {
         })
       })
     }
-    const imap_sec = new server(options)
-    imap_sec.listen(993)
+    this.#server_imap_sec = new server(options)
+    this.#server_imap_sec.listen(993)
+  }
+
+  stop() {
+    try {
+      if (this.#server_smtp_insecure) {
+        this.#server_smtp_insecure.close(() => {})
+        this.#server_smtp_insecure = null
+      }
+      if (this.#server_smtp) {
+        this.#server_smtp.close(() => {})
+        this.#server_smtp = null
+      }
+      if (this.#server_imap) {
+        this.#server_imap.close(() => {})
+        this.#server_imap = null
+      }
+      if (this.#server_imap_sec) {
+        this.#server_imap_sec.close(() => {})
+        this.#server_imap_sec = null
+      }
+    } catch (e) {
+      error('Error stopping Mail services: %s', e.message)
+    }
   }
 
   async list(domain) {
