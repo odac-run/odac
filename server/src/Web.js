@@ -312,78 +312,104 @@ class Web {
   }
 
   spawnProxy() {
-    if (this.#proxyProcess) return
-
-    // Determine mechanism based on OS
     const isWindows = os.platform() === 'win32'
     const proxyName = isWindows ? 'odac-proxy.exe' : 'odac-proxy'
     const binPath = path.resolve(__dirname, '../../bin', proxyName)
+    const runDir = path.join(os.homedir(), '.odac', 'run')
+    const logDir = path.join(os.homedir(), '.odac', 'logs')
+
+    if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
+
+    const pidFile = path.join(runDir, 'proxy.pid')
+    const logFile = path.join(logDir, 'proxy.log')
+
+    // Set fixed socket path
+    if (!isWindows) {
+      this.#proxySocketPath = path.join(runDir, 'proxy.sock')
+    }
+
+    // 1. Try to adopt existing process
+    if (fs.existsSync(pidFile)) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
+        // Check if running
+        process.kill(pid, 0)
+
+        log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
+
+        // Create a fake process object to manage it
+        this.#proxyProcess = {
+          pid,
+          kill: () => {
+            try {
+              process.kill(pid)
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        // Sync config immediately
+        this.syncConfig()
+        return
+      } catch {
+        // Process dead
+        log(`Orphaned proxy PID file exists but process is dead. Cleaning up.`)
+        try {
+          fs.unlinkSync(pidFile)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
 
     if (!fs.existsSync(binPath)) {
       error(`Go proxy binary not found at ${binPath}. Please run 'go build -o bin/${proxyName} ./server/proxy'`)
       return
     }
 
+    // 2. Start new Proxy
     let env = {...process.env}
 
     if (!isWindows) {
-      this.#proxySocketPath = path.join(os.tmpdir(), `odac-proxy-${process.pid}.sock`)
       env.ODAC_SOCKET_PATH = this.#proxySocketPath
       log(`Starting Go Proxy (Socket: ${this.#proxySocketPath})...`)
     } else {
-      this.#proxySocketPath = null
       log(`Starting Go Proxy (TCP Mode)...`)
     }
 
-    this.#proxyProcess = childProcess.spawn(binPath, [], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: env
-    })
+    try {
+      const logFd = fs.openSync(logFile, 'a')
 
-    this.#proxyProcess.stdout.on('data', data => {
-      const output = data.toString()
-      if (this.#proxySocketPath) {
-        // Unix Socket Mode: Just log
-        log(`[Proxy] ${output.trim()}`)
-      } else {
-        // TCP Mode: Look for port
-        const match = output.match(/ODAC_PROXY_PORT=(\d+)/)
-        if (match) {
-          this.#proxyApiPort = parseInt(match[1])
-          log(`Go Proxy Control API listening on port ${this.#proxyApiPort}`)
-          this.syncConfig()
-        } else {
-          log(`[Proxy] ${output.trim()}`)
-        }
+      this.#proxyProcess = childProcess.spawn(binPath, [], {
+        detached: true, // Allow running after parent exit
+        stdio: ['ignore', logFd, logFd], // Redirect logs to file
+        env: env
+      })
+
+      this.#proxyProcess.unref() // Don't prevent Node from exiting
+
+      if (this.#proxyProcess.pid) {
+        fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString())
+        log(`Go Proxy started with PID ${this.#proxyProcess.pid}`)
       }
-    })
 
-    this.#proxyProcess.stderr.on('data', data => {
-      error(`[Proxy Error] ${data.toString().trim()}`)
-    })
-
-    this.#proxyProcess.on('error', err => {
-      error(`Failed to spawn Go Proxy: ${err.message}`)
-      this.#proxyProcess = null
-      this.#proxyApiPort = null
-    })
-
-    this.#proxyProcess.on('exit', code => {
-      error(`Go Proxy exited with code ${code}`)
-      this.#proxyProcess = null
-      this.#proxyApiPort = null
-      // Cleanup socket
-      if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+      this.#proxyProcess.on('exit', code => {
+        error(`Go Proxy exited with code ${code}`)
+        this.#proxyProcess = null
         try {
-          fs.unlinkSync(this.#proxySocketPath)
+          fs.unlinkSync(pidFile)
         } catch {
           /* ignore */
         }
-      }
-    })
+      })
 
-    // Give proxy a moment to create the socket then initial sync
-    if (!isWindows) setTimeout(() => this.syncConfig(), 500)
+      // Give it a moment to start
+      setTimeout(() => this.syncConfig(), 1000)
+    } catch (err) {
+      error(`Failed to spawn Go Proxy: ${err.message}`)
+    }
   }
 
   async syncConfig() {
@@ -489,20 +515,30 @@ class Web {
     let isDocker = false
 
     if (Odac.server('Container').available) {
-      // Run via Docker
-      const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
-      const env = {
-        ODAC_API_HOST: 'host.docker.internal',
-        ODAC_API_PORT: 1453,
-        ODAC_API_KEY: Odac.core('Config').config.api.auth,
-        ODAC_API_SOCKET: '/run/odac/api.sock',
-        ODAC_HOST: '0.0.0.0'
-      }
-      const success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
-        env
-      })
-      if (success) {
+      const isRunning = await Odac.server('Container').isRunning(domain)
+      let success = false
+
+      if (isRunning) {
+        log(`Container for ${domain} is already running. Attaching logs...`)
+        success = true
         isDocker = true
+      } else {
+        // Run via Docker
+        const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
+        const env = {
+          ODAC_API_HOST: 'host.docker.internal',
+          ODAC_API_PORT: 1453,
+          ODAC_API_KEY: Odac.core('Config').config.api.auth,
+          ODAC_API_SOCKET: '/run/odac/api.sock',
+          ODAC_HOST: '0.0.0.0'
+        }
+        success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
+          env
+        })
+        if (success) isDocker = true
+      }
+
+      if (success) {
         child = await Odac.server('Container').logs(domain)
 
         // Whitelist container IP for API access

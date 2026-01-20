@@ -64,16 +64,7 @@ func main() {
 	fw := proxy.NewFirewall(cfg)
 	prx := proxy.NewProxy()
 
-	// Monitor parent process via Stdin
-	go func() {
-		buf := make([]byte, 1)
-		_, err := os.Stdin.Read(buf)
-		if err != nil {
-			// Pipe closed or error = parent died
-			log.Println("Parent process disconnected (stdin closed), shutting down...")
-			os.Exit(0)
-		}
-	}()
+
 
 	// Stack middleware: Firewall -> Proxy
 	// We removed timeoutMiddleware because robust timeout handling is now done 
