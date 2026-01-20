@@ -1,6 +1,7 @@
 const {log, error} = Odac.core('Log', false).init('Container')
 const Docker = require('dockerode')
 const path = require('path')
+const fs = require('fs')
 
 class Container {
   #docker
@@ -208,31 +209,114 @@ class Container {
     this.#activeBuilds.add(imageName)
 
     const hostPath = this.#resolveHostPath(sourceDir)
-    const image = 'buildpacksio/pack:latest'
+    const sandboxImage = 'docker:26-dind' // Downgrade to 26 for better compat with pack
 
-    log(`Building image ${imageName} from ${hostPath}`)
+    log(`Building image ${imageName} from ${hostPath} (Isolated Sandbox)`)
 
     try {
-      await this.#ensureImage(image)
+      await this.#ensureImage(sandboxImage)
 
-      const runBuild = async () => {
+      // Create a temporary volume or simple bind for output
+      // We will assume sourceDir is writable or use a temp dir for output inside hostPath
+      // To keep it clean, we output the tarball to the source directory
+      // (which is mounted) and then load it from there.
+
+      const runBuild = async (useCache = true) => {
+        const packVersion = 'v0.33.2'
+        // We need to know arch of the CONTAINER, not the HOST.
+        // But docker:dind usually matches host arch.
+        // URL for pack cli (using specific version for stability)
+
+        // Shell script to run inside the isolated container
+        // 1. Start dockerd
+        // 2. Wait for it
+        // 3. Install pack (download binary)
+        // 4. Build
+        // 5. Save image
+        // 6. Chown to match host user (optional, but good for cleanup)
+
+        const buildScript = `
+          # Force API version for negotiation
+          export DOCKER_API_VERSION=1.45
+
+          # 1. Start internal Docker Daemon
+          dockerd > /var/log/dockerd.log 2>&1 &
+          PID=$!
+          
+          echo "Waiting for internal Docker Daemon..."
+          TIMEOUT=0
+          while ! docker info >/dev/null 2>&1; do
+            if [ $TIMEOUT -gt 30 ]; then
+              echo "Timeout waiting for dockerd"
+              echo "--- Daemon Logs ---"
+              cat /var/log/dockerd.log
+              echo "-------------------"
+              exit 1
+            fi
+            sleep 1
+            TIMEOUT=$((TIMEOUT+1))
+          done
+          echo "Internal Docker Daemon is ready."
+
+          # 2. Install pack CLI
+          # Simple detection: docker info usually reports Arch
+          ARCH=$(uname -m)
+          PACK_URL=""
+          if [ "$ARCH" = "aarch64" ]; then
+             PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux-arm64.tgz"
+          else
+             PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux.tgz"
+          fi
+          
+          if [ -f "/odac-tools/pack" ]; then
+            echo "Using cached pack CLI..."
+            cp /odac-tools/pack /usr/local/bin/pack
+          else
+            echo "Downloading pack CLI from $PACK_URL..."
+            wget -qO- "$PACK_URL" | tar -xz -C /usr/local/bin
+            # Cache it
+            mkdir -p /odac-tools
+            cp /usr/local/bin/pack /odac-tools/pack
+          fi
+          
+          # 3. Build Image
+          echo "Starting pack build..."
+          # Note: We are inside the container, source is at /app
+          cd /app
+          pack build ${imageName} --path . --builder heroku/builder:24 --trust-builder --pull-policy if-not-present --verbose
+          BUILD_EXIT=$?
+          
+          if [ $BUILD_EXIT -ne 0 ]; then
+             echo "Pack build failed."
+             exit $BUILD_EXIT
+          fi
+          
+          # 4. Save Image to tarball
+          echo "Saving image to /image.tar..."
+          docker save ${imageName} -o /image.tar
+          exit $?
+        `
+
+        const binds = [
+          `${hostPath}:/app`,
+          'odac-tools-cache:/odac-tools' // Cache binaries like pack
+        ]
+
+        if (useCache) {
+          binds.push('odac-build-cache:/var/lib/docker') // Cache docker images/layers
+        } else {
+          log('[sandbox] Building WITHOUT cache (fresh start)...')
+        }
+
         const container = await this.#docker.createContainer({
-          Image: image,
-          Cmd: [
-            'build',
-            imageName,
-            '--path',
-            '/app',
-            '--builder',
-            'heroku/builder:24',
-            '--trust-builder',
-            '--pull-policy',
-            'if-not-present'
-          ],
-          Env: ['DOCKER_API_VERSION=1.45'],
+          Image: sandboxImage,
+          Entrypoint: [],
+          Cmd: ['sh', '-c', buildScript],
+          Env: ['DOCKER_TLS_CERTDIR='],
           HostConfig: {
-            Binds: [`${hostPath}:/app`, '/var/run/docker.sock:/var/run/docker.sock'],
-            AutoRemove: true
+            Binds: binds,
+            Privileged: true,
+            AutoRemove: false
           }
         })
 
@@ -248,7 +332,7 @@ class Container {
         stream.on('data', chunk => {
           const line = chunk.toString('utf8').trim()
           if (line) {
-            log(`[build] ${line}`)
+            log(`[sandbox] ${line}`)
             buildLogs += line + '\n'
           }
         })
@@ -257,6 +341,66 @@ class Container {
 
         // Wait a bit for stream to flush
         await new Promise(resolve => setTimeout(resolve, 500))
+
+        // If successful, load the image into Host Docker
+        if (result.StatusCode === 0) {
+          log(`[sandbox] Loading image ${imageName} into host docker...`)
+          // We use 'docker load' on the host via exec or direct API?
+          // Since we don't have direct API for loading from file easily without reading it into memory,
+          // and the file is in hostPath/image.tar, we can use a helper container or stream it.
+          // Easiest: Use a small helper container to load it, OR simply read it if small.
+          // Images can be large. Better to use a container with socket mounted just for LOADING.
+          // Or since this is Container.js running on Host, we can use the 'docker' CLI if installed,
+          // But we should stick to 'dockerode'.
+
+          // Dockerode loadImage takes a stream.
+          // We can create a read stream from the file on disk (since hostPath is local).
+
+          try {
+            const stream = await container.getArchive({path: '/image.tar'})
+
+            const os = require('os')
+            const cp = require('child_process')
+
+            const dlTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'odac-dl-'))
+            const tarPath = path.join(dlTempDir, 'output.tar')
+
+            const fileStream = fs.createWriteStream(tarPath)
+
+            await new Promise((resolve, reject) => {
+              stream.pipe(fileStream)
+              stream.on('end', resolve)
+              stream.on('error', reject)
+            })
+
+            log(`[sandbox] Extracted archive to ${tarPath}, unpacking...`)
+
+            try {
+              cp.execSync(`tar -xf ${tarPath} -C ${dlTempDir}`)
+
+              const imageTarPath = path.join(dlTempDir, 'image.tar')
+              if (fs.existsSync(imageTarPath)) {
+                log(`[sandbox] Loading image.tar into Docker...`)
+                await this.#docker.loadImage(fs.createReadStream(imageTarPath))
+                log(`[sandbox] Image loaded successfully.`)
+              } else {
+                throw new Error('image.tar missing in archive')
+              }
+            } finally {
+              fs.rmSync(dlTempDir, {recursive: true, force: true})
+            }
+          } catch (loadErr) {
+            error(`[sandbox] Failed to load image: ${loadErr.message}`)
+            return {exitCode: 1, logs: buildLogs + '\nLoad Failed: ' + loadErr.message}
+          }
+        }
+
+        // Cleanup container (since AutoRemove is false)
+        try {
+          await container.remove({force: true})
+        } catch {
+          // ignore
+        }
 
         return {exitCode: result.StatusCode, logs: buildLogs}
       }
@@ -270,17 +414,13 @@ class Container {
         await this.#syncPackageLock(hostPath)
 
         log('[build] Retrying build...')
-        result = await runBuild()
+        result = await runBuild() // Retry with cache (default)
       }
 
-      // If export failed (disk/cache issue), prune and retry
+      // If export failed (disk/cache issue), retry WITHOUT cache
       if (result.exitCode !== 0 && result.logs.includes('failed to export')) {
-        log('[build] Export failed - cleaning Docker build cache...')
-
-        await this.#pruneBuilderCache()
-
-        log('[build] Retrying build...')
-        result = await runBuild()
+        log('[build] Export failed (Cache issue?) - Retrying WITHOUT cache...')
+        result = await runBuild(false)
       }
 
       if (result.exitCode !== 0) {
@@ -297,7 +437,6 @@ class Container {
       this.#activeBuilds.delete(imageName)
     }
   }
-
   /**
    * Syncs package-lock.json with package.json for Node.js projects
    * @param {string} hostPath - Path to the app source
@@ -327,18 +466,6 @@ class Container {
 
     log('[build] package-lock.json synced successfully')
     log('[build] TIP: Commit this file to your repository to avoid this step')
-  }
-
-  /**
-   * Prunes Docker builder cache to free up space
-   */
-  async #pruneBuilderCache() {
-    try {
-      await this.#docker.pruneBuilder()
-      log('[build] Builder cache pruned')
-    } catch {
-      log('[build] Could not prune builder cache, continuing anyway')
-    }
   }
 
   /**
