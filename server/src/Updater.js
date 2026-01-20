@@ -302,19 +302,20 @@ class Updater {
     // Note: process.exit() will be called in #selfDestruct
   }
 
-  #selfDestruct() {
-    log('Old container mission complete. Goodbye.')
-    // Graceful exit, Watchdog or Docker will NOT restart us if we exit with 0
-    // AND the restart policy is manual (which is not, it's usually unless-stopped).
-    // To prevent restart loop, we might need to rely on the NEW container
-    // stopping us explicitly via Docker API, OR we just exit and let Docker restart us
-    // but since the NEW container is running on same ports, we might fail to bind and crash?
-    // NO, because SO_REUSEPORT allows it.
+  async #selfDestruct() {
+    log('Old container mission complete. Disabling restart policy and exiting.')
 
-    // Better approach: scaling down or just stopping.
-    // Since we are 'odac', docker restart will bring US back.
-    // We need the RUNNING NEW CONTAINER to kill us and rename itself.
-    // But for now, let's just exit.
+    // Disable restart policy to prevent Docker from restarting this container
+    try {
+      if (process.env.HOSTNAME) {
+        const container = this.#docker.getContainer(process.env.HOSTNAME)
+        await container.update({RestartPolicy: {Name: 'no'}})
+        log('Restart policy disabled.')
+      }
+    } catch (e) {
+      error('Failed to disable restart policy: %s', e.message)
+    }
+
     process.exit(0)
   }
 
