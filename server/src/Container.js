@@ -131,11 +131,12 @@ class Container {
 
   /**
    * Clones a git repository into a target directory
-   * @param {string} gitUrl - Git repository URL (with token if private)
+   * @param {string} gitUrl - Git repository URL
    * @param {string} branch - Branch to clone
    * @param {string} targetDir - Target directory on host
+   * @param {string} [token] - Optional access token for private repos
    */
-  async cloneRepo(gitUrl, branch, targetDir) {
+  async cloneRepo(gitUrl, branch, targetDir, token = null) {
     if (!this.available) {
       throw new Error('Docker is not available')
     }
@@ -148,16 +149,29 @@ class Container {
     try {
       await this.#ensureImage(image)
 
-      // Create container for git clone
-      const container = await this.#docker.createContainer({
+      const containerConfig = {
         Image: image,
-        Cmd: ['clone', '--depth', '1', '--branch', branch, gitUrl, '/repo'],
-        Entrypoint: ['git'],
         HostConfig: {
           Binds: [`${hostPath}:/repo`],
           AutoRemove: true
         }
-      })
+      }
+
+      if (token) {
+        // Use shell to expand the token variable, keeping it out of the command string
+        // Note: We assume the URL starts with https:// as per previous logic
+        const urlWithoutProtocol = gitUrl.replace(/^https:\/\//, '')
+        containerConfig.Entrypoint = ['/bin/sh', '-c']
+        containerConfig.Cmd = [`git clone --depth 1 --branch "${branch}" "https://x-access-token:$GIT_TOKEN@${urlWithoutProtocol}" /repo`]
+        containerConfig.Env = [`GIT_TOKEN=${token}`]
+      } else {
+        // Standard execution for public repos
+        containerConfig.Entrypoint = ['git']
+        containerConfig.Cmd = ['clone', '--depth', '1', '--branch', branch, gitUrl, '/repo']
+      }
+
+      // Create container for git clone
+      const container = await this.#docker.createContainer(containerConfig)
 
       // Start and wait for completion
       await container.start()

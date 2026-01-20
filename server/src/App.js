@@ -198,17 +198,14 @@ class App {
     fs.mkdirSync(appDir, {recursive: true})
 
     // Build git URL with token if provided
-    let gitUrl = url
-    if (token) {
-      gitUrl = url.replace('https://', `https://x-access-token:${token}@`)
-    }
+    // Security update: We now pass the token separately via env var to prevent exposure in process/docker history
 
     const imageName = `odac-app-${name}`
 
     try {
       // Step 1: Clone repository
       log('createFromGit: Cloning repository...')
-      await Odac.server('Container').cloneRepo(gitUrl, branch, appDir)
+      await Odac.server('Container').cloneRepo(url, branch, appDir, token)
       log('createFromGit: Clone successful')
 
       // Step 2: Build with Nixpacks
