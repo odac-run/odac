@@ -41,6 +41,10 @@ class Api {
   }
   #connections = {}
   #allowed = new Set()
+  #tcpServer = null
+  #unixServer = null
+  #started = false
+  #connectionHandler = null
 
   allow(ip) {
     this.#allowed.add(ip)
@@ -110,9 +114,16 @@ class Api {
       })
     }
 
+    this.#connectionHandler = handleConnection // Save for start()
+  }
+
+  start() {
+    if (this.#started) return
+    this.#started = true
+
     // TCP Server for localhost/CLI only
-    const tcpServer = net.createServer(socket => handleConnection(socket, false))
-    tcpServer.listen(1453, '127.0.0.1')
+    this.#tcpServer = net.createServer(socket => this.#connectionHandler(socket, false))
+    this.#tcpServer.listen(1453, '127.0.0.1')
 
     // Unix Socket Server for containers (bypasses network/firewall)
     const sockDir = this.#socketDir
@@ -121,13 +132,39 @@ class Api {
       fs.mkdirSync(sockDir, {recursive: true})
     }
     if (fs.existsSync(sockPath)) {
-      fs.unlinkSync(sockPath)
+      try {
+        fs.unlinkSync(sockPath)
+      } catch (e) {
+        Odac.core('Log').error('Api', `Failed to remove old socket: ${e.message}`)
+      }
     }
-    const socketServer = net.createServer(socket => handleConnection(socket, true))
-    socketServer.listen(sockPath, () => {
+    this.#unixServer = net.createServer(socket => this.#connectionHandler(socket, true))
+    this.#unixServer.listen(sockPath, () => {
       fs.chmodSync(sockPath, 0o666)
       Odac.core('Log').log('Api', `Unix socket listening at ${sockPath}`)
+      // Grant privileges to newly created socket
+      // (Optional: chown if needed, but chmod 666 is usually enough for group access)
     })
+  }
+
+  stop() {
+    try {
+      if (this.#tcpServer) {
+        this.#tcpServer.close()
+        this.#tcpServer = null
+      }
+      if (this.#unixServer) {
+        this.#unixServer.close()
+        this.#unixServer = null
+        // Clean up socket file
+        if (fs.existsSync(this.socketPath)) {
+          fs.unlinkSync(this.socketPath)
+        }
+      }
+      this.#started = false
+    } catch (e) {
+      Odac.core('Log').error('Api', `Error stopping API services: ${e.message}`)
+    }
   }
 
   send(id, process, status, message) {

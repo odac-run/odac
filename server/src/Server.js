@@ -10,10 +10,19 @@ class Server {
     Odac.server('Hub')
     Odac.server('Container')
 
+    if (!(await Odac.server('Updater').check())) {
+      Odac.server('Web').start()
+      Odac.server('Api').start()
+      Odac.server('Mail').start()
+      Odac.server('DNS').start()
+    }
+
     Odac.server('Updater').onReady(() => {
+      Odac.server('Web').start()
       Odac.server('DNS').start()
       setTimeout(() => {
         Odac.server('Mail').start()
+        Odac.server('Api').start()
       }, 1000)
     })
 
@@ -29,8 +38,10 @@ class Server {
   }
 
   stop() {
-    Odac.server('App').stopAll()
-    Odac.server('Web').stopAll()
+    Odac.server('Web').stop()
+    Odac.server('Mail').stop()
+    Odac.server('DNS').stop()
+    Odac.server('Api').stop()
   }
 }
 

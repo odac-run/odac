@@ -245,7 +245,7 @@ class Web {
     }
 
     // Start Go Proxy with a slight delay to ensure config loads or immediate
-    this.spawnProxy()
+    // this.spawnProxy() -> Moved to start()
   }
 
   async list() {
@@ -431,7 +431,30 @@ class Web {
     Odac.core('Config').config.websites[domain] = data
   }
 
-  async start(domain) {
+  start(domain) {
+    // If domain provided, start specific site container/process
+    if (domain) return this.#startSite(domain)
+
+    // Otherwise start the main Web Proxy service
+    this.spawnProxy()
+  }
+
+  stop() {
+    if (this.#proxyProcess) {
+      this.#proxyProcess.kill() // SIGTERM
+      this.#proxyProcess = null
+      this.#proxyApiPort = null
+      if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+        try {
+          fs.unlinkSync(this.#proxySocketPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  async #startSite(domain) {
     if (this.#active[domain] || !this.#loaded) return
     this.#active[domain] = true
     if (!Odac.core('Config').config.websites[domain]) return (this.#active[domain] = false)
