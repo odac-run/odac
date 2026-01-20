@@ -187,6 +187,11 @@ class App {
       return Odac.server('Api').result(false, __('App %s already exists', name))
     }
 
+    // Validate the app name to prevent path traversal.
+    if (path.basename(name) !== name) {
+      return Odac.server('Api').result(false, __('Invalid app name.'))
+    }
+
     // Create app directory
     const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
     log('createFromGit: App directory: %s', appDir)
