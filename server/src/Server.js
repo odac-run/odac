@@ -11,7 +11,10 @@ class Server {
     Odac.server('Container')
 
     Odac.server('Updater').onReady(() => {
-      Odac.server('Mail').start()
+      Odac.server('DNS').start()
+      setTimeout(() => {
+        Odac.server('Mail').start()
+      }, 1000)
     })
 
     setTimeout(function () {

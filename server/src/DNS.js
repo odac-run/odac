@@ -58,8 +58,26 @@ class DNS {
         })
       })
     }
+  }
+
+  start() {
+    if (this.#loaded) return
     this.#getExternalIP()
     this.#publish()
+  }
+
+  stop() {
+    try {
+      if (this.#udp) {
+        this.#udp.close()
+      }
+      if (this.#tcp) {
+        this.#tcp.close()
+      }
+      this.#loaded = false
+    } catch (e) {
+      error('Error stopping DNS services: %s', e.message)
+    }
   }
 
   async #getExternalIP() {
