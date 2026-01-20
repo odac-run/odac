@@ -208,6 +208,9 @@ class Hub {
       log('Creating app: %j', payload)
       const result = await Odac.server('App').create(payload)
       this.#sendCommandResponse(command.requestId, result)
+
+      // Immediately update Hub with new container list
+      await this.sendInitialHandshake()
     } catch (e) {
       log('app.create failed: %s', e.message)
       this.#sendCommandResponse(command.requestId, {
