@@ -229,29 +229,70 @@ class Updater {
     const socketDir = '/app/storage/run'
 
     if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, {recursive: true})
-
-    // Remove existing socket if any
     if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
     return new Promise((resolve, reject) => {
-      // Timeout for the entire handover process (e.g., 2 minutes)
-      const timeout = setTimeout(() => {
+      // Extended timeout for stability check (e.g. 5 minutes total)
+      const globalTimeout = setTimeout(() => {
         server.close()
-        reject(new Error('Update handover timed out'))
-      }, 120000)
+        reject(new Error('Update process timed out globally'))
+      }, 300000)
+
+      let handoverCompleted = false
 
       const server = net.createServer(socket => {
-        log('New container connected to update socket')
+        log('New container connected. Starting stability monitoring...')
+
+        // Monitoring: If socket closes before handover completion, Rollback!
+        socket.on('close', async () => {
+          if (!handoverCompleted) {
+            log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
+            try {
+              // 1. Remove the failed new container
+              try {
+                // Better: Iterate containers or just try to remove 'odac' (which is the new one now)
+                const newOne = this.#docker.getContainer('odac')
+                await newOne.remove({force: true})
+                log('Failed new container removed.')
+              } catch {
+                // Ignore removal errors if already gone
+                // It might be named 'odac-update' if rename failed
+                try {
+                  const updateOne = this.#docker.getContainer('odac-update')
+                  await updateOne.remove({force: true})
+                } catch {
+                  /* Ignore */
+                }
+              }
+
+              // 2. Restore my name from 'odac-backup' to 'odac'
+              // We need to find our own container.
+              // Assuming we renamed ourselves to 'odac-backup' during the TakeOver phase initiated by New
+              // Wait, TakeOver is done by NEW instance via API.
+              // So if NEW died, WE are named 'odac-backup'.
+
+              const myName = 'odac-backup'
+              const me = this.#docker.getContainer(myName)
+              await me.rename({name: 'odac'})
+              log('Rollback successful: Restored self to "odac". Continuing operations.')
+            } catch (err) {
+              error('Rollback failed: %s', err.message)
+            }
+          }
+        })
 
         socket.on('data', async data => {
           const message = data.toString().trim()
-          log('Received message from update socket: %s', message)
+          log('Received: %s', message)
 
           if (message === 'HANDSHAKE_READY') {
-            log('Handshake successful! New container is ready.')
+            socket.write('HANDSHAKE_ACK')
+          } else if (message === 'TAKEOVER_COMPLETE') {
+            log('Stability check passed. New instance is stable.')
+            handoverCompleted = true
 
-            // Critical Point: The core switch logic
             try {
+              // Now we stop our services
               await this.#performHandover()
               socket.write('HANDOVER_COMPLETE')
               resolve(true)
@@ -259,12 +300,10 @@ class Updater {
               socket.write(`HANDOVER_FAILED:${e.message}`)
               reject(e)
             } finally {
-              clearTimeout(timeout)
-              // Give some time for the message to be sent before closing
+              clearTimeout(globalTimeout)
               setTimeout(() => {
                 socket.end()
                 server.close()
-                // Self-destruct sequence for the old container
                 this.#selfDestruct()
               }, 1000)
             }
@@ -278,7 +317,7 @@ class Updater {
       })
 
       server.on('error', e => {
-        clearTimeout(timeout)
+        clearTimeout(globalTimeout)
         reject(e)
       })
     })
@@ -372,50 +411,59 @@ class Updater {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath)
 
+      // Timeout just for the initial connection and handshake
+      // The stability wait is handled inside logic
       const timeout = setTimeout(() => {
         socket.destroy()
         reject(new Error('Handshake timeout'))
-      }, 5000)
+      }, 60000)
 
       socket.on('connect', () => {
-        log('Connected to update socket. Sending READY signal...')
         socket.write('HANDSHAKE_READY')
       })
 
       socket.on('data', async data => {
         const message = data.toString().trim()
-        log('Received handshake response: %s', message)
 
-        if (message === 'HANDOVER_COMPLETE') {
+        if (message === 'HANDSHAKE_ACK') {
+          log('Ack received. Taking over & Starting stability timer (15s)...')
+
+          try {
+            // 1. Take Over Name
+            await this.#takeOver()
+
+            // 2. Start Services (Trigger Ready)
+            this.#triggerReady()
+            log('Services started. Waiting 15s for stability...')
+
+            // 3. Wait 15 Seconds
+            setTimeout(() => {
+              log('Stability check passed (15s). Signaling completion...')
+              socket.write('TAKEOVER_COMPLETE')
+            }, 15000)
+          } catch (e) {
+            error('Startup failed: %s', e.message)
+            socket.destroy()
+            reject(e)
+          }
+        } else if (message === 'HANDOVER_COMPLETE') {
           clearTimeout(timeout)
-          log('Handover completed successfully. We are now the primary instance.')
+          log('Update completed successfully.')
           socket.end()
-          // We are now in charge. The old process should have exited or is about to.
-          // Clean up the socket file to ensure clean state for next restart/update
           try {
             require('fs').unlinkSync(socketPath)
           } catch {
-            // Ignore
+            /* Ignore */
           }
-
-          // Take over identity
-          try {
-            await this.#takeOver()
-          } catch (e) {
-            error('Takeover failed: %s', e.message)
-          }
-
-          this.#triggerReady()
           resolve(true)
         } else if (message.startsWith('HANDOVER_FAILED')) {
-          clearTimeout(timeout)
           socket.end()
           reject(new Error(message))
         }
       })
 
       socket.on('error', err => {
-        clearTimeout(timeout)
+        // If we crash or disconnect, the old instance handles rollback
         reject(err)
       })
     })
