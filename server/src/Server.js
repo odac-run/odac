@@ -9,6 +9,7 @@ class Server {
     Odac.server('Api')
     Odac.server('Hub')
     Odac.server('Container')
+    Odac.server('Updater')
     setTimeout(function () {
       setInterval(function () {
         Odac.server('App').check()

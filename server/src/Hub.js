@@ -189,7 +189,7 @@ class Hub {
         break
       case 'updater.start':
         try {
-          Odac.server('Updater').start(command)
+          Odac.server('Updater').start(command, res => this.#sendCommandResponse(command.requestId, res))
         } catch (e) {
           log('Updater module not found or failed: %s', e.message)
         }
