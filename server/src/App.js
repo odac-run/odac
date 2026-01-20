@@ -131,7 +131,7 @@ class App {
     if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
 
     const app = {
-      id: this.#apps.length,
+      id: this.#getNextId(),
       name,
       type: 'container',
       image: recipe.image,
@@ -220,7 +220,7 @@ class App {
 
       // Step 3: Create app record
       const app = {
-        id: this.#apps.length,
+        id: this.#getNextId(),
         name,
         type: 'git',
         url,
@@ -363,7 +363,7 @@ class App {
     name = this.#generateUniqueName(name)
 
     const app = {
-      id: this.#apps.length,
+      id: this.#getNextId(),
       name,
       file,
       type,
@@ -536,6 +536,10 @@ class App {
     if (seconds) parts.push(`${seconds}s`)
 
     return parts.join(' ') || '0s'
+  }
+
+  #getNextId() {
+    return this.#apps.reduce((maxId, app) => Math.max(app.id, maxId), -1) + 1
   }
 
   #generateUniqueName(baseName) {
