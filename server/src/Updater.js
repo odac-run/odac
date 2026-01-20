@@ -319,6 +319,37 @@ class Updater {
     process.exit(0)
   }
 
+  async #takeOver() {
+    log('Taking over container identity...')
+    const targetName = 'odac'
+
+    // Remove old container
+    try {
+      const oldContainer = this.#docker.getContainer(targetName)
+      await oldContainer.remove({force: true})
+      log('Old container removed.')
+    } catch (e) {
+      // Ignore 404 (already gone)
+      if (e.statusCode !== 404) {
+        log('Warning: Could not remove old container: %s', e.message)
+      }
+    }
+
+    // Rename self
+    try {
+      if (process.env.HOSTNAME) {
+        // If we are named 'odac-update', rename to 'odac'
+        // But first, wait a bit to ensure the name is freed by Docker?
+        // remove() represents deletion, so name should be free immediately.
+        const me = this.#docker.getContainer(process.env.HOSTNAME)
+        await me.rename({name: targetName})
+        log('Renamed self to %s', targetName)
+      }
+    } catch (e) {
+      error('Failed to rename self: %s', e.message)
+    }
+  }
+
   async #performHandshake(socketPath) {
     const net = require('net')
 
@@ -335,7 +366,7 @@ class Updater {
         socket.write('HANDSHAKE_READY')
       })
 
-      socket.on('data', data => {
+      socket.on('data', async data => {
         const message = data.toString().trim()
         log('Received handshake response: %s', message)
 
@@ -350,6 +381,14 @@ class Updater {
           } catch {
             // Ignore
           }
+
+          // Take over identity
+          try {
+            await this.#takeOver()
+          } catch (e) {
+            error('Takeover failed: %s', e.message)
+          }
+
           this.#triggerReady()
           resolve(true)
         } else if (message.startsWith('HANDOVER_FAILED')) {
