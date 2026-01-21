@@ -82,7 +82,7 @@ class Watchdog {
         if (Odac.core('Config').config.websites[domain].pid)
           await Odac.core('Process').stop(Odac.core('Config').config.websites[domain].pid)
 
-      for (const service of Odac.core('Config').config.services ?? []) if (service.pid) await Odac.core('Process').stop(service.pid)
+      for (const app of Odac.core('Config').config.apps ?? []) if (app.pid) await Odac.core('Process').stop(app.pid)
 
       // Update config with current watchdog's info
       Odac.core('Config').config.server.watchdog = process.pid
