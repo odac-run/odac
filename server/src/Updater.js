@@ -44,6 +44,10 @@ class Updater {
     }
 
     // Normal startup (not updating or failed update check)
+    // If we are starting up and have an update log name (e.g. after a restart), switch to standard logs
+    if (process.env.ODAC_LOG_NAME && process.env.ODAC_LOG_NAME.includes('odac-update')) {
+      console.log('ODAC_CMD:SWITCH_LOGS')
+    }
     this.#triggerReady()
   }
 
@@ -77,31 +81,28 @@ class Updater {
    * @param {Object} command - The command object from Hub.
    * @param {Function} sendResponse - Callback to send response back to Hub.
    */
-  async start(command, sendResponse) {
+  async start() {
     if (this.#updating) {
       log('Update request blocked: Update already in progress')
-      if (sendResponse) sendResponse({success: false, message: 'Update already in progress'})
-      return
+      return Odac.server('Api').result(false, 'Update already in progress')
     }
-
     this.#updating = true
-    log('Update process started via Hub command')
-    if (sendResponse) sendResponse({success: true, message: 'Update process started'})
-
-    try {
-      const available = await this.#checkForUpdates()
-      if (!available) {
-        log('System is up to date.')
-        this.#updating = false
-        return
-      }
-
-      await this.download()
-      await this.execute()
-    } catch (e) {
+    const available = await this.#checkForUpdates()
+    if (!available) {
+      log('System is up to date.')
       this.#updating = false
-      error('Update process failed: %s', e.message)
+      return Odac.server('Api').result(true, 'System is up to date')
     }
+    setTimeout(async () => {
+      try {
+        await this.download()
+        await this.execute()
+      } catch (e) {
+        this.#updating = false
+        error('Update process failed: %s', e.message)
+      }
+    }, 1)
+    return Odac.server('Api').result(true, 'Update process started')
   }
 
   /**
@@ -143,9 +144,28 @@ class Updater {
   async execute() {
     log('Launching update process...')
 
+    // Clean up previous update logs to avoid confusion
+    try {
+      const fs = require('fs')
+      const path = require('path')
+      const os = require('os')
+      const logDir = path.join(os.homedir(), '.odac', 'logs')
+      const files = [`.${UPDATE_CONTAINER_NAME}.log`, `.${UPDATE_CONTAINER_NAME}_err.log`]
+
+      for (const f of files) {
+        const p = path.join(logDir, f)
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p)
+          log('Removed old log file: %s', f)
+        }
+      }
+    } catch (e) {
+      log('Warning: Could not clean old logs: %s', e.message)
+    }
+
     try {
       // 1. Get current container info
-      const containerId = process.env.HOSTNAME
+      const containerId = CONTAINER_NAME
       const container = this.#docker.getContainer(containerId)
       const info = await container.inspect()
 
@@ -183,6 +203,8 @@ class Updater {
 
         createOptions.Env.push('ODAC_UPDATE_MODE=true')
         createOptions.Env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
+        // Use separate log file for update process
+        createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
 
         createOptions.HostConfig.NetworkMode = 'host'
         createOptions.HostConfig.PidMode = 'host'
@@ -269,6 +291,9 @@ class Updater {
           if (!handoverCompleted) {
             log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
             try {
+              // Fetch logs from the failed container before removing it
+              await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
+
               // 1. Remove the failed new container
               // The new container might have failed before OR after taking the 'odac' name.
               // We must try to clean it up using both potential names to be safe.
@@ -358,11 +383,9 @@ class Updater {
 
     // Disable restart policy to prevent Docker from restarting this container
     try {
-      if (process.env.HOSTNAME) {
-        const container = this.#docker.getContainer(process.env.HOSTNAME)
-        await container.update({RestartPolicy: {Name: 'no'}})
-        log('Restart policy disabled.')
-      }
+      const container = this.#docker.getContainer(BACKUP_CONTAINER_NAME)
+      await container.update({RestartPolicy: {Name: 'no'}})
+      log('Restart policy disabled.')
     } catch (e) {
       error('Failed to disable restart policy: %s', e.message)
     }
@@ -407,11 +430,9 @@ class Updater {
 
     // 3. Rename self
     try {
-      if (process.env.HOSTNAME) {
-        const me = this.#docker.getContainer(process.env.HOSTNAME)
-        await me.rename({name: targetName})
-        log('Renamed self to %s', targetName)
-      }
+      const me = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
+      await me.rename({name: targetName})
+      log('Renamed self to %s', targetName)
     } catch (e) {
       error('Failed to rename self: %s', e.message)
     }
@@ -461,6 +482,8 @@ class Updater {
         } else if (message === 'HANDOVER_COMPLETE') {
           clearTimeout(timeout)
           log('Update completed successfully.')
+          // Signal Watchdog to switch to standard logs
+          console.log('ODAC_CMD:SWITCH_LOGS')
           socket.end()
           try {
             require('fs').unlinkSync(socketPath)
@@ -490,6 +513,50 @@ class Updater {
     } catch (e) {
       log('Could not get local image ID: %s', e.message)
       return null
+    }
+  }
+
+  async #fetchContainerLogs(name) {
+    const fs = require('fs')
+    const tempFile = `/tmp/${name}-crash.log`
+
+    try {
+      // 1. Try to copy internal log file
+      // We use docker cp because the log file is inside the container's filesystem
+      // and might contain details not printed to stdout
+      const logFileName = name === UPDATE_CONTAINER_NAME ? `.${name}.log` : '.odac.log'
+
+      await execAsync(`docker cp ${name}:/app/storage/.odac/logs/${logFileName} ${tempFile}`)
+
+      if (fs.existsSync(tempFile)) {
+        const content = fs.readFileSync(tempFile, 'utf8')
+        // Get last 100 lines
+        const lines = content.split('\n') // This might be memory heavy if file is huge, but usually fine for logs
+        const lastLines = lines.slice(-100).join('\n')
+
+        log(`--- INTERNAL LOGS FOR ${name} ---`)
+        log(lastLines)
+        log('-----------------------------------')
+
+        try {
+          fs.unlinkSync(tempFile)
+        } catch {
+          /* Ignore */
+        }
+      }
+    } catch (e) {
+      log('Could not fetch internal logs via cp: %s. Trying standard logs...', e.message)
+
+      // 2. Fallback to standard docker logs
+      try {
+        const container = this.#docker.getContainer(name)
+        const buffer = await container.logs({stdout: true, stderr: true, tail: 50})
+        log(`--- DOCKER STD LOGS (FALLBACK) FOR ${name} ---`)
+        log(buffer.toString('utf8'))
+        log('-----------------------------------')
+      } catch (err) {
+        log('Could not fetch docker logs: %s', err.message)
+      }
     }
   }
 

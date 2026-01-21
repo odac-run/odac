@@ -20,6 +20,7 @@ class Api {
   }
   #commands = {
     auth: (...args) => Odac.server('Hub').auth(...args),
+    update: (...args) => Odac.server('Updater').start(...args),
     'app.start': (...args) => Odac.server('App').start(...args),
     'app.delete': (...args) => Odac.server('App').delete(...args),
     'app.list': (...args) => Odac.server('App').list(...args),
@@ -29,7 +30,6 @@ class Api {
     'mail.list': (...args) => Odac.server('Mail').list(...args),
     'mail.password': (...args) => Odac.server('Mail').password(...args),
     'mail.send': (...args) => Odac.server('Mail').send(...args),
-
     'server.stop': () => Odac.server('Server').stop(),
     'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
     'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),
