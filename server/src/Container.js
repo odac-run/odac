@@ -853,6 +853,32 @@ class Container {
   }
 
   /**
+   * Returns the container environment variables
+   * @param {string} name
+   * @returns {Promise<Object>}
+   */
+  async getEnv(name) {
+    if (!this.available) return {}
+    try {
+      const container = this.#docker.getContainer(name)
+      const data = await container.inspect()
+      const env = {}
+      for (const e of data.Config.Env) {
+        const parts = e.split('=')
+        const key = parts[0]
+        const val = parts.slice(1).join('=')
+        env[key] = val
+      }
+      return env
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get Env for ${name}: ${err.message}`)
+      }
+      return {}
+    }
+  }
+
+  /**
    * Returns the Docker instance
    */
   get docker() {

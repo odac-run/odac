@@ -701,6 +701,12 @@ class Connection {
     }
   }
 
+  #encodeBody(str) {
+    if (!str) return ''
+    const b64 = Buffer.from(str).toString('base64')
+    return b64.replace(/(.{76})/g, '$1\r\n').trim()
+  }
+
   #lsub() {
     if (!this.#auth) return this.#write(`${this.#request.id} NO Authentication required\r\n`)
     if (!this.#options.onLsub || typeof this.#options.onLsub != 'function') return this.#write(`${this.#request.id} NO LSUB failed\r\n`)
@@ -807,16 +813,16 @@ class Connection {
           if (data.text && data.text.length) {
             body.content += '\r\n--' + boundary + '_alt\r\n'
             body.content += 'Content-Type: text/plain; charset=utf-8\r\n'
-            body.content += 'Content-Transfer-Encoding: quoted-printable\r\n\r\n'
-            body.content += data.text
+            body.content += 'Content-Transfer-Encoding: base64\r\n\r\n'
+            body.content += this.#encodeBody(data.text)
             body.content += '\r\n--' + boundary + '_alt\r\n'
           }
           if (data.html.length) {
             if (data.text && data.text.length) {
               body.content += 'Content-Type: text/html; charset=utf-8\r\n'
-              body.content += 'Content-Transfer-Encoding: quoted-printable\r\n\r\n'
+              body.content += 'Content-Transfer-Encoding: base64\r\n\r\n'
             }
-            body.content += data.html
+            body.content += this.#encodeBody(data.html)
             if (data.text && data.text.length) body.content += '\r\n--' + boundary + '_alt--\r\n'
           }
           for (let attachment of data.attachments) {
@@ -831,8 +837,8 @@ class Connection {
       } else if (!isNaN(obj.value)) {
         obj.value = parseInt(obj.value)
         if (obj.value === 1 || (obj.value === 2 && !data.attachments.length)) {
-          if (obj.peek === 2 || obj.value === 2) body.content += data.html
-          else body.content += data.text
+          if (obj.peek === 2 || obj.value === 2) body.content += this.#encodeBody(data.html)
+          else body.content += this.#encodeBody(data.text)
         } else if (obj.value > 1 && data.attachments[obj.value - 2])
           body.content += Buffer.from(data.attachments[obj.value - 2].content.data).toString('base64') + '\r\n'
       }
@@ -846,20 +852,24 @@ class Connection {
   #prepareBodyStructure(data, boundary) {
     let structure = ''
     if (data.text && data.text.length && data.html && data.html.length) structure += '('
-    if (data.text && data.text.length)
+    if (data.text && data.text.length) {
+      const encodedText = this.#encodeBody(data.text)
       structure +=
-        '("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "QUOTED-PRINTABLE" ' +
-        Buffer.byteLength(data.text, 'utf8') +
+        '("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "BASE64" ' +
+        Buffer.byteLength(encodedText) +
         ' ' +
-        data.text.split('\n').length +
+        encodedText.split('\n').length +
         ' NIL NIL NIL NIL)'
-    if (data.html && data.html.length)
+    }
+    if (data.html && data.html.length) {
+      const encodedHtml = this.#encodeBody(data.html)
       structure +=
-        '("TEXT" "HTML"  ("CHARSET" "UTF-8") NIL NIL "QUOTED-PRINTABLE" ' +
-        Buffer.byteLength(data.html, 'utf8') +
+        '("TEXT" "HTML"  ("CHARSET" "UTF-8") NIL NIL "BASE64" ' +
+        Buffer.byteLength(encodedHtml) +
         ' ' +
-        data.html.split('\n').length +
+        encodedHtml.split('\n').length +
         ')'
+    }
     if (data.text && data.text.length && data.html && data.html.length)
       structure += ' "ALTERNATIVE" ("BOUNDARY" "' + boundary + '_alt") NIL NIL NIL'
     if (data.text && data.text.length && data.html && data.html.length) structure += ')'

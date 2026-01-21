@@ -22,12 +22,12 @@ class App {
   // Lifecycle
   async init() {
     log('Initializing apps...')
-    this.#apps = Odac.core('Config').config.apps ?? []
+    this.#apps = this.#loadAppsFromConfig()
     this.#loaded = true
   }
 
   async check() {
-    this.#apps = Odac.core('Config').config.apps ?? []
+    this.#apps = this.#loadAppsFromConfig()
 
     for (const app of this.#apps) {
       if (!app.active) continue
@@ -306,7 +306,7 @@ class App {
 
   // Status & Listing
   async status() {
-    const apps = Odac.core('Config').config.apps ?? []
+    const apps = this.#loadAppsFromConfig()
     const container = Odac.server('Container')
 
     for (const app of apps) {
@@ -344,9 +344,14 @@ class App {
   }
 
   // Private: App Data Management
+  #loadAppsFromConfig() {
+    const apps = Odac.core('Config').config.apps
+    return Array.isArray(apps) ? apps : []
+  }
+
   #get(id) {
     if (!this.#loaded && this.#apps.length === 0) {
-      this.#apps = Odac.core('Config').config.apps ?? []
+      this.#apps = this.#loadAppsFromConfig()
       this.#loaded = true
     }
 

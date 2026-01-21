@@ -532,7 +532,18 @@ class Web {
     let isDocker = false
 
     if (Odac.server('Container').available) {
-      const isRunning = await Odac.server('Container').isRunning(domain)
+      let isRunning = await Odac.server('Container').isRunning(domain)
+
+      if (isRunning) {
+        const containerEnv = await Odac.server('Container').getEnv(domain)
+        const currentAuth = Odac.core('Config').config.api.auth
+        if (containerEnv.ODAC_API_KEY && containerEnv.ODAC_API_KEY !== currentAuth) {
+          log(`Container for ${domain} has stale API credentials. Restarting...`)
+          await Odac.server('Container').remove(domain)
+          isRunning = false
+        }
+      }
+
       let success = false
 
       if (isRunning) {
