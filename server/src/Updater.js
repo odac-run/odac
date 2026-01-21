@@ -77,23 +77,22 @@ class Updater {
    * @param {Object} command - The command object from Hub.
    * @param {Function} sendResponse - Callback to send response back to Hub.
    */
-  async start(command, sendResponse) {
+  async start() {
     if (this.#updating) {
       log('Update request blocked: Update already in progress')
-      if (sendResponse) sendResponse({success: false, message: 'Update already in progress'})
-      return
+      return Odac.server('Api').result(false, 'Update already in progress')
     }
 
     this.#updating = true
     log('Update process started via Hub command')
-    if (sendResponse) sendResponse({success: true, message: 'Update process started'})
+    Odac.server('Api').result(true, 'Update process started')
 
     try {
       const available = await this.#checkForUpdates()
       if (!available) {
         log('System is up to date.')
         this.#updating = false
-        return
+        return Odac.server('Api').result(true, 'System is up to date')
       }
 
       await this.download()
@@ -101,6 +100,7 @@ class Updater {
     } catch (e) {
       this.#updating = false
       error('Update process failed: %s', e.message)
+      return Odac.server('Api').result(false, `Update failed: ${e.message}`)
     }
   }
 
