@@ -45,6 +45,19 @@ describe('Api', () => {
       randomBytes: jest.fn(() => Buffer.from('mock-auth-token-32-bytes-long-test'))
     }))
 
+    // Mock fs and os
+    jest.doMock('fs', () => ({
+      existsSync: jest.fn(() => false),
+      mkdirSync: jest.fn(),
+      unlinkSync: jest.fn(),
+      chmodSync: jest.fn(),
+      constants: {}
+    }))
+    jest.doMock('os', () => ({
+      homedir: jest.fn(() => '/tmp'),
+      platform: jest.fn(() => 'linux')
+    }))
+
     // Clear module cache and require Api
     jest.resetModules()
     Api = require('../../server/src/Api')
@@ -55,6 +68,8 @@ describe('Api', () => {
     jest.resetModules()
     jest.dontMock('net')
     jest.dontMock('crypto')
+    jest.dontMock('fs')
+    jest.dontMock('os')
   })
 
   describe('initialization', () => {
@@ -77,6 +92,7 @@ describe('Api', () => {
       net.createServer.mockReturnValue(mockServer)
 
       Api.init()
+      Api.start()
 
       expect(net.createServer).toHaveBeenCalledWith(expect.any(Function))
       expect(mockServer.listen).toHaveBeenCalledWith(1453, '127.0.0.1')
@@ -104,6 +120,7 @@ describe('Api', () => {
       net.createServer.mockReturnValue(mockServer)
 
       Api.init()
+      Api.start()
 
       // Get the connection handler directly from the createServer call (first call is TCP server)
       // Api.js: const tcpServer = net.createServer(socket => handleConnection(socket, false))
@@ -227,6 +244,7 @@ describe('Api', () => {
       net.createServer.mockReturnValue(mockServer)
 
       Api.init()
+      Api.start()
 
       // Get the connection handler from createServer call
       connectionHandler = net.createServer.mock.calls.length > 0 ? net.createServer.mock.calls[0][0] : null
@@ -628,6 +646,7 @@ describe('Api', () => {
       net.createServer.mockReturnValue(mockServer)
 
       Api.init()
+      Api.start()
 
       // Set up a connection
       // Get handler from createServer call
