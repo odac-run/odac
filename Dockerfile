@@ -1,5 +1,5 @@
 # Stage 0: Build Go Proxy
-FROM golang:1.22-alpine AS go-builder
+FROM golang:1.24-alpine AS go-builder
 WORKDIR /build
 # Copy Go source
 COPY server/proxy ./server/proxy
