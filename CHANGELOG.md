@@ -1,5 +1,21 @@
 ### ⚙️ Engine Tuning
 
+- improve email validation regex to better handle domain name structures.
+
+### 🛠️ Fixes & Improvements
+
+- automatic restart for containers with stale API credentials.
+- **mail:** improve email validation and switch IMAP encoding to Base64
+- **server:** prevent startup crash by enforcing strict apps config validation
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - replace Service module with App module
 
 ### ✨ What's New
