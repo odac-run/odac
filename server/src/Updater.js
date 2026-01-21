@@ -4,6 +4,11 @@ const util = require('util')
 const execAsync = util.promisify(exec)
 const {log, error} = Odac.core('Log', false).init('Updater')
 
+const CONTAINER_NAME = 'odac'
+const UPDATE_CONTAINER_NAME = 'odac-update'
+const BACKUP_CONTAINER_NAME = 'odac-backup'
+const RUNNER_IMAGE = 'docker:cli'
+
 class Updater {
   #updating = false
   #isUpdateMode = false
@@ -147,7 +152,7 @@ class Updater {
       log('Current container found: %s (%s)', info.Name, containerId)
 
       // 2. Prepare configuration for the new container
-      const newName = 'odac-update'
+      const newName = UPDATE_CONTAINER_NAME
       // Clean up previous update attempt if exists
       try {
         const oldUpdater = this.#docker.getContainer(newName)
@@ -213,10 +218,10 @@ class Updater {
         log('Spawning runner container to perform swap...')
 
         // Command: Wait 5s, Stop Old, Remove Old, Rename New, Start New
-        const cmd = 'sleep 5 && docker stop odac && docker rm odac && docker rename odac-update odac && docker start odac'
+        const cmd = `sleep 5 && docker stop ${CONTAINER_NAME} && docker rm ${CONTAINER_NAME} && docker rename ${UPDATE_CONTAINER_NAME} ${CONTAINER_NAME} && docker start ${CONTAINER_NAME}`
 
         const runnerOptions = {
-          Image: 'docker:cli', // Lightweight docker client
+          Image: RUNNER_IMAGE, // Lightweight docker client
           HostConfig: {
             Binds: ['/var/run/docker.sock:/var/run/docker.sock'],
             AutoRemove: true // Remove runner after execution
@@ -225,7 +230,7 @@ class Updater {
         }
 
         // Pull docker:cli just in case
-        await execAsync('docker pull docker:cli')
+        await execAsync(`docker pull ${RUNNER_IMAGE}`)
 
         const runner = await this.#docker.createContainer(runnerOptions)
         await runner.start()
@@ -266,12 +271,12 @@ class Updater {
             try {
               // 1. Remove the failed new container
               try {
-                const newOne = this.#docker.getContainer('odac')
+                const newOne = this.#docker.getContainer(CONTAINER_NAME)
                 await newOne.remove({force: true})
                 log('Failed new container removed.')
               } catch {
                 try {
-                  const updateOne = this.#docker.getContainer('odac-update')
+                  const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
                   await updateOne.remove({force: true})
                 } catch {
                   /* Ignore */
@@ -279,9 +284,9 @@ class Updater {
               }
 
               // 2. Restore my name from 'odac-backup' to 'odac'
-              const myName = 'odac-backup'
+              const myName = BACKUP_CONTAINER_NAME
               const me = this.#docker.getContainer(myName)
-              await me.rename({name: 'odac'})
+              await me.rename({name: CONTAINER_NAME})
               log('Rollback successful: Restored self to "odac". Continuing operations.')
             } catch (err) {
               error('Rollback failed: %s', err.message)
@@ -363,8 +368,8 @@ class Updater {
 
   async #takeOver() {
     log('Taking over container identity...')
-    const targetName = 'odac'
-    const backupName = 'odac-backup'
+    const targetName = CONTAINER_NAME
+    const backupName = BACKUP_CONTAINER_NAME
 
     // 1. Remove existing backup if any
     try {
@@ -476,7 +481,7 @@ class Updater {
     try {
       // Find the ID of the currently running 'odac' container
       // This assumes the container name is 'odac'
-      const {stdout} = await execAsync("docker inspect --format='{{.Image}}' odac")
+      const {stdout} = await execAsync(`docker inspect --format='{{.Image}}' ${CONTAINER_NAME}`)
       return stdout.trim()
     } catch (e) {
       log('Could not get local image ID: %s', e.message)
