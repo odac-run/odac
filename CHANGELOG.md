@@ -1,5 +1,15 @@
 ### 🛠️ Fixes & Improvements
 
+- Updater fix
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### 🛠️ Fixes & Improvements
+
 - Cli Apps count
 
 

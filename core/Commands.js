@@ -5,7 +5,7 @@ const path = require('path')
 module.exports = {
   auth: {
     args: ['key', '-k', '--key'],
-    description: 'Define your server to your Odac account',
+    description: 'Define your server to your ODAC account',
     action: async args => {
       const cli = Odac.cli('Cli')
       let key = cli.parseArg(args, ['-k', '--key']) || args[0]
@@ -18,7 +18,7 @@ module.exports = {
     }
   },
   debug: {
-    description: 'Debug Odac Server',
+    description: 'Debug ODAC Server',
     action: async () => Odac.cli('Monitor').debug()
   },
   help: {
@@ -30,8 +30,12 @@ module.exports = {
     action: async () => Odac.cli('Monitor').monit()
   },
   restart: {
-    description: 'Restart Odac Server',
+    description: 'Restart ODAC Server',
     action: async () => Odac.cli('Cli').boot()
+  },
+  update: {
+    description: 'Update ODAC Server',
+    action: async () => Odac.cli('Connector').call({action: 'update'})
   },
   run: {
     args: ['file'],
