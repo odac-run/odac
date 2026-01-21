@@ -27,8 +27,7 @@ class smtp {
       dnsTimeout: 10000, // 10 seconds
       rateLimitPerHour: 1000,
       tls: {
-        minVersion: 'TLSv1.1', // More flexible minimum
-        secureProtocol: 'TLS_method', // Auto-negotiation
+        minVersion: 'TLSv1.2',
         ciphers: [
           'ECDHE-RSA-AES256-GCM-SHA384',
           'ECDHE-RSA-AES128-GCM-SHA256',
@@ -168,17 +167,35 @@ class smtp {
   }
 
   #encodeQuotedPrintable(str) {
-    return (
-      str
-        // eslint-disable-next-line no-control-regex
-        .replace(/[=\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\xFF]/g, match => {
-          return '=' + match.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')
-        })
-        .replace(/[ \t]+$/gm, match => {
-          return match.replace(/./g, char => '=' + char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
-        })
-        .replace(/(.{75})/g, '$1=\r\n')
-    )
+    const buffer = Buffer.from(str, 'utf-8')
+    let result = ''
+    let lineLength = 0
+
+    for (const byte of buffer) {
+      if ((byte >= 33 && byte <= 45) || (byte >= 47 && byte <= 60) || (byte >= 62 && byte <= 126) || byte === 9 || byte === 32) {
+        if (lineLength + 1 > 75) {
+          result += '=\r\n'
+          lineLength = 0
+        }
+        result += String.fromCharCode(byte)
+        lineLength++
+      } else if (byte === 13 || byte === 10) {
+        result += String.fromCharCode(byte)
+        lineLength = 0
+      } else {
+        const encoded = '=' + byte.toString(16).toUpperCase().padStart(2, '0')
+        if (lineLength + 3 > 75) {
+          result += '=\r\n'
+          lineLength = 0
+        }
+        result += encoded
+        lineLength += 3
+      }
+    }
+
+    return result.replace(/[ \t]+$/gm, match => {
+      return match.replace(/./g, char => '=' + char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
+    })
   }
 
   #encodeBase64(buffer) {
@@ -226,6 +243,8 @@ class smtp {
 
     if (connection && connection.socket.readyState === 'open') {
       connection.lastUsed = Date.now()
+      // Remove default error listener added when pooling
+      connection.socket.removeAllListeners('error')
       log('Connection Pool', `Reusing connection to ${key}`)
       return connection.socket
     }
@@ -250,6 +269,22 @@ class smtp {
       }
       this.connectionPool.delete(oldestKey)
     }
+
+    // Clean up listeners before pooling to prevent memory leaks
+    socket.removeAllListeners('timeout')
+    socket.removeAllListeners('data')
+    socket.removeAllListeners('error')
+
+    // Add a default error listener to catch background errors while allowed in pool
+    socket.on('error', err => {
+      log('Connection Pool', `Background socket error for ${key}: ${err.message}`)
+      this.connectionPool.delete(key)
+      try {
+        socket.destroy()
+      } catch {
+        // Ignore cleanup errors
+      }
+    })
 
     this.connectionPool.set(key, {
       socket: socket,
@@ -325,7 +360,7 @@ class smtp {
                   port: port,
                   rejectUnauthorized: false,
                   timeout: this.config.timeout,
-                  minVersion: 'TLSv1.1'
+                  minVersion: 'TLSv1.2'
                 })
                 fallbackSocket.on('secureConnect', async () => {
                   log('Fallback SSL connection successful on port 465')
@@ -400,7 +435,7 @@ class smtp {
                       socket: socket,
                       servername: host,
                       rejectUnauthorized: false,
-                      minVersion: 'TLSv1.1'
+                      minVersion: 'TLSv1.2'
                     })
                     fallbackSocket.on('secureConnect', () => {
                       log('Fallback TLS connection successful')

@@ -1,16 +1,35 @@
 const net = require('net')
 const nodeCrypto = require('crypto')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 
 class Api {
+  // Socket path inside this process (container or host)
+  get #socketDir() {
+    return path.join(os.homedir(), '.odac', 'run')
+  }
+
+  get socketPath() {
+    return path.join(this.#socketDir, 'api.sock')
+  }
+
+  // Host path is same as internal path (resolved later by Container.js if needed)
+  get hostSocketDir() {
+    return this.#socketDir
+  }
   #commands = {
     auth: (...args) => Odac.server('Hub').auth(...args),
+    'app.start': (...args) => Odac.server('App').start(...args),
+    'app.delete': (...args) => Odac.server('App').delete(...args),
+    'app.list': (...args) => Odac.server('App').list(...args),
+    'app.create': (...args) => Odac.server('App').create(...args),
     'mail.create': (...args) => Odac.server('Mail').create(...args),
     'mail.delete': (...args) => Odac.server('Mail').delete(...args),
     'mail.list': (...args) => Odac.server('Mail').list(...args),
     'mail.password': (...args) => Odac.server('Mail').password(...args),
     'mail.send': (...args) => Odac.server('Mail').send(...args),
-    'service.start': (...args) => Odac.server('Service').start(...args),
-    'service.delete': (...args) => Odac.server('Service').delete(...args),
+
     'server.stop': () => Odac.server('Server').stop(),
     'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
     'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),
@@ -21,23 +40,41 @@ class Api {
     'web.list': (...args) => Odac.server('Web').list(...args)
   }
   #connections = {}
+  #allowed = new Set()
+  #tcpServer = null
+  #unixServer = null
+  #started = false
+  #connectionHandler = null
+
+  allow(ip) {
+    this.#allowed.add(ip)
+  }
+
+  disallow(ip) {
+    this.#allowed.delete(ip)
+  }
 
   init() {
     if (!Odac.core('Config').config.api) Odac.core('Config').config.api = {}
-    // Regenerate auth token every start
-    Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
+    // Only generate auth token if missing
+    if (!Odac.core('Config').config.api.auth) {
+      Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
+    }
 
-    const server = net.createServer()
-
-    server.on('connection', socket => {
-      // Only allow localhost
-      if (socket.remoteAddress !== '::ffff:127.0.0.1' && socket.remoteAddress !== '127.0.0.1') {
-        socket.destroy()
-        return
+    const handleConnection = (socket, skipIpCheck = false) => {
+      // IP check for TCP connections only
+      if (!skipIpCheck && socket.remoteAddress) {
+        const ip = socket.remoteAddress.replace(/^.*:/, '')
+        Odac.core('Log').log('Api', `Incoming TCP connection from: ${ip}`)
+        const isLocal = ip === '127.0.0.1' || ip === '::1'
+        if (!isLocal && !this.#allowed.has(ip)) {
+          Odac.core('Log').log('Api', `Blocking connection from unauthorized IP: ${ip}`)
+          socket.destroy()
+          return
+        }
       }
 
       let id = Math.random().toString(36).substring(7)
-
       this.#connections[id] = socket
 
       socket.on('data', async raw => {
@@ -67,12 +104,69 @@ class Api {
         }
       })
 
+      socket.on('error', error => {
+        if (error.code !== 'ECONNRESET') {
+          Odac.core('Log').log('Api', `Socket error: ${error.message}`)
+        }
+        delete this.#connections[id]
+      })
+
       socket.on('close', () => {
         delete this.#connections[id]
       })
-    })
+    }
 
-    server.listen(1453)
+    this.#connectionHandler = handleConnection // Save for start()
+  }
+
+  start() {
+    if (this.#started) return
+    this.#started = true
+
+    // TCP Server for localhost/CLI only
+    this.#tcpServer = net.createServer(socket => this.#connectionHandler(socket, false))
+    this.#tcpServer.listen(1453, '127.0.0.1')
+
+    // Unix Socket Server for containers (bypasses network/firewall)
+    const sockDir = this.#socketDir
+    const sockPath = this.socketPath
+    if (!fs.existsSync(sockDir)) {
+      fs.mkdirSync(sockDir, {recursive: true})
+    }
+    if (fs.existsSync(sockPath)) {
+      try {
+        fs.unlinkSync(sockPath)
+      } catch (e) {
+        Odac.core('Log').error('Api', `Failed to remove old socket: ${e.message}`)
+      }
+    }
+    this.#unixServer = net.createServer(socket => this.#connectionHandler(socket, true))
+    this.#unixServer.listen(sockPath, () => {
+      fs.chmodSync(sockPath, 0o666)
+      Odac.core('Log').log('Api', `Unix socket listening at ${sockPath}`)
+      // Grant privileges to newly created socket
+      // (Optional: chown if needed, but chmod 666 is usually enough for group access)
+    })
+  }
+
+  stop() {
+    try {
+      if (this.#tcpServer) {
+        this.#tcpServer.close()
+        this.#tcpServer = null
+      }
+      if (this.#unixServer) {
+        this.#unixServer.close()
+        this.#unixServer = null
+        // Clean up socket file
+        if (fs.existsSync(this.socketPath)) {
+          fs.unlinkSync(this.socketPath)
+        }
+      }
+      this.#started = false
+    } catch (e) {
+      Odac.core('Log').error('Api', `Error stopping API services: ${e.message}`)
+    }
   }
 
   send(id, process, status, message) {

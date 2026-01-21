@@ -13,8 +13,24 @@ class DNS {
   #types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SOA', 'CAA']
   #udp
   #requestCount = new Map() // Rate limiting
-  #rateLimit = 100 // requests per minute per IP
+  #rateLimit = 2500 // requests per minute per IP
   #rateLimitWindow = 60000 // 1 minute
+
+  #execHost(cmd, options = {}) {
+    // Check if running in Docker
+    const isDocker = fs.existsSync('/.dockerenv')
+
+    if (isDocker) {
+      // Strip sudo strings, assuming we are root in container and joining as root on host
+      const cleanCmd = cmd.replace(/sudo\s+/g, '')
+      // Use nsenter to execute on host (PID 1)
+      // Requires pid: host, privileged: true in docker-compose
+      const nsenterCmd = `nsenter -t 1 -m -u -n -i sh -c "${cleanCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      return execSync(nsenterCmd, {...options, encoding: 'utf8'})
+    }
+
+    return execSync(cmd, options)
+  }
 
   delete(...args) {
     for (let obj of args) {
@@ -34,8 +50,34 @@ class DNS {
   init() {
     this.#udp = dns.createServer()
     this.#tcp = dns.createTCPServer()
+    // Patch native-dns TCP server to handle connection errors
+    if (this.#tcp._socket) {
+      this.#tcp._socket.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('DNS TCP Socket Error:', err.message)
+        })
+      })
+    }
+  }
+
+  start() {
+    if (this.#loaded) return
     this.#getExternalIP()
     this.#publish()
+  }
+
+  stop() {
+    try {
+      if (this.#udp) {
+        this.#udp.close()
+      }
+      if (this.#tcp) {
+        this.#tcp.close()
+      }
+      this.#loaded = false
+    } catch (e) {
+      error('Error stopping DNS services: %s', e.message)
+    }
   }
 
   async #getExternalIP() {
@@ -128,7 +170,7 @@ class DNS {
 
       // Check what's using port 53
       try {
-        const port53Info = execSync(
+        const port53Info = this.#execHost(
           'lsof -i :53 2>/dev/null || netstat -tulpn 2>/dev/null | grep :53 || ss -tulpn 2>/dev/null | grep :53 || echo "Port 53 appears to be free"',
           {
             encoding: 'utf8',
@@ -143,7 +185,7 @@ class DNS {
       // Check systemd-resolved status on Linux
       if (os.platform() === 'linux') {
         try {
-          const resolvedStatus = execSync('systemctl is-active systemd-resolved 2>/dev/null || echo "not-active"', {
+          const resolvedStatus = this.#execHost('systemctl is-active systemd-resolved 2>/dev/null || echo "not-active"', {
             encoding: 'utf8',
             timeout: 3000
           }).trim()
@@ -151,7 +193,7 @@ class DNS {
 
           if (resolvedStatus === 'active') {
             try {
-              const resolvedConfig = execSync(
+              const resolvedConfig = this.#execHost(
                 'systemd-resolve --status 2>/dev/null | head -20 || resolvectl status 2>/dev/null | head -20 || echo "Could not get resolver status"',
                 {
                   encoding: 'utf8',
@@ -252,7 +294,7 @@ class DNS {
   async #checkPortAvailability(port) {
     try {
       // Check if anything is listening on the port
-      const portCheck = execSync(
+      const portCheck = this.#execHost(
         `lsof -i :${port} 2>/dev/null || netstat -tulpn 2>/dev/null | grep :${port} || ss -tulpn 2>/dev/null | grep :${port} || true`,
         {
           encoding: 'utf8',
@@ -283,7 +325,7 @@ class DNS {
       // More comprehensive check for what's using port 53
       let portInfo = ''
       try {
-        portInfo = execSync(
+        portInfo = this.#execHost(
           'lsof -i :53 2>/dev/null || netstat -tulpn 2>/dev/null | grep :53 || ss -tulpn 2>/dev/null | grep :53 || true',
           {
             encoding: 'utf8',
@@ -321,7 +363,7 @@ class DNS {
       log('Attempting to disable systemd-resolved DNS stub listener...')
 
       // Check if systemd-resolved is active
-      const isActive = execSync('systemctl is-active systemd-resolved 2>/dev/null || echo inactive', {
+      const isActive = this.#execHost('systemctl is-active systemd-resolved 2>/dev/null || echo inactive', {
         encoding: 'utf8',
         timeout: 5000
       }).trim()
@@ -338,7 +380,7 @@ class DNS {
       try {
         // Ensure directory exists
         if (!fs.existsSync(resolvedConfDir)) {
-          execSync(`sudo mkdir -p ${resolvedConfDir}`, {timeout: 10000})
+          this.#execHost(`sudo mkdir -p ${resolvedConfDir}`, {timeout: 10000})
         }
 
         // Create configuration to disable DNS stub listener and use public DNS
@@ -348,11 +390,11 @@ DNS=1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4
 FallbackDNS=1.1.1.1 1.0.0.1
 `
 
-        execSync(`echo '${resolvedConfig}' | sudo tee ${resolvedConfFile}`, {timeout: 10000})
+        this.#execHost(`echo '${resolvedConfig}' | sudo tee ${resolvedConfFile}`, {timeout: 10000})
         log('Created systemd-resolved configuration to disable DNS stub listener')
 
         // Restart systemd-resolved
-        execSync('sudo systemctl restart systemd-resolved', {timeout: 15000})
+        this.#execHost('sudo systemctl restart systemd-resolved', {timeout: 15000})
         log('Restarted systemd-resolved service')
 
         // Wait for service to restart and port to be freed
@@ -360,7 +402,7 @@ FallbackDNS=1.1.1.1 1.0.0.1
           setTimeout(() => {
             try {
               // Check if port 53 is now free
-              const portCheck = execSync('lsof -i :53 2>/dev/null || true', {
+              const portCheck = this.#execHost('lsof -i :53 2>/dev/null || true', {
                 encoding: 'utf8',
                 timeout: 3000
               })
@@ -394,7 +436,7 @@ FallbackDNS=1.1.1.1 1.0.0.1
 
       // Check if we can stop systemd-resolved
       try {
-        execSync('sudo systemctl stop systemd-resolved', {timeout: 10000})
+        this.#execHost('sudo systemctl stop systemd-resolved', {timeout: 10000})
         log('Temporarily stopped systemd-resolved')
 
         // Set up cleanup handlers to restart systemd-resolved when process exits
@@ -416,7 +458,7 @@ FallbackDNS=1.1.1.1 1.0.0.1
   #setupCleanupHandlers() {
     const restartSystemdResolved = () => {
       try {
-        execSync('sudo systemctl start systemd-resolved', {timeout: 10000})
+        this.#execHost('sudo systemctl start systemd-resolved', {timeout: 10000})
         log('Restarted systemd-resolved on cleanup')
       } catch (err) {
         error('Failed to restart systemd-resolved on cleanup:', err.message)
@@ -531,17 +573,17 @@ nameserver 8.8.4.4
 `
 
       // Backup original resolv.conf
-      execSync('sudo cp /etc/resolv.conf /etc/resolv.conf.odac.backup 2>/dev/null || true', {timeout: 5000})
+      this.#execHost('sudo cp /etc/resolv.conf /etc/resolv.conf.odac.backup 2>/dev/null || true', {timeout: 5000})
 
       // Update resolv.conf with public DNS servers
-      execSync(`echo '${resolvConf}' | sudo tee /etc/resolv.conf`, {timeout: 5000})
+      this.#execHost(`echo '${resolvConf}' | sudo tee /etc/resolv.conf`, {timeout: 5000})
       log('Configured system to use public DNS servers for internet access')
       log('Cloudflare DNS (1.1.1.1) and Google DNS (8.8.8.8) will handle non-Odac domains')
 
       // Set up restoration on exit
       process.on('exit', () => {
         try {
-          execSync('sudo mv /etc/resolv.conf.odac.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
+          this.#execHost('sudo mv /etc/resolv.conf.odac.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
         } catch {
           // Silent fail on exit
         }
@@ -570,17 +612,17 @@ nameserver 8.8.4.4
 `
 
       // Backup original resolv.conf
-      execSync('sudo cp /etc/resolv.conf /etc/resolv.conf.odac.backup 2>/dev/null || true', {timeout: 5000})
+      this.#execHost('sudo cp /etc/resolv.conf /etc/resolv.conf.odac.backup 2>/dev/null || true', {timeout: 5000})
 
       // Update resolv.conf with public DNS servers
-      execSync(`echo '${resolvConf}' | sudo tee /etc/resolv.conf`, {timeout: 5000})
+      this.#execHost(`echo '${resolvConf}' | sudo tee /etc/resolv.conf`, {timeout: 5000})
       log('Updated /etc/resolv.conf to use reliable public DNS servers (1.1.1.1, 8.8.8.8)')
       log('Odac domains will be handled locally, all other domains via public DNS')
 
       // Set up restoration on exit
       process.on('exit', () => {
         try {
-          execSync('sudo mv /etc/resolv.conf.odac.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
+          this.#execHost('sudo mv /etc/resolv.conf.odac.backup /etc/resolv.conf 2>/dev/null || true', {timeout: 5000})
         } catch {
           // Silent fail on exit
         }
@@ -843,7 +885,7 @@ nameserver 8.8.4.4
         const value = caaParts.slice(2).join(' ')
 
         response.answer.push(
-          dns.CAA({
+          this.#createCAARecord({
             name: record.name,
             flags: flags,
             tag: tag,
@@ -861,7 +903,7 @@ nameserver 8.8.4.4
     try {
       // Add default CAA records allowing Let's Encrypt
       response.answer.push(
-        dns.CAA({
+        this.#createCAARecord({
           name: questionName,
           flags: 0,
           tag: 'issue',
@@ -870,7 +912,7 @@ nameserver 8.8.4.4
         })
       )
       response.answer.push(
-        dns.CAA({
+        this.#createCAARecord({
           name: questionName,
           flags: 0,
           tag: 'issuewild',
@@ -881,6 +923,31 @@ nameserver 8.8.4.4
       log("Added default CAA records for Let's Encrypt to response for:", questionName)
     } catch (err) {
       error('Error adding default CAA records:', err.message)
+    }
+  }
+
+  #createCAARecord(opts) {
+    const flags = opts.flags || 0
+    const tag = opts.tag
+    const value = opts.value
+
+    const flagsBuf = Buffer.alloc(1)
+    flagsBuf.writeUInt8(flags, 0)
+
+    const tagBuf = Buffer.from(tag)
+    const tagLenBuf = Buffer.alloc(1)
+    tagLenBuf.writeUInt8(tagBuf.length, 0)
+
+    const valueBuf = Buffer.from(value)
+
+    const data = Buffer.concat([flagsBuf, tagLenBuf, tagBuf, valueBuf])
+
+    return {
+      name: opts.name,
+      type: dns.consts.NAME_TO_QTYPE.CAA || 257,
+      class: 1, // IN
+      ttl: opts.ttl || 3600,
+      data: data
     }
   }
 

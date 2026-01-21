@@ -60,6 +60,11 @@ describe('DNS Module', () => {
       SOA: jest.fn(data => ({type: 'SOA', ...data}))
     }))
 
+    // Mock child_process for system commands
+    jest.doMock('child_process', () => ({
+      execSync: jest.fn().mockReturnValue('')
+    }))
+
     // Mock axios module
     jest.doMock('axios', () => ({
       get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
@@ -86,6 +91,7 @@ describe('DNS Module', () => {
     cleanupGlobalMocks()
     jest.resetModules()
     jest.dontMock('native-dns')
+    jest.dontMock('child_process')
     jest.dontMock('axios')
   })
 
@@ -103,6 +109,7 @@ describe('DNS Module', () => {
       const axios = require('axios')
 
       DNS.init()
+      DNS.start()
 
       expect(axios.get).toHaveBeenCalledWith('https://curlmyip.org/', {
         headers: {'User-Agent': 'Odac-DNS/1.0'},
@@ -114,6 +121,7 @@ describe('DNS Module', () => {
       const dns = require('native-dns')
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization to complete
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -131,6 +139,7 @@ describe('DNS Module', () => {
       axios.get.mockResolvedValue({data: '203.0.113.1'})
 
       DNS.init()
+      DNS.start()
 
       // Wait for the axios promise to resolve
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -144,6 +153,7 @@ describe('DNS Module', () => {
       axios.get.mockResolvedValue({data: 'invalid-ip-format'})
 
       DNS.init()
+      DNS.start()
 
       // Wait for the axios promise to resolve
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -161,6 +171,7 @@ describe('DNS Module', () => {
       axios.get.mockRejectedValue(networkError)
 
       DNS.init()
+      DNS.start()
 
       // Wait for the axios promise to resolve
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -190,6 +201,7 @@ describe('DNS Module', () => {
       dns.createTCPServer.mockReturnValue(tcpServer)
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -208,6 +220,7 @@ describe('DNS Module', () => {
       dns.createTCPServer.mockReturnValue(tcpServer)
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -227,6 +240,7 @@ describe('DNS Module', () => {
       dns.createTCPServer.mockReturnValue(tcpServer)
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -251,6 +265,7 @@ describe('DNS Module', () => {
       mockConfig.config.websites = {}
 
       DNS.init()
+      DNS.start()
 
       expect(udpServer.serve).not.toHaveBeenCalled()
       expect(tcpServer.serve).not.toHaveBeenCalled()
@@ -546,6 +561,7 @@ describe('DNS Module', () => {
 
       // Initialize DNS to set up servers
       DNS.init()
+      DNS.start()
     })
 
     it('should process A record queries correctly', () => {
@@ -960,9 +976,6 @@ describe('DNS Module', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
 
-      // Mock CAA function
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
-
       // Add CAA record
       DNS.record({name: 'example.com', type: 'CAA', value: '0 issue letsencrypt.org'})
 
@@ -974,22 +987,20 @@ describe('DNS Module', () => {
 
       requestHandler(mockRequest, mockResponse)
 
-      expect(dns.CAA).toHaveBeenCalledWith({
-        name: 'example.com',
-        flags: 0,
-        tag: 'issue',
-        value: 'letsencrypt.org',
-        ttl: 3600
-      })
+      expect(mockResponse.answer).toHaveLength(1)
+      const record = mockResponse.answer[0]
+      expect(record.name).toBe('example.com')
+      expect(record.type).toBe(257)
+      expect(record.class).toBe(1)
+      expect(record.ttl).toBe(3600)
+      expect(Buffer.isBuffer(record.data)).toBe(true)
+      expect(record.data.length).toBeGreaterThan(0)
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
     it('should add default CAA records when none exist', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
-
-      // Mock CAA function
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
 
       // Initialize CAA array but leave it empty
       mockConfig.config.websites['example.com'].DNS.CAA = []
@@ -1003,20 +1014,16 @@ describe('DNS Module', () => {
       requestHandler(mockRequest, mockResponse)
 
       // Should add default Let's Encrypt CAA records
-      expect(dns.CAA).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'example.com',
-          tag: 'issue',
-          value: 'letsencrypt.org'
-        })
-      )
-      expect(dns.CAA).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'example.com',
-          tag: 'issuewild',
-          value: 'letsencrypt.org'
-        })
-      )
+      expect(mockResponse.answer).toHaveLength(2)
+
+      const issueRecord = mockResponse.answer.find(r => r.data.toString().includes('issue'))
+      expect(issueRecord).toBeDefined()
+      expect(issueRecord.type).toBe(257)
+
+      const issuewildRecord = mockResponse.answer.find(r => r.data.toString().includes('issuewild'))
+      expect(issuewildRecord).toBeDefined()
+      expect(issuewildRecord.type).toBe(257)
+
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
@@ -1063,7 +1070,6 @@ describe('DNS Module', () => {
     it('should handle malformed CAA records gracefully', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
 
       // Add malformed CAA record (missing parts)
       mockConfig.config.websites['example.com'].DNS.CAA = [
@@ -1149,7 +1155,6 @@ describe('DNS Module', () => {
     it('should handle null records in CAA processing', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
-      dns.CAA = jest.fn(data => ({type: 'CAA', ...data}))
 
       // Add null record
       mockConfig.config.websites['example.com'].DNS.CAA = [null, {name: 'example.com', value: '0 issue letsencrypt.org'}]
@@ -1162,7 +1167,8 @@ describe('DNS Module', () => {
       requestHandler(mockRequest, mockResponse)
 
       // Should process valid record and skip null
-      expect(dns.CAA).toHaveBeenCalled()
+      expect(mockResponse.answer).toHaveLength(1)
+      expect(mockResponse.answer[0].type).toBe(257)
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
@@ -1303,6 +1309,7 @@ describe('DNS Module', () => {
       axios.get.mockRejectedValue(new Error('Network error'))
 
       DNS.init()
+      DNS.start()
 
       await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -1318,6 +1325,7 @@ describe('DNS Module', () => {
       axios.get.mockRejectedValueOnce(new Error('First service failed')).mockResolvedValueOnce({data: '203.0.113.50'})
 
       DNS.init()
+      DNS.start()
 
       await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -1330,6 +1338,7 @@ describe('DNS Module', () => {
       axios.get.mockResolvedValue({data: '  203.0.113.75  \n'})
 
       DNS.init()
+      DNS.start()
 
       await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -1348,7 +1357,10 @@ describe('DNS Module', () => {
       const DNSWithError = require('../../server/src/DNS')
 
       // Should not crash when init is called
-      expect(() => DNSWithError.init()).not.toThrow()
+      expect(() => {
+        DNSWithError.init()
+        DNSWithError.start()
+      }).not.toThrow()
 
       await new Promise(resolve => setTimeout(resolve, 100))
     })
@@ -1367,7 +1379,10 @@ describe('DNS Module', () => {
       const DNSWithDarwin = require('../../server/src/DNS')
 
       // Should not crash on non-Linux platforms
-      expect(() => DNSWithDarwin.init()).not.toThrow()
+      expect(() => {
+        DNSWithDarwin.init()
+        DNSWithDarwin.start()
+      }).not.toThrow()
 
       await new Promise(resolve => setTimeout(resolve, 100))
     })
@@ -1398,7 +1413,10 @@ describe('DNS Module', () => {
       const DNSWithLinux = require('../../server/src/DNS')
 
       // Should not crash on Linux with systemd-resolved
-      expect(() => DNSWithLinux.init()).not.toThrow()
+      expect(() => {
+        DNSWithLinux.init()
+        DNSWithLinux.start()
+      }).not.toThrow()
 
       await new Promise(resolve => setTimeout(resolve, 100))
     })
@@ -1477,7 +1495,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle port conflict gracefully
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 200))
   })
@@ -1494,7 +1515,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should start successfully when port is available
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 200))
   })
@@ -1510,7 +1534,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle port check errors without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 200))
   })
@@ -1540,7 +1567,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle systemd-resolved detection without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 300))
   })
@@ -1565,7 +1595,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should skip systemd-resolved handling on non-Linux without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 300))
   })
@@ -1590,7 +1623,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle non-systemd process without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 300))
   })

@@ -35,16 +35,57 @@ module.exports = {
   },
   run: {
     args: ['file'],
-    description: 'Add a new Service',
+    description: 'Run a script or file as a service',
     action: async args => {
-      let service = args[0]
-      if (!service.startsWith('/') && !/^[a-zA-Z]:\\|^\\\\/.test(service)) {
-        service = path.resolve() + '/' + service
+      let filePath = args[0]
+      if (!filePath) return console.log(__('Please specify a file to run.'))
+
+      // Check for Windows path manually to support cross-platform tests
+      const isWindowsAbsolute = /^[a-zA-Z]:\\|^\\\\/.test(filePath)
+
+      if (!path.isAbsolute(filePath) && !isWindowsAbsolute) {
+        filePath = path.resolve(filePath)
       }
-      await Odac.cli('Connector').call({action: 'service.start', data: [service]})
+      await Odac.cli('Connector').call({action: 'app.start', data: [filePath]})
     }
   },
 
+  app: {
+    title: 'APP',
+    sub: {
+      create: {
+        description: 'Create a new application',
+        args: ['-t', '--type'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+
+          if (!type) {
+            type = await cli.question(__('Enter the app type or repo: '))
+          }
+
+          await Odac.cli('Connector').call({
+            action: 'app.create',
+            data: [type]
+          })
+        }
+      },
+      delete: {
+        description: 'Delete an App',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+          await Odac.cli('Connector').call({action: 'app.delete', data: [app]})
+        }
+      },
+      list: {
+        description: 'List all apps',
+        action: async () => Odac.cli('Connector').call({action: 'app.list'})
+      }
+    }
+  },
   mail: {
     title: 'MAIL',
     sub: {
@@ -131,21 +172,6 @@ module.exports = {
           if (!domain) domain = await cli.question(__('Enter the domain name: '))
 
           await Odac.cli('Connector').call({action: 'ssl.renew', data: [domain]})
-        }
-      }
-    }
-  },
-  service: {
-    title: 'SERVICE',
-    sub: {
-      delete: {
-        description: 'Delete a Service',
-        args: ['-i', '--id'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let service = cli.parseArg(args, ['-i', '--id'])
-          if (!service) service = await cli.question(__('Enter the Service ID or Name: '))
-          await Odac.cli('Connector').call({action: 'service.delete', data: [service]})
         }
       }
     }

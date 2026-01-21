@@ -1,4 +1,4 @@
-const {log, error} = Odac.core('Log', false).init('Service')
+const {log, error} = Odac.core('Log', false).init('Mail')
 
 const bcrypt = require('bcrypt')
 const SMTPServer = require('smtp-server').SMTPServer
@@ -17,8 +17,12 @@ class Mail {
   #counts = {}
   #db
   #server_smtp
+  #server_smtp_insecure
+  #server_imap
+  #server_imap_sec
   #started = false
   #sslCache = new Map()
+  #blocked = new Map()
 
   clearSSLCache(domain) {
     if (domain) {
@@ -30,6 +34,38 @@ class Mail {
     } else {
       this.#sslCache.clear()
     }
+  }
+
+  #handleFailedAuth(ip) {
+    if (!this.#clients[ip]) this.#clients[ip] = {attempts: 0, last: 0}
+    // Reset counter if last attempt was more than 1 hour ago
+    if (Date.now() - this.#clients[ip].last > 1000 * 60 * 60) {
+      this.#clients[ip] = {attempts: 0, last: 0}
+    }
+
+    this.#clients[ip].attempts++
+    this.#clients[ip].last = Date.now()
+
+    if (this.#clients[ip].attempts > 5) {
+      this.#block(ip, 'Too many failed login attempts')
+      delete this.#clients[ip]
+    }
+  }
+
+  #block(ip, reason = 'Suspicious activity') {
+    if (this.#blocked.has(ip)) return
+    log(`Blocking IP ${ip}: ${reason}`)
+    // Block for 24 hours
+    this.#blocked.set(ip, Date.now() + 1000 * 60 * 60 * 24)
+  }
+
+  #isBlocked(ip) {
+    if (!this.#blocked.has(ip)) return false
+    if (this.#blocked.get(ip) < Date.now()) {
+      this.#blocked.delete(ip)
+      return false
+    }
+    return true
   }
 
   check() {
@@ -95,6 +131,7 @@ class Mail {
     let publicKeyPem = forge.pki.publicKeyToPem(keys.publicKey)
     if (!fs.existsSync(os.homedir() + '/.odac/cert/dkim')) fs.mkdirSync(os.homedir() + '/.odac/cert/dkim', {recursive: true})
     fs.writeFileSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.key', privateKeyPem)
+    fs.chmodSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.key', 0o600)
     fs.writeFileSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.pub', publicKeyPem)
     publicKeyPem = publicKeyPem
       .replace('-----BEGIN PUBLIC KEY-----', '')
@@ -173,27 +210,41 @@ class Mail {
       this.#db.run(`CREATE INDEX IF NOT EXISTS idx_email  ON mail_box      (email);`)
       this.#db.run(`CREATE INDEX IF NOT EXISTS idx_title  ON mail_box      (title);`)
     })
+  }
+
+  start() {
+    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
+
     const self = this
     let options = {
       logger: true,
+      tls: {minVersion: 'TLSv1.2'},
       secure: false,
-      banner: 'Odac',
+      banner: 'ODAC',
       size: 1024 * 1024 * 10,
       authOptional: true,
+      onConnect(session, callback) {
+        if (self.#isBlocked(session.remoteAddress)) {
+          return callback(new Error('Your IP is blocked due to suspicious activity.'))
+        }
+        return callback()
+      },
       onAuth(auth, session, callback) {
         let ip = session.remoteAddress
-        if (self.#clients[ip]) {
-          if (self.#clients[ip].attempts > 1 && Date.now() - self.#clients[ip].last < 1000 * 60 * 60)
-            return callback(new Error('Too many attempts from this IP: ' + ip))
-          if (self.#clients[ip].last < Date.now() - 1000 * 60 * 60) self.#clients[ip] = {attempts: 0, last: 0}
-        }
-        if (!auth.username.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/))
+        // Basic format check
+        if (!auth.username.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+          self.#handleFailedAuth(ip)
           return callback(new Error('Invalid username or password'))
+        }
+
         self.exists(auth.username).then(async result => {
-          if (result && (await bcrypt.compare(auth.password, result.password))) return callback(null, {user: auth.username})
-          if (!self.#clients[ip]) self.#clients[ip] = {attempts: 0, last: 0}
-          self.#clients[ip].attempts++
-          self.#clients[ip].last = Date.now()
+          if (result && (await bcrypt.compare(auth.password, result.password))) {
+            // Successful login, clear attempts
+            if (self.#clients[ip]) delete self.#clients[ip]
+            return callback(null, {user: auth.username})
+          }
+
+          self.#handleFailedAuth(ip)
           return callback(new Error('Invalid username or password'))
         })
       },
@@ -421,11 +472,19 @@ class Mail {
         error('Error:', err)
       }
     }
-    let serv = new SMTPServer(options)
-    serv.listen(25)
-    serv.on('error', err => log('SMTP Server Error: ', err))
-    const imap = new server(options)
-    imap.listen(143)
+    this.#server_smtp_insecure = new SMTPServer(options)
+    this.#server_smtp_insecure.listen(25)
+    this.#server_smtp_insecure.on('error', err => log('SMTP Server Error: ', err))
+    // Handle socket errors to prevent crash
+    if (this.#server_smtp_insecure.server) {
+      this.#server_smtp_insecure.server.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('SMTP Socket Error:', err)
+        })
+      })
+    }
+    this.#server_imap = new server(options)
+    this.#server_imap.listen(143)
     options.SNICallback = (hostname, callback) => {
       const cached = this.#sslCache.get(hostname)
       if (cached) return callback(null, cached)
@@ -452,6 +511,7 @@ class Mail {
           cert: fs.readFileSync(ssl.cert)
         }
       }
+      sslOptions.minVersion = 'TLSv1.2'
       const ctx = tls.createSecureContext(sslOptions)
       this.#sslCache.set(hostname, ctx)
       callback(null, ctx)
@@ -459,9 +519,44 @@ class Mail {
     options.secure = true
     this.#server_smtp = new SMTPServer(options)
     this.#server_smtp.listen(465)
-    this.#server_smtp.on('error', err => error('SMTP Server Error: ', err))
-    const imap_sec = new server(options)
-    imap_sec.listen(993)
+    this.#server_smtp.on('error', err => {
+      if (err.code === 'ERR_SSL_HTTP_REQUEST' && err.meta?.remoteAddress) {
+        this.#block(err.meta.remoteAddress, 'HTTP request on SMTP port')
+      }
+      error('SMTP Server Error: ', err)
+    })
+    if (this.#server_smtp.server) {
+      this.#server_smtp.server.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('SMTP Secure Socket Error:', err)
+        })
+      })
+    }
+    this.#server_imap_sec = new server(options)
+    this.#server_imap_sec.listen(993)
+  }
+
+  stop() {
+    try {
+      if (this.#server_smtp_insecure) {
+        this.#server_smtp_insecure.close(() => {})
+        this.#server_smtp_insecure = null
+      }
+      if (this.#server_smtp) {
+        this.#server_smtp.close(() => {})
+        this.#server_smtp = null
+      }
+      if (this.#server_imap) {
+        this.#server_imap.close(() => {})
+        this.#server_imap = null
+      }
+      if (this.#server_imap_sec) {
+        this.#server_imap_sec.close(() => {})
+        this.#server_imap_sec = null
+      }
+    } catch (e) {
+      error('Error stopping Mail services: %s', e.message)
+    }
   }
 
   async list(domain) {

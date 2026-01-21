@@ -1,16 +1,28 @@
 class Server {
-  constructor() {
+  async init() {
     Odac.core('Config').config.server.pid = process.pid
     Odac.core('Config').config.server.started = Date.now()
-    Odac.server('Service')
+    Odac.server('App')
     Odac.server('DNS')
     Odac.server('Web')
     Odac.server('Mail')
     Odac.server('Api')
     Odac.server('Hub')
+    Odac.server('Container')
+
+    Odac.server('Updater').onReady(() => {
+      Odac.server('Web').start()
+      Odac.server('DNS').start()
+      Odac.server('Hub').start()
+      setTimeout(() => {
+        Odac.server('Mail').start()
+        Odac.server('Api').start()
+      }, 1000)
+    })
+
     setTimeout(function () {
       setInterval(function () {
-        Odac.server('Service').check()
+        Odac.server('App').check()
         Odac.server('SSL').check()
         Odac.server('Web').check()
         Odac.server('Mail').check()
@@ -20,8 +32,11 @@ class Server {
   }
 
   stop() {
-    Odac.server('Service').stopAll()
-    Odac.server('Web').stopAll()
+    Odac.server('Web').stop()
+    Odac.server('Mail').stop()
+    Odac.server('DNS').stop()
+    Odac.server('Api').stop()
+    Odac.server('Hub').stop()
   }
 }
 

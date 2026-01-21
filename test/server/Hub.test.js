@@ -16,6 +16,7 @@ jest.mock('axios')
 const axios = require('axios')
 
 jest.mock('ws')
+const WebSocketLib = require('ws')
 
 jest.mock('os')
 const os = require('os')
@@ -27,6 +28,8 @@ jest.useFakeTimers()
 
 describe('Hub', () => {
   let Hub
+  let System
+  let MessageSigner
 
   beforeEach(() => {
     jest.clearAllMocks()
@@ -37,7 +40,7 @@ describe('Hub', () => {
         hub: null,
         server: {started: Date.now()},
         websites: {},
-        services: [],
+        apps: [],
         mail: {accounts: {}}
       }
     })
@@ -58,21 +61,24 @@ describe('Hub', () => {
 
     jest.isolateModules(() => {
       Hub = require('../../server/src/Hub')
+      Hub.start()
+      System = require('../../server/src/Hub/System')
+      const WS = require('../../server/src/Hub/WebSocket')
+      MessageSigner = WS.MessageSigner
     })
   })
 
   afterEach(() => {
-    if (Hub.websocket) {
-      Hub.websocket = null
+    if (Hub.ws && Hub.ws.socket) {
+      Hub.ws.disconnect()
     }
     Hub.checkCounter = 0
   })
 
   describe('initialization', () => {
     it('should initialize with default values', () => {
-      expect(Hub.websocket).toBeNull()
-      expect(Hub.websocketReconnectAttempts).toBe(0)
-      expect(Hub.maxReconnectAttempts).toBe(5)
+      expect(Hub.ws).toBeDefined()
+      expect(Hub.ws.connected).toBe(false)
       expect(Hub.checkCounter).toBe(0)
     })
   })
@@ -86,10 +92,10 @@ describe('Hub', () => {
       expect(Hub.checkCounter).toBe(2)
     })
 
-    it('should reset counter after reaching 60', () => {
-      Hub.checkCounter = 59
+    it('should reset counter after reaching 3600', () => {
+      Hub.checkCounter = 3600
       Hub.check()
-      expect(Hub.checkCounter).toBe(0)
+      expect(Hub.checkCounter).toBe(1)
     })
 
     it('should skip API call when counter is not 0', async () => {
@@ -101,8 +107,13 @@ describe('Hub', () => {
       })
 
       Hub.checkCounter = 1
+      const sendSpy = jest.spyOn(Hub.ws, 'send')
+
+      // Force connected state
+      Object.defineProperty(Hub.ws, 'connected', {get: () => true})
+
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      expect(sendSpy).not.toHaveBeenCalled()
     })
 
     it('should skip API call when websocket is connected', async () => {
@@ -113,10 +124,13 @@ describe('Hub', () => {
         }
       })
 
-      Hub.websocket = {readyState: 1}
+      Object.defineProperty(Hub.ws, 'connected', {get: () => true})
+      const sendSpy = jest.spyOn(Hub.ws, 'send')
+
       Hub.checkCounter = 0
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      // Interval is 60, checkCounter becomes 1, so 1 % 60 != 0
+      expect(sendSpy).not.toHaveBeenCalled()
     })
   })
 
@@ -130,8 +144,9 @@ describe('Hub', () => {
         config: {hub: null}
       })
 
+      const connectSpy = jest.spyOn(Hub.ws, 'connect')
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      expect(connectSpy).not.toHaveBeenCalled()
     })
 
     it('should return early if no token', async () => {
@@ -139,106 +154,73 @@ describe('Hub', () => {
         config: {hub: {}}
       })
 
+      const connectSpy = jest.spyOn(Hub.ws, 'connect')
       await Hub.check()
-      expect(axios.post).not.toHaveBeenCalled()
+      expect(connectSpy).not.toHaveBeenCalled()
     })
 
-    it('should send status to hub when counter is 0', async () => {
+    it('should send status to hub when interval matches', async () => {
       jest.useRealTimers()
 
       mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
-          server: {started: Date.now()}
+          server: {started: Date.now()},
+          websites: {'test-container': {}},
+          apps: []
         }
       })
 
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {authenticated: true}
-        }
+      mockOdac.setMock('server', 'Container', {
+        available: true,
+        list: jest.fn().mockResolvedValue([{id: '123', names: ['/test-container'], image: 'image'}]),
+        getStats: jest.fn().mockResolvedValue({cpu: 10, memory: 100})
       })
 
+      // Mock connected state and send
+      Object.defineProperty(Hub.ws, 'connected', {get: () => true})
+      const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
+
+      // statsInterval is 60
       Hub.checkCounter = 59
-      Hub.check()
+      await Hub.check()
 
-      await new Promise(resolve => setImmediate(resolve))
-      expect(axios.post).toHaveBeenCalled()
+      // Wait for async operations to complete
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      expect(sendSpy).toHaveBeenCalled()
+
+      const sendCalls = sendSpy.mock.calls
+      const hasStats = sendCalls.some(call => {
+        // data is passed as object or string, check args
+        const data = typeof call[0] === 'string' ? JSON.parse(call[0]) : call[0]
+        return data.type === 'container_stats'
+      })
+      expect(hasStats).toBe(true)
 
       jest.useFakeTimers()
     })
 
-    it('should handle authentication failure', async () => {
-      jest.useRealTimers()
-
+    it('should connect to websocket if not connected', async () => {
       mockOdac.setMock('core', 'Config', {
         config: {
-          hub: {token: 'invalid-token', secret: 'test-secret'},
-          server: {started: Date.now()}
+          hub: {token: 'test-token', secret: 'test-secret'}
         }
       })
 
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {authenticated: false, reason: 'token_invalid'}
-        }
-      })
+      WebSocketLib.mockClear()
 
-      Hub.checkCounter = 59
-      Hub.check()
+      // Ensure it thinks it needs to reconnect
+      jest.spyOn(Hub.ws, 'shouldReconnect').mockReturnValue(true)
 
-      await new Promise(resolve => setImmediate(resolve))
-      expect(mockLog).toHaveBeenCalledWith('Server not authenticated: %s', 'token_invalid')
+      await Hub.check()
 
-      jest.useFakeTimers()
-    })
-
-    it('should clear config on invalid token', async () => {
-      jest.useRealTimers()
-
-      const config = {
-        hub: {token: 'invalid-token', secret: 'test-secret'},
-        server: {started: Date.now()}
-      }
-      mockOdac.setMock('core', 'Config', {config})
-
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {authenticated: false, reason: 'token_invalid'}
-        }
-      })
-
-      Hub.checkCounter = 59
-      Hub.check()
-
-      await new Promise(resolve => setImmediate(resolve))
-      expect(config.hub).toBeUndefined()
-
-      jest.useFakeTimers()
-    })
-
-    it('should handle check errors gracefully', async () => {
-      jest.useRealTimers()
-
-      mockOdac.setMock('core', 'Config', {
-        config: {
-          hub: {token: 'test-token', secret: 'test-secret'},
-          server: {started: Date.now()}
-        }
-      })
-
-      axios.post.mockRejectedValue(new Error('Network error'))
-
-      Hub.checkCounter = 59
-      Hub.check()
-
-      await new Promise(resolve => setImmediate(resolve))
-      expect(mockLog).toHaveBeenCalledWith('Failed to report status: %s', 'Network error')
-
-      jest.useFakeTimers()
+      expect(WebSocketLib).toHaveBeenCalledWith(
+        'wss://hub.odac.run/ws',
+        expect.objectContaining({
+          headers: {Authorization: 'Bearer test-token'}
+        })
+      )
     })
   })
 
@@ -282,31 +264,14 @@ describe('Hub', () => {
       const result = await Hub.auth('invalid-code')
 
       expect(result).toEqual(mockApiResult)
-      expect(mockLog).toHaveBeenCalledWith('Authentication failed: %s', 'Invalid code')
-    })
-
-    it('should include distro info on Linux', async () => {
-      os.platform.mockReturnValue('linux')
-      fs.readFileSync.mockReturnValue('NAME="Ubuntu"\nVERSION_ID="20.04"\nID=ubuntu')
-
-      axios.post.mockResolvedValue({
-        data: {
-          result: {success: true},
-          data: {token: 'token', secret: 'secret'}
-        }
-      })
-
-      await Hub.auth('code')
-
-      const callArgs = axios.post.mock.calls[0][1]
-      expect(callArgs.distro).toBeDefined()
-      expect(callArgs.distro.name).toBe('Ubuntu')
+      // Expect an Error object as the second argument
+      expect(mockLog).toHaveBeenCalledWith('Authentication failed: %s', expect.objectContaining({message: 'Invalid code'}))
     })
   })
 
   describe('system status', () => {
-    it('should get system status', () => {
-      const status = Hub.getSystemStatus()
+    it('should get system status via System module', () => {
+      const status = System.getStatus()
 
       expect(status).toHaveProperty('cpu')
       expect(status).toHaveProperty('memory')
@@ -326,7 +291,7 @@ describe('Hub', () => {
             'example.com': {},
             'test.com': {}
           },
-          services: ['web', 'mail'],
+          apps: ['web', 'mail'],
           mail: {
             accounts: {
               'user@example.com': {},
@@ -336,78 +301,51 @@ describe('Hub', () => {
         }
       })
 
-      const services = Hub.getServicesInfo()
+      const services = System.getServicesInfo()
 
       expect(services.websites).toBe(2)
-      expect(services.services).toBe(2)
+      expect(services.apps).toBe(2)
       expect(services.mail).toBe(2)
     })
 
     it('should handle missing services config', () => {
       mockOdac.setMock('core', 'Config', {config: {}})
 
-      const services = Hub.getServicesInfo()
+      const services = System.getServicesInfo()
 
       expect(services.websites).toBe(0)
-      expect(services.services).toBe(0)
+      expect(services.apps).toBe(0)
       expect(services.mail).toBe(0)
     })
   })
 
   describe('memory usage', () => {
-    it('should get memory usage on Linux', () => {
+    it('should get memory usage on Linux via System', () => {
       os.platform.mockReturnValue('linux')
       os.totalmem.mockReturnValue(8589934592)
       os.freemem.mockReturnValue(4294967296)
 
-      const memory = Hub.getMemoryUsage()
+      const memory = System.getMemoryUsage()
 
       expect(memory.total).toBe(8589934592)
       expect(memory.used).toBe(4294967296)
     })
   })
 
-  describe('CPU usage', () => {
-    it('should return 0 on first call', () => {
-      const usage = Hub.getCpuUsage()
-      expect(usage).toBe(0)
-    })
-
-    it('should calculate CPU usage on subsequent calls', () => {
-      Hub.getCpuUsage()
-
-      os.cpus.mockReturnValue([
-        {times: {user: 2000, nice: 0, sys: 1000, idle: 7000, irq: 0}},
-        {times: {user: 2000, nice: 0, sys: 1000, idle: 7000, irq: 0}}
-      ])
-
-      const usage = Hub.getCpuUsage()
-      expect(usage).toBeGreaterThanOrEqual(0)
-      expect(usage).toBeLessThanOrEqual(100)
-    })
-  })
-
   describe('request signing', () => {
-    it('should sign request with secret', () => {
-      mockOdac.setMock('core', 'Config', {
-        config: {
-          hub: {token: 'token', secret: 'test-secret'}
-        }
-      })
-
+    it('should sign request with secret using MessageSigner', () => {
       const data = {test: 'data'}
-      const signature = Hub.signRequest(data)
+      const timestamp = Date.now()
+      const secret = 'test-secret'
+
+      const signature = MessageSigner.sign({type: 'test', data, timestamp}, secret)
 
       expect(signature).toBeTruthy()
       expect(typeof signature).toBe('string')
     })
 
     it('should return null without secret', () => {
-      mockOdac.setMock('core', 'Config', {
-        config: {hub: {token: 'token'}}
-      })
-
-      const signature = Hub.signRequest({test: 'data'})
+      const signature = MessageSigner.sign({type: 'test', data: {}}, null)
       expect(signature).toBeNull()
     })
   })
@@ -454,43 +392,41 @@ describe('Hub', () => {
         }
       })
 
-      await expect(Hub.call('test', {})).rejects.toBe('API error')
+      await expect(Hub.call('test', {})).rejects.toThrow('API error')
     })
 
     it('should handle network errors', async () => {
-      axios.post.mockRejectedValue({
-        response: {status: 500, data: 'Server error'}
-      })
+      axios.post.mockRejectedValue(new Error('Server error'))
 
-      await expect(Hub.call('test', {})).rejects.toBe('Server error')
+      await expect(Hub.call('test', {})).rejects.toThrow('Server error')
     })
   })
 
   describe('Linux distro detection', () => {
-    it('should return null on non-Linux platforms', () => {
+    it('should return null on non-Linux platforms via System', () => {
       os.platform.mockReturnValue('darwin')
-      const distro = Hub.getLinuxDistro()
+      const distro = System.getLinuxDistro()
       expect(distro).toBeNull()
     })
 
-    it('should parse os-release file', () => {
+    it('should parse os-release file via System', () => {
       os.platform.mockReturnValue('linux')
       fs.readFileSync.mockReturnValue('NAME="Ubuntu"\nVERSION_ID="20.04"\nID=ubuntu')
 
-      const distro = Hub.getLinuxDistro()
+      const distro = System.getLinuxDistro()
 
       expect(distro.name).toBe('Ubuntu')
       expect(distro.version).toBe('20.04')
       expect(distro.id).toBe('ubuntu')
     })
 
-    it('should handle missing os-release file', () => {
+    it('should handle missing os-release file via System', () => {
       os.platform.mockReturnValue('linux')
       fs.readFileSync.mockImplementation(() => {
         throw new Error('File not found')
       })
 
-      const distro = Hub.getLinuxDistro()
+      const distro = System.getLinuxDistro()
       expect(distro).toBeNull()
     })
   })

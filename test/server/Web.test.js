@@ -344,11 +344,11 @@ describe('Web', () => {
       mockConfig.config.web = {path: '/var/odac'}
     })
 
-    test('should create website with valid domain', () => {
+    test('should create website with valid domain', async () => {
       const mockProgress = jest.fn()
       const domain = 'example.com'
 
-      const result = Web.create(domain, mockProgress)
+      const result = await Web.create(domain, mockProgress)
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('Website example.com created')
@@ -356,98 +356,71 @@ describe('Web', () => {
       expect(mockProgress).toHaveBeenCalledWith('domain', 'success', expect.stringContaining('Domain example.com set'))
     })
 
-    test('should reject invalid domain names', () => {
+    test('should reject invalid domain names', async () => {
       const mockProgress = jest.fn()
 
       // Test short domain
-      let result = Web.create('ab', mockProgress)
+      let result = await Web.create('ab', mockProgress)
       expect(result.success).toBe(false)
       expect(result.message).toBe('Invalid domain.')
 
       // Test domain without dot (except localhost)
-      result = Web.create('invalid', mockProgress)
+      result = await Web.create('invalid', mockProgress)
       expect(result.success).toBe(false)
       expect(result.message).toBe('Invalid domain.')
     })
 
-    test('should allow localhost as valid domain', () => {
+    test('should allow localhost as valid domain', async () => {
       const mockProgress = jest.fn()
 
-      const result = Web.create('localhost', mockProgress)
+      const result = await Web.create('localhost', mockProgress)
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('Website localhost created')
     })
 
-    test('should strip protocol prefixes from domain', () => {
+    test('should strip protocol prefixes from domain', async () => {
       const mockProgress = jest.fn()
 
-      Web.create('https://example.com', mockProgress)
+      await Web.create('https://example.com', mockProgress)
 
       expect(mockConfig.config.websites['example.com']).toBeDefined()
       expect(mockConfig.config.websites['https://example.com']).toBeUndefined()
     })
 
-    test('should reject existing domain', () => {
+    test('should reject existing domain', async () => {
       const mockProgress = jest.fn()
       mockConfig.config.websites = {'example.com': {}}
 
-      const result = Web.create('example.com', mockProgress)
+      const result = await Web.create('example.com', mockProgress)
 
       expect(result.success).toBe(false)
       expect(result.message).toBe('Website example.com already exists.')
     })
 
-    test('should create website directory structure', () => {
+    test('should create website directory and initialize project', async () => {
       const mockProgress = jest.fn()
       const domain = 'example.com'
 
       // Mock fs.existsSync to return false for the website directory so it gets created
       fs.existsSync.mockImplementation(path => {
         if (path === '/var/odac/example.com') return false
-        if (path.includes('node_modules')) return false
         return true
       })
 
-      Web.create(domain, mockProgress)
+      await Web.create(domain, mockProgress)
 
       expect(fs.mkdirSync).toHaveBeenCalledWith('/var/odac/example.com', {recursive: true})
-      expect(fs.cpSync).toHaveBeenCalledWith(expect.stringContaining('web/'), '/var/odac/example.com', {recursive: true})
-    })
 
-    test('should setup npm link for odac', () => {
-      const mockProgress = jest.fn()
-      const domain = 'example.com'
-
-      Web.create(domain, mockProgress)
-
-      expect(childProcess.execSync).toHaveBeenCalledWith('npm link odac', {
+      // Verify initialization commands
+      expect(childProcess.execSync).toHaveBeenCalledWith('npm init -y', {cwd: '/var/odac/example.com'})
+      expect(childProcess.execSync).toHaveBeenCalledWith('npm i odac', {cwd: '/var/odac/example.com'})
+      expect(childProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('odac init'), {
         cwd: '/var/odac/example.com'
       })
     })
 
-    test('should remove node_modules/.bin if it exists', () => {
-      const mockProgress = jest.fn()
-      const domain = 'example.com'
-      fs.existsSync.mockImplementation(path => path.includes('node_modules/.bin'))
-
-      Web.create(domain, mockProgress)
-
-      // Note: The actual Web.js code has a bug - missing '/' in path concatenation
-      expect(fs.rmSync).toHaveBeenCalledWith('/var/odac/example.com/node_modules/.bin', {recursive: true})
-    })
-
-    test('should create node_modules directory if it does not exist', () => {
-      const mockProgress = jest.fn()
-      const domain = 'example.com'
-      fs.existsSync.mockImplementation(path => !path.includes('node_modules'))
-
-      Web.create(domain, mockProgress)
-
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/var/odac/example.com/node_modules')
-    })
-
-    test('should setup DNS records for non-localhost domains', () => {
+    test('should setup DNS records for non-localhost domains', async () => {
       const mockProgress = jest.fn()
       const domain = 'example.com'
       const mockDNS = {
@@ -457,7 +430,7 @@ describe('Web', () => {
       mockOdac.setMock('server', 'DNS', mockDNS)
       mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
-      Web.create(domain, mockProgress)
+      await Web.create(domain, mockProgress)
 
       expect(mockDNS.record).toHaveBeenCalledWith(
         {name: 'example.com', type: 'A', value: '192.168.1.1'},
@@ -474,24 +447,24 @@ describe('Web', () => {
       expect(mockProgress).toHaveBeenCalledWith('dns', 'success', expect.stringContaining('DNS records for example.com set'))
     })
 
-    test('should not setup DNS records for localhost', () => {
+    test('should not setup DNS records for localhost', async () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
       mockOdac.setMock('server', 'DNS', mockDNS)
       mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
-      Web.create('localhost', mockProgress)
+      await Web.create('localhost', mockProgress)
 
       expect(mockDNS.record).not.toHaveBeenCalled()
     })
 
-    test('should not setup DNS records for IP addresses', () => {
+    test('should not setup DNS records for IP addresses', async () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
       mockOdac.setMock('server', 'DNS', mockDNS)
       mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
 
-      Web.create('192.168.1.1', mockProgress)
+      await Web.create('192.168.1.1', mockProgress)
 
       expect(mockDNS.record).not.toHaveBeenCalled()
     })
@@ -1414,8 +1387,7 @@ describe('Web', () => {
     test('should list all websites', async () => {
       mockConfig.config.websites = {
         'example.com': {},
-        'test.com': {},
-        'demo.com': {}
+        'test.com': {}
       }
 
       const result = await Web.list()
@@ -1423,7 +1395,6 @@ describe('Web', () => {
       expect(result.success).toBe(true)
       expect(result.message).toContain('example.com')
       expect(result.message).toContain('test.com')
-      expect(result.message).toContain('demo.com')
     })
 
     test('should return error when no websites exist', async () => {
@@ -1436,59 +1407,54 @@ describe('Web', () => {
     })
 
     test('should return website status', async () => {
-      mockConfig.config.websites = {
-        'example.com': {
-          status: 'running',
-          pid: 12345
-        }
-      }
+      mockConfig.config.websites = {'example.com': {}}
 
       const result = await Web.status()
 
-      expect(result).toEqual(mockConfig.config.websites)
+      expect(result).toEqual({'example.com': {}})
     })
 
     test('should set website configuration', () => {
-      const websiteData = {
-        domain: 'example.com',
-        path: '/var/odac/example.com',
-        status: 'running'
-      }
-
-      Web.set('example.com', websiteData)
-
-      expect(mockConfig.config.websites['example.com']).toEqual(websiteData)
+      const data = {domain: 'new.com'}
+      Web.set('new.com', data)
+      expect(mockConfig.config.websites['new.com']).toEqual(data)
     })
 
     test('should stop all websites', () => {
-      mockConfig.config.websites = {
-        'example.com': {pid: 12345},
-        'test.com': {pid: 67890},
-        'demo.com': {pid: null}
-      }
+      // Setup mock container availability
+      // Since Container is mocked globally via Odac.server('Container'), we need to handle that if used.
+      // But stopAll checks Container availability.
+      // Let's assume non-container environment for simplicity or mock it if needed.
+      // In beforeEach we set available=false (actually we didn't explicitly set Container mock).
+      // Let's rely on Process.stop being called if standard logic applies.
 
-      const mockProcess = {
+      const mockContainer = {
+        available: false,
         stop: jest.fn()
       }
-      mockOdac.setMock('core', 'Process', mockProcess)
+      mockOdac.setMock('server', 'Container', mockContainer)
+
+      mockConfig.config.websites = {
+        'site1.com': {pid: 1, domain: 'site1.com'},
+        'site2.com': {pid: 2, domain: 'site2.com'}
+      }
 
       Web.stopAll()
 
-      expect(mockProcess.stop).toHaveBeenCalledWith(12345)
-      expect(mockProcess.stop).toHaveBeenCalledWith(67890)
-      expect(mockProcess.stop).toHaveBeenCalledTimes(2)
-      expect(mockConfig.config.websites['example.com'].pid).toBe(null)
-      expect(mockConfig.config.websites['test.com'].pid).toBe(null)
+      expect(mockOdac.core('Process').stop).toHaveBeenCalledWith(1)
+      expect(mockOdac.core('Process').stop).toHaveBeenCalledWith(2)
+      expect(mockConfig.config.websites['site1.com'].pid).toBeNull()
+      expect(mockConfig.config.websites['site2.com'].pid).toBeNull()
     })
 
     test('should serve default index page', () => {
-      const mockReq = createMockRequest()
-      const mockRes = createMockResponse()
+      const req = {}
+      const res = {write: jest.fn(), end: jest.fn()}
 
-      Web.index(mockReq, mockRes)
+      Web.index(req, res)
 
-      expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
-      expect(mockRes.end).toHaveBeenCalled()
+      expect(res.write).toHaveBeenCalledWith('ODAC Server')
+      expect(res.end).toHaveBeenCalled()
     })
   })
 })

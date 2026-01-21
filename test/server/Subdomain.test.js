@@ -123,11 +123,7 @@ describe('Subdomain', () => {
         const result = await Subdomain.create('api.v1.example.com')
 
         expect(result.success).toBe(true)
-        expect(mockDNS.record).toHaveBeenCalledWith(
-          {name: 'api.v1.example.com', type: 'A'},
-          {name: 'www.api.v1.example.com', type: 'CNAME'},
-          {name: 'api.v1.example.com', type: 'MX'}
-        )
+        expect(mockDNS.record).toHaveBeenCalledWith({name: 'api.v1.example.com', type: 'A'})
       })
     })
 
@@ -136,22 +132,14 @@ describe('Subdomain', () => {
         const result = await Subdomain.create('api.example.com')
 
         expect(result.success).toBe(true)
-        expect(mockDNS.record).toHaveBeenCalledWith(
-          {name: 'api.example.com', type: 'A'},
-          {name: 'www.api.example.com', type: 'CNAME'},
-          {name: 'api.example.com', type: 'MX'}
-        )
+        expect(mockDNS.record).toHaveBeenCalledWith({name: 'api.example.com', type: 'A'})
       })
 
       it('should create DNS records for complex subdomain names', async () => {
         const result = await Subdomain.create('staging.api.example.com')
 
         expect(result.success).toBe(true)
-        expect(mockDNS.record).toHaveBeenCalledWith(
-          {name: 'staging.api.example.com', type: 'A'},
-          {name: 'www.staging.api.example.com', type: 'CNAME'},
-          {name: 'staging.api.example.com', type: 'MX'}
-        )
+        expect(mockDNS.record).toHaveBeenCalledWith({name: 'staging.api.example.com', type: 'A'})
       })
     })
 
@@ -161,7 +149,6 @@ describe('Subdomain', () => {
 
         expect(result.success).toBe(true)
         expect(mockConfig.websites['example.com'].subdomain).toContain('api')
-        expect(mockConfig.websites['example.com'].subdomain).toContain('www.api')
       })
 
       it('should maintain sorted subdomain list', async () => {
@@ -182,15 +169,6 @@ describe('Subdomain', () => {
         const result2 = await Subdomain.create('api.example.com')
         expect(result2.success).toBe(false)
         expect(result2.data).toBe('Subdomain api.example.com already exists.')
-      })
-
-      it('should handle www prefix correctly when checking for existing subdomains', async () => {
-        // Create a subdomain
-        await Subdomain.create('api.example.com')
-
-        // Try to create www.api which should already exist
-        const result = await Subdomain.create('www.api.example.com')
-        expect(result.success).toBe(false)
       })
     })
 
@@ -233,8 +211,8 @@ describe('Subdomain', () => {
   describe('delete', () => {
     beforeEach(() => {
       // Add some existing subdomains for deletion tests
-      mockConfig.websites['example.com'].subdomain = ['www', 'api', 'www.api', 'blog', 'www.blog']
-      mockConfig.websites['test.org'].subdomain = ['www', 'mail', 'www.mail', 'admin', 'www.admin']
+      mockConfig.websites['example.com'].subdomain = ['www', 'api', 'blog']
+      mockConfig.websites['test.org'].subdomain = ['www', 'mail', 'admin']
     })
 
     describe('subdomain validation and error handling', () => {
@@ -274,11 +252,7 @@ describe('Subdomain', () => {
         const result = await Subdomain.delete('api.example.com')
 
         expect(result.success).toBe(true)
-        expect(mockDNS.delete).toHaveBeenCalledWith(
-          {name: 'api.example.com', type: 'A'},
-          {name: 'www.api.example.com', type: 'CNAME'},
-          {name: 'api.example.com', type: 'MX'}
-        )
+        expect(mockDNS.delete).toHaveBeenCalledWith({name: 'api.example.com', type: 'A'})
       })
 
       it('should delete DNS records for complex subdomain names', async () => {
@@ -288,11 +262,7 @@ describe('Subdomain', () => {
         const result = await Subdomain.delete('staging.api.example.com')
 
         expect(result.success).toBe(true)
-        expect(mockDNS.delete).toHaveBeenCalledWith(
-          {name: 'staging.api.example.com', type: 'A'},
-          {name: 'www.staging.api.example.com', type: 'CNAME'},
-          {name: 'staging.api.example.com', type: 'MX'}
-        )
+        expect(mockDNS.delete).toHaveBeenCalledWith({name: 'staging.api.example.com', type: 'A'})
       })
     })
 
@@ -302,7 +272,6 @@ describe('Subdomain', () => {
 
         expect(result.success).toBe(true)
         expect(mockConfig.websites['example.com'].subdomain).not.toContain('api')
-        expect(mockConfig.websites['example.com'].subdomain).not.toContain('www.api')
       })
 
       it('should preserve other subdomains when deleting one', async () => {
@@ -311,7 +280,6 @@ describe('Subdomain', () => {
         expect(result.success).toBe(true)
         expect(mockConfig.websites['example.com'].subdomain).toContain('www')
         expect(mockConfig.websites['example.com'].subdomain).toContain('blog')
-        expect(mockConfig.websites['example.com'].subdomain).toContain('www.blog')
       })
 
       it('should handle deletion of subdomain without www variant', async () => {
@@ -347,8 +315,8 @@ describe('Subdomain', () => {
   describe('list', () => {
     beforeEach(() => {
       // Set up test subdomains
-      mockConfig.websites['example.com'].subdomain = ['www', 'api', 'www.api', 'blog', 'www.blog']
-      mockConfig.websites['test.org'].subdomain = ['www', 'mail', 'www.mail']
+      mockConfig.websites['example.com'].subdomain = ['www', 'api', 'blog']
+      mockConfig.websites['test.org'].subdomain = ['www', 'mail']
     })
 
     describe('domain validation', () => {
@@ -368,9 +336,7 @@ describe('Subdomain', () => {
         expect(result.data).toContain('Subdomains of example.com:')
         expect(result.data).toContain('www.example.com')
         expect(result.data).toContain('api.example.com')
-        expect(result.data).toContain('www.api.example.com')
         expect(result.data).toContain('blog.example.com')
-        expect(result.data).toContain('www.blog.example.com')
       })
 
       it('should format subdomain list with proper indentation', async () => {
@@ -392,7 +358,6 @@ describe('Subdomain', () => {
         expect(result.data).toContain('Subdomains of test.org:')
         expect(result.data).toContain('www.test.org')
         expect(result.data).toContain('mail.test.org')
-        expect(result.data).toContain('www.mail.test.org')
       })
 
       it('should handle domains with no additional subdomains', async () => {

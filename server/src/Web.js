@@ -1,53 +1,37 @@
-const {log, error} = Odac.core('Log', false).init('Web')
+const noop = () => {}
+const {log, error} = typeof Odac !== 'undefined' && Odac.core ? Odac.core('Log', false).init('Web') : {log: noop, error: noop}
 
 const childProcess = require('child_process')
 const fs = require('fs')
-const http = require('http')
-const https = require('https')
-const http2 = require('http2')
 const net = require('net')
 const os = require('os')
 const path = require('path')
-const tls = require('tls')
+const axios = require('axios')
 
-const WebProxy = require('./Web/Proxy.js')
 const WebFirewall = require('./Web/Firewall.js')
-const WebSocketProxy = require('./Web/WebSocket.js')
 
 class Web {
   #active = {}
   #error_counts = {}
   #loaded = false
-  #log
-  #logs = {log: {}, err: {}}
-  #sslCache = new Map()
-  #ports = {}
-  #proxy
   #firewall
-  #server_http
-  #server_https
   #started = {}
   #watcher = {}
+  #logs = {log: {}, err: {}}
+  #ports = {}
+  #proxy
 
-  #wsProxy
+  #proxyProcess = null
+  #proxySocketPath = null
+  #proxyApiPort = null
 
   constructor() {
-    this.#log = log
-    this.#proxy = new WebProxy(this.#log)
     this.#firewall = new WebFirewall()
-    this.#wsProxy = new WebSocketProxy(this.#log)
   }
 
-  clearSSLCache(domain) {
-    if (domain) {
-      for (const key of this.#sslCache.keys()) {
-        if (key === domain || key.endsWith('.' + domain)) {
-          this.#sslCache.delete(key)
-        }
-      }
-    } else {
-      this.#sslCache.clear()
-    }
+  clearSSLCache() {
+    // Deprecated: SSL cache is now managed by Go Proxy
+    // We could implement an API call to clear Go cache if needed
   }
 
   check() {
@@ -61,7 +45,15 @@ class Web {
         this.start(domain)
       }
       if (this.#logs.log[domain]) {
-        fs.writeFile(os.homedir() + '/.odac/logs/' + domain + '.log', this.#logs.log[domain], function (err) {
+        const logDir = path.join(os.homedir(), '.odac', 'logs')
+        if (!fs.existsSync(logDir)) {
+          try {
+            fs.mkdirSync(logDir, {recursive: true})
+          } catch (e) {
+            log(e)
+          }
+        }
+        fs.writeFile(path.join(logDir, domain + '.log'), this.#logs.log[domain], function (err) {
           if (err) log(err)
         })
       }
@@ -77,6 +69,9 @@ class Web {
   checkPort(port) {
     return new Promise(resolve => {
       const server = net.createServer()
+      server.on('connection', socket => {
+        socket.on('error', () => {})
+      })
       server.once('error', () => resolve(false))
       server.once('listening', () => {
         server.close()
@@ -86,7 +81,7 @@ class Web {
     })
   }
 
-  create(domain, progress) {
+  async create(domain, progress) {
     let web = {}
     for (const iterator of ['http://', 'https://', 'ftp://', 'www.']) {
       if (domain.startsWith(iterator)) domain = domain.replace(iterator, '')
@@ -122,25 +117,80 @@ class Web {
     }
     progress('directory', 'progress', __('Setting up website files for %s...', domain))
 
-    childProcess.execSync('npm link odac', {cwd: web.path})
-    if (fs.existsSync(web.path + '/node_modules/.bin')) fs.rmSync(web.path + '/node_modules/.bin', {recursive: true})
-    if (!fs.existsSync(web.path + '/node_modules')) fs.mkdirSync(web.path + '/node_modules')
+    if (Odac.server('Container').available) {
+      // Create package.json manually for Docker environment
+      const packageJson = {
+        name: domain.replace(/\./g, '-'),
+        version: '1.0.0',
+        description: '',
+        main: 'index.js',
+        scripts: {
+          test: 'echo "Error: no test specified" && exit 1'
+        },
+        keywords: [],
+        author: '',
+        license: 'ISC',
+        dependencies: {
+          odac: 'latest'
+        }
+      }
+      fs.writeFileSync(path.join(web.path, 'package.json'), JSON.stringify(packageJson, null, 2))
 
-    // Copy web template files
-    fs.cpSync(__dirname + '/../../web/', web.path, {recursive: true})
+      progress('directory', 'success', __('Website files for %s set.', domain))
 
-    // Process package.json template after copying
-    const packageJsonPath = path.join(web.path, 'package.json')
-    if (fs.existsSync(packageJsonPath)) {
-      let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
+      // Start the container immediately
+      progress('container', 'progress', __('Starting container for %s...', domain))
+      await this.start(domain)
 
-      // Replace template variables
-      packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
+      // Wait for odac to be installed (poll for binary existence)
+      // npm install runs at container startup, we need to wait for it to finish
+      progress('setup', 'progress', __('Waiting for dependencies installation...'))
+      let installed = false
+      for (let i = 0; i < 60; i++) {
+        // Max 120 seconds
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        try {
+          // Check if odac bin exists by trying to get version
+          await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac --version')
+          installed = true
+          break
+        } catch {
+          // Ignore error, probably not installed yet or container not ready
+        }
+      }
 
-      fs.writeFileSync(packageJsonPath, packageTemplate)
+      if (installed) {
+        progress('setup', 'progress', __('Running initial setup for %s...', domain))
+        await Odac.server('Container').execInContainer(domain, './node_modules/.bin/odac init')
+        progress('setup', 'success', __('Initial setup completed.'))
+      } else {
+        progress('setup', 'error', __('Dependency installation timed out. Please check container logs.'))
+      }
+    } else {
+      // Run directly on host
+      childProcess.execSync('npm init -y', {cwd: web.path})
+      childProcess.execSync('npm i odac', {cwd: web.path})
+      childProcess.execSync('./node_modules/.bin/odac init', {cwd: web.path})
+
+      // Process package.json template after copying
+      const packageJsonPath = path.join(web.path, 'package.json')
+      try {
+        let packageTemplate = fs.readFileSync(packageJsonPath, 'utf8')
+
+        // Replace template variables
+        packageTemplate = packageTemplate.replace(/\{\{domain\}\}/g, domain.replace(/\./g, '-')).replace(/\{\{domain_original\}\}/g, domain)
+
+        fs.writeFileSync(packageJsonPath, packageTemplate)
+      } catch (err) {
+        // Prepare package.json if it doesn't exist or ignore read errors
+        if (err.code === 'ENOENT') {
+          // Optional: handle missing file if critical, or just ignore as before
+        }
+      }
+      progress('directory', 'success', __('Website files for %s set.', domain))
     }
-    progress('directory', 'success', __('Website files for %s set.', domain))
-    return Odac.server('Api').result(true, __('Website %s1 created at %s2.', web.domain, web.path))
+
+    return Odac.server('Api').result(true, __('Website %s created at %s.', web.domain, web.path))
   }
 
   async delete(domain) {
@@ -151,7 +201,12 @@ class Web {
 
     // Stop process if running
     if (website.pid) {
-      Odac.core('Process').stop(website.pid)
+      if (Odac.server('Container').available) {
+        await Odac.server('Container').remove(domain)
+      } else {
+        Odac.core('Process').stop(website.pid)
+      }
+
       delete this.#watcher[website.pid]
       if (website.port) {
         delete this.#ports[website.port]
@@ -165,11 +220,12 @@ class Web {
     delete this.#active[domain]
     delete this.#started[domain]
 
+    this.syncConfig()
     return Odac.server('Api').result(true, __('Website %s deleted.', domain))
   }
 
   index(req, res) {
-    res.write('Odac Server')
+    res.write('ODAC Server')
     res.end()
   }
 
@@ -187,6 +243,9 @@ class Web {
         Odac.core('Config').config.web.path = '/var/odac/'
       }
     }
+
+    // Start Go Proxy with a slight delay to ensure config loads or immediate
+    // this.spawnProxy() -> Moved to start()
   }
 
   async list() {
@@ -252,135 +311,193 @@ class Web {
     }
   }
 
-  server() {
-    if (!this.#loaded) return setTimeout(() => this.server(), 1000)
-    if (Object.keys(Odac.core('Config').config.websites ?? {}).length == 0) return
+  spawnProxy() {
+    const isWindows = os.platform() === 'win32'
+    const proxyName = isWindows ? 'odac-proxy.exe' : 'odac-proxy'
+    const binPath = path.resolve(__dirname, '../../bin', proxyName)
+    const runDir = path.join(os.homedir(), '.odac', 'run')
+    const logDir = path.join(os.homedir(), '.odac', 'logs')
 
-    if (!this.#server_http) {
-      this.#server_http = http.createServer((req, res) => this.request(req, res, false))
-      this.#server_http.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head, false))
-      this.#server_http.on('error', err => {
-        log(`HTTP server error: ${err.message}`)
-        if (err.code === 'EADDRINUSE') {
-          log('Port 80 is already in use')
-        }
-      })
-      this.#server_http.listen(80)
+    if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
+
+    const pidFile = path.join(runDir, 'proxy.pid')
+    const logFile = path.join(logDir, 'proxy.log')
+
+    // Set fixed socket path
+    if (!isWindows) {
+      this.#proxySocketPath = path.join(runDir, 'proxy.sock')
     }
 
-    let ssl = Odac.core('Config').config.ssl ?? {}
-    if (!this.#server_https && ssl && ssl.key && ssl.cert && fs.existsSync(ssl.key) && fs.existsSync(ssl.cert)) {
-      const useHttp2 = Odac.core('Config').config.http2 !== false
+    // 1. Try to adopt existing process
+    // 1. Try to adopt existing process
+    // We try to read directly to avoid TOCTOU race condition (checking existence then reading)
+    try {
+      const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
+      // Check if running
+      process.kill(pid, 0)
 
-      const serverOptions = {
-        SNICallback: (hostname, callback) => {
+      log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
+
+      // Create a fake process object to manage it
+      this.#proxyProcess = {
+        pid,
+        kill: () => {
           try {
-            const cached = this.#sslCache.get(hostname)
-            if (cached) return callback(null, cached)
-
-            let sslOptions
-            while (!Odac.core('Config').config.websites[hostname] && hostname.includes('.'))
-              hostname = hostname.split('.').slice(1).join('.')
-            let website = Odac.core('Config').config.websites[hostname]
-            if (
-              website &&
-              website.cert &&
-              website.cert.ssl &&
-              website.cert.ssl.key &&
-              website.cert.ssl.cert &&
-              fs.existsSync(website.cert.ssl.key) &&
-              fs.existsSync(website.cert.ssl.cert)
-            ) {
-              sslOptions = {
-                key: fs.readFileSync(website.cert.ssl.key),
-                cert: fs.readFileSync(website.cert.ssl.cert)
-              }
-            } else {
-              sslOptions = {
-                key: fs.readFileSync(ssl.key),
-                cert: fs.readFileSync(ssl.cert)
-              }
-            }
-            const ctx = tls.createSecureContext(sslOptions)
-            this.#sslCache.set(hostname, ctx)
-            callback(null, ctx)
-          } catch (err) {
-            log(`SSL certificate error for ${hostname}: ${err.message}`)
-            callback(err)
+            process.kill(pid)
+          } catch {
+            /* ignore */
           }
-        },
-        key: fs.readFileSync(ssl.key),
-        cert: fs.readFileSync(ssl.cert),
-        sessionTimeout: 300,
-        ciphers:
-          'TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:' +
-          'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:' +
-          'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:' +
-          'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305',
-        honorCipherOrder: true
+        }
       }
 
-      if (useHttp2) {
-        serverOptions.allowHTTP1 = true
-        this.#server_https = http2.createSecureServer(serverOptions, (req, res) => {
-          this.request(req, res, true)
-        })
-        log('HTTPS server starting with HTTP/2 support enabled')
-      } else {
-        this.#server_https = https.createServer(serverOptions, (req, res) => {
-          this.request(req, res, true)
-        })
-        log('HTTPS server starting with HTTP/1.1 only')
+      // Sync config immediately
+      this.syncConfig()
+      return
+    } catch (err) {
+      // Logic for when we fail to adopt the process
+      if (err.code !== 'ENOENT') {
+        // If error is NOT "File not found", it means file exists but maybe corrupt or process dead
+        log(`Orphaned proxy PID file issue. Cleaning up.`)
+        try {
+          fs.unlinkSync(pidFile)
+        } catch {
+          /* ignore */
+        }
+      }
+      // If err.code IS 'ENOENT', it simply means no PID file exists, so we proceed to start a new one.
+    }
+
+    if (!fs.existsSync(binPath)) {
+      error(`Go proxy binary not found at ${binPath}. Please run 'go build -o bin/${proxyName} ./server/proxy'`)
+      return
+    }
+
+    // 2. Start new Proxy
+    let env = {...process.env}
+
+    if (!isWindows) {
+      env.ODAC_SOCKET_PATH = this.#proxySocketPath
+      log(`Starting Go Proxy (Socket: ${this.#proxySocketPath})...`)
+    } else {
+      log(`Starting Go Proxy (TCP Mode)...`)
+    }
+
+    try {
+      const logFd = fs.openSync(logFile, 'a')
+
+      this.#proxyProcess = childProcess.spawn(binPath, [], {
+        detached: true, // Allow running after parent exit
+        stdio: ['ignore', logFd, logFd], // Redirect logs to file
+        env: env
+      })
+
+      this.#proxyProcess.unref() // Don't prevent Node from exiting
+
+      if (this.#proxyProcess.pid) {
+        try {
+          // Use 'wx' flag to ensure we don't overwrite a PID file created by a concurrent process
+          // This resolves the TOCTOU (Time-of-check to time-of-use) race condition
+          fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString(), {flag: 'wx'})
+          log(`Go Proxy started with PID ${this.#proxyProcess.pid}`)
+        } catch (err) {
+          if (err.code === 'EEXIST') {
+            error(`Race condition detected: PID file ${pidFile} already exists. Stopping redundant proxy instance.`)
+            // Kill the process we just spawned as it is a duplicate/redundant
+            this.#proxyProcess.kill()
+            this.#proxyProcess = null
+            return
+          }
+          throw err
+        }
       }
 
-      this.#server_https.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head, true))
-      this.#server_https.on('error', err => {
-        log(`HTTPS server error: ${err.message}`)
-        if (err.code === 'EADDRINUSE') {
-          log('Port 443 is already in use')
+      this.#proxyProcess.on('exit', code => {
+        error(`Go Proxy exited with code ${code}`)
+        this.#proxyProcess = null
+        try {
+          fs.unlinkSync(pidFile)
+        } catch {
+          /* ignore */
         }
       })
 
-      this.#server_https.listen(443)
+      // Give it a moment to start
+      setTimeout(() => this.syncConfig(), 1000)
+    } catch (err) {
+      error(`Failed to spawn Go Proxy: ${err.message}`)
     }
   }
 
-  #handleUpgrade(req, socket, head, secure) {
-    let host = req.headers.host
-    if (!host) {
-      socket.destroy()
+  async syncConfig() {
+    if (typeof Odac === 'undefined') return
+    if (!this.#proxyProcess) return
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return
+
+    // Ensure socket exists before sending
+    if (this.#proxySocketPath && !fs.existsSync(this.#proxySocketPath)) {
+      // Socket not ready yet
       return
     }
 
-    if (host.includes(':')) {
-      host = host.split(':')[0]
+    const config = {
+      websites: Odac.core('Config').config.websites || {},
+      firewall: Odac.core('Config').config.firewall || {enabled: true},
+      ssl: Odac.core('Config').config.ssl || null
     }
 
-    let matchedHost = host
-    while (!Odac.core('Config').config.websites[matchedHost] && matchedHost.includes('.')) {
-      matchedHost = matchedHost.split('.').slice(1).join('.')
+    try {
+      if (this.#proxySocketPath) {
+        // Unix Socket Request
+        await axios.post('http://localhost/config', config, {
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        // TCP Request
+        await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/config`, config)
+      }
+    } catch (e) {
+      error(`Failed to sync config to proxy: ${e.message}`)
     }
-
-    const website = Odac.core('Config').config.websites[matchedHost]
-    if (!website || !website.pid || !this.#watcher[website.pid]) {
-      socket.destroy()
-      return
-    }
-
-    if (!secure) {
-      socket.write('HTTP/1.1 301 Moved Permanently\r\nLocation: wss://' + host + req.url + '\r\n\r\n')
-      socket.destroy()
-      return
-    }
-
-    this.#wsProxy.upgrade(req, socket, head, website, host)
   }
+
+  server() {
+    // Legacy server method replaced by Go Proxy
+    // Only kept if called by check() repeatedly
+    if (!this.#proxyProcess) this.spawnProxy()
+  }
+
+  // Removed #handleUpgrade as it is handled by Go Proxy
 
   set(domain, data) {
     Odac.core('Config').config.websites[domain] = data
   }
 
-  async start(domain) {
+  start(domain) {
+    // If domain provided, start specific site container/process
+    if (domain) return this.#startSite(domain)
+
+    // Otherwise start the main Web Proxy service
+    this.spawnProxy()
+  }
+
+  stop() {
+    if (this.#proxyProcess) {
+      this.#proxyProcess.kill() // SIGTERM
+      this.#proxyProcess = null
+      this.#proxyApiPort = null
+      if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+        try {
+          fs.unlinkSync(this.#proxySocketPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  async #startSite(domain) {
     if (this.#active[domain] || !this.#loaded) return
     this.#active[domain] = true
     if (!Odac.core('Config').config.websites[domain]) return (this.#active[domain] = false)
@@ -410,65 +527,219 @@ class Web {
     } while (using)
     Odac.core('Config').config.websites[domain].port = port
     this.#ports[port] = true
-    var child = childProcess.spawn('odac', ['framework', 'run', port], {
-      cwd: Odac.core('Config').config.websites[domain].path
-    })
-    let pid = child.pid
-    log('Web server started for ' + domain + ' with PID ' + pid)
-    child.stdout.on('data', data => {
-      if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
-      this.#logs.log[domain] +=
-        '[LOG][' +
-        Date.now() +
-        '] ' +
-        data
-          .toString()
-          .trim()
-          .split('\n')
-          .join('\n[LOG][' + Date.now() + '] ') +
-        '\n'
-      if (this.#logs.log[domain].length > 100000)
-        this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
-      if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
-        Odac.core('Config').config.websites[domain].status = 'running'
-    })
-    child.stderr.on('data', data => {
-      if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
-      this.#logs.log[domain] +=
-        '[ERR][' +
-        Date.now() +
-        '] ' +
-        data
-          .toString()
-          .trim()
-          .split('\n')
-          .join('\n[ERR][' + Date.now() + '] ') +
-        '\n'
-      this.#logs.err[domain] += data.toString()
-      if (this.#logs.err[domain].length > 100000)
-        this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
-      if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
-    })
-    child.on('exit', () => {
-      error('Child process exited for ' + domain)
-      if (!Odac.core('Config').config.websites[domain]) return
-      Odac.core('Config').config.websites[domain].pid = null
-      Odac.core('Config').config.websites[domain].updated = Date.now()
-      if (Odac.core('Config').config.websites[domain].status == 'errored') {
-        Odac.core('Config').config.websites[domain].status = 'errored'
-        this.#error_counts[domain] = this.#error_counts[domain] ?? 0
-        this.#error_counts[domain]++
-      } else Odac.core('Config').config.websites[domain].status = 'stopped'
-      this.#watcher[pid] = false
-      delete this.#ports[Odac.core('Config').config.websites[domain].port]
-      this.#active[domain] = false
-    })
+
+    let child
+    let isDocker = false
+
+    if (Odac.server('Container').available) {
+      const isRunning = await Odac.server('Container').isRunning(domain)
+      let success = false
+
+      if (isRunning) {
+        log(`Container for ${domain} is already running. Attaching logs...`)
+        success = true
+        isDocker = true
+      } else {
+        // Run via Docker
+        const extraBinds = Odac.core('Config').config.websites[domain].volumes || []
+        const env = {
+          ODAC_API_HOST: 'host.docker.internal',
+          ODAC_API_PORT: 1453,
+          ODAC_API_KEY: Odac.core('Config').config.api.auth,
+          ODAC_API_SOCKET: '/run/odac/api.sock',
+          ODAC_HOST: '0.0.0.0'
+        }
+        success = await Odac.server('Container').run(domain, port, Odac.core('Config').config.websites[domain].path, extraBinds, {
+          env
+        })
+        if (success) isDocker = true
+      }
+
+      if (success) {
+        child = await Odac.server('Container').logs(domain)
+
+        // Whitelist container IP for API access
+        const containerIP = await Odac.server('Container').getIP(domain)
+        Odac.core('Config').config.websites[domain].container = domain
+        if (containerIP) {
+          Odac.server('Api').allow(containerIP)
+          Odac.core('Config').config.websites[domain].containerIP = containerIP
+          log(`Whitelisted API access for ${domain} (${containerIP})`)
+        }
+
+        log('Web container started for ' + domain)
+      } else {
+        error('Failed to start container for ' + domain)
+        return
+      }
+    } else {
+      // Run Local
+      const websitePath = Odac.core('Config').config.websites[domain].path
+      try {
+        const packageJsonPath = path.join(websitePath, 'package.json')
+        if (fs.existsSync(packageJsonPath)) {
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+          if (pkg.scripts && pkg.scripts.build) {
+            log('Building website ' + domain + '...')
+            await new Promise((resolve, reject) => {
+              const buildChild = childProcess.spawn('npm', ['run', 'build'], {
+                cwd: websitePath,
+                stdio: 'ignore'
+              })
+              buildChild.on('close', code => {
+                if (code === 0) resolve()
+                else reject(new Error('Build failed with code ' + code))
+              })
+              buildChild.on('error', err => reject(err))
+            })
+          }
+        }
+      } catch (e) {
+        error('Failed to build website ' + domain + ': ' + e.message)
+      }
+
+      let startCommand = 'odac'
+      let startArgs = ['framework', 'run', port]
+
+      try {
+        const packageJsonPath = path.join(websitePath, 'package.json')
+        if (fs.existsSync(packageJsonPath)) {
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+          if (pkg.scripts && pkg.scripts.start) {
+            log('Starting website ' + domain + ' using npm run start...')
+            startCommand = 'npm'
+            startArgs = ['run', 'start', '--', port]
+          }
+        }
+      } catch {
+        // Ignore JSON errors or read errors, fallback to default
+      }
+
+      child = childProcess.spawn(startCommand, startArgs, {
+        cwd: websitePath
+      })
+      log('Web server started for ' + domain + ' with PID ' + child.pid)
+    }
+
+    // Dockerode returns a stream that doesn't have a pid property (it is undefined)
+    // We use a dummy PID for internal tracking if check fails
+    let pid = child.pid || domain
+
+    // Dockerode streams handling
+    if (isDocker && child) {
+      const stdoutStream = new (require('stream').PassThrough)()
+      const stderrStream = new (require('stream').PassThrough)()
+
+      Odac.server('Container').docker.modem.demuxStream(child, stdoutStream, stderrStream)
+
+      stdoutStream.on('data', data => {
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+        this.#logs.log[domain] += '[LOG][' + Date.now() + '] ' + data.toString().trim() + '\n'
+        if (this.#logs.log[domain].length > 100000)
+          this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
+          Odac.core('Config').config.websites[domain].status = 'running'
+      })
+
+      stderrStream.on('data', data => {
+        if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+
+        this.#logs.log[domain] +=
+          '[ERR][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[ERR][' + Date.now() + '] ') +
+          '\n'
+
+        this.#logs.err[domain] += data.toString()
+        if (this.#logs.err[domain].length > 100000)
+          this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
+      })
+
+      child.on('end', () => {
+        // Handle exit
+        child.emit('exit')
+      })
+    } else if (child) {
+      // Child Process standard handling
+      child.stdout.on('data', data => {
+        if (!this.#logs.log[domain]) this.#logs.log[domain] = ''
+        this.#logs.log[domain] +=
+          '[LOG][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[LOG][' + Date.now() + '] ') +
+          '\n'
+        if (this.#logs.log[domain].length > 100000)
+          this.#logs.log[domain] = this.#logs.log[domain].substr(this.#logs.log[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain] && Odac.core('Config').config.websites[domain].status == 'errored')
+          Odac.core('Config').config.websites[domain].status = 'running'
+      })
+      child.stderr.on('data', data => {
+        if (!this.#logs.err[domain]) this.#logs.err[domain] = ''
+        this.#logs.log[domain] +=
+          '[ERR][' +
+          Date.now() +
+          '] ' +
+          data
+            .toString()
+            .trim()
+            .split('\n')
+            .join('\n[ERR][' + Date.now() + '] ') +
+          '\n'
+        this.#logs.err[domain] += data.toString()
+        if (this.#logs.err[domain].length > 100000)
+          this.#logs.err[domain] = this.#logs.err[domain].substr(this.#logs.err[domain].length - 1000000)
+        if (Odac.core('Config').config.websites[domain]) Odac.core('Config').config.websites[domain].status = 'errored'
+      })
+    }
+
+    if (child) {
+      child.on('exit', () => {
+        error((isDocker ? 'Container log stream' : 'Child process') + ' exited for ' + domain)
+
+        if (isDocker) {
+          // If the log stream ended, the container likely stopped or crashed
+          Odac.server('Container').stop(domain)
+        }
+
+        if (!Odac.core('Config').config.websites[domain]) return
+        Odac.core('Config').config.websites[domain].pid = null
+        Odac.core('Config').config.websites[domain].updated = Date.now()
+        if (Odac.core('Config').config.websites[domain].status == 'errored') {
+          Odac.core('Config').config.websites[domain].status = 'errored'
+          this.#error_counts[domain] = this.#error_counts[domain] ?? 0
+          this.#error_counts[domain]++
+        } else Odac.core('Config').config.websites[domain].status = 'stopped'
+        this.#watcher[pid] = false
+        delete this.#ports[Odac.core('Config').config.websites[domain].port]
+
+        // Cleanup whitelisted IP
+        if (Odac.core('Config').config.websites[domain].containerIP) {
+          Odac.server('Api').disallow(Odac.core('Config').config.websites[domain].containerIP)
+          delete Odac.core('Config').config.websites[domain].containerIP
+        }
+
+        this.#active[domain] = false
+      })
+    }
 
     Odac.core('Config').config.websites[domain].pid = pid
     Odac.core('Config').config.websites[domain].started = Date.now()
     Odac.core('Config').config.websites[domain].status = 'running'
     this.#watcher[pid] = true
     this.#started[domain] = Date.now()
+    this.syncConfig()
   }
 
   async status() {
@@ -480,11 +751,24 @@ class Web {
     for (const domain of Object.keys(Odac.core('Config').config.websites ?? {})) {
       let website = Odac.core('Config').config.websites[domain]
       if (website.pid) {
-        Odac.core('Process').stop(website.pid)
+        if (Odac.server('Container').available) {
+          Odac.server('Container').stop(domain)
+        } else {
+          Odac.core('Process').stop(website.pid)
+        }
         website.pid = null
         this.set(domain, website)
       }
     }
+    this.syncConfig()
+  }
+
+  // Test helper
+  reset() {
+    this.#proxyProcess = null
+    this.#proxySocketPath = null
+    this.#proxyApiPort = null
+    if (this.#firewall && this.#firewall.reset) this.#firewall.reset()
   }
 }
 

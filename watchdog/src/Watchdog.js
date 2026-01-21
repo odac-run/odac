@@ -128,6 +128,12 @@ class Watchdog {
     })
 
     child.on('close', code => {
+      // If server exited intentionally (code 0), shutdown watchdog too
+      if (code === 0) {
+        console.log('Server process exited normally (code 0). Watchdog shutting down.')
+        return process.exit(0)
+      }
+
       Odac.core('Config').reload()
       this.#errorBuffer += `[ERR][${new Date().toISOString()}] Process closed with code ${code}\n`
 

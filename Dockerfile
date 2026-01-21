@@ -1,4 +1,15 @@
-FROM node:22-alpine AS builder
+# Stage 0: Build Go Proxy
+FROM golang:1.24-alpine AS go-builder
+WORKDIR /build
+# Copy Go source
+COPY server/proxy ./server/proxy
+# Build static binary
+# -ldflags="-s -w" reduces binary size by stripping debug symbols
+RUN cd server/proxy && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-proxy
+
+# Stage 1: Build Node.js Native Dependencies
+FROM node:22-alpine AS node-builder
 
 LABEL maintainer="emre.red <mail@emre.red>"
 LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
@@ -17,22 +28,23 @@ COPY package*.json ./
 # Install all dependencies (including devDependencies for native builds)
 RUN npm ci
 
-# Copy application files
-COPY . .
+# Copy application files (Optional: if you need to build frontend assets later, copy . here)
+# COPY . .
 
-# Production stage
+# Stage 2: Production Image
 FROM node:22-alpine
 
 LABEL maintainer="emre.red <mail@emre.red>"
 LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
 
-# Install only runtime dependencies
+# Install runtime dependencies
 RUN apk add --no-cache \
     docker-cli \
     docker-compose \
     sqlite \
     bash \
-    curl
+    curl \
+    ca-certificates
 
 WORKDIR /app
 
@@ -42,9 +54,16 @@ COPY package*.json ./
 # Install production dependencies only
 RUN npm ci --omit=dev
 
-# Copy application files from builder
-COPY --from=builder /app/node_modules ./node_modules
+# Copy Node.js modules from builder
+COPY --from=node-builder /app/node_modules ./node_modules
+
+# Copy Go Proxy binary from go-builder
+COPY --from=go-builder /build/odac-proxy ./bin/odac-proxy
+
+# Copy application source code
 COPY . .
+# Ensure binary is executable
+RUN chmod +x ./bin/odac-proxy
 
 # Create necessary directories
 RUN mkdir -p /app/storage /app/sites

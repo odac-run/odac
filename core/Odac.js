@@ -3,6 +3,28 @@ class Odac {
   constructor() {
     this._registry = new Map()
     this._singletons = new Map()
+    process.stdout.on('error', err => {
+      if (err.code === 'EPIPE') return
+      throw err
+    })
+    process.stderr.on('error', err => {
+      if (err.code === 'EPIPE') return
+      throw err
+    })
+
+    process.on('uncaughtException', err => {
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE') {
+        // Ignore network reset errors to prevent server crash
+        // These can happen when a TLS stream is closed abruptly
+        if (process.env.ODAC_DEBUG) {
+          console.error(`[Ignored] Uncaught network error: ${err.code}`, err)
+        }
+        return
+      }
+
+      console.error('Uncaught Exception:', err)
+      process.exit(1)
+    })
   }
 
   #instantiate(value) {
