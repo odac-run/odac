@@ -68,6 +68,17 @@ class Mail {
     return true
   }
 
+  /**
+   * Validates an email address format.
+   * Includes support for '=', used in some specific routing/encoding schemes.
+   * @param {string} email
+   * @returns {boolean}
+   */
+  #isValidEmail(email) {
+    if (!email) return false
+    return email.match(/^[a-zA-Z0-9._%+\-=]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)
+  }
+
   check() {
     if (this.#checking) return
     if (!this.#started) this.init()
@@ -90,8 +101,7 @@ class Mail {
         resolve(hash)
       })
     })
-    if (!email.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/))
-      return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (await this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s already exists.', email))
     let domain = email.split('@')[1]
     if (!Odac.core('Config').config.websites[domain]) {
@@ -114,8 +124,7 @@ class Mail {
 
   async delete(email) {
     if (!email) return Odac.server('Api').result(false, await __('Email address is required.'))
-    if (!email.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/))
-      return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (!(await this.exists(email))) return Odac.server('Api').result(false, await __('Mail account %s not found.', email))
     this.#db.serialize(() => {
       let stmt = this.#db.prepare('DELETE FROM mail_account WHERE email = ?')
@@ -232,7 +241,7 @@ class Mail {
       onAuth(auth, session, callback) {
         let ip = session.remoteAddress
         // Basic format check
-        if (!auth.username.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+        if (!self.#isValidEmail(auth.username)) {
           self.#handleFailedAuth(ip)
           return callback(new Error('Invalid username or password'))
         }
@@ -290,7 +299,7 @@ class Mail {
             error('Missing recipient address')
             return callback(new Error('Invalid recipient'))
           }
-          if (!parsed.to.value[0].address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+          if (!self.#isValidEmail(parsed.to.value[0].address)) {
             error('Invalid recipient:', parsed.to.value[0].address)
             return callback(new Error('Invalid recipient'))
           }
@@ -298,7 +307,7 @@ class Mail {
             error('Missing sender address')
             return callback(new Error('Invalid sender'))
           }
-          if (!parsed.from.value[0].address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+          if (!self.#isValidEmail(parsed.from.value[0].address)) {
             error('Invalid sender:', parsed.from.value[0].address)
             return callback(new Error('Invalid sender'))
           }
@@ -394,11 +403,11 @@ class Mail {
         })
       },
       onMailFrom(address, session, callback) {
-        if (!address.address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) return callback(new Error('Invalid email address'))
+        if (!self.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
         return callback()
       },
       onRcptTo(address, session, callback) {
-        if (!address.address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) return callback(new Error('Invalid email address'))
+        if (!self.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
         return callback()
       },
       onSelect(data, session, callback) {
@@ -589,8 +598,7 @@ class Mail {
         resolve(hash)
       })
     })
-    if (!email.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/))
-      return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (!this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s not found.', email))
     this.#db.serialize(() => {
       let stmt = this.#db.prepare('UPDATE mail_account SET password = ? WHERE email = ?')
@@ -602,10 +610,8 @@ class Mail {
 
   async send(data) {
     if (!data || !data.from || !data.to || !data.header) return Odac.server('Api').result(false, await __('All fields are required.'))
-    if (!data.from.value[0].address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/))
-      return Odac.server('Api').result(false, await __('Invalid email address.'))
-    if (!data.to.value[0].address.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/))
-      return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!this.#isValidEmail(data.from.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!this.#isValidEmail(data.to.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     let domain = data.from.value[0].address.split('@')[1].split('.')
     while (domain.length > 2 && !Odac.core('Config').config.websites[domain.join('.')]) domain.shift()
     domain = domain.join('.')
