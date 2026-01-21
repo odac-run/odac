@@ -58,6 +58,8 @@ class Config {
               max: 300
             }
           }
+        } else if (key === 'apps') {
+          config[key] = []
         } else {
           config[key] = {}
         }
