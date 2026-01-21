@@ -39,8 +39,9 @@ class Watchdog {
     try {
       // Ensure log directory exists before attempting to write files
       await fs.mkdir(LOG_DIR, {recursive: true})
-      const logFile = path.join(LOG_DIR, '.odac.log')
-      const errFile = path.join(LOG_DIR, '.odac_err.log')
+      const logName = process.env.ODAC_LOG_NAME || '.odac'
+      const logFile = path.join(LOG_DIR, `${logName}.log`)
+      const errFile = path.join(LOG_DIR, `${logName}_err.log`)
 
       // Limit log buffer to last 1000 lines
       const logLines = this.#logBuffer.split('\n')
@@ -119,7 +120,12 @@ class Watchdog {
     console.log(`Server process started with PID: ${child.pid}`)
 
     child.stdout.on('data', data => {
-      this.#logBuffer += `[LOG][${new Date().toISOString()}] ${data.toString()}`
+      const str = data.toString()
+      if (str.includes('ODAC_CMD:SWITCH_LOGS')) {
+        console.log('Watchdog: Switching to standard logs (.odac.log)...')
+        process.env.ODAC_LOG_NAME = '.odac'
+      }
+      this.#logBuffer += `[LOG][${new Date().toISOString()}] ${str}`
     })
 
     child.stderr.on('data', data => {

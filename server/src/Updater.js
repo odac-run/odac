@@ -44,6 +44,10 @@ class Updater {
     }
 
     // Normal startup (not updating or failed update check)
+    // If we are starting up and have an update log name (e.g. after a restart), switch to standard logs
+    if (process.env.ODAC_LOG_NAME && process.env.ODAC_LOG_NAME.includes('odac-update')) {
+      console.log('ODAC_CMD:SWITCH_LOGS')
+    }
     this.#triggerReady()
   }
 
@@ -140,6 +144,25 @@ class Updater {
   async execute() {
     log('Launching update process...')
 
+    // Clean up previous update logs to avoid confusion
+    try {
+      const fs = require('fs')
+      const path = require('path')
+      const os = require('os')
+      const logDir = path.join(os.homedir(), '.odac', 'logs')
+      const files = [`.${UPDATE_CONTAINER_NAME}.log`, `.${UPDATE_CONTAINER_NAME}_err.log`]
+
+      for (const f of files) {
+        const p = path.join(logDir, f)
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p)
+          log('Removed old log file: %s', f)
+        }
+      }
+    } catch (e) {
+      log('Warning: Could not clean old logs: %s', e.message)
+    }
+
     try {
       // 1. Get current container info
       const containerId = CONTAINER_NAME
@@ -180,6 +203,8 @@ class Updater {
 
         createOptions.Env.push('ODAC_UPDATE_MODE=true')
         createOptions.Env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
+        // Use separate log file for update process
+        createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
 
         createOptions.HostConfig.NetworkMode = 'host'
         createOptions.HostConfig.PidMode = 'host'
@@ -266,6 +291,9 @@ class Updater {
           if (!handoverCompleted) {
             log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
             try {
+              // Fetch logs from the failed container before removing it
+              await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
+
               // 1. Remove the failed new container
               // The new container might have failed before OR after taking the 'odac' name.
               // We must try to clean it up using both potential names to be safe.
@@ -454,6 +482,8 @@ class Updater {
         } else if (message === 'HANDOVER_COMPLETE') {
           clearTimeout(timeout)
           log('Update completed successfully.')
+          // Signal Watchdog to switch to standard logs
+          console.log('ODAC_CMD:SWITCH_LOGS')
           socket.end()
           try {
             require('fs').unlinkSync(socketPath)
@@ -483,6 +513,50 @@ class Updater {
     } catch (e) {
       log('Could not get local image ID: %s', e.message)
       return null
+    }
+  }
+
+  async #fetchContainerLogs(name) {
+    const fs = require('fs')
+    const tempFile = `/tmp/${name}-crash.log`
+
+    try {
+      // 1. Try to copy internal log file
+      // We use docker cp because the log file is inside the container's filesystem
+      // and might contain details not printed to stdout
+      const logFileName = name === UPDATE_CONTAINER_NAME ? `.${name}.log` : '.odac.log'
+
+      await execAsync(`docker cp ${name}:/app/storage/.odac/logs/${logFileName} ${tempFile}`)
+
+      if (fs.existsSync(tempFile)) {
+        const content = fs.readFileSync(tempFile, 'utf8')
+        // Get last 100 lines
+        const lines = content.split('\n') // This might be memory heavy if file is huge, but usually fine for logs
+        const lastLines = lines.slice(-100).join('\n')
+
+        log(`--- INTERNAL LOGS FOR ${name} ---`)
+        log(lastLines)
+        log('-----------------------------------')
+
+        try {
+          fs.unlinkSync(tempFile)
+        } catch {
+          /* Ignore */
+        }
+      }
+    } catch (e) {
+      log('Could not fetch internal logs via cp: %s. Trying standard logs...', e.message)
+
+      // 2. Fallback to standard docker logs
+      try {
+        const container = this.#docker.getContainer(name)
+        const buffer = await container.logs({stdout: true, stderr: true, tail: 50})
+        log(`--- DOCKER STD LOGS (FALLBACK) FOR ${name} ---`)
+        log(buffer.toString('utf8'))
+        log('-----------------------------------')
+      } catch (err) {
+        log('Could not fetch docker logs: %s', err.message)
+      }
     }
   }
 
