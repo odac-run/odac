@@ -61,6 +61,7 @@ describe('Hub', () => {
 
     jest.isolateModules(() => {
       Hub = require('../../server/src/Hub')
+      Hub.start()
       System = require('../../server/src/Hub/System')
       const WS = require('../../server/src/Hub/WebSocket')
       MessageSigner = WS.MessageSigner

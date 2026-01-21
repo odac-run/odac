@@ -1,7 +1,13 @@
 const {mockOdac} = require('./__mocks__/globalOdac')
 
 // Mock modules before requiring Web
-jest.mock('fs')
+jest.mock('fs', () => ({
+  existsSync: jest.fn(),
+  readFileSync: jest.fn(),
+  openSync: jest.fn(),
+  writeFileSync: jest.fn(),
+  unlinkSync: jest.fn()
+}))
 jest.mock('child_process')
 jest.mock('axios', () => ({
   post: jest.fn(() => Promise.resolve())
@@ -39,6 +45,14 @@ describe('Web Proxy Integration', () => {
 
     // Setup fs mock
     fs.existsSync.mockReturnValue(true)
+    fs.readFileSync.mockImplementation(() => {
+      const err = new Error('File not found')
+      err.code = 'ENOENT'
+      throw err
+    })
+    fs.openSync.mockReturnValue(1) // Return a dummy file descriptor
+    fs.writeFileSync.mockImplementation(() => {})
+    fs.unlinkSync.mockImplementation(() => {})
 
     // Setup child process mock
     mockStdout = {on: jest.fn()}

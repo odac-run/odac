@@ -13,6 +13,8 @@ const HUB_WS_URL = 'wss://hub.odac.run/ws'
 const CHECK_COUNTER_MAX = 3600
 
 class Hub {
+  #active = false
+
   constructor() {
     this.ws = new WebSocketClient()
     this.checkCounter = 0
@@ -35,11 +37,24 @@ class Hub {
   }
 
   // Public API
+  start() {
+    this.#active = true
+    log('Hub Service started')
+  }
+
+  stop() {
+    this.#active = false
+    this.ws.disconnect()
+    log('Hub Service stopped')
+  }
+
   isAuthenticated() {
     return !!this.#getHubConfig()?.token
   }
 
   check() {
+    if (!this.#active) return
+
     this.checkCounter++
     if (this.checkCounter > CHECK_COUNTER_MAX) this.checkCounter = 1
 
@@ -186,6 +201,13 @@ class Hub {
         break
       case 'app.create':
         this.#handleAppCreate(command)
+        break
+      case 'updater.start':
+        try {
+          Odac.server('Updater').start(command, res => this.#sendCommandResponse(command.requestId, res))
+        } catch (e) {
+          log('Updater module not found or failed: %s', e.message)
+        }
         break
       default:
         log('Unknown command action: %s', command.action)

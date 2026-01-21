@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +17,14 @@ import (
 	"odac-proxy/config"
 	"odac-proxy/proxy"
 )
+
+// listen creates a net.Listener with SO_REUSEPORT support on Linux
+func listen(network, address string) (net.Listener, error) {
+	lc := net.ListenConfig{
+		Control: setSocketOptions,
+	}
+	return lc.Listen(context.Background(), network, address)
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -36,25 +46,14 @@ func main() {
 	fw := proxy.NewFirewall(cfg)
 	prx := proxy.NewProxy()
 
-	// Monitor parent process via Stdin
-	go func() {
-		buf := make([]byte, 1)
-		_, err := os.Stdin.Read(buf)
-		if err != nil {
-			// Pipe closed or error = parent died
-			log.Println("Parent process disconnected (stdin closed), shutting down...")
-			os.Exit(0)
-		}
-	}()
-
 	// Stack middleware: Firewall -> Proxy
-	// We removed timeoutMiddleware because robust timeout handling is now done 
+	// We removed timeoutMiddleware because robust timeout handling is now done
 	// via http.Transport (ResponseHeaderTimeout) and http.Server (IdleTimeout, ReadHeaderTimeout).
 	handler := fw.Check(prx)
 
 	// Check for Socket Environment Variable
 	socketPath := os.Getenv("ODAC_SOCKET_PATH")
-	
+
 	var apiListener net.Listener
 	var err error
 
@@ -91,7 +90,7 @@ func main() {
 	}
 
 	apiServer := api.NewServer(prx, fw)
-	
+
 	go func() {
 		if err := http.Serve(apiListener, apiServer); err != nil {
 			log.Fatalf("Control API failed: %v", err)
@@ -104,50 +103,56 @@ func main() {
 	}
 
 	// Start HTTP Server (Port 80)
+	httpServer := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	go func() {
 		log.Println("Starting HTTP server on :80")
-		server := &http.Server{
-			Addr:              ":80",
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
-			ReadTimeout:       0,                // Unlimited for large uploads (rely on TCP keepalive)
-			WriteTimeout:      0,                // Unlimited for large downloads (streaming)
-			IdleTimeout:       120 * time.Second,
+		listener, err := listen("tcp", ":80")
+		if err != nil {
+			log.Fatalf("HTTP listener failed: %v", err)
 		}
-		if err := server.ListenAndServe(); err != nil {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
 
 	// Start HTTPS Server (Port 443)
+	tlsConfig := &tls.Config{
+		GetCertificate: prx.GetCertificate,
+		NextProtos:     []string{"h2", "http/1.1"},
+		MinVersion:     tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+	}
+
+	httpsServer := &http.Server{
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	go func() {
 		log.Println("Starting HTTPS server on :443")
-		
-		tlsConfig := &tls.Config{
-			GetCertificate: prx.GetCertificate,
-			NextProtos:     []string{"h2", "http/1.1"},
-			MinVersion:     tls.VersionTLS12,
-			CipherSuites: []uint16{
-				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			},
+		listener, err := listen("tcp", ":443")
+		if err != nil {
+			log.Fatalf("HTTPS listener failed: %v", err)
 		}
-
-		server := &http.Server{
-			Addr:              ":443",
-			Handler:           handler,
-			TLSConfig:         tlsConfig,
-			ReadHeaderTimeout: 5 * time.Second,  // Security: Mitigate Slowloris
-			ReadTimeout:       0,                // Unlimited for large uploads
-			WriteTimeout:      0,                // Unlimited for large downloads
-			IdleTimeout:       120 * time.Second,
-		}
-
-		if err := server.ListenAndServeTLS("", ""); err != nil {
+		if err := httpsServer.Serve(tls.NewListener(listener, tlsConfig)); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	}()
@@ -157,7 +162,32 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
-	log.Println("ODAC Proxy shutting down...")
+	log.Println("ODAC Proxy shutting down gracefully...")
+
+	// Graceful shutdown with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Shutdown both servers
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if err := httpsServer.Shutdown(ctx); err != nil {
+			log.Printf("HTTPS server shutdown error: %v", err)
+		}
+	}()
+
+	// Wait for both shutdowns to complete
+	wg.Wait()
+
+	log.Println("ODAC Proxy stopped.")
 }
-
-

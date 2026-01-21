@@ -1,11 +1,11 @@
 package proxy
 
 import (
-	"github.com/klauspost/compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"github.com/klauspost/compress/gzip"
 	"io"
 	"log"
 	"net"
@@ -141,10 +141,10 @@ func (p *Proxy) director(req *http.Request) {
 		targetIP = website.ContainerIP
 		targetPort = internalContainerPort
 	}
-	
+
 	req.URL.Scheme = "http"
 	req.URL.Host = net.JoinHostPort(targetIP, targetPort)
-	
+
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
 	}
@@ -154,7 +154,7 @@ func (p *Proxy) director(req *http.Request) {
 		req.Header.Set("X-Odac-Connection-RemoteAddress", remoteIP)
 		req.Header.Set("X-Real-IP", remoteIP)
 	}
-	
+
 	if req.TLS != nil {
 		req.Header.Set("X-Odac-Connection-Ssl", "true")
 		req.Header.Set("X-Forwarded-Proto", "https")
@@ -191,7 +191,7 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	if strings.Contains(err.Error(), "connection reset by peer") {
 		return
 	}
-	
+
 	log.Printf("Proxy error for %s: %v", r.Host, err)
 	w.WriteHeader(http.StatusBadGateway)
 	w.Write([]byte("Bad Gateway"))
@@ -202,7 +202,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(host, ":") {
 		host, _, _ = net.SplitHostPort(host)
 	}
-	
+
 	// Remove www.
 	if strings.HasPrefix(host, "www.") {
 		host = host[4:]
@@ -211,8 +211,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.RLock()
 	website, exists := p.resolveWebsite(host)
 	// Check SSL availability (Site-specific or Global)
-	hasSSL := (website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "") || 
-			  (p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "")
+	hasSSL := (website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "") ||
+		(p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "")
 	p.mu.RUnlock()
 
 	if !exists {
@@ -443,7 +443,7 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 		debugLog("[DEBUG] SNI is empty")
 		return nil, nil // Fallback to default cert if any
 	}
-	
+
 	p.mu.RLock()
 	website, exists := p.resolveWebsite(host)
 	// Check cache
@@ -453,7 +453,7 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 		return cert, nil
 	}
 	p.mu.RUnlock()
-	
+
 	var certKey, certFile string
 	var source string
 
@@ -478,19 +478,19 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	// Load certificate
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	// Double check
 	if cert, ok := p.sslCache[host]; ok {
 		return cert, nil
 	}
-	
+
 	debugLog("[DEBUG] Loading cert files for %s from %s...", host, source)
 	cert, err := tls.LoadX509KeyPair(certFile, certKey)
 	if err != nil {
 		log.Printf("[ERROR] Failed to load SSL for %s (Key: %s, Cert: %s): %v", host, certKey, certFile, err)
 		return nil, err
 	}
-	
+
 	p.sslCache[host] = &cert
 	debugLog("[DEBUG] Successfully loaded and cached cert for %s", host)
 	return &cert, nil

@@ -109,6 +109,7 @@ describe('DNS Module', () => {
       const axios = require('axios')
 
       DNS.init()
+      DNS.start()
 
       expect(axios.get).toHaveBeenCalledWith('https://curlmyip.org/', {
         headers: {'User-Agent': 'Odac-DNS/1.0'},
@@ -120,6 +121,7 @@ describe('DNS Module', () => {
       const dns = require('native-dns')
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization to complete
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -137,6 +139,7 @@ describe('DNS Module', () => {
       axios.get.mockResolvedValue({data: '203.0.113.1'})
 
       DNS.init()
+      DNS.start()
 
       // Wait for the axios promise to resolve
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -150,6 +153,7 @@ describe('DNS Module', () => {
       axios.get.mockResolvedValue({data: 'invalid-ip-format'})
 
       DNS.init()
+      DNS.start()
 
       // Wait for the axios promise to resolve
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -167,6 +171,7 @@ describe('DNS Module', () => {
       axios.get.mockRejectedValue(networkError)
 
       DNS.init()
+      DNS.start()
 
       // Wait for the axios promise to resolve
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -196,6 +201,7 @@ describe('DNS Module', () => {
       dns.createTCPServer.mockReturnValue(tcpServer)
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -214,6 +220,7 @@ describe('DNS Module', () => {
       dns.createTCPServer.mockReturnValue(tcpServer)
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -233,6 +240,7 @@ describe('DNS Module', () => {
       dns.createTCPServer.mockReturnValue(tcpServer)
 
       DNS.init()
+      DNS.start()
 
       // Wait for async initialization
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -257,6 +265,7 @@ describe('DNS Module', () => {
       mockConfig.config.websites = {}
 
       DNS.init()
+      DNS.start()
 
       expect(udpServer.serve).not.toHaveBeenCalled()
       expect(tcpServer.serve).not.toHaveBeenCalled()
@@ -552,6 +561,7 @@ describe('DNS Module', () => {
 
       // Initialize DNS to set up servers
       DNS.init()
+      DNS.start()
     })
 
     it('should process A record queries correctly', () => {
@@ -1299,6 +1309,7 @@ describe('DNS Module', () => {
       axios.get.mockRejectedValue(new Error('Network error'))
 
       DNS.init()
+      DNS.start()
 
       await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -1314,6 +1325,7 @@ describe('DNS Module', () => {
       axios.get.mockRejectedValueOnce(new Error('First service failed')).mockResolvedValueOnce({data: '203.0.113.50'})
 
       DNS.init()
+      DNS.start()
 
       await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -1326,6 +1338,7 @@ describe('DNS Module', () => {
       axios.get.mockResolvedValue({data: '  203.0.113.75  \n'})
 
       DNS.init()
+      DNS.start()
 
       await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -1344,7 +1357,10 @@ describe('DNS Module', () => {
       const DNSWithError = require('../../server/src/DNS')
 
       // Should not crash when init is called
-      expect(() => DNSWithError.init()).not.toThrow()
+      expect(() => {
+        DNSWithError.init()
+        DNSWithError.start()
+      }).not.toThrow()
 
       await new Promise(resolve => setTimeout(resolve, 100))
     })
@@ -1363,7 +1379,10 @@ describe('DNS Module', () => {
       const DNSWithDarwin = require('../../server/src/DNS')
 
       // Should not crash on non-Linux platforms
-      expect(() => DNSWithDarwin.init()).not.toThrow()
+      expect(() => {
+        DNSWithDarwin.init()
+        DNSWithDarwin.start()
+      }).not.toThrow()
 
       await new Promise(resolve => setTimeout(resolve, 100))
     })
@@ -1394,7 +1413,10 @@ describe('DNS Module', () => {
       const DNSWithLinux = require('../../server/src/DNS')
 
       // Should not crash on Linux with systemd-resolved
-      expect(() => DNSWithLinux.init()).not.toThrow()
+      expect(() => {
+        DNSWithLinux.init()
+        DNSWithLinux.start()
+      }).not.toThrow()
 
       await new Promise(resolve => setTimeout(resolve, 100))
     })
@@ -1473,7 +1495,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle port conflict gracefully
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 200))
   })
@@ -1490,7 +1515,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should start successfully when port is available
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 200))
   })
@@ -1506,7 +1534,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle port check errors without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 200))
   })
@@ -1536,7 +1567,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle systemd-resolved detection without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 300))
   })
@@ -1561,7 +1595,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should skip systemd-resolved handling on non-Linux without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 300))
   })
@@ -1586,7 +1623,10 @@ describe('port management and conflict resolution', () => {
     DNS = require('../../server/src/DNS')
 
     // Should handle non-systemd process without crashing
-    expect(() => DNS.init()).not.toThrow()
+    expect(() => {
+      DNS.init()
+      DNS.start()
+    }).not.toThrow()
 
     await new Promise(resolve => setTimeout(resolve, 300))
   })

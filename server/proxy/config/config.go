@@ -9,13 +9,13 @@ type Config struct {
 
 // Website represents a single site configuration
 type Website struct {
-	Domain      string   `json:"domain"`
-	Port        int      `json:"port"` // The backend port (e.g., 3000, 60001)
-	Pid         interface{} `json:"pid,omitempty"`  // Process ID (string or int)
-	Container   string   `json:"container"` // Container name (if running in Docker)
-	ContainerIP string   `json:"containerIP"` // Direct IP if available
-	Subdomains  []string `json:"subdomain"`
-	Cert        Cert     `json:"cert"`
+	Domain      string      `json:"domain"`
+	Port        int         `json:"port"`          // The backend port (e.g., 3000, 60001)
+	Pid         interface{} `json:"pid,omitempty"` // Process ID (string or int)
+	Container   string      `json:"container"`     // Container name (if running in Docker)
+	ContainerIP string      `json:"containerIP"`   // Direct IP if available
+	Subdomains  []string    `json:"subdomain"`
+	Cert        Cert        `json:"cert"`
 }
 
 // Cert represents SSL certificate paths
@@ -31,12 +31,12 @@ type SSL struct {
 
 // Firewall represents firewall rules
 type Firewall struct {
-	Enabled    bool           `json:"enabled"`
-	RateLimit  RateLimit      `json:"rateLimit"`
-	MaxWSPerIP     int            `json:"maxWsPerIp"`     // Max concurrent WebSockets per IP
-	RequestTimeout int            `json:"requestTimeout"` // Timeout for regular HTTP requests in seconds
-	Blacklist      []string       `json:"blacklist"`
-	Whitelist      []string       `json:"whitelist"`
+	Enabled        bool      `json:"enabled"`
+	RateLimit      RateLimit `json:"rateLimit"`
+	MaxWSPerIP     int       `json:"maxWsPerIp"`     // Max concurrent WebSockets per IP
+	RequestTimeout int       `json:"requestTimeout"` // Timeout for regular HTTP requests in seconds
+	Blacklist      []string  `json:"blacklist"`
+	Whitelist      []string  `json:"whitelist"`
 }
 
 // RateLimit configuration
