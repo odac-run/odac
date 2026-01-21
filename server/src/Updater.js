@@ -82,26 +82,23 @@ class Updater {
       log('Update request blocked: Update already in progress')
       return Odac.server('Api').result(false, 'Update already in progress')
     }
-
     this.#updating = true
-    log('Update process started via Hub command')
-    Odac.server('Api').result(true, 'Update process started')
-
-    try {
-      const available = await this.#checkForUpdates()
-      if (!available) {
-        log('System is up to date.')
-        this.#updating = false
-        return Odac.server('Api').result(true, 'System is up to date')
-      }
-
-      await this.download()
-      await this.execute()
-    } catch (e) {
+    const available = await this.#checkForUpdates()
+    if (!available) {
+      log('System is up to date.')
       this.#updating = false
-      error('Update process failed: %s', e.message)
-      return Odac.server('Api').result(false, `Update failed: ${e.message}`)
+      return Odac.server('Api').result(true, 'System is up to date')
     }
+    setTimeout(async () => {
+      try {
+        await this.download()
+        await this.execute()
+      } catch (e) {
+        this.#updating = false
+        error('Update process failed: %s', e.message)
+      }
+    }, 1)
+    return Odac.server('Api').result(true, 'Update process started')
   }
 
   /**
