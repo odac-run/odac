@@ -145,7 +145,7 @@ class Updater {
 
     try {
       // 1. Get current container info
-      const containerId = process.env.HOSTNAME
+      const containerId = CONTAINER_NAME
       const container = this.#docker.getContainer(containerId)
       const info = await container.inspect()
 
@@ -358,11 +358,9 @@ class Updater {
 
     // Disable restart policy to prevent Docker from restarting this container
     try {
-      if (process.env.HOSTNAME) {
-        const container = this.#docker.getContainer(process.env.HOSTNAME)
-        await container.update({RestartPolicy: {Name: 'no'}})
-        log('Restart policy disabled.')
-      }
+      const container = this.#docker.getContainer(BACKUP_CONTAINER_NAME)
+      await container.update({RestartPolicy: {Name: 'no'}})
+      log('Restart policy disabled.')
     } catch (e) {
       error('Failed to disable restart policy: %s', e.message)
     }
@@ -407,11 +405,9 @@ class Updater {
 
     // 3. Rename self
     try {
-      if (process.env.HOSTNAME) {
-        const me = this.#docker.getContainer(process.env.HOSTNAME)
-        await me.rename({name: targetName})
-        log('Renamed self to %s', targetName)
-      }
+      const me = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
+      await me.rename({name: targetName})
+      log('Renamed self to %s', targetName)
     } catch (e) {
       error('Failed to rename self: %s', e.message)
     }
