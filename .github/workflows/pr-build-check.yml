@@ -31,6 +31,8 @@ jobs:
         run: go mod verify
 
       - name: Build Binary
+        env:
+          GOOS: linux
         run: go build -v ./...
 
   # Check 2: Full Docker Build (Dry Run)
