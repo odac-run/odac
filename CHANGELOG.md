@@ -1,3 +1,36 @@
+### ⚙️ Engine Tuning
+
+- replace Service module with App module
+
+### ✨ What's New
+
+- add support for installing 3rd party services
+- prioritize npm start script for website execution
+- **proxy:** Add Zst, Brotli and Gzip compression with sync.Pool optimization
+- **proxy:** enforce automatic https redirection with ip exceptions
+- **proxy:** harden security headers and improve ip masking
+- Remote app creation and build system overhaul
+- replace Node.js proxy with high-performance Go implement…
+- Robust Zero-Downtime Update System, Detached Proxy Management & Stability Improvements
+- **server:** enhance Docker container integration and stability
+- Transition to WebSocket architecture, Proxy optimizations, and Container stats
+- **web:** add automatic build step during website startup
+
+### 🛠️ Fixes & Improvements
+
+- Cli Texts
+- handle ECONNRESET on API sockets to prevent crash
+- Prevent server crashes from uncaught network errors and optimize HTTPS connection reuse with a persistent agent.
+- prevent zombie proxy processes and improve lifecycle management
+- **proxy:** resolve build issues and cleanup unused imports
+- **proxy:** skip compression for WebSocket and SSE streams
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - remove conditional checks for Docker build steps
