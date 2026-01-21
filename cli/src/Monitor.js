@@ -10,7 +10,7 @@ class Monitor {
   #height
   #logs = {content: [], mtime: null, selected: null, watched: [], lastFetch: 0}
   #logging = false
-  #modules = ['api', 'config', 'container', 'dns', 'hub', 'mail', 'server', 'app', 'ssl', 'subdomain', 'web']
+  #modules = ['api', 'app', 'config', 'container', 'dns', 'hub', 'mail', 'server', 'ssl', 'subdomain', 'updater', 'web']
   #printing = false
   #selected = 0
   #apps = []
@@ -21,7 +21,7 @@ class Monitor {
   #stats = {}
 
   constructor() {
-    process.stdout.write(process.platform === 'win32' ? `title Odac Debug\n` : `\x1b]2;Odac Debug\x1b\x5c`)
+    process.stdout.write(process.platform === 'win32' ? `title ODAC Debug\n` : `\x1b]2;ODAC Debug\x1b\x5c`)
   }
 
   async debug() {
@@ -220,12 +220,6 @@ class Monitor {
     if (this.#logging) return
     this.#logging = true
 
-    if (this.#watch.length === 0) {
-      this.#logs.content = []
-      this.#logging = false
-      return
-    }
-
     const file = os.homedir() + '/.odac/logs/.odac.log'
     let log = ''
     let mtime = null
@@ -239,7 +233,7 @@ class Monitor {
       log = fs.readFileSync(file, 'utf8')
     }
 
-    const selectedModules = this.#watch.map(index => this.#modules[index])
+    const selectedModules = this.#watch.length > 0 ? this.#watch.map(index => this.#modules[index]) : this.#modules
     this.#logs.content = log
       .trim()
       .replace(/\r\n/g, '\n')
