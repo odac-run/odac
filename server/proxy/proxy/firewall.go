@@ -92,11 +92,11 @@ func (f *Firewall) Check(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		
+
 		// Copy config values needed for checking to avoid holding RLock too long if possible,
 		// but checking slice contains is fast enough to keep lock.
 		// However, we need to upgrade lock for rate limiting.
-		
+
 		blacklistMap := f.blacklistMap
 		whitelistMap := f.whitelistMap
 		rateLimit := f.config.RateLimit
@@ -106,7 +106,7 @@ func (f *Firewall) Check(next http.Handler) http.Handler {
 		if err != nil {
 			ip = r.RemoteAddr
 		}
-		
+
 		// Handle X-Forwarded-For if needed (Node.js version does)
 		forwarded := r.Header.Get("X-Forwarded-For")
 		if forwarded != "" {
@@ -164,24 +164,23 @@ func (f *Firewall) Check(next http.Handler) http.Handler {
 			}
 		}
 
-
 		// WebSocket Connection Limit
 		isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
-		
+
 		if isWebSocket && f.config.MaxWSPerIP > 0 {
 			f.mu.Lock()
 			currentWS := f.wsCounts[ip]
-			
+
 			if currentWS >= f.config.MaxWSPerIP {
 				f.mu.Unlock()
 				log.Printf("Blocked WebSocket from %s: Max concurrent connections (%d) reached", ip, f.config.MaxWSPerIP)
 				http.Error(w, "Too Many WebSocket Connections", http.StatusTooManyRequests)
 				return
 			}
-			
+
 			f.wsCounts[ip]++
 			f.mu.Unlock()
-			
+
 			// Decrement on completion
 			defer func() {
 				f.mu.Lock()

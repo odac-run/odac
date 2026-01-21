@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -21,25 +20,7 @@ import (
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
 func listen(network, address string) (net.Listener, error) {
 	lc := net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			var opErr error
-			if runtime.GOOS == "linux" {
-				if err := c.Control(func(fd uintptr) {
-					// SO_REUSEPORT is typically 15 on Linux/amd64
-					// using syscall.SO_REUSEPORT is safer if available, but let's try standard syscall first
-					// If syscall.SO_REUSEPORT is not defined on non-linux at compile time, this block inside runtime.GOOS check 
-					// might still cause compilation error if we are not careful.
-					// However, since we are editing a file that compiled before, syscall.SO_REUSEPORT might be available 
-					// in the environment we are building (Docker Linux).
-					// For safety against local Mac linting, we can use the constant value 0x0F (15) for Linux.
-					
-					opErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, 0x0F, 1)
-				}); err != nil {
-					return err
-				}
-			}
-			return opErr
-		},
+		Control: setSocketOptions,
 	}
 	return lc.Listen(context.Background(), network, address)
 }
@@ -64,16 +45,14 @@ func main() {
 	fw := proxy.NewFirewall(cfg)
 	prx := proxy.NewProxy()
 
-
-
 	// Stack middleware: Firewall -> Proxy
-	// We removed timeoutMiddleware because robust timeout handling is now done 
+	// We removed timeoutMiddleware because robust timeout handling is now done
 	// via http.Transport (ResponseHeaderTimeout) and http.Server (IdleTimeout, ReadHeaderTimeout).
 	handler := fw.Check(prx)
 
 	// Check for Socket Environment Variable
 	socketPath := os.Getenv("ODAC_SOCKET_PATH")
-	
+
 	var apiListener net.Listener
 	var err error
 
@@ -110,7 +89,7 @@ func main() {
 	}
 
 	apiServer := api.NewServer(prx, fw)
-	
+
 	go func() {
 		if err := http.Serve(apiListener, apiServer); err != nil {
 			log.Fatalf("Control API failed: %v", err)
@@ -201,5 +180,3 @@ func main() {
 
 	log.Println("ODAC Proxy stopped.")
 }
-
-
