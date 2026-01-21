@@ -270,11 +270,15 @@ class Updater {
             log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
             try {
               // 1. Remove the failed new container
+              // The new container might have failed before OR after taking the 'odac' name.
+              // We must try to clean it up using both potential names to be safe.
               try {
+                // Priority 1: Check if it already grabbed the main name
                 const newOne = this.#docker.getContainer(CONTAINER_NAME)
                 await newOne.remove({force: true})
                 log('Failed new container removed.')
               } catch {
+                // Priority 2: If finding by main name failed, it likely still has the update name
                 try {
                   const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
                   await updateOne.remove({force: true})
