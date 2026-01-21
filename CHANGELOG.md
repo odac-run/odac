@@ -1,3 +1,13 @@
+### 🛠️ Fixes & Improvements
+
+- Cli Apps count
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ⚙️ Engine Tuning
 
 - improve email validation regex to better handle domain name structures.
