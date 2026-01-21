@@ -391,8 +391,21 @@ class Web {
       this.#proxyProcess.unref() // Don't prevent Node from exiting
 
       if (this.#proxyProcess.pid) {
-        fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString())
-        log(`Go Proxy started with PID ${this.#proxyProcess.pid}`)
+        try {
+          // Use 'wx' flag to ensure we don't overwrite a PID file created by a concurrent process
+          // This resolves the TOCTOU (Time-of-check to time-of-use) race condition
+          fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString(), {flag: 'wx'})
+          log(`Go Proxy started with PID ${this.#proxyProcess.pid}`)
+        } catch (err) {
+          if (err.code === 'EEXIST') {
+            error(`Race condition detected: PID file ${pidFile} already exists. Stopping redundant proxy instance.`)
+            // Kill the process we just spawned as it is a duplicate/redundant
+            this.#proxyProcess.kill()
+            this.#proxyProcess = null
+            return
+          }
+          throw err
+        }
       }
 
       this.#proxyProcess.on('exit', code => {
