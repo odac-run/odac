@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -168,15 +169,25 @@ func main() {
 	defer cancel()
 
 	// Shutdown both servers
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	go func() {
+		defer wg.Done()
 		if err := httpServer.Shutdown(ctx); err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
 		}
 	}()
 
-	if err := httpsServer.Shutdown(ctx); err != nil {
-		log.Printf("HTTPS server shutdown error: %v", err)
-	}
+	go func() {
+		defer wg.Done()
+		if err := httpsServer.Shutdown(ctx); err != nil {
+			log.Printf("HTTPS server shutdown error: %v", err)
+		}
+	}()
+
+	// Wait for both shutdowns to complete
+	wg.Wait()
 
 	log.Println("ODAC Proxy stopped.")
 }
