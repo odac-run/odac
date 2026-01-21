@@ -45,7 +45,7 @@ class Config {
           }
         } else if (key === 'websites') {
           config[key] = {}
-        } else if (key === 'services') {
+        } else if (key === 'apps') {
           config[key] = []
         } else if (key === 'firewall') {
           config[key] = {
@@ -58,8 +58,6 @@ class Config {
               max: 300
             }
           }
-        } else if (key === 'apps') {
-          config[key] = []
         } else {
           config[key] = {}
         }
