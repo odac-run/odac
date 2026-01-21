@@ -227,7 +227,8 @@ class Cli {
     if (minutes && !days) uptimeString += minutes + 'm '
     if (seconds && !hours) uptimeString += seconds + 's'
     status.uptime = uptimeString
-    status.apps = Odac.core('Config').config.apps ? Odac.core('Config').config.apps.length : 0
+    const apps = Odac.core('Config').config.apps
+    status.apps = Array.isArray(apps) ? apps.length : 0
     status.websites = Odac.core('Config').config.websites ? Object.keys(Odac.core('Config').config.websites).length : 0
     status.auth = Odac.server('Hub').isAuthenticated()
     var args = process.argv.slice(2)
