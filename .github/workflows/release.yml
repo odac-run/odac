@@ -6,7 +6,6 @@ on:
       - main
     paths-ignore:
       - 'CHANGELOG.md'
-      - 'package.json'
   workflow_dispatch:
 
 permissions:
