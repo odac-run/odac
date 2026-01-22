@@ -1,5 +1,15 @@
 ### 🛠️ Fixes & Improvements
 
+- **server:** implement zero downtime handover for TCP server and config sync retry logic
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### 🛠️ Fixes & Improvements
+
 - Update GitHub Actions to their latest versions and add QEMU for multi-platform Docker image builds.
 
 
