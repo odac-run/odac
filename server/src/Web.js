@@ -429,7 +429,7 @@ class Web {
     }
   }
 
-  async syncConfig() {
+  async syncConfig(retryCount = 0) {
     if (typeof Odac === 'undefined') return
     if (!this.#proxyProcess) return
     if (!this.#proxySocketPath && !this.#proxyApiPort) return
@@ -458,6 +458,11 @@ class Web {
         await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/config`, config)
       }
     } catch (e) {
+      if (retryCount < 3 && (e.code === 'ECONNREFUSED' || e.code === 'ENOENT' || e.code === 'ECONNRESET')) {
+        log(`Config sync failed (${e.code}). Retrying in 1s...`)
+        await new Promise(r => setTimeout(r, 1000))
+        return this.syncConfig(retryCount + 1)
+      }
       error(`Failed to sync config to proxy: ${e.message}`)
     }
   }

@@ -124,8 +124,29 @@ class Api {
     this.#started = true
 
     // TCP Server for localhost/CLI only
-    this.#tcpServer = net.createServer(socket => this.#connectionHandler(socket, false))
-    this.#tcpServer.listen(1453, '127.0.0.1')
+    const startTcpServer = () => {
+      // Remove previous listeners to avoid duplicates on retry
+      if (this.#tcpServer) {
+        this.#tcpServer.removeAllListeners()
+      }
+
+      this.#tcpServer = net.createServer(socket => this.#connectionHandler(socket, false))
+
+      this.#tcpServer.on('error', e => {
+        if (e.code === 'EADDRINUSE') {
+          // If port is busy, it implies the old container is still running.
+          // We wait and retry until it hands over the port (Zero Downtime Handover).
+          Odac.core('Log').log('Api', 'Port 1453 in use. Waiting for release...')
+          setTimeout(startTcpServer, 1000)
+        } else {
+          Odac.core('Log').error('Api', `TCP Server error: ${e.message}`)
+        }
+      })
+
+      this.#tcpServer.listen(1453, '127.0.0.1')
+    }
+
+    startTcpServer()
 
     // Unix Socket Server for containers (bypasses network/firewall)
     const sockDir = this.#socketDir
