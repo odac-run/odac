@@ -1,5 +1,15 @@
 ### 🛠️ Fixes & Improvements
 
+- Update GitHub Actions to their latest versions and add QEMU for multi-platform Docker image builds.
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### 🛠️ Fixes & Improvements
+
 - Updater fix
 
 
