@@ -5,6 +5,8 @@ const fs = require('fs')
 const os = require('os')
 const cp = require('child_process')
 
+const NODE_IMAGE = 'node:lts-alpine'
+
 class Container {
   #docker
   #activeBuilds = new Set() // Track active builds to prevent parallel builds for same app
@@ -111,7 +113,7 @@ class Container {
     if (!this.available) return false
 
     const hostPath = this.#resolveHostPath(volumePath)
-    const image = 'node:lts-alpine'
+    const image = NODE_IMAGE
 
     // We use run with remove: true to mimic 'docker run --rm'
     try {
@@ -450,7 +452,7 @@ class Container {
   async #syncPackageLock(hostPath) {
     log('[build] Syncing package-lock.json...')
 
-    const nodeImage = 'node:20-alpine'
+    const nodeImage = NODE_IMAGE
     await this.#ensureImage(nodeImage)
 
     const container = await this.#docker.createContainer({
@@ -575,10 +577,10 @@ class Container {
       await this.#ensureNetwork(networkName)
 
       log(`Starting container for ${name}...`)
-      await this.#ensureImage('node:lts-alpine')
+      await this.#ensureImage(NODE_IMAGE)
 
       const container = await this.#docker.createContainer({
-        Image: 'node:lts-alpine',
+        Image: NODE_IMAGE,
         Cmd: [
           'sh',
           '-c',
