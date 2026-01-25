@@ -109,6 +109,7 @@ func main() {
 		ReadTimeout:       0,
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    32 << 10, // 32 KB limit for headers to prevent DoS
 	}
 
 	go func() {
@@ -124,9 +125,10 @@ func main() {
 
 	// Start HTTPS Server (Port 443)
 	tlsConfig := &tls.Config{
-		GetCertificate: prx.GetCertificate,
-		NextProtos:     []string{"h2", "http/1.1"},
-		MinVersion:     tls.VersionTLS12,
+		GetCertificate:           prx.GetCertificate,
+		NextProtos:               []string{"h2", "http/1.1"},
+		MinVersion:               tls.VersionTLS12,
+		PreferServerCipherSuites: true, // Stronger security for TLS 1.2
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -144,6 +146,7 @@ func main() {
 		ReadTimeout:       0,
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    32 << 10, // 32 KB limit for headers to prevent DoS
 	}
 
 	go func() {

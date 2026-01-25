@@ -90,6 +90,31 @@ func NewProxy() *Proxy {
 		Director:     p.director,
 		Transport:    transport,
 		ErrorHandler: p.errorHandler,
+		ModifyResponse: func(r *http.Response) error {
+			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
+			r.Header.Set("Server", "ODAC")
+
+			// Security Headers: Apply defaults only if upstream didn't set them
+			// This allows apps to override these (e.g. allowing iframes via X-Frame-Options)
+			if r.Header.Get("X-Frame-Options") == "" {
+				r.Header.Set("X-Frame-Options", "SAMEORIGIN")
+			}
+			if r.Header.Get("X-Content-Type-Options") == "" {
+				r.Header.Set("X-Content-Type-Options", "nosniff")
+			}
+			if r.Header.Get("X-XSS-Protection") == "" {
+				r.Header.Set("X-XSS-Protection", "1; mode=block")
+			}
+			if r.Header.Get("Referrer-Policy") == "" {
+				r.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			}
+
+			// Security: Minimize information leakage from frameworks
+			r.Header.Del("X-Powered-By")
+			r.Header.Del("X-AspNet-Version")
+			r.Header.Del("X-Runtime")
+			return nil
+		},
 	}
 
 	return p
@@ -234,6 +259,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		url := "https://" + targetHost + r.URL.RequestURI()
 		http.Redirect(w, r, url, http.StatusMovedPermanently)
 		return
+	}
+
+	// Security Headers
+	// Note: Other security headers (X-Frame-Options, etc.) are handled in ModifyResponse
+	// to allow upstream overrides. HSTS is forced here because we handle SSL termination.
+
+	// HSTS: Only send on HTTPS and valid domains (not IP or localhost)
+	if r.TLS != nil && !isIP && !isLocalhost {
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 	}
 
 	// Compression negotiation
