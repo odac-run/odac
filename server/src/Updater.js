@@ -1,6 +1,13 @@
 const Docker = require('dockerode')
 const {exec} = require('child_process')
 const util = require('util')
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const net = require('net')
+const {Writable} = require('stream')
+const {StringDecoder} = require('string_decoder')
+
 const execAsync = util.promisify(exec)
 const {log, error} = Odac.core('Log', false).init('Updater')
 
@@ -17,12 +24,15 @@ class Updater {
   #readyCallbacks = []
   #isReady = false
 
+  get #isBeta() {
+    return process.env.ODAC_CHANNEL === 'beta'
+  }
+
   /**
    * Initialize Updater.
    * Checks if an update socket exists, meaning we are the new instance in an update process.
    */
   async init() {
-    const fs = require('fs')
     const socketPath = '/app/storage/run/update.sock'
 
     if (fs.existsSync(socketPath)) {
@@ -113,6 +123,11 @@ class Updater {
   }
 
   async #checkForUpdates() {
+    if (this.#isBeta) {
+      log('Beta mode detected. Forcing update check to true (Always rebuild in Dev).')
+      return true
+    }
+
     log('Checking for updates...')
     const localId = await this.#getLocalImageId()
 
@@ -137,18 +152,68 @@ class Updater {
   }
 
   async download() {
+    if (this.#isBeta) {
+      return this.#buildFromSource()
+    }
     // Already downloaded in check() via docker pull
     return true
+  }
+
+  async #buildFromSource() {
+    log('Starting Build from Source (Beta/Dev)...')
+
+    try {
+      // 1. Ensure Git is available
+      await this.#ensureGit()
+
+      // 2. Prepare Source Directory
+      const sourceDir = '/tmp/odac_source'
+      if (fs.existsSync(sourceDir)) {
+        await execAsync(`rm -rf ${sourceDir}`)
+      }
+
+      // 3. Clone Repository
+      log('Cloning dev branch...')
+      await execAsync(`git clone -b dev https://github.com/odac-run/odac.git ${sourceDir}`)
+
+      // 4. Build Docker Image
+      log('Building Docker Image...')
+      // We use the docker CLI for building as it handles context transfer seamlessly
+      await execAsync(`cd ${sourceDir} && docker build -t ${this.#image} .`)
+
+      // 5. Cleanup
+      await execAsync(`rm -rf ${sourceDir}`)
+      log('Build complete.')
+      return true
+    } catch (e) {
+      throw new Error(`Build failed: ${e.message}`)
+    }
+  }
+
+  async #ensureGit() {
+    try {
+      await execAsync('git --version')
+    } catch {
+      log('Git not found. Installing...')
+      if (process.platform === 'linux') {
+        try {
+          // Detect package manager (Alpine vs Debian/Ubuntu)
+          await execAsync('apk add --no-cache git || (apt-get update && apt-get install -y git)')
+        } catch (e) {
+          throw new Error('Failed to install git: ' + e.message)
+        }
+      } else {
+        throw new Error('Git missing and auto-install not supported on this platform.')
+      }
+    }
   }
 
   async execute() {
     log('Launching update process...')
 
     // Clean up previous update logs to avoid confusion
+    // Clean up previous update logs to avoid confusion
     try {
-      const fs = require('fs')
-      const path = require('path')
-      const os = require('os')
       const logDir = path.join(os.homedir(), '.odac', 'logs')
       const files = [`.${UPDATE_CONTAINER_NAME}.log`, `.${UPDATE_CONTAINER_NAME}_err.log`]
 
@@ -216,6 +281,11 @@ class Updater {
         log('Starting new container...')
         await newContainer.start()
 
+        // Stream logs from the new container for better observability
+        this.#streamLogs(newContainer, newName).catch(e => {
+          log('Warning: Failed to attach logs for %s: %s', newName, e.message)
+        })
+
         log('Update container started successfully. Waiting for handover...')
         try {
           await this.#createUpdateListener()
@@ -266,8 +336,6 @@ class Updater {
   }
 
   async #createUpdateListener() {
-    const net = require('net')
-    const fs = require('fs')
     const socketPath = '/app/storage/run/update.sock'
     const socketDir = '/app/storage/run'
 
@@ -439,8 +507,6 @@ class Updater {
   }
 
   async #performHandshake(socketPath) {
-    const net = require('net')
-
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath)
 
@@ -486,7 +552,7 @@ class Updater {
           console.log('ODAC_CMD:SWITCH_LOGS')
           socket.end()
           try {
-            require('fs').unlinkSync(socketPath)
+            fs.unlinkSync(socketPath)
           } catch {
             /* Ignore */
           }
@@ -517,7 +583,6 @@ class Updater {
   }
 
   async #fetchContainerLogs(name) {
-    const fs = require('fs')
     const tempFile = `/tmp/${name}-crash.log`
 
     try {
@@ -567,6 +632,41 @@ class Updater {
     } catch (e) {
       log('Could not get remote image ID: %s', e.message)
       return null
+    }
+  }
+
+  async #streamLogs(container, name) {
+    try {
+      const stream = await container.logs({
+        follow: true,
+        stdout: true,
+        stderr: true
+      })
+
+      const createLogStream = () => {
+        const decoder = new StringDecoder('utf8')
+        let buffer = ''
+
+        return new Writable({
+          write(chunk, encoding, next) {
+            buffer += decoder.write(chunk)
+            const lines = buffer.split('\n')
+            buffer = lines.pop() // Keep the last partial line in the buffer
+
+            for (const line of lines) {
+              if (line.trim()) {
+                log(`[${name}] ${line}`)
+              }
+            }
+            next()
+          }
+        })
+      }
+
+      // Demultiplex stdout and stderr
+      container.modem.demuxStream(stream, createLogStream(), createLogStream())
+    } catch (e) {
+      log('Failed to attach log stream for %s: %s', name, e.message)
     }
   }
 }
