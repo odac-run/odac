@@ -86,7 +86,14 @@ class Web {
     for (const iterator of ['http://', 'https://', 'ftp://', 'www.']) {
       if (domain.startsWith(iterator)) domain = domain.replace(iterator, '')
     }
-    if (domain.length < 3 || (!domain.includes('.') && domain != 'localhost'))
+    // Security: Validate domain to prevent Path Traversal
+    if (
+      domain.length < 3 ||
+      (!domain.includes('.') && domain != 'localhost') ||
+      domain.includes('/') ||
+      domain.includes('\\') ||
+      domain.includes('..')
+    )
       return Odac.server('Api').result(false, __('Invalid domain.'))
     if (Odac.core('Config').config.websites?.[domain]) return Odac.server('Api').result(false, __('Website %s already exists.', domain))
     progress('domain', 'progress', __('Setting up domain %s...', domain))
