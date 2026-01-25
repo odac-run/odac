@@ -178,6 +178,17 @@ class App {
     if (!url) {
       return Odac.server('Api').result(false, __('Missing git URL'))
     }
+
+    // Security: Validate Git URL to prevent Command Injection
+    // Block dangerous shell characters that could be used to chain commands
+    if (/[;&|`$(){}<>]/.test(url)) {
+      return Odac.server('Api').result(false, __('Invalid Git URL: Contains illegal characters.'))
+    }
+
+    // Validate protocol (optional but recommended)
+    if (!url.match(/^(https?|git|ssh|ftps?|rsync):\/\//) && !url.match(/^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/)) {
+      return Odac.server('Api').result(false, __('Invalid Git URL: Unsupported protocol.'))
+    }
     if (!name) {
       return Odac.server('Api').result(false, __('Missing app name'))
     }
