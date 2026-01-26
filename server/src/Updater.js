@@ -24,8 +24,16 @@ class Updater {
   #readyCallbacks = []
   #isReady = false
 
-  get #isBeta() {
-    return process.env.ODAC_CHANNEL === 'beta'
+  get #channel() {
+    return process.env.ODAC_CHANNEL || 'stable'
+  }
+
+  get #isBuildMode() {
+    return this.#channel !== 'stable' && this.#channel !== 'latest'
+  }
+
+  get #targetBranch() {
+    return this.#channel === 'beta' ? 'dev' : this.#channel
   }
 
   /**
@@ -123,8 +131,8 @@ class Updater {
   }
 
   async #checkForUpdates() {
-    if (this.#isBeta) {
-      log('Beta mode detected. Forcing update check to true (Always rebuild in Dev).')
+    if (this.#isBuildMode) {
+      log('Custom channel detected (%s). Forcing update check to true.', this.#channel)
       return true
     }
 
@@ -152,7 +160,7 @@ class Updater {
   }
 
   async download() {
-    if (this.#isBeta) {
+    if (this.#isBuildMode) {
       return this.#buildFromSource()
     }
     // Already downloaded in check() via docker pull
@@ -173,8 +181,9 @@ class Updater {
       }
 
       // 3. Clone Repository
-      log('Cloning dev branch...')
-      await execAsync(`git clone -b dev https://github.com/odac-run/odac.git ${sourceDir}`)
+      const branch = this.#targetBranch
+      log(`Cloning ${branch} branch...`)
+      await execAsync(`git clone -b ${branch} https://github.com/odac-run/odac.git ${sourceDir}`)
 
       // 4. Build Docker Image
       log('Building Docker Image...')
@@ -643,7 +652,7 @@ class Updater {
         stderr: true
       })
 
-      const createLogStream = () => {
+      const createLogStream = (isError = false) => {
         const decoder = new StringDecoder('utf8')
         let buffer = ''
 
@@ -655,7 +664,8 @@ class Updater {
 
             for (const line of lines) {
               if (line.trim()) {
-                log(`[${name}] ${line}`)
+                const prefix = isError ? '[NEW_VERSION:ERR]' : '[NEW_VERSION]'
+                log(`${prefix} ${line}`)
               }
             }
             next()
@@ -664,7 +674,7 @@ class Updater {
       }
 
       // Demultiplex stdout and stderr
-      container.modem.demuxStream(stream, createLogStream(), createLogStream())
+      container.modem.demuxStream(stream, createLogStream(false), createLogStream(true))
     } catch (e) {
       log('Failed to attach log stream for %s: %s', name, e.message)
     }
