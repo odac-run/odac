@@ -1,4 +1,6 @@
 class Server {
+  #checkInterval = null
+
   async init() {
     Odac.core('Config').config.server.pid = process.pid
     Odac.core('Config').config.server.started = Date.now()
@@ -20,8 +22,8 @@ class Server {
       }, 1000)
     })
 
-    setTimeout(function () {
-      setInterval(function () {
+    setTimeout(() => {
+      this.#checkInterval = setInterval(() => {
         Odac.server('App').check()
         Odac.server('SSL').check()
         Odac.server('Web').check()
@@ -32,6 +34,11 @@ class Server {
   }
 
   stop() {
+    // Stop check interval first to prevent services from restarting
+    if (this.#checkInterval) {
+      clearInterval(this.#checkInterval)
+      this.#checkInterval = null
+    }
     Odac.server('Web').stop()
     Odac.server('Mail').stop()
     Odac.server('DNS').stop()
