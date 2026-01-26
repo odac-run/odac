@@ -340,7 +340,6 @@ class Web {
     }
 
     // 1. Try to adopt existing process
-    // 1. Try to adopt existing process
     // We try to read directly to avoid TOCTOU race condition (checking existence then reading)
     // SKIP adoption if we are in Update Mode (we need a fresh proxy)
     const isUpdateMode = process.env.ODAC_UPDATE_MODE === 'true'
@@ -348,8 +347,46 @@ class Web {
     if (!isUpdateMode) {
       try {
         const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
-        // Check if running
+        // 1. Check if PID exists/running
         process.kill(pid, 0)
+
+        // 2. Validate it's actually our Proxy (check if socket/port is active)
+        // If we are in Socket mode, the socket file MUST exist
+        if (!isWindows) {
+          if (!fs.existsSync(this.#proxySocketPath)) {
+            log(`PID ${pid} exists but socket file is missing. PID reuse detected or proxy crashed. Ignoring orphan...`)
+            // We don't kill the process because it might be a random system process reusing the PID
+            // Just clean the PID file and proceed to spawn new
+            try {
+              fs.unlinkSync(pidFile)
+            } catch {
+              /* ignore */
+            }
+            throw new Error('Socket missing') // Break to catch block to spawn new
+          }
+        }
+
+        // 3. Double Check: Verify process name to be sure it is 'odac-proxy'
+        // This prevents connecting to a random process that might have reused the PID
+        try {
+          // Simple check: If we can read /proc/PID/cmdline (Linux)
+          const procPath = `/proc/${pid}/cmdline`
+          if (fs.existsSync(procPath)) {
+            const cmdline = fs.readFileSync(procPath, 'utf8')
+            if (!cmdline.includes('odac-proxy')) {
+              log(`PID ${pid} is active but command line does not match proxy. PID reuse detected!`)
+              try {
+                fs.unlinkSync(pidFile)
+              } catch {
+                /* ignore */
+              }
+              throw new Error('PID reuse detected')
+            }
+          }
+        } catch (e) {
+          // If we can't read proc (e.g. permission or Mac), we rely on Socket check above
+          if (e.message === 'PID reuse detected') throw e
+        }
 
         log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
 
