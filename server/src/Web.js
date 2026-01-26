@@ -339,40 +339,47 @@ class Web {
     // 1. Try to adopt existing process
     // 1. Try to adopt existing process
     // We try to read directly to avoid TOCTOU race condition (checking existence then reading)
-    try {
-      const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
-      // Check if running
-      process.kill(pid, 0)
+    // SKIP adoption if we are in Update Mode (we need a fresh proxy)
+    const isUpdateMode = process.env.ODAC_UPDATE_MODE === 'true'
 
-      log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
+    if (!isUpdateMode) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
+        // Check if running
+        process.kill(pid, 0)
 
-      // Create a fake process object to manage it
-      this.#proxyProcess = {
-        pid,
-        kill: () => {
+        log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
+
+        // Create a fake process object to manage it
+        this.#proxyProcess = {
+          pid,
+          kill: () => {
+            try {
+              process.kill(pid)
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        // Sync config immediately
+        this.syncConfig()
+        return
+      } catch (err) {
+        // Logic for when we fail to adopt the process
+        if (err.code !== 'ENOENT') {
+          // If error is NOT "File not found", it means file exists but maybe corrupt or process dead
+          log(`Orphaned proxy PID file issue. Cleaning up.`)
           try {
-            process.kill(pid)
+            fs.unlinkSync(pidFile)
           } catch {
             /* ignore */
           }
         }
+        // If err.code IS 'ENOENT', it simply means no PID file exists, so we proceed to start a new one.
       }
-
-      // Sync config immediately
-      this.syncConfig()
-      return
-    } catch (err) {
-      // Logic for when we fail to adopt the process
-      if (err.code !== 'ENOENT') {
-        // If error is NOT "File not found", it means file exists but maybe corrupt or process dead
-        log(`Orphaned proxy PID file issue. Cleaning up.`)
-        try {
-          fs.unlinkSync(pidFile)
-        } catch {
-          /* ignore */
-        }
-      }
-      // If err.code IS 'ENOENT', it simply means no PID file exists, so we proceed to start a new one.
+    } else {
+      log('Update mode detected. Forcing new Proxy instance spawn...')
     }
 
     if (!fs.existsSync(binPath)) {
@@ -405,7 +412,9 @@ class Web {
         try {
           // Use 'wx' flag to ensure we don't overwrite a PID file created by a concurrent process
           // This resolves the TOCTOU (Time-of-check to time-of-use) race condition
-          fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString(), {flag: 'wx'})
+          // UNLESS in update mode, where we deliberately take over.
+          const flags = isUpdateMode ? 'w' : 'wx'
+          fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString(), {flag: flags})
           log(`Go Proxy started with PID ${this.#proxyProcess.pid}`)
         } catch (err) {
           if (err.code === 'EEXIST') {
