@@ -230,6 +230,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host, _, _ = net.SplitHostPort(host)
 	}
 
+	// 0-RTT (Early Data) Security Check
+	// If the TLS handshake is not complete, this request was sent via 0-RTT (Early Data).
+	// RFC 8446 states that 0-RTT data is subject to Replay Attacks.
+	// Therefore, we MUST NOT allow non-idempotent methods (like POST, PUT, DELETE) over 0-RTT.
+	if r.TLS != nil && !r.TLS.HandshakeComplete {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			// Safe methods are allowed in 0-RTT
+		default:
+			// Risky methods MUST be rejected or retried with confirmed handshake (1-RTT)
+			// HTTP 425 (Too Early) tells the client to retry after handshake completion.
+			w.WriteHeader(http.StatusTooEarly)
+			return
+		}
+	}
+
 	// Remove www.
 	if strings.HasPrefix(host, "www.") {
 		host = host[4:]

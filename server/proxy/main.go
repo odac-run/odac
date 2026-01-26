@@ -20,6 +20,7 @@ import (
 	"odac-proxy/config"
 	"odac-proxy/proxy"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -165,6 +166,9 @@ func main() {
 		Addr:      ":443",
 		Handler:   handler,
 		TLSConfig: tlsConfig,
+		QUICConfig: &quic.Config{
+			Allow0RTT: true,
+		},
 	}
 
 	go func() {
