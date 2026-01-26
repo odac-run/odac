@@ -222,7 +222,8 @@ class Mail {
   }
 
   start() {
-    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
+    // Prevent multiple startup attempts which cause port conflicts
+    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec || this.#server_smtp_insecure) return
 
     const self = this
     let options = {
