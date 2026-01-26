@@ -222,8 +222,7 @@ class Mail {
   }
 
   start() {
-    // Prevent multiple startup attempts which cause port conflicts
-    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec || this.#server_smtp_insecure) return
+    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
 
     const self = this
     let options = {
@@ -482,10 +481,33 @@ class Mail {
         error('Error:', err)
       }
     }
-    this.#server_smtp_insecure = new SMTPServer(options)
-    this.#listen(this.#server_smtp_insecure, 25, 'SMTP')
+    // Retry helper for EADDRINUSE errors during zero-downtime updates
+    const MAX_RETRIES = 5
+    const RETRY_DELAY_MS = 1000
 
-    this.#server_smtp_insecure.on('error', err => log('SMTP Server Error: ', err))
+    const listenWithRetry = (serverInstance, port, name, retryCount = 0) => {
+      const serverObj = serverInstance.server || serverInstance
+      serverObj.once('error', err => {
+        if (err.code === 'EADDRINUSE' && retryCount < MAX_RETRIES) {
+          log(`${name} port ${port} in use. Retrying (${retryCount + 1}/${MAX_RETRIES})...`)
+          setTimeout(() => listenWithRetry(serverInstance, port, name, retryCount + 1), RETRY_DELAY_MS)
+        } else if (err.code === 'EADDRINUSE') {
+          error(`${name} failed to bind port ${port} after ${MAX_RETRIES} retries`)
+        } else {
+          error(`${name} error:`, err)
+        }
+      })
+      if (typeof serverInstance.listen === 'function') {
+        serverInstance.listen(port)
+      }
+    }
+
+    this.#server_smtp_insecure = new SMTPServer(options)
+    listenWithRetry(this.#server_smtp_insecure, 25, 'SMTP Insecure')
+    this.#server_smtp_insecure.on('error', err => {
+      if (err.code !== 'EADDRINUSE') log('SMTP Server Error: ', err)
+    })
+    // Handle socket errors to prevent crash
     if (this.#server_smtp_insecure.server) {
       this.#server_smtp_insecure.server.on('connection', socket => {
         socket.on('error', err => {
@@ -493,10 +515,8 @@ class Mail {
         })
       })
     }
-
     this.#server_imap = new server(options)
-    this.#listen(this.#server_imap, 143, 'IMAP')
-
+    this.#server_imap.listen(143, MAX_RETRIES, RETRY_DELAY_MS)
     options.SNICallback = (hostname, callback) => {
       const cached = this.#sslCache.get(hostname)
       if (cached) return callback(null, cached)
@@ -529,11 +549,10 @@ class Mail {
       callback(null, ctx)
     }
     options.secure = true
-
     this.#server_smtp = new SMTPServer(options)
-    this.#listen(this.#server_smtp, 465, 'SMTP Secure')
-
+    listenWithRetry(this.#server_smtp, 465, 'SMTP Secure')
     this.#server_smtp.on('error', err => {
+      if (err.code === 'EADDRINUSE') return // Handled by retry logic
       if (err.code === 'ERR_SSL_HTTP_REQUEST' && err.meta?.remoteAddress) {
         this.#block(err.meta.remoteAddress, 'HTTP request on SMTP port')
       }
@@ -546,48 +565,8 @@ class Mail {
         })
       })
     }
-
     this.#server_imap_sec = new server(options)
-    this.#listen(this.#server_imap_sec, 993, 'IMAP Secure')
-  }
-
-  #listen(serverInstance, port, name) {
-    const attempt = (retries = 0) => {
-      const errorHandler = err => {
-        if (err.code === 'EADDRINUSE') {
-          if (retries % 5 === 0) log(`[${name}] Port ${port} is busy. Retrying... (Attempt ${retries + 1})`)
-          setTimeout(() => {
-            // Cleanup listeners if possible
-            if (typeof serverInstance.removeListener === 'function') {
-              serverInstance.removeListener('error', errorHandler)
-            }
-            // Retrying...
-            attempt(retries + 1)
-          }, 1000)
-        } else {
-          error(`[${name}] Server Error:`, err)
-        }
-      }
-
-      // 1. SMTPServer (EventEmitter)
-      if (typeof serverInstance.once === 'function') {
-        serverInstance.removeListener('error', errorHandler) // Ensure no duplicate listeners
-        serverInstance.once('error', errorHandler)
-      }
-      // 2. Custom Server (IMAP - wrapper)
-      else if (serverInstance.options) {
-        // Hijack the onError callback for the custom server
-        serverInstance.options.onError = errorHandler
-      }
-
-      try {
-        serverInstance.listen(port)
-      } catch (e) {
-        errorHandler(e)
-      }
-    }
-
-    attempt()
+    this.#server_imap_sec.listen(993, MAX_RETRIES, RETRY_DELAY_MS)
   }
 
   stop() {
@@ -601,16 +580,12 @@ class Mail {
         this.#server_smtp = null
       }
       if (this.#server_imap) {
-        this.#server_imap.stop(() => {}) // Updated to .stop()
+        this.#server_imap.close(() => {})
         this.#server_imap = null
       }
       if (this.#server_imap_sec) {
-        this.#server_imap_sec.stop(() => {}) // Updated to .stop()
+        this.#server_imap_sec.close(() => {})
         this.#server_imap_sec = null
-      }
-      // Stop the SMTP client service dependencies
-      if (smtp && typeof smtp.stop === 'function') {
-        smtp.stop()
       }
     } catch (e) {
       error('Error stopping Mail services: %s', e.message)
