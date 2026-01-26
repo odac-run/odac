@@ -63,7 +63,7 @@ class Web {
         })
       }
     }
-    this.server()
+    this.spawnProxy()
   }
 
   checkPort(port) {
@@ -238,7 +238,7 @@ class Web {
 
   async init() {
     this.#loaded = true
-    this.server()
+
     if (!Odac.core('Config').config.web?.path || !fs.existsSync(Odac.core('Config').config.web.path)) {
       if (!Odac.core('Config').config.web) Odac.core('Config').config.web = {}
       // Check environment variable first (Docker support)
@@ -319,6 +319,8 @@ class Web {
   }
 
   spawnProxy() {
+    if (this.#proxyProcess) return
+
     const isWindows = os.platform() === 'win32'
     const proxyName = isWindows ? 'odac-proxy.exe' : 'odac-proxy'
     const binPath = path.resolve(__dirname, '../../bin', proxyName)
@@ -481,12 +483,6 @@ class Web {
       }
       error(`Failed to sync config to proxy: ${e.message}`)
     }
-  }
-
-  server() {
-    // Legacy server method replaced by Go Proxy
-    // Only kept if called by check() repeatedly
-    if (!this.#proxyProcess) this.spawnProxy()
   }
 
   // Removed #handleUpgrade as it is handled by Go Proxy
