@@ -164,8 +164,9 @@ describe('Web', () => {
     test('should initialize with default configuration', async () => {
       await Web.init()
 
-      expect(Web.server).toBeDefined()
-      expect(Web.server).toBeDefined()
+      // Web.server is no longer exposed as the architecture changed to use Go Proxy
+      // We verify initialization by ensuring no error is thrown and config is set
+      expect(mockConfig.config.web).toBeDefined()
     })
 
     test('should set default web path based on platform', async () => {
