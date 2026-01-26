@@ -330,12 +330,13 @@ class Web {
     if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
 
-    const pidFile = path.join(runDir, 'proxy.pid')
+    const instanceId = process.env.ODAC_INSTANCE_ID || 'default'
+    const pidFile = path.join(runDir, `proxy-${instanceId}.pid`)
     const logFile = path.join(logDir, 'proxy.log')
 
-    // Set fixed socket path
+    // Set socket path
     if (!isWindows) {
-      this.#proxySocketPath = path.join(runDir, 'proxy.sock')
+      this.#proxySocketPath = path.join(runDir, `proxy-${instanceId}.sock`)
     }
 
     // 1. Try to adopt existing process
@@ -442,6 +443,25 @@ class Web {
 
       // Give it a moment to start
       setTimeout(() => this.syncConfig(), 1000)
+
+      // 3. Cleanup Previous Instance Files (Garbage Collection)
+      const prevId = process.env.ODAC_PREVIOUS_INSTANCE_ID
+      if (prevId) {
+        // Wait for handover to definitely complete (60s)
+        setTimeout(() => {
+          log(`Cleaning up files from previous instance: ${prevId}`)
+          const prevPidFile = path.join(runDir, `proxy-${prevId}.pid`)
+          const prevSockFile = path.join(runDir, `proxy-${prevId}.sock`)
+
+          try {
+            if (fs.existsSync(prevPidFile)) fs.unlinkSync(prevPidFile)
+            if (fs.existsSync(prevSockFile)) fs.unlinkSync(prevSockFile)
+            log(`Cleanup successful for region ${prevId}`)
+          } catch (e) {
+            log(`Warning: Failed to cleanup previous instance files: ${e.message}`)
+          }
+        }, 60000)
+      }
     } catch (err) {
       error(`Failed to spawn Go Proxy: ${err.message}`)
     }

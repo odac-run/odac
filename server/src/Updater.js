@@ -282,7 +282,7 @@ class Updater {
       const createOptions = {
         name: newName,
         Image: this.#image,
-        Env: env,
+        Env: env.filter(e => !e.startsWith('ODAC_UPDATE_MODE=') && !e.startsWith('ODAC_INSTANCE_ID=')),
         HostConfig: {
           Binds: binds,
           Privileged: true,
@@ -296,6 +296,9 @@ class Updater {
         log('Platform: Linux. Using Zero Downtime Update Strategy.')
 
         createOptions.Env.push('ODAC_UPDATE_MODE=true')
+        createOptions.Env.push('ODAC_INSTANCE_ID=' + require('crypto').randomUUID())
+        const currentInstanceId = process.env.ODAC_INSTANCE_ID || 'default'
+        createOptions.Env.push(`ODAC_PREVIOUS_INSTANCE_ID=${currentInstanceId}`)
         createOptions.Env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
         // Use separate log file for update process
         createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
