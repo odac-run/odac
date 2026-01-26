@@ -797,7 +797,7 @@ class smtp {
   }
 
   // Public method to clear caches
-  clearCaches() {
+  stop() {
     this.mxCache.clear()
     this.rateLimiter.clear()
     for (const [, connection] of this.connectionPool.entries()) {
@@ -808,7 +808,7 @@ class smtp {
       }
     }
     this.connectionPool.clear()
-    log('SMTP', 'All caches and connections cleared')
+    log('SMTP', 'Service stopped, all caches and connections cleared')
   }
 
   // Public method to update configuration

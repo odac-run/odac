@@ -556,13 +556,15 @@ class Mail {
         this.#server_smtp = null
       }
       if (this.#server_imap) {
-        this.#server_imap.close(() => {})
+        this.#server_imap.stop(() => {})
         this.#server_imap = null
       }
       if (this.#server_imap_sec) {
-        this.#server_imap_sec.close(() => {})
+        this.#server_imap_sec.stop(() => {})
         this.#server_imap_sec = null
       }
+      // Stop the SMTP client service (connection pools etc)
+      smtp.stop()
     } catch (e) {
       error('Error stopping Mail services: %s', e.message)
     }
