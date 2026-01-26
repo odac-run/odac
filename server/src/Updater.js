@@ -206,9 +206,9 @@ class Updater {
       log('Git not found. Installing...')
       if (process.platform === 'linux') {
         try {
-          // Check for apk (Alpine) - use which instead of command -v (shell built-in)
+          // Check for apk (Alpine) - try running it directly
           try {
-            await execAsync('which apk')
+            await execAsync('apk --version')
             log('Detected Alpine Linux. Installing git via apk...')
             await execAsync('apk add --no-cache git')
             return
@@ -216,9 +216,10 @@ class Updater {
             // Not Alpine
           }
 
-          // Check for apt-get (Debian/Ubuntu)
+          // Check for apt-get (Debian/Ubuntu) - try running it directly
           try {
-            await execAsync('which apt-get')
+            // apt-get -v usually returns 0 if installed
+            await execAsync('apt-get -v')
             log('Detected Debian/Ubuntu. Installing git via apt-get...')
             // Use DEBIAN_FRONTEND=noninteractive to prevent hanging on prompts
             await execAsync('apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git')
@@ -286,8 +287,10 @@ class Updater {
         HostConfig: {
           Binds: binds,
           Privileged: true,
+          CapAdd: ['NET_ADMIN', 'NET_BIND_SERVICE'],
           RestartPolicy: {Name: 'unless-stopped'} // Default policy for production
-        }
+        },
+        Tty: true
       }
 
       // Platform Specific Configuration
