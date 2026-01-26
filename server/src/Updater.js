@@ -307,7 +307,7 @@ class Updater {
         createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
 
         createOptions.HostConfig.NetworkMode = 'host'
-        createOptions.HostConfig.PidMode = 'host'
+        // NOTE: PidMode: 'host' is NOT needed and breaks package managers (apk, apt-get)
         createOptions.HostConfig.RestartPolicy = {Name: 'no'}
 
         // Initialize Listener FIRST to avoid race condition with fast containers
