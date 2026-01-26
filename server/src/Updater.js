@@ -105,6 +105,20 @@ class Updater {
       return Odac.server('Api').result(false, 'Update already in progress')
     }
     this.#updating = true
+
+    // DEBUG: Test stop commands only
+    log('DEBUG: Testing stop commands...')
+    try {
+      log('DEBUG: Calling Server.stop()...')
+      Odac.server('Server').stop()
+      log('DEBUG: Server.stop() completed')
+    } catch (e) {
+      error('DEBUG: Server.stop() failed: %s', e.message)
+    }
+    this.#updating = false
+    return Odac.server('Api').result(true, 'DEBUG: Stop test completed')
+
+    /* DISABLED FOR DEBUG
     const available = await this.#checkForUpdates()
     if (!available) {
       log('System is up to date.')
@@ -121,6 +135,7 @@ class Updater {
       }
     }, 1)
     return Odac.server('Api').result(true, 'Update process started')
+    */
   }
 
   /**
@@ -130,6 +145,7 @@ class Updater {
     return this.#isUpdateMode
   }
 
+  // eslint-disable-next-line no-unused-private-class-members
   async #checkForUpdates() {
     if (this.#isBuildMode) {
       log('Custom channel detected (%s). Forcing update check to true.', this.#channel)
