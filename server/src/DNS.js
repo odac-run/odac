@@ -171,13 +171,13 @@ class DNS {
       // Check what's using port 53
       try {
         const port53Info = this.#execHost(
-          'lsof -i :53 2>/dev/null || netstat -tulpn 2>/dev/null | grep :53 || ss -tulpn 2>/dev/null | grep :53 || echo "Port 53 appears to be free"',
+          '(lsof -i :53 2>/dev/null || (netstat -tulpn 2>/dev/null | grep :53) || (ss -tulpn 2>/dev/null | grep :53)) || echo "Port 53 appears to be free"',
           {
             encoding: 'utf8',
             timeout: 5000
           }
         )
-        log('Port 53 status:', port53Info.trim() || 'No processes found on port 53')
+        log('Port 53 status:', port53Info.trim())
       } catch (err) {
         log('Could not check port 53 status:', err.message)
       }
