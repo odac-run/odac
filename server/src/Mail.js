@@ -569,24 +569,42 @@ class Mail {
     this.#server_imap_sec.listen(993, MAX_RETRIES, RETRY_DELAY_MS)
   }
 
-  stop() {
+  async stop() {
+    const closePromises = []
     try {
       if (this.#server_smtp_insecure) {
-        this.#server_smtp_insecure.close(() => {})
+        closePromises.push(
+          new Promise(resolve => {
+            this.#server_smtp_insecure.close(resolve)
+          })
+        )
         this.#server_smtp_insecure = null
       }
       if (this.#server_smtp) {
-        this.#server_smtp.close(() => {})
+        closePromises.push(
+          new Promise(resolve => {
+            this.#server_smtp.close(resolve)
+          })
+        )
         this.#server_smtp = null
       }
       if (this.#server_imap) {
-        this.#server_imap.stop(() => {})
+        closePromises.push(
+          new Promise(resolve => {
+            this.#server_imap.stop(resolve)
+          })
+        )
         this.#server_imap = null
       }
       if (this.#server_imap_sec) {
-        this.#server_imap_sec.stop(() => {})
+        closePromises.push(
+          new Promise(resolve => {
+            this.#server_imap_sec.stop(resolve)
+          })
+        )
         this.#server_imap_sec = null
       }
+      await Promise.all(closePromises)
       // Clean up SMTP client resources
       smtp.stop()
     } catch (e) {

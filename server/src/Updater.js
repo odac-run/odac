@@ -478,7 +478,7 @@ class Updater {
     // while we handle the graceful shutdown of internal services.
 
     log('Stopping internal services...')
-    Odac.server('Server').stop() // Stops App, Web, Mail, etc.
+    await Odac.server('Server').stop() // Stops App, Web, Mail, etc.
 
     // Note: process.exit() will be called in #selfDestruct
   }

@@ -31,12 +31,12 @@ class Server {
     }, 1000)
   }
 
-  stop() {
-    Odac.server('Web').stop()
-    Odac.server('Mail').stop()
-    Odac.server('DNS').stop()
-    Odac.server('Api').stop()
-    Odac.server('Hub').stop()
+  async stop() {
+    await Odac.server('Web').stop()
+    await Odac.server('Mail').stop()
+    await Odac.server('DNS').stop()
+    await Odac.server('Api').stop()
+    await Odac.server('Hub').stop()
   }
 }
 
