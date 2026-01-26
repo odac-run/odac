@@ -15,10 +15,10 @@ class server {
    * Start listening on the specified port with retry mechanism for EADDRINUSE.
    * Used during zero-downtime updates when the old container hasn't released the port yet.
    * @param {number} port - Port number to listen on (default: 993)
-   * @param {number} maxRetries - Maximum retry attempts (default: 5)
+   * @param {number} maxRetries - Maximum retry attempts (default: 15)
    * @param {number} retryDelayMs - Delay between retries in milliseconds (default: 1000)
    */
-  listen(port, maxRetries = 5, retryDelayMs = 1000) {
+  listen(port, maxRetries = 15, retryDelayMs = 1000) {
     if (!port) port = 993
     this.#port = port
     this.#maxRetries = maxRetries
@@ -27,7 +27,7 @@ class server {
   }
 
   #port = 993
-  #maxRetries = 5
+  #maxRetries = 15
   #retryDelayMs = 1000
   #retryCount = 0
 

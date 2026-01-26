@@ -482,7 +482,7 @@ class Mail {
       }
     }
     // Retry helper for EADDRINUSE errors during zero-downtime updates
-    const MAX_RETRIES = 5
+    const MAX_RETRIES = 15
     const RETRY_DELAY_MS = 1000
 
     const listenWithRetry = (serverInstance, port, name, retryCount = 0) => {
