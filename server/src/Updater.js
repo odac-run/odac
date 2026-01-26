@@ -206,9 +206,9 @@ class Updater {
       log('Git not found. Installing...')
       if (process.platform === 'linux') {
         try {
-          // Check for apk (Alpine)
+          // Check for apk (Alpine) - use which instead of command -v (shell built-in)
           try {
-            await execAsync('command -v apk')
+            await execAsync('which apk')
             log('Detected Alpine Linux. Installing git via apk...')
             await execAsync('apk add --no-cache git')
             return
@@ -218,7 +218,7 @@ class Updater {
 
           // Check for apt-get (Debian/Ubuntu)
           try {
-            await execAsync('command -v apt-get')
+            await execAsync('which apt-get')
             log('Detected Debian/Ubuntu. Installing git via apt-get...')
             // Use DEBIAN_FRONTEND=noninteractive to prevent hanging on prompts
             await execAsync('apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git')
