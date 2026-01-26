@@ -206,8 +206,28 @@ class Updater {
       log('Git not found. Installing...')
       if (process.platform === 'linux') {
         try {
-          // Detect package manager (Alpine vs Debian/Ubuntu)
-          await execAsync('apk add --no-cache git || (apt-get update && apt-get install -y git)')
+          // Check for apk (Alpine)
+          try {
+            await execAsync('command -v apk')
+            log('Detected Alpine Linux. Installing git via apk...')
+            await execAsync('apk add --no-cache git')
+            return
+          } catch {
+            // Not Alpine
+          }
+
+          // Check for apt-get (Debian/Ubuntu)
+          try {
+            await execAsync('command -v apt-get')
+            log('Detected Debian/Ubuntu. Installing git via apt-get...')
+            // Use DEBIAN_FRONTEND=noninteractive to prevent hanging on prompts
+            await execAsync('apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git')
+            return
+          } catch {
+            // Not Debian
+          }
+
+          throw new Error('No supported package manager found (apk, apt-get)')
         } catch (e) {
           throw new Error('Failed to install git: ' + e.message)
         }
