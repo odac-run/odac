@@ -304,6 +304,9 @@ class Updater {
         createOptions.HostConfig.PidMode = 'host'
         createOptions.HostConfig.RestartPolicy = {Name: 'no'}
 
+        // Initialize Listener FIRST to avoid race condition with fast containers
+        const completionPromise = await this.#createUpdateListener()
+
         log('Creating new container: %s', newName)
         const newContainer = await this.#docker.createContainer(createOptions)
 
@@ -317,7 +320,7 @@ class Updater {
 
         log('Update container started successfully. Waiting for handover...')
         try {
-          await this.#createUpdateListener()
+          await completionPromise
         } catch (e) {
           log('Handover failed: %s. Rolling back...', e.message)
           await newContainer.stop().catch(() => {})
@@ -371,94 +374,94 @@ class Updater {
     if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, {recursive: true})
     if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
-    return new Promise((resolve, reject) => {
-      // Extended timeout for stability check (e.g. 5 minutes total)
-      const globalTimeout = setTimeout(() => {
-        server.close()
-        reject(new Error('Update process timed out globally'))
-      }, 300000)
+    let resolveCompletion, rejectCompletion
+    const completionPromise = new Promise((resolve, reject) => {
+      resolveCompletion = resolve
+      rejectCompletion = reject
+    })
 
-      let handoverCompleted = false
+    // Extended timeout for stability check (e.g. 5 minutes total)
+    const globalTimeout = setTimeout(() => {
+      if (server) server.close()
+      rejectCompletion(new Error('Update process timed out globally'))
+    }, 300000)
 
-      const server = net.createServer(socket => {
-        log('New container connected. Starting stability monitoring...')
+    let handoverCompleted = false
 
-        // Monitoring: If socket closes before handover completion, Rollback!
-        socket.on('close', async () => {
-          if (!handoverCompleted) {
-            log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
+    const server = net.createServer(socket => {
+      log('New container connected. Starting stability monitoring...')
+
+      // Monitoring: If socket closes before handover completion, Rollback!
+      socket.on('close', async () => {
+        if (!handoverCompleted) {
+          log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
+          try {
+            await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
+
             try {
-              // Fetch logs from the failed container before removing it
-              await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
-
-              // 1. Remove the failed new container
-              // The new container might have failed before OR after taking the 'odac' name.
-              // We must try to clean it up using both potential names to be safe.
+              const newOne = this.#docker.getContainer(CONTAINER_NAME)
+              await newOne.remove({force: true})
+              log('Failed new container removed.')
+            } catch {
               try {
-                // Priority 1: Check if it already grabbed the main name
-                const newOne = this.#docker.getContainer(CONTAINER_NAME)
-                await newOne.remove({force: true})
-                log('Failed new container removed.')
+                const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
+                await updateOne.remove({force: true})
               } catch {
-                // Priority 2: If finding by main name failed, it likely still has the update name
-                try {
-                  const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
-                  await updateOne.remove({force: true})
-                } catch {
-                  /* Ignore */
-                }
+                /* Ignore */
               }
-
-              // 2. Restore my name from 'odac-backup' to 'odac'
-              const myName = BACKUP_CONTAINER_NAME
-              const me = this.#docker.getContainer(myName)
-              await me.rename({name: CONTAINER_NAME})
-              log('Rollback successful: Restored self to "odac". Continuing operations.')
-            } catch (err) {
-              error('Rollback failed: %s', err.message)
             }
+
+            const myName = BACKUP_CONTAINER_NAME
+            const me = this.#docker.getContainer(myName)
+            await me.rename({name: CONTAINER_NAME})
+            log('Rollback successful: Restored self to "odac". Continuing operations.')
+          } catch (err) {
+            error('Rollback failed: %s', err.message)
           }
-        })
-
-        socket.on('data', async data => {
-          const message = data.toString().trim()
-          log('Received: %s', message)
-
-          if (message === 'HANDSHAKE_READY') {
-            socket.write('HANDSHAKE_ACK')
-          } else if (message === 'TAKEOVER_COMPLETE') {
-            log('Stability check passed. New instance is stable.')
-            handoverCompleted = true
-
-            try {
-              // Now we stop our services
-              await this.#performHandover()
-              socket.write('HANDOVER_COMPLETE')
-              resolve(true)
-            } catch (e) {
-              socket.write(`HANDOVER_FAILED:${e.message}`)
-              reject(e)
-            } finally {
-              clearTimeout(globalTimeout)
-              setTimeout(() => {
-                socket.end()
-                server.close()
-                this.#selfDestruct()
-              }, 1000)
-            }
-          }
-        })
+        }
       })
 
+      socket.on('data', async data => {
+        const message = data.toString().trim()
+        log('Received: %s', message)
+
+        if (message === 'HANDSHAKE_READY') {
+          socket.write('HANDSHAKE_ACK')
+        } else if (message === 'TAKEOVER_COMPLETE') {
+          log('Stability check passed. New instance is stable.')
+          handoverCompleted = true
+
+          try {
+            await this.#performHandover()
+            socket.write('HANDOVER_COMPLETE')
+            resolveCompletion(true)
+          } catch (e) {
+            socket.write(`HANDOVER_FAILED:${e.message}`)
+            rejectCompletion(e)
+          } finally {
+            clearTimeout(globalTimeout)
+            setTimeout(() => {
+              socket.end()
+              server.close()
+              this.#selfDestruct()
+            }, 1000)
+          }
+        }
+      })
+    })
+
+    server.on('error', e => {
+      clearTimeout(globalTimeout)
+      rejectCompletion(e)
+    })
+
+    return new Promise((resolveListening, rejectListening) => {
       server.listen(socketPath, () => {
         fs.chmodSync(socketPath, 0o666)
         log('Listening on update socket: %s', socketPath)
+        resolveListening(completionPromise)
       })
-
-      server.on('error', e => {
-        clearTimeout(globalTimeout)
-        reject(e)
-      })
+      server.on('error', err => rejectListening(err))
     })
   }
 
