@@ -305,7 +305,8 @@ class Updater {
         createOptions.HostConfig.RestartPolicy = {Name: 'no'}
 
         // Initialize Listener FIRST to avoid race condition with fast containers
-        const completionPromise = await this.#createUpdateListener()
+        // Destructure to get the pending promise without awaiting it (Deadlock fix)
+        const {completion: completionPromise} = await this.#createUpdateListener()
 
         log('Creating new container: %s', newName)
         const newContainer = await this.#docker.createContainer(createOptions)
@@ -459,7 +460,8 @@ class Updater {
       server.listen(socketPath, () => {
         fs.chmodSync(socketPath, 0o666)
         log('Listening on update socket: %s', socketPath)
-        resolveListening(completionPromise)
+        // Return object to prevent await from unwrapping the inner promise immediately (Deadlock fix)
+        resolveListening({completion: completionPromise})
       })
       server.on('error', err => rejectListening(err))
     })
