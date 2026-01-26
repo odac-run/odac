@@ -1,4 +1,6 @@
 class Server {
+  #checkInterval = null
+
   async init() {
     Odac.core('Config').config.server.pid = process.pid
     Odac.core('Config').config.server.started = Date.now()
@@ -20,8 +22,8 @@ class Server {
       }, 1000)
     })
 
-    setTimeout(function () {
-      setInterval(function () {
+    setTimeout(() => {
+      this.#checkInterval = setInterval(() => {
         Odac.server('App').check()
         Odac.server('SSL').check()
         Odac.server('Web').check()
@@ -31,12 +33,23 @@ class Server {
     }, 1000)
   }
 
-  stop() {
-    Odac.server('Web').stop()
+  stop(exceptWeb = false) {
+    // Stop check interval first to prevent services from restarting
+    if (this.#checkInterval) {
+      clearInterval(this.#checkInterval)
+      this.#checkInterval = null
+    }
+    // Stop non-web services first (they don't support SO_REUSEPORT)
     Odac.server('Mail').stop()
     Odac.server('DNS').stop()
     Odac.server('Api').stop()
     Odac.server('Hub').stop()
+
+    // Web is stopped last (or not at all if exceptWeb=true)
+    // This allows new container's Web to start BEFORE old one stops (SO_REUSEPORT)
+    if (!exceptWeb) {
+      Odac.server('Web').stop()
+    }
   }
 }
 

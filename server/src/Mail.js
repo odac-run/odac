@@ -481,9 +481,32 @@ class Mail {
         error('Error:', err)
       }
     }
+    // Retry helper for EADDRINUSE errors during zero-downtime updates
+    const MAX_RETRIES = 15
+    const RETRY_DELAY_MS = 1000
+
+    const listenWithRetry = (serverInstance, port, name, retryCount = 0) => {
+      const serverObj = serverInstance.server || serverInstance
+      serverObj.once('error', err => {
+        if (err.code === 'EADDRINUSE' && retryCount < MAX_RETRIES) {
+          log(`${name} port ${port} in use. Retrying (${retryCount + 1}/${MAX_RETRIES})...`)
+          setTimeout(() => listenWithRetry(serverInstance, port, name, retryCount + 1), RETRY_DELAY_MS)
+        } else if (err.code === 'EADDRINUSE') {
+          error(`${name} failed to bind port ${port} after ${MAX_RETRIES} retries`)
+        } else {
+          error(`${name} error:`, err)
+        }
+      })
+      if (typeof serverInstance.listen === 'function') {
+        serverInstance.listen(port)
+      }
+    }
+
     this.#server_smtp_insecure = new SMTPServer(options)
-    this.#server_smtp_insecure.listen(25)
-    this.#server_smtp_insecure.on('error', err => log('SMTP Server Error: ', err))
+    listenWithRetry(this.#server_smtp_insecure, 25, 'SMTP Insecure')
+    this.#server_smtp_insecure.on('error', err => {
+      if (err.code !== 'EADDRINUSE') log('SMTP Server Error: ', err)
+    })
     // Handle socket errors to prevent crash
     if (this.#server_smtp_insecure.server) {
       this.#server_smtp_insecure.server.on('connection', socket => {
@@ -493,7 +516,7 @@ class Mail {
       })
     }
     this.#server_imap = new server(options)
-    this.#server_imap.listen(143)
+    this.#server_imap.listen(143, MAX_RETRIES, RETRY_DELAY_MS)
     options.SNICallback = (hostname, callback) => {
       const cached = this.#sslCache.get(hostname)
       if (cached) return callback(null, cached)
@@ -527,8 +550,9 @@ class Mail {
     }
     options.secure = true
     this.#server_smtp = new SMTPServer(options)
-    this.#server_smtp.listen(465)
+    listenWithRetry(this.#server_smtp, 465, 'SMTP Secure')
     this.#server_smtp.on('error', err => {
+      if (err.code === 'EADDRINUSE') return // Handled by retry logic
       if (err.code === 'ERR_SSL_HTTP_REQUEST' && err.meta?.remoteAddress) {
         this.#block(err.meta.remoteAddress, 'HTTP request on SMTP port')
       }
@@ -542,7 +566,7 @@ class Mail {
       })
     }
     this.#server_imap_sec = new server(options)
-    this.#server_imap_sec.listen(993)
+    this.#server_imap_sec.listen(993, MAX_RETRIES, RETRY_DELAY_MS)
   }
 
   stop() {
@@ -556,13 +580,15 @@ class Mail {
         this.#server_smtp = null
       }
       if (this.#server_imap) {
-        this.#server_imap.close(() => {})
+        this.#server_imap.stop(() => {})
         this.#server_imap = null
       }
       if (this.#server_imap_sec) {
-        this.#server_imap_sec.close(() => {})
+        this.#server_imap_sec.stop(() => {})
         this.#server_imap_sec = null
       }
+      // Clean up SMTP client resources
+      smtp.stop()
     } catch (e) {
       error('Error stopping Mail services: %s', e.message)
     }

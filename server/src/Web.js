@@ -63,7 +63,7 @@ class Web {
         })
       }
     }
-    this.server()
+    this.spawnProxy()
   }
 
   checkPort(port) {
@@ -238,7 +238,7 @@ class Web {
 
   async init() {
     this.#loaded = true
-    this.server()
+
     if (!Odac.core('Config').config.web?.path || !fs.existsSync(Odac.core('Config').config.web.path)) {
       if (!Odac.core('Config').config.web) Odac.core('Config').config.web = {}
       // Check environment variable first (Docker support)
@@ -319,6 +319,8 @@ class Web {
   }
 
   spawnProxy() {
+    if (this.#proxyProcess) return
+
     const isWindows = os.platform() === 'win32'
     const proxyName = isWindows ? 'odac-proxy.exe' : 'odac-proxy'
     const binPath = path.resolve(__dirname, '../../bin', proxyName)
@@ -328,51 +330,97 @@ class Web {
     if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
 
-    const pidFile = path.join(runDir, 'proxy.pid')
+    const instanceId = process.env.ODAC_INSTANCE_ID || 'default'
+    const pidFile = path.join(runDir, `proxy-${instanceId}.pid`)
     const logFile = path.join(logDir, 'proxy.log')
 
-    // Set fixed socket path
+    // Set socket path
     if (!isWindows) {
-      this.#proxySocketPath = path.join(runDir, 'proxy.sock')
+      this.#proxySocketPath = path.join(runDir, `proxy-${instanceId}.sock`)
     }
 
     // 1. Try to adopt existing process
-    // 1. Try to adopt existing process
     // We try to read directly to avoid TOCTOU race condition (checking existence then reading)
-    try {
-      const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
-      // Check if running
-      process.kill(pid, 0)
+    // SKIP adoption if we are in Update Mode (we need a fresh proxy)
+    const isUpdateMode = process.env.ODAC_UPDATE_MODE === 'true'
 
-      log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
+    if (!isUpdateMode) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
+        // 1. Check if PID exists/running
+        process.kill(pid, 0)
 
-      // Create a fake process object to manage it
-      this.#proxyProcess = {
-        pid,
-        kill: () => {
+        // 2. Validate it's actually our Proxy (check if socket/port is active)
+        // If we are in Socket mode, the socket file MUST exist
+        if (!isWindows) {
+          if (!fs.existsSync(this.#proxySocketPath)) {
+            log(`PID ${pid} exists but socket file is missing. PID reuse detected or proxy crashed. Ignoring orphan...`)
+            // We don't kill the process because it might be a random system process reusing the PID
+            // Just clean the PID file and proceed to spawn new
+            try {
+              fs.unlinkSync(pidFile)
+            } catch {
+              /* ignore */
+            }
+            throw new Error('Socket missing') // Break to catch block to spawn new
+          }
+        }
+
+        // 3. Double Check: Verify process name to be sure it is 'odac-proxy'
+        // This prevents connecting to a random process that might have reused the PID
+        // SECURITY: PID Reuse Attack Vector Mitigation
+        try {
+          // Simple check: If we can read /proc/PID/cmdline (Linux)
+          const procPath = `/proc/${pid}/cmdline`
+          if (fs.existsSync(procPath)) {
+            const cmdline = fs.readFileSync(procPath, 'utf8')
+            if (!cmdline.includes('odac-proxy')) {
+              log(`PID ${pid} is active but command line does not match proxy. PID reuse detected!`)
+              try {
+                fs.unlinkSync(pidFile)
+              } catch {
+                /* ignore */
+              }
+              throw new Error('PID reuse detected')
+            }
+          }
+        } catch (e) {
+          // If we can't read proc (e.g. permission or Mac), we rely on Socket check above
+          if (e.message === 'PID reuse detected') throw e
+        }
+
+        log(`Found orphaned Go Proxy (PID: ${pid}). Reconnecting...`)
+
+        // Create a fake process object to manage it
+        this.#proxyProcess = {
+          pid,
+          kill: () => {
+            try {
+              process.kill(pid)
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        // Sync config immediately
+        this.syncConfig()
+        return
+      } catch (err) {
+        // Logic for when we fail to adopt the process
+        if (err.code !== 'ENOENT') {
+          // If error is NOT "File not found", it means file exists but maybe corrupt or process dead
+          log(`Orphaned proxy PID file issue. Cleaning up.`)
           try {
-            process.kill(pid)
+            fs.unlinkSync(pidFile)
           } catch {
             /* ignore */
           }
         }
+        // If err.code IS 'ENOENT', it simply means no PID file exists, so we proceed to start a new one.
       }
-
-      // Sync config immediately
-      this.syncConfig()
-      return
-    } catch (err) {
-      // Logic for when we fail to adopt the process
-      if (err.code !== 'ENOENT') {
-        // If error is NOT "File not found", it means file exists but maybe corrupt or process dead
-        log(`Orphaned proxy PID file issue. Cleaning up.`)
-        try {
-          fs.unlinkSync(pidFile)
-        } catch {
-          /* ignore */
-        }
-      }
-      // If err.code IS 'ENOENT', it simply means no PID file exists, so we proceed to start a new one.
+    } else {
+      log('Update mode detected. Forcing new Proxy instance spawn...')
     }
 
     if (!fs.existsSync(binPath)) {
@@ -405,7 +453,9 @@ class Web {
         try {
           // Use 'wx' flag to ensure we don't overwrite a PID file created by a concurrent process
           // This resolves the TOCTOU (Time-of-check to time-of-use) race condition
-          fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString(), {flag: 'wx'})
+          // UNLESS in update mode, where we deliberately take over.
+          const flags = isUpdateMode ? 'w' : 'wx'
+          fs.writeFileSync(pidFile, this.#proxyProcess.pid.toString(), {flag: flags})
           log(`Go Proxy started with PID ${this.#proxyProcess.pid}`)
         } catch (err) {
           if (err.code === 'EEXIST') {
@@ -431,6 +481,25 @@ class Web {
 
       // Give it a moment to start
       setTimeout(() => this.syncConfig(), 1000)
+
+      // 3. Cleanup Previous Instance Files (Garbage Collection)
+      const prevId = process.env.ODAC_PREVIOUS_INSTANCE_ID
+      if (prevId) {
+        // Wait for handover to definitely complete (60s)
+        setTimeout(() => {
+          log(`Cleaning up files from previous instance: ${prevId}`)
+          const prevPidFile = path.join(runDir, `proxy-${prevId}.pid`)
+          const prevSockFile = path.join(runDir, `proxy-${prevId}.sock`)
+
+          try {
+            if (fs.existsSync(prevPidFile)) fs.unlinkSync(prevPidFile)
+            if (fs.existsSync(prevSockFile)) fs.unlinkSync(prevSockFile)
+            log(`Cleanup successful for region ${prevId}`)
+          } catch (e) {
+            log(`Warning: Failed to cleanup previous instance files: ${e.message}`)
+          }
+        }, 60000)
+      }
     } catch (err) {
       error(`Failed to spawn Go Proxy: ${err.message}`)
     }
@@ -472,12 +541,6 @@ class Web {
       }
       error(`Failed to sync config to proxy: ${e.message}`)
     }
-  }
-
-  server() {
-    // Legacy server method replaced by Go Proxy
-    // Only kept if called by check() repeatedly
-    if (!this.#proxyProcess) this.spawnProxy()
   }
 
   // Removed #handleUpgrade as it is handled by Go Proxy
