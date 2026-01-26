@@ -44,6 +44,24 @@ jobs:
       - name: Get version
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Generate Release Notes
+        id: ai_notes
+        if: steps.version.outputs.version != ''
+        uses: odac-run/actions/actions/release-notes@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          michelangelo: ${{ secrets.MICHELANGELO }}
+        timeout-minutes: 15
+        continue-on-error: true
+      - name: Update Release
+        uses: softprops/action-gh-release@v1
+        if: steps.ai_notes.outcome == 'success' && steps.version.outputs.version != ''
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          body_path: RELEASE_NOTE.md
+          draft: false
+          prerelease: false
       
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
