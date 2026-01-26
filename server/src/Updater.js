@@ -163,6 +163,10 @@ class Updater {
     return true
   }
 
+  /**
+   * Downloads the update (image or source) to the local machine.
+   * Ensures the artifact is available before execution.
+   */
   async download() {
     if (this.#isBuildMode) {
       return this.#buildFromSource()
@@ -254,6 +258,10 @@ class Updater {
     log('Git clone via Docker Sidecar successful.')
   }
 
+  /**
+   * Orchestrates the update execution process using Zero-Downtime strategy on Linux.
+   * Manages container lifecycle, socket handover, and rollback on failure.
+   */
   async execute() {
     log('Launching update process...')
 
@@ -390,6 +398,11 @@ class Updater {
     }
   }
 
+  /**
+   * Creates the update listener socket for the handshake protocol.
+   * Returns a promise that resolves when the socket is listening, fulfilling the race condition fix.
+   * @returns {Promise<{completion: Promise<boolean>}>}
+   */
   async #createUpdateListener() {
     const socketPath = '/app/storage/run/update.sock'
     const socketDir = '/app/storage/run'
