@@ -16,6 +16,8 @@ import (
 	"odac-proxy/api"
 	"odac-proxy/config"
 	"odac-proxy/proxy"
+
+	"github.com/quic-go/quic-go/http3"
 )
 
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
@@ -126,7 +128,7 @@ func main() {
 	// Start HTTPS Server (Port 443)
 	tlsConfig := &tls.Config{
 		GetCertificate:           prx.GetCertificate,
-		NextProtos:               []string{"h2", "http/1.1"},
+		NextProtos:               []string{"h3", "h2", "http/1.1"},
 		MinVersion:               tls.VersionTLS12,
 		PreferServerCipherSuites: true, // Stronger security for TLS 1.2
 		CipherSuites: []uint16{
@@ -148,6 +150,21 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    32 << 10, // 32 KB limit for headers to prevent DoS
 	}
+
+	// Start HTTP/3 Server (UDP :443)
+	h3Server := &http3.Server{
+		Addr:      ":443",
+		Handler:   handler,
+		TLSConfig: tlsConfig,
+	}
+
+	go func() {
+		log.Println("Starting HTTP/3 server on :443 (UDP)")
+		if err := h3Server.ListenAndServe(); err != nil {
+			// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
+			log.Printf("HTTP/3 server failed: %v", err)
+		}
+	}()
 
 	go func() {
 		log.Println("Starting HTTPS server on :443")
@@ -171,14 +188,20 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown both servers
+	// Shutdown all servers
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
+
+	go func() {
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+	}()
 
 	go func() {
 		defer wg.Done()
-		if err := httpServer.Shutdown(ctx); err != nil {
-			log.Printf("HTTP server shutdown error: %v", err)
+		if err := h3Server.Shutdown(ctx); err != nil {
+			log.Printf("HTTP/3 server shutdown error: %v", err)
 		}
 	}()
 

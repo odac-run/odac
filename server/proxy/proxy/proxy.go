@@ -93,6 +93,8 @@ func NewProxy() *Proxy {
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
+			// Advertise HTTP/3 (QUIC) support
+			r.Header.Set("Alt-Svc", `h3=":443"; ma=2592000`)
 
 			// Security Headers: Apply defaults only if upstream didn't set them
 			// This allows apps to override these (e.g. allowing iframes via X-Frame-Options)
