@@ -33,17 +33,23 @@ class Server {
     }, 1000)
   }
 
-  stop() {
+  stop(exceptWeb = false) {
     // Stop check interval first to prevent services from restarting
     if (this.#checkInterval) {
       clearInterval(this.#checkInterval)
       this.#checkInterval = null
     }
-    Odac.server('Web').stop()
+    // Stop non-web services first (they don't support SO_REUSEPORT)
     Odac.server('Mail').stop()
     Odac.server('DNS').stop()
     Odac.server('Api').stop()
     Odac.server('Hub').stop()
+
+    // Web is stopped last (or not at all if exceptWeb=true)
+    // This allows new container's Web to start BEFORE old one stops (SO_REUSEPORT)
+    if (!exceptWeb) {
+      Odac.server('Web').stop()
+    }
   }
 }
 

@@ -394,9 +394,10 @@ class Updater {
     }, 300000)
 
     let handoverCompleted = false
+    let servicesRestarted = false
 
     const server = net.createServer(socket => {
-      log('New container connected. Starting stability monitoring...')
+      log('New container connected. Starting handover...')
 
       // Monitoring: If socket closes before handover completion, Rollback!
       socket.on('close', async () => {
@@ -405,6 +406,15 @@ class Updater {
           try {
             await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
 
+            // Restart services immediately
+            if (!servicesRestarted) {
+              log('Restarting services for rollback...')
+              servicesRestarted = true
+              Odac.server('Server').init() // Restart all services
+              log('Services restarted successfully')
+            }
+
+            // Clean up failed containers
             try {
               const newOne = this.#docker.getContainer(CONTAINER_NAME)
               await newOne.remove({force: true})
@@ -418,6 +428,7 @@ class Updater {
               }
             }
 
+            // Restore name
             const myName = BACKUP_CONTAINER_NAME
             const me = this.#docker.getContainer(myName)
             await me.rename({name: CONTAINER_NAME})
@@ -433,13 +444,36 @@ class Updater {
         log('Received: %s', message)
 
         if (message === 'HANDSHAKE_READY') {
+          log('New container ready. Stopping services (except Web) and releasing ports...')
+
+          // Stop all services EXCEPT Web (Mail, DNS, Api, Hub)
+          // Web continues running due to SO_REUSEPORT - new container's Web will overlap
+          try {
+            Odac.server('Server').stop(true) // exceptWeb = true
+            log('Non-Web services stopped. Ports released. Web still running.')
+          } catch (e) {
+            error('Failed to stop services: %s', e.message)
+          }
+
+          // Send ACK - NEW can now start ALL services (including Web)
           socket.write('HANDSHAKE_ACK')
+          log('ACK sent. New container can now bind ports (Web will overlap via SO_REUSEPORT).')
+        } else if (message === 'WEB_READY') {
+          log("New container's Web is stable. Stopping old Web now...")
+
+          // Stop Web service immediately - NEW's Web is proven to work
+          try {
+            Odac.server('Web').stop()
+            log('Old Web stopped. Zero-downtime handover complete (overlap: ~3s).')
+          } catch (e) {
+            error('Failed to stop Web: %s', e.message)
+          }
         } else if (message === 'TAKEOVER_COMPLETE') {
           log('Stability check passed. New instance is stable.')
           handoverCompleted = true
 
           try {
-            await this.#performHandover()
+            // Services already stopped, just cleanup and exit
             socket.write('HANDOVER_COMPLETE')
             resolveCompletion(true)
           } catch (e) {
@@ -473,21 +507,16 @@ class Updater {
     })
   }
 
-  async #performHandover() {
-    log('Performing handover...')
-    // Rename current container (backup)
-    // Rename new container (primary)
-    // Since we are inside the container, we rely on the NEW container taking over
-    // while we handle the graceful shutdown of internal services.
-
-    log('Stopping internal services...')
-    Odac.server('Server').stop() // Stops App, Web, Mail, etc.
-
-    // Note: process.exit() will be called in #selfDestruct
-  }
-
   async #selfDestruct() {
-    log('Old container mission complete. Disabling restart policy and exiting.')
+    log('Old container mission complete. Stopping Web and exiting.')
+
+    // Stop Web service now (was kept running during handover for zero-downtime)
+    try {
+      Odac.server('Web').stop()
+      log('Web service stopped.')
+    } catch (e) {
+      error('Failed to stop Web: %s', e.message)
+    }
 
     // Disable restart policy to prevent Docker from restarting this container
     try {
@@ -573,13 +602,19 @@ class Updater {
 
             // 2. Start Services (Trigger Ready)
             this.#triggerReady()
-            log('Services started. Waiting 15s for stability...')
+            log('Services started. Waiting 3s for Web stability...')
 
-            // 3. Wait 15 Seconds
+            // 3. Wait 3 Seconds - Web Stability Check
             setTimeout(() => {
-              log('Stability check passed (15s). Signaling completion...')
-              socket.write('TAKEOVER_COMPLETE')
-            }, 15000)
+              log('Web stability passed (3s). Signaling old container to stop Web...')
+              socket.write('WEB_READY')
+
+              // 4. Wait 12 Seconds more - General System Stability Check
+              setTimeout(() => {
+                log('General stability check passed (15s total). Signaling completion...')
+                socket.write('TAKEOVER_COMPLETE')
+              }, 12000)
+            }, 3000)
           } catch (e) {
             error('Startup failed: %s', e.message)
             socket.destroy()
