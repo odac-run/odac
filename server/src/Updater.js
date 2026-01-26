@@ -472,6 +472,13 @@ class Updater {
         const message = data.toString().trim()
         log('Received: %s', message)
 
+        // --- ZERO-DOWNTIME HANDSHAKE PROTOCOL ---
+        // Phase 1 (HANDSHAKE_READY): Old instance releases non-critical ports (Mail, DNS, Api).
+        //                            Web stays UP to serve requests during overlap (SO_REUSEPORT).
+        // Phase 2 (HANDSHAKE_ACK):   Old instance signals New instance to bind ports.
+        // Phase 3 (WEB_READY):       New instance confirms Web is active. Old instance stops Web.
+        // Phase 4 (TAKEOVER_COMPLETE): Final stability confirmed. Old instance self-destructs.
+
         if (message === 'HANDSHAKE_READY') {
           log('New container ready. Stopping services (except Web) and releasing ports...')
 

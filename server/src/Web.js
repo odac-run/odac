@@ -368,6 +368,7 @@ class Web {
 
         // 3. Double Check: Verify process name to be sure it is 'odac-proxy'
         // This prevents connecting to a random process that might have reused the PID
+        // SECURITY: PID Reuse Attack Vector Mitigation
         try {
           // Simple check: If we can read /proc/PID/cmdline (Linux)
           const procPath = `/proc/${pid}/cmdline`
