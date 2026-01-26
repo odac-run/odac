@@ -224,6 +224,7 @@ class Mail {
   start() {
     if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
 
+    const self = this
     let options = {
       logger: true,
       tls: {minVersion: 'TLSv1.2'},
@@ -231,74 +232,43 @@ class Mail {
       banner: 'ODAC',
       size: 1024 * 1024 * 10,
       authOptional: true,
-      SNICallback: (hostname, callback) => {
-        const cached = this.#sslCache.get(hostname)
-        if (cached) return callback(null, cached)
-
-        let ssl = Odac.core('Config').config.ssl ?? {}
-        let sslOptions = {}
-        while (!Odac.core('Config').config.websites[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
-        let website = Odac.core('Config').config.websites[hostname]
-        if (
-          website &&
-          website.cert.ssl &&
-          website.cert.ssl.key &&
-          website.cert.ssl.cert &&
-          fs.existsSync(website.cert.ssl.key) &&
-          fs.existsSync(website.cert.ssl.cert)
-        ) {
-          sslOptions = {
-            key: fs.readFileSync(website.cert.ssl.key),
-            cert: fs.readFileSync(website.cert.ssl.cert)
-          }
-        } else {
-          sslOptions = {
-            key: fs.readFileSync(ssl.key),
-            cert: fs.readFileSync(ssl.cert)
-          }
-        }
-        sslOptions.minVersion = 'TLSv1.2'
-        const ctx = tls.createSecureContext(sslOptions)
-        this.#sslCache.set(hostname, ctx)
-        callback(null, ctx)
-      },
-      onConnect: (session, callback) => {
-        if (this.#isBlocked(session.remoteAddress)) {
+      onConnect(session, callback) {
+        if (self.#isBlocked(session.remoteAddress)) {
           return callback(new Error('Your IP is blocked due to suspicious activity.'))
         }
         return callback()
       },
-      onAuth: (auth, session, callback) => {
+      onAuth(auth, session, callback) {
         let ip = session.remoteAddress
         // Basic format check
-        if (!this.#isValidEmail(auth.username)) {
-          this.#handleFailedAuth(ip)
+        if (!self.#isValidEmail(auth.username)) {
+          self.#handleFailedAuth(ip)
           return callback(new Error('Invalid username or password'))
         }
 
-        this.exists(auth.username).then(async result => {
+        self.exists(auth.username).then(async result => {
           if (result && (await bcrypt.compare(auth.password, result.password))) {
             // Successful login, clear attempts
-            if (this.#clients[ip]) delete this.#clients[ip]
+            if (self.#clients[ip]) delete self.#clients[ip]
             return callback(null, {user: auth.username})
           }
 
-          this.#handleFailedAuth(ip)
+          self.#handleFailedAuth(ip)
           return callback(new Error('Invalid username or password'))
         })
       },
-      onAppend: (data, callback) => {
+      onAppend(data, callback) {
         parser(data.message, {}, async (err, parsed) => {
           if (err) {
             error(err)
             return callback(err)
           }
-          await this.storeInternal(data.address, parsed, data.mailbox, data.flags)
+          await self.#store(data.address, parsed, data.mailbox, data.flags)
           callback()
         })
       },
-      onExpunge: (data, callback) => {
-        this.#db.all(
+      onExpunge(data, callback) {
+        self.#db.all(
           "SELECT uid FROM mail_received WHERE email = ? AND mailbox = ? AND flags LIKE '%deleted%'",
           [data.address, data.mailbox],
           (err, rows) => {
@@ -307,7 +277,7 @@ class Mail {
               return callback(err)
             }
             let uids = rows.map(row => row.uid)
-            this.#db.run(
+            self.#db.run(
               "DELETE FROM mail_received WHERE email = ? AND mailbox = ? AND flags LIKE '%deleted%'",
               [data.address, data.mailbox],
               err => {
@@ -321,7 +291,7 @@ class Mail {
           }
         )
       },
-      onData: (stream, session, callback) => {
+      onData(stream, session, callback) {
         parser(stream, {}, async (err, parsed) => {
           if (err) return error(err)
           // log('ON DATA:', session);
@@ -329,7 +299,7 @@ class Mail {
             error('Missing recipient address')
             return callback(new Error('Invalid recipient'))
           }
-          if (!this.#isValidEmail(parsed.to.value[0].address)) {
+          if (!self.#isValidEmail(parsed.to.value[0].address)) {
             error('Invalid recipient:', parsed.to.value[0].address)
             return callback(new Error('Invalid recipient'))
           }
@@ -337,11 +307,11 @@ class Mail {
             error('Missing sender address')
             return callback(new Error('Invalid sender'))
           }
-          if (!this.#isValidEmail(parsed.from.value[0].address)) {
+          if (!self.#isValidEmail(parsed.from.value[0].address)) {
             error('Invalid sender:', parsed.from.value[0].address)
             return callback(new Error('Invalid sender'))
           }
-          let sender = await this.exists(parsed.from.value[0].address)
+          let sender = await self.exists(parsed.from.value[0].address)
           if (sender && (!session.user || parsed.from.value[0].address !== session.user)) {
             error('Unexpected sender:', parsed.from.value[0].address)
             return callback(new Error('Unexpected sender'))
@@ -349,18 +319,18 @@ class Mail {
           if (
             !sender &&
             !['hostmaster', 'postmaster'].includes(parsed.to.value[0].address.split('@')[0]) &&
-            !(await this.exists(parsed.to.value[0].address))
+            !(await self.exists(parsed.to.value[0].address))
           ) {
             error('Unexpected recipient:', parsed.to.value[0].address)
             return callback(new Error('Unexpected recipient'))
           }
-          await this.storeInternal(session.user ?? parsed.to.value[0].address, parsed)
+          await self.#store(session.user ?? parsed.to.value[0].address, parsed)
           if (session.user && parsed.from.value[0].address === session.user) smtp.send(parsed)
           callback()
         })
       },
-      onCreate: (data, callback) => {
-        this.#db.run('INSERT INTO mail_box (email, title) VALUES (?, ?)', [data.address, data.mailbox], err => {
+      onCreate(data, callback) {
+        self.#db.run('INSERT INTO mail_box (email, title) VALUES (?, ?)', [data.address, data.mailbox], err => {
           if (err) {
             error(err)
             return callback(err)
@@ -368,8 +338,8 @@ class Mail {
           callback()
         })
       },
-      onDelete: (data, callback) => {
-        this.#db.run('DELETE FROM mail_box WHERE email = ? AND title = ?', [data.address, data.mailbox], err => {
+      onDelete(data, callback) {
+        self.#db.run('DELETE FROM mail_box WHERE email = ? AND title = ?', [data.address, data.mailbox], err => {
           if (err) {
             error(err)
             return callback(err)
@@ -377,8 +347,8 @@ class Mail {
           callback()
         })
       },
-      onRename: (data, callback) => {
-        this.#db.run(
+      onRename(data, callback) {
+        self.#db.run(
           'UPDATE mail_box SET title = ? WHERE email = ? AND title = ?',
           [data.newMailbox, data.address, data.oldMailbox],
           err => {
@@ -390,13 +360,13 @@ class Mail {
           }
         )
       },
-      onFetch: (data, session, callback) => {
+      onFetch(data, session, callback) {
         let limit = ``
         if (data.limit) {
           if (data.limit[0] && !isNaN(data.limit[0])) limit += `AND uid >= ${parseInt(data.limit[0])} `
           if (data.limit[1] && !isNaN(data.limit[1])) limit += `AND uid <= ${parseInt(data.limit[1])} `
         }
-        this.#db.all(
+        self.#db.all(
           `SELECT * FROM mail_received
                               WHERE email = ? AND mailbox = ? ${limit}
                               ORDER BY id DESC`,
@@ -410,8 +380,8 @@ class Mail {
           }
         )
       },
-      onList: (data, callback) => {
-        this.#db.all('SELECT title FROM mail_box WHERE email = ?', [data.address], (err, rows) => {
+      onList(data, callback) {
+        self.#db.all('SELECT title FROM mail_box WHERE email = ?', [data.address], (err, rows) => {
           if (err) {
             error(err)
             return callback(err)
@@ -421,8 +391,8 @@ class Mail {
           callback(null, boxes)
         })
       },
-      onLsub: (data, callback) => {
-        this.#db.all('SELECT title FROM mail_box WHERE email = ?', [data.address], (err, rows) => {
+      onLsub(data, callback) {
+        self.#db.all('SELECT title FROM mail_box WHERE email = ?', [data.address], (err, rows) => {
           if (err) {
             error(err)
             return callback(err)
@@ -432,16 +402,16 @@ class Mail {
           callback(null, boxes)
         })
       },
-      onMailFrom: (address, session, callback) => {
-        if (!this.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
+      onMailFrom(address, session, callback) {
+        if (!self.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
         return callback()
       },
-      onRcptTo: (address, session, callback) => {
-        if (!this.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
+      onRcptTo(address, session, callback) {
+        if (!self.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
         return callback()
       },
-      onSelect: (data, session, callback) => {
-        this.#db.get(
+      onSelect(data, session, callback) {
+        self.#db.get(
           "SELECT COUNT(*) AS 'exists', SUM(IIF(flags LIKE '%seen%', 0, 1)) AS 'unseen', MAX(uid) + 1 AS uidnext, MAX(uid) AS uidvalidity FROM mail_received WHERE email = ? AND mailbox = ?",
           [data.address, data.mailbox],
           (err, row) => {
@@ -453,7 +423,7 @@ class Mail {
           }
         )
       },
-      onStore: (data, session, callback) => {
+      onStore(data, session, callback) {
         let uids = data.uids
         for (let flag of data.flags) {
           for (let uid of uids) {
@@ -461,7 +431,7 @@ class Mail {
             if (uid.includes(':')) uid = uid.split(':')
             switch (data.action) {
               case 'add':
-                this.#db.run(
+                self.#db.run(
                   `UPDATE mail_received
                                     SET flags = JSON_INSERT(flags, '$[#]', ?)
                                     WHERE email = ? AND uid BETWEEN ? AND ? AND flags NOT LIKE ?`,
@@ -475,7 +445,7 @@ class Mail {
                 )
                 break
               case 'remove':
-                this.#db.run(
+                self.#db.run(
                   `UPDATE mail_received
                                     SET flags = JSON_REMOVE(flags, (SELECT value FROM JSON_EACH(flags) WHERE value = ?))
                                     WHERE email = ? AND uid BETWEEN ? AND ? AND flags LIKE ?`,
@@ -489,7 +459,7 @@ class Mail {
                 )
                 break
               case 'set':
-                this.#db.run(
+                self.#db.run(
                   `UPDATE mail_received
                                     SET flags = JSON_SET(flags, '$', ?)
                                     WHERE email = ? AND uid BETWEEN ? AND ?`,
@@ -511,84 +481,112 @@ class Mail {
         error('Error:', err)
       }
     }
-
-    // 1. SMTP Insecure (25)
     this.#server_smtp_insecure = new SMTPServer(options)
-    this.#attachErrorHandlers(this.#server_smtp_insecure, 'SMTP')
-    this.#listenWithRetry('SMTP', 25, this.#server_smtp_insecure)
+    this.#listen(this.#server_smtp_insecure, 25, 'SMTP')
 
-    // 2. IMAP (143)
+    this.#server_smtp_insecure.on('error', err => log('SMTP Server Error: ', err))
+    if (this.#server_smtp_insecure.server) {
+      this.#server_smtp_insecure.server.on('connection', socket => {
+        socket.on('error', err => {
+          if (err.code !== 'ECONNRESET') error('SMTP Socket Error:', err)
+        })
+      })
+    }
+
     this.#server_imap = new server(options)
-    this.#listenWithRetry('IMAP', 143, this.#server_imap)
+    this.#listen(this.#server_imap, 143, 'IMAP')
 
-    // 3. SMTP Secure (465)
-    const optionsSecure = {...options, secure: true}
-    this.#server_smtp = new SMTPServer(optionsSecure)
+    options.SNICallback = (hostname, callback) => {
+      const cached = this.#sslCache.get(hostname)
+      if (cached) return callback(null, cached)
+
+      let ssl = Odac.core('Config').config.ssl ?? {}
+      let sslOptions = {}
+      while (!Odac.core('Config').config.websites[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
+      let website = Odac.core('Config').config.websites[hostname]
+      if (
+        website &&
+        website.cert.ssl &&
+        website.cert.ssl.key &&
+        website.cert.ssl.cert &&
+        fs.existsSync(website.cert.ssl.key) &&
+        fs.existsSync(website.cert.ssl.cert)
+      ) {
+        sslOptions = {
+          key: fs.readFileSync(website.cert.ssl.key),
+          cert: fs.readFileSync(website.cert.ssl.cert)
+        }
+      } else {
+        sslOptions = {
+          key: fs.readFileSync(ssl.key),
+          cert: fs.readFileSync(ssl.cert)
+        }
+      }
+      sslOptions.minVersion = 'TLSv1.2'
+      const ctx = tls.createSecureContext(sslOptions)
+      this.#sslCache.set(hostname, ctx)
+      callback(null, ctx)
+    }
+    options.secure = true
+
+    this.#server_smtp = new SMTPServer(options)
+    this.#listen(this.#server_smtp, 465, 'SMTP Secure')
+
     this.#server_smtp.on('error', err => {
       if (err.code === 'ERR_SSL_HTTP_REQUEST' && err.meta?.remoteAddress) {
         this.#block(err.meta.remoteAddress, 'HTTP request on SMTP port')
       }
       error('SMTP Server Error: ', err)
     })
-    this.#attachErrorHandlers(this.#server_smtp, 'SMTP:SEC')
-    this.#listenWithRetry('SMTP:SEC', 465, this.#server_smtp)
-
-    // 4. IMAP Secure (993)
-    this.#server_imap_sec = new server(optionsSecure)
-    // Custom IMAP server wrapper needs its error handler via constructor options ideally,
-    // but looking at previous code, `server.js` listens for error on the internal tls server.
-    // We can just call listen.
-    this.#listenWithRetry('IMAP:SEC', 993, this.#server_imap_sec)
-  }
-
-  #attachErrorHandlers(serverInstance, name) {
-    serverInstance.on('error', err => {
-      if (err.code !== 'EADDRINUSE') {
-        log(`${name} Server Error: `, err)
-      }
-    })
-    if (serverInstance.server) {
-      serverInstance.server.on('connection', socket => {
+    if (this.#server_smtp.server) {
+      this.#server_smtp.server.on('connection', socket => {
         socket.on('error', err => {
-          if (err.code !== 'ECONNRESET') error(`${name} Socket Error:`, err)
+          if (err.code !== 'ECONNRESET') error('SMTP Secure Socket Error:', err)
         })
       })
     }
+
+    this.#server_imap_sec = new server(options)
+    this.#listen(this.#server_imap_sec, 993, 'IMAP Secure')
   }
 
-  #listenWithRetry(name, port, serverInstance, retries = 0) {
-    if (!this.#started) return
-
-    // Define a specific error handler for binding
-    const errorHandler = err => {
-      if (err.code === 'EADDRINUSE') {
-        if (retries % 5 === 0) {
-          // Log every 5th attempt to reduce spam
-          log(`[${name}] Port ${port} is busy. Waiting for old instance to release... (Attempt ${retries + 1})`)
+  #listen(serverInstance, port, name) {
+    const attempt = (retries = 0) => {
+      const errorHandler = err => {
+        if (err.code === 'EADDRINUSE') {
+          if (retries % 5 === 0) log(`[${name}] Port ${port} is busy. Retrying... (Attempt ${retries + 1})`)
+          setTimeout(() => {
+            // Cleanup listeners if possible
+            if (typeof serverInstance.removeListener === 'function') {
+              serverInstance.removeListener('error', errorHandler)
+            }
+            // Retrying...
+            attempt(retries + 1)
+          }, 1000)
+        } else {
+          error(`[${name}] Server Error:`, err)
         }
-        setTimeout(() => {
-          // Remove this specific listener to avoid duplicates on retry
-          serverInstance.removeListener('error', errorHandler) // SMTPServer/Net
-          if (serverInstance.server) serverInstance.server.removeListener('error', errorHandler) // Custom wrapper often exposes .server
+      }
 
-          this.#listenWithRetry(name, port, serverInstance, retries + 1)
-        }, 1000)
-      } else {
-        error(`[${name}] Failed to start: ${err.message}`)
+      // 1. SMTPServer (EventEmitter)
+      if (typeof serverInstance.once === 'function') {
+        serverInstance.removeListener('error', errorHandler) // Ensure no duplicate listeners
+        serverInstance.once('error', errorHandler)
+      }
+      // 2. Custom Server (IMAP - wrapper)
+      else if (serverInstance.options) {
+        // Hijack the onError callback for the custom server
+        serverInstance.options.onError = errorHandler
+      }
+
+      try {
+        serverInstance.listen(port)
+      } catch (e) {
+        errorHandler(e)
       }
     }
 
-    // Attach one-time error listener for startup
-    // Note: SMTPServer emits 'error' on the instance.
-    // Our custom 'server.js' emits 'error' on the instance too (forwarded).
-    serverInstance.once('error', errorHandler)
-
-    try {
-      serverInstance.listen(port)
-      // If successful, we might want to log. But 'listening' event is generic.
-    } catch (e) {
-      errorHandler(e)
-    }
+    attempt()
   }
 
   stop() {
@@ -602,15 +600,17 @@ class Mail {
         this.#server_smtp = null
       }
       if (this.#server_imap) {
-        this.#server_imap.stop(() => {})
+        this.#server_imap.stop(() => {}) // Updated to .stop()
         this.#server_imap = null
       }
       if (this.#server_imap_sec) {
-        this.#server_imap_sec.stop(() => {})
+        this.#server_imap_sec.stop(() => {}) // Updated to .stop()
         this.#server_imap_sec = null
       }
-      // Stop the SMTP client service (connection pools etc)
-      smtp.stop()
+      // Stop the SMTP client service dependencies
+      if (smtp && typeof smtp.stop === 'function') {
+        smtp.stop()
+      }
     } catch (e) {
       error('Error stopping Mail services: %s', e.message)
     }
@@ -677,10 +677,6 @@ class Mail {
     mail.attachments = data.attachments ?? []
     smtp.send(mail)
     return Odac.server('Api').result(true, await __('Mail sent successfully.'))
-  }
-
-  storeInternal(email, data, mailbox, flags) {
-    return this.#store(email, data, mailbox, flags)
   }
 
   #store(email, data, mailbox = 'INBOX', flags = '[]') {
