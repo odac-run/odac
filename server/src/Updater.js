@@ -36,6 +36,10 @@ class Updater {
     return this.#channel === 'beta' ? 'dev' : this.#channel
   }
 
+  get #downloadPath() {
+    return '/app/storage/tmp/odac_source'
+  }
+
   /**
    * Initialize Updater.
    * Checks if an update socket exists, meaning we are the new instance in an update process.
@@ -171,27 +175,38 @@ class Updater {
     log('Starting Build from Source (Beta/Dev)...')
 
     try {
-      // 1. Ensure Git is available
-      await this.#ensureGit()
+      // 1. Prepare Source Directory
+      const repo = 'https://github.com/odac-run/odac.git'
+      const branch = this.#targetBranch
 
-      // 2. Prepare Source Directory
-      const sourceDir = '/tmp/odac_source'
-      if (fs.existsSync(sourceDir)) {
-        await execAsync(`rm -rf ${sourceDir}`)
+      if (fs.existsSync(this.#downloadPath)) {
+        log('Removing previous download...')
+        fs.rmSync(this.#downloadPath, {recursive: true, force: true})
       }
 
-      // 3. Clone Repository
-      const branch = this.#targetBranch
-      log(`Cloning ${branch} branch...`)
-      await execAsync(`git clone -b ${branch} https://github.com/odac-run/odac.git ${sourceDir}`)
+      // 2. Clone Repository via Sidecar
+      log('Cloning repository via Docker Sidecar...')
+      // Cloning into a subdirectory within the volume mount to ensure clean path mapping
+      // Sidecar mounts 'odac-storage' to '/git_target'
+      // It clones into '/git_target/tmp/odac_source'
+      // This corresponds to '/app/storage/tmp/odac_source' in OUR container (this.#downloadPath)
+      await this.#gitCloneWithDocker(repo, branch, this.#downloadPath)
 
-      // 4. Build Docker Image
+      // Verify clone
+      if (!fs.existsSync(path.join(this.#downloadPath, 'package.json'))) {
+        throw new Error('Clone failed: package.json not found')
+      }
+
+      // 3. Build Docker Image
       log('Building Docker Image...')
-      // We use the docker CLI for building as it handles context transfer seamlessly
-      await execAsync(`cd ${sourceDir} && docker build -t ${this.#image} .`)
+      // Run docker build from within our container using the mapped socket
+      // The context will be sent from our container to the daemon
+      await execAsync(`cd ${this.#downloadPath} && docker build -t ${this.#image} .`)
 
-      // 5. Cleanup
-      await execAsync(`rm -rf ${sourceDir}`)
+      // 4. Cleanup
+      log('Cleaning up source files...')
+      fs.rmSync(this.#downloadPath, {recursive: true, force: true})
+
       log('Build complete.')
       return true
     } catch (e) {
@@ -199,43 +214,44 @@ class Updater {
     }
   }
 
-  async #ensureGit() {
-    try {
-      await execAsync('git --version')
-    } catch {
-      log('Git not found. Installing...')
-      if (process.platform === 'linux') {
-        try {
-          // Check for apk (Alpine) - try running it directly
-          try {
-            await execAsync('apk --version')
-            log('Detected Alpine Linux. Installing git via apk...')
-            await execAsync('apk add --no-cache git')
-            return
-          } catch {
-            // Not Alpine
-          }
+  async #gitCloneWithDocker(repo, branch, targetDir) {
+    log('Using Docker Sidecar for git operations using target: %s', targetDir)
 
-          // Check for apt-get (Debian/Ubuntu) - try running it directly
-          try {
-            // apt-get -v usually returns 0 if installed
-            await execAsync('apt-get -v')
-            log('Detected Debian/Ubuntu. Installing git via apt-get...')
-            // Use DEBIAN_FRONTEND=noninteractive to prevent hanging on prompts
-            await execAsync('apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git')
-            return
-          } catch {
-            // Not Debian
-          }
+    // Sidecar mounts 'odac-storage' to '/git_target'
+    // It clones into '/git_target/tmp/odac_source'
 
-          throw new Error('No supported package manager found (apk, apt-get)')
-        } catch (e) {
-          throw new Error('Failed to install git: ' + e.message)
-        }
-      } else {
-        throw new Error('Git missing and auto-install not supported on this platform.')
+    const options = {
+      Image: 'alpine/git',
+      Cmd: ['clone', '-b', branch, '--depth', '1', repo, '/git_target/tmp/odac_source'],
+      HostConfig: {
+        Binds: ['odac-storage:/git_target'] // Assumes standard volume name 'odac-storage'
       }
     }
+
+    // Try to pull image first
+    try {
+      await new Promise(resolve => {
+        this.#docker.pull('alpine/git', (err, stream) => {
+          if (err) return resolve() // Ignore pull error (maybe offline/cached)
+          this.#docker.modem.followProgress(stream, resolve)
+        })
+      })
+    } catch {
+      /* ignore */
+    }
+
+    const container = await this.#docker.createContainer(options)
+    await container.start()
+    const streamLog = await container.logs({follow: true, stdout: true, stderr: true})
+    streamLog.pipe(process.stdout) // Pipe logs to our stdout
+
+    const data = await container.wait()
+    await container.remove()
+
+    if (data.StatusCode !== 0) {
+      throw new Error(`Git clone failed with exit code ${data.StatusCode}`)
+    }
+    log('Git clone via Docker Sidecar successful.')
   }
 
   async execute() {
@@ -307,7 +323,7 @@ class Updater {
         createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
 
         createOptions.HostConfig.NetworkMode = 'host'
-        // NOTE: PidMode: 'host' is NOT needed and breaks package managers (apk, apt-get)
+        createOptions.HostConfig.PidMode = 'host'
         createOptions.HostConfig.RestartPolicy = {Name: 'no'}
 
         // Initialize Listener FIRST to avoid race condition with fast containers
