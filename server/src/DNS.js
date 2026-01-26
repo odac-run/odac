@@ -66,24 +66,14 @@ class DNS {
     this.#publish()
   }
 
-  async stop() {
-    const closePromises = []
+  stop() {
     try {
       if (this.#udp) {
-        closePromises.push(
-          new Promise(resolve => {
-            this.#udp.close(resolve)
-          })
-        )
+        this.#udp.close()
       }
       if (this.#tcp) {
-        closePromises.push(
-          new Promise(resolve => {
-            this.#tcp.close(resolve)
-          })
-        )
+        this.#tcp.close()
       }
-      await Promise.all(closePromises)
       this.#loaded = false
     } catch (e) {
       error('Error stopping DNS services: %s', e.message)

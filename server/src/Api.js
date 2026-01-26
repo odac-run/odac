@@ -170,30 +170,20 @@ class Api {
     })
   }
 
-  async stop() {
-    const closePromises = []
+  stop() {
     try {
       if (this.#tcpServer) {
-        closePromises.push(
-          new Promise(resolve => {
-            this.#tcpServer.close(resolve)
-          })
-        )
+        this.#tcpServer.close()
         this.#tcpServer = null
       }
       if (this.#unixServer) {
-        closePromises.push(
-          new Promise(resolve => {
-            this.#unixServer.close(resolve)
-          })
-        )
+        this.#unixServer.close()
         this.#unixServer = null
         // Clean up socket file
         if (fs.existsSync(this.socketPath)) {
           fs.unlinkSync(this.socketPath)
         }
       }
-      await Promise.all(closePromises)
       this.#started = false
     } catch (e) {
       Odac.core('Log').error('Api', `Error stopping API services: ${e.message}`)
