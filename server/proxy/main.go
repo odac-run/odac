@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -320,45 +321,76 @@ func optimizeUDPBuffers() {
 // - Handles packet loss gracefully (up to ~20% loss with minimal degradation)
 // - Reduces bufferbloat by not filling intermediate buffers
 // FQ (Fair Queue) qdisc is required for BBR to function optimally.
+//
+// Note: This is a best-effort optimization. All errors are logged as warnings
+// and the proxy continues to function normally. Safe for shared hosting.
 func optimizeTCPCongestion() {
 	if runtime.GOOS != "linux" {
 		return
 	}
 
-	// Enable BBR congestion control
 	const congestionPath = "/proc/sys/net/ipv4/tcp_congestion_control"
 	const qdiscPath = "/proc/sys/net/core/default_qdisc"
+	const availablePath = "/proc/sys/net/ipv4/tcp_available_congestion_control"
 
-	// Check if BBR is available
-	availablePath := "/proc/sys/net/ipv4/tcp_available_congestion_control"
+	// Quick check: If BBR is already active, nothing to do
+	currentCC, err := os.ReadFile(congestionPath)
+	if err != nil {
+		// Can't read - probably containerized without /proc access
+		return
+	}
+	if strings.TrimSpace(string(currentCC)) == "bbr" {
+		// BBR already active, nothing to do
+		return
+	}
+
+	// Step 1: Check if BBR module is available
 	available, err := os.ReadFile(availablePath)
 	if err != nil {
-		log.Printf("[WARN] Could not read available congestion controls: %v", err)
 		return
 	}
 
+	// Step 2: If BBR not in kernel, try to load the module (fails on OpenVZ/shared hosting)
 	if !strings.Contains(string(available), "bbr") {
-		log.Printf("[WARN] BBR congestion control not available in kernel. Available: %s", strings.TrimSpace(string(available)))
-		return
+		if err := loadKernelModule("tcp_bbr"); err != nil {
+			// OpenVZ, shared hosting, or unprivileged container
+			log.Printf("[INFO] BBR unavailable (virtualized/shared environment), using standard TCP")
+			return
+		}
+		// Re-check after loading module
+		available, _ = os.ReadFile(availablePath)
+		if !strings.Contains(string(available), "bbr") {
+			log.Printf("[INFO] BBR module loaded but not accepted by kernel, using standard TCP")
+			return
+		}
+		log.Printf("[INFO] Loaded tcp_bbr kernel module")
 	}
 
-	// Set FQ qdisc (required for BBR to work optimally)
+	// Step 3: Set FQ qdisc (required for BBR to work optimally)
 	currentQdisc, _ := os.ReadFile(qdiscPath)
 	if strings.TrimSpace(string(currentQdisc)) != "fq" {
-		if err := os.WriteFile(qdiscPath, []byte("fq"), 0644); err != nil {
-			log.Printf("[WARN] Failed to set default_qdisc to fq: %v", err)
-		} else {
+		if err := os.WriteFile(qdiscPath, []byte("fq"), 0644); err == nil {
 			log.Printf("[INFO] Set default_qdisc: %s -> fq", strings.TrimSpace(string(currentQdisc)))
+		} else {
+			// Can't set qdisc but BBR might still work with default qdisc
+			log.Printf("[INFO] Could not set FQ qdisc, BBR may have reduced effectiveness")
 		}
 	}
 
-	// Set BBR congestion control
-	currentCC, _ := os.ReadFile(congestionPath)
-	if strings.TrimSpace(string(currentCC)) != "bbr" {
-		if err := os.WriteFile(congestionPath, []byte("bbr"), 0644); err != nil {
-			log.Printf("[WARN] Failed to enable BBR: %v", err)
-		} else {
-			log.Printf("[INFO] Enabled TCP BBR congestion control: %s -> bbr", strings.TrimSpace(string(currentCC)))
-		}
+	// Step 4: Enable BBR congestion control
+	if err := os.WriteFile(congestionPath, []byte("bbr"), 0644); err == nil {
+		log.Printf("[INFO] Enabled TCP BBR: %s -> bbr", strings.TrimSpace(string(currentCC)))
+	} else {
+		log.Printf("[INFO] Could not enable BBR, continuing with %s", strings.TrimSpace(string(currentCC)))
 	}
+}
+
+// loadKernelModule attempts to load a kernel module using modprobe.
+// This requires root/privileged access and is a best-effort operation.
+func loadKernelModule(moduleName string) error {
+	cmd := exec.Command("modprobe", moduleName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, string(output))
+	}
+	return nil
 }
