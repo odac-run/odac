@@ -78,7 +78,9 @@ func NewProxy() *Proxy {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          1000,
+		// MaxIdleConns: 10000 ensures we can reuse many connections in high-throughput scenarios
+		// (Performance > Memory for this Enterprise Proxy)
+		MaxIdleConns:          10000,
 		MaxIdleConnsPerHost:   1000,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -93,6 +95,8 @@ func NewProxy() *Proxy {
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
+			// Advertise HTTP/3 (QUIC) support
+			r.Header.Set("Alt-Svc", `h3=":443"; ma=2592000`)
 
 			// Security Headers: Apply defaults only if upstream didn't set them
 			// This allows apps to override these (e.g. allowing iframes via X-Frame-Options)
@@ -226,6 +230,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if strings.Contains(host, ":") {
 		host, _, _ = net.SplitHostPort(host)
+	}
+
+	// 0-RTT (Early Data) Security Check
+	// If the TLS handshake is not complete, this request was sent via 0-RTT (Early Data).
+	// RFC 8446 states that 0-RTT data is subject to Replay Attacks.
+	// Therefore, we MUST NOT allow non-idempotent methods (like POST, PUT, DELETE) over 0-RTT.
+	if r.TLS != nil && !r.TLS.HandshakeComplete {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			// Safe methods are allowed in 0-RTT
+		default:
+			// Risky methods MUST be rejected or retried with confirmed handshake (1-RTT)
+			// HTTP 425 (Too Early) tells the client to retry after handshake completion.
+			w.WriteHeader(http.StatusTooEarly)
+			return
+		}
 	}
 
 	// Remove www.

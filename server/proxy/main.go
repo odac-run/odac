@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -16,6 +19,9 @@ import (
 	"odac-proxy/api"
 	"odac-proxy/config"
 	"odac-proxy/proxy"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
@@ -40,6 +46,14 @@ func main() {
 			log.Printf("File descriptor limit set to: %d", rLimit.Cur)
 		}
 	}
+	// Optimize UDP buffers for HTTP/3 (QUIC)
+	// QUIC requires larger buffers than TCP to perform well over UDP.
+	// Since we run in privileged mode, we can try to tune the host kernel.
+	// Optimize UDP buffers for HTTP/3 (QUIC)
+	// QUIC requires larger buffers than TCP to perform well over UDP.
+	// Since we run in privileged mode, we can try to tune the host kernel.
+	// This function contains internal checks to only run on Linux.
+	optimizeUDPBuffers()
 
 	// Initialize components
 	cfg := config.Firewall{Enabled: true} // Default
@@ -126,7 +140,7 @@ func main() {
 	// Start HTTPS Server (Port 443)
 	tlsConfig := &tls.Config{
 		GetCertificate:           prx.GetCertificate,
-		NextProtos:               []string{"h2", "http/1.1"},
+		NextProtos:               []string{"h3", "h2", "http/1.1"},
 		MinVersion:               tls.VersionTLS12,
 		PreferServerCipherSuites: true, // Stronger security for TLS 1.2
 		CipherSuites: []uint16{
@@ -148,6 +162,25 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    32 << 10, // 32 KB limit for headers to prevent DoS
 	}
+
+	// Start HTTP/3 Server (UDP :443)
+	h3Server := &http3.Server{
+		Addr:      ":443",
+		Handler:   handler,
+		TLSConfig: tlsConfig,
+		QUICConfig: &quic.Config{
+			Allow0RTT: true,
+		},
+	}
+
+	go func() {
+		log.Println("Starting HTTP/3 server on :443 (UDP)")
+		if err := h3Server.ListenAndServe(); err != nil {
+			// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
+			log.Printf("HTTP/3 server failed: %v", err)
+			log.Println("Hint: If you see 'message too long' or performance issues, run: sysctl -w net.core.rmem_max=2500000")
+		}
+	}()
 
 	go func() {
 		log.Println("Starting HTTPS server on :443")
@@ -171,14 +204,21 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown both servers
+	// Shutdown all servers
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
 		if err := httpServer.Shutdown(ctx); err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if err := h3Server.Shutdown(ctx); err != nil {
+			log.Printf("HTTP/3 server shutdown error: %v", err)
 		}
 	}()
 
@@ -193,4 +233,50 @@ func main() {
 	wg.Wait()
 
 	log.Println("ODAC Proxy stopped.")
+}
+
+// optimizeUDPBuffers attempts to increase UDP buffer sizes for better QUIC performance.
+// Standard Linux default is usually too low (~212KB), causing packet drops at high speeds.
+// We target 2.5MB which is recommended for high-performance QUIC servers.
+func optimizeUDPBuffers() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+
+	const targetSize = 2500000 // ~2.5 MB
+
+	params := []string{
+		"/proc/sys/net/core/rmem_max",
+		"/proc/sys/net/core/wmem_max",
+	}
+
+	for _, path := range params {
+		// Read current value
+		content, err := os.ReadFile(path)
+		if err != nil {
+			// Fail silently/warn only, as we might not have permissions (e.g. non-root)
+			log.Printf("[WARN] Could not read kernel param %s: %v", path, err)
+			continue
+		}
+
+		valStr := strings.TrimSpace(string(content))
+		currentVal, err := strconv.Atoi(valStr)
+		if err != nil {
+			log.Printf("[WARN] Could not parse kernel param %s value '%s': %v", path, valStr, err)
+			continue
+		}
+
+		if currentVal < targetSize {
+			// Attempt to update
+			err := os.WriteFile(path, []byte(strconv.Itoa(targetSize)), 0644)
+			if err != nil {
+				log.Printf("[WARN] Failed to auto-tune %s: %v. HTTP/3 performance might be limited.", path, err)
+			} else {
+				log.Printf("[INFO] Optimized Kernel Buffer: %s (%d -> %d) for HTTP/3", path, currentVal, targetSize)
+			}
+		} else {
+			// Already optimized
+			// log.Printf("[DEBUG] Kernel param %s is already sufficient (%d)", path, currentVal)
+		}
+	}
 }

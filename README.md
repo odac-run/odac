@@ -6,7 +6,7 @@
 
 ## ✨ Key Features
 
-*   ⚡ **High-Performance Architecture:** Features a hyper-optimized **Go proxy** for the data plane to handle massive concurrency with sub-millisecond latency, significantly outperforming traditional Node.js-only solutions.
+*   ⚡ **High-Performance Architecture:** Features a hyper-optimized **Go proxy** supporting **HTTP/3 (QUIC)** and **0-RTT** for instant page loads. ODAC automatically upgrades *any* application (Node.js, PHP, Python) to the latest web protocols with **zero config**.
 *   🚀 **Zero-Config Deployment:** Deploy applications instantly without complex configuration files. Focus on your code while ODAC handles the infrastructure.
 *   🐳 **Containerized Isolation:** Applications are automatically deployed in secure, lightweight containers. This provides robust resource isolation, preventing "noisy neighbor" issues and enhancing security.
 *   🔒 **Automated Security:** Zero-touch SSL certificate generation and auto-renewal for all your domains.
