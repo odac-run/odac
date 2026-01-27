@@ -49,9 +49,11 @@ func main() {
 	// Optimize UDP buffers for HTTP/3 (QUIC)
 	// QUIC requires larger buffers than TCP to perform well over UDP.
 	// Since we run in privileged mode, we can try to tune the host kernel.
-	if runtime.GOOS == "linux" {
-		optimizeUDPBuffers()
-	}
+	// Optimize UDP buffers for HTTP/3 (QUIC)
+	// QUIC requires larger buffers than TCP to perform well over UDP.
+	// Since we run in privileged mode, we can try to tune the host kernel.
+	// This function contains internal checks to only run on Linux.
+	optimizeUDPBuffers()
 
 	// Initialize components
 	cfg := config.Firewall{Enabled: true} // Default
@@ -237,6 +239,10 @@ func main() {
 // Standard Linux default is usually too low (~212KB), causing packet drops at high speeds.
 // We target 2.5MB which is recommended for high-performance QUIC servers.
 func optimizeUDPBuffers() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+
 	const targetSize = 2500000 // ~2.5 MB
 
 	params := []string{
@@ -249,13 +255,14 @@ func optimizeUDPBuffers() {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			// Fail silently/warn only, as we might not have permissions (e.g. non-root)
-			// log.Printf("[WARN] Could not read kernel param %s: %v", path, err)
+			log.Printf("[WARN] Could not read kernel param %s: %v", path, err)
 			continue
 		}
 
 		valStr := strings.TrimSpace(string(content))
 		currentVal, err := strconv.Atoi(valStr)
 		if err != nil {
+			log.Printf("[WARN] Could not parse kernel param %s value '%s': %v", path, valStr, err)
 			continue
 		}
 
