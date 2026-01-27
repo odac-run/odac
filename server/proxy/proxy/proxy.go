@@ -78,6 +78,8 @@ func NewProxy() *Proxy {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
+		// MaxIdleConns: 10000 ensures we can reuse many connections in high-throughput scenarios
+		// (Performance > Memory for this Enterprise Proxy)
 		MaxIdleConns:          10000,
 		MaxIdleConnsPerHost:   1000,
 		IdleConnTimeout:       90 * time.Second,
