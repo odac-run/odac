@@ -10,7 +10,7 @@ class Monitor {
   #height
   #logs = {content: [], mtime: null, selected: null, watched: [], lastFetch: 0}
   #logging = false
-  #modules = ['api', 'app', 'config', 'container', 'dns', 'hub', 'mail', 'server', 'ssl', 'subdomain', 'updater', 'web']
+  #modules = ['api', 'app', 'config', 'container', 'dns', 'hub', 'mail', 'proxy', 'server', 'ssl', 'subdomain', 'updater', 'web']
   #printing = false
   #selected = 0
   #apps = []
@@ -220,17 +220,50 @@ class Monitor {
     if (this.#logging) return
     this.#logging = true
 
-    const file = os.homedir() + '/.odac/logs/.odac.log'
+    const odacLogFile = os.homedir() + '/.odac/logs/.odac.log'
+    const proxyLogFile = os.homedir() + '/.odac/logs/proxy.log'
     let log = ''
     let mtime = null
 
-    if (fs.existsSync(file)) {
-      mtime = fs.statSync(file).mtime
-      if (JSON.stringify(this.#watch) === JSON.stringify(this.#logs.watched) && mtime == this.#logs.mtime) {
-        this.#logging = false
-        return
-      }
-      log = fs.readFileSync(file, 'utf8')
+    // Read main ODAC log
+    if (fs.existsSync(odacLogFile)) {
+      mtime = fs.statSync(odacLogFile).mtime
+      log = fs.readFileSync(odacLogFile, 'utf8')
+    }
+
+    // Read and merge proxy logs if proxy is selected or watching all
+    const proxyIndex = this.#modules.indexOf('proxy')
+    const isProxySelected = this.#watch.length === 0 || this.#watch.includes(proxyIndex)
+
+    if (isProxySelected && fs.existsSync(proxyLogFile)) {
+      const proxyMtime = fs.statSync(proxyLogFile).mtime
+      if (proxyMtime > mtime) mtime = proxyMtime
+
+      const proxyLog = fs.readFileSync(proxyLogFile, 'utf8')
+      // Convert Go log format to our format for merging
+      // Go format: 2006/01/02 15:04:05.000000 [INFO] Message
+      const proxyLines = proxyLog
+        .trim()
+        .split('\n')
+        .map(line => {
+          // Parse Go log format: "2024/01/27 20:50:49.123456 [INFO] Message"
+          const match = line.match(/^(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\s+(.*)$/)
+          if (match) {
+            const dateStr = match[1].replace(/\//g, '-').replace(' ', 'T')
+            const message = match[2]
+            const isError = message.includes('[ERROR]') || message.includes('[WARN]')
+            return `[${isError ? 'ERR' : 'LOG'}][${dateStr}][proxy] ${message}`
+          }
+          return `[LOG][proxy] ${line}`
+        })
+        .join('\n')
+      log = log + '\n' + proxyLines
+    }
+
+    // Check cache
+    if (JSON.stringify(this.#watch) === JSON.stringify(this.#logs.watched) && mtime == this.#logs.mtime) {
+      this.#logging = false
+      return
     }
 
     const selectedModules = this.#watch.length > 0 ? this.#watch.map(index => this.#modules[index]) : this.#modules
