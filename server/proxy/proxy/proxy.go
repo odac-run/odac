@@ -30,6 +30,10 @@ const (
 	// internalContainerPort is the port used for inter-container communication
 	// when routing requests to Docker containers via their network IP
 	internalContainerPort = "1071"
+
+	// proxyBufferSize is the buffer size for proxying request/response bodies.
+	// 32KB is the Go default for io.Copy, but we pool these to achieve zero-allocation.
+	proxyBufferSize = 32 * 1024
 )
 
 // Define buffer pools to reduce GC pressure and memory allocation
@@ -50,6 +54,15 @@ var (
 			return w
 		},
 	}
+
+	// proxyBufferPool is used by httputil.ReverseProxy for zero-allocation proxying.
+	// This dramatically reduces GC pressure under high concurrency (10K+ connections).
+	proxyBufferPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, proxyBufferSize)
+			return &buf
+		},
+	}
 )
 
 // debugMode enables verbose debug logging when PROXY_DEBUG environment variable is set
@@ -59,6 +72,18 @@ func debugLog(format string, args ...interface{}) {
 	if debugMode {
 		log.Printf(format, args...)
 	}
+}
+
+// bufferPool implements httputil.BufferPool interface for zero-allocation proxying.
+// This is used by ReverseProxy to reuse buffers instead of allocating new ones per request.
+type bufferPool struct{}
+
+func (bufferPool) Get() []byte {
+	return *(proxyBufferPool.Get().(*[]byte))
+}
+
+func (bufferPool) Put(buf []byte) {
+	proxyBufferPool.Put(&buf)
 }
 
 type Proxy struct {
@@ -106,6 +131,7 @@ func NewProxy() *Proxy {
 	p.reverseProxy = &httputil.ReverseProxy{
 		Director:     p.director,
 		Transport:    transport,
+		BufferPool:   bufferPool{}, // Zero-allocation: reuse buffers from pool
 		ErrorHandler: p.errorHandler,
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
