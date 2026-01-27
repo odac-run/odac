@@ -6,14 +6,13 @@
 
 ## ✨ Key Features
 
-*   ⚡ **High-Performance Architecture:** Features a hyper-optimized **Go proxy** supporting **HTTP/3 (QUIC)** and **0-RTT** for instant page loads. ODAC automatically upgrades *any* application (Node.js, PHP, Python) to the latest web protocols with **zero config**.
-*   🚀 **Zero-Config Deployment:** Deploy applications instantly without complex configuration files. Focus on your code while ODAC handles the infrastructure.
-*   🐳 **Containerized Isolation:** Applications are automatically deployed in secure, lightweight containers. This provides robust resource isolation, preventing "noisy neighbor" issues and enhancing security.
-*   🔒 **Automated Security:** Zero-touch SSL certificate generation and auto-renewal for all your domains.
-*   📬 **Integrated Mail Server:** A complete, production-ready IMAP/SMTP solution for managing domain-specific email accounts without external dependencies.
-*   ⚙️ **Advanced Monitoring:** Real-time process management, auto-recovery, and comprehensive CLI-based observability tools.
-*   🔄 **Always-On & Self-Updating:** The system keeps itself secure and up-to-date with zero-downtime over-the-air updates, ensuring your infrastructure never sleeps or rots.
-
+*   🛠️ **Zero-Bloat Architecture:** Engineered for maximum efficiency, leaving almost all system resources for your applications. No external dependencies like Redis, Postgres, Nginx, or Traefik required. Just download and run.
+*   ⚡ **Next-Gen Performance:** Built-in Go Proxy automatically upgrades legacy apps (Node.js, PHP, Python) to HTTP/3 (QUIC) and 0-RTT. Get instant page loads without changing a single line of code.
+*   🚀 **Zero-Config Deployment:** Push your code, and ODAC handles the build, ports, and reverse proxying automatically.
+*   🔄 **Atomic Updates & Self-Healing:** Updates are applied with Zero-Downtime. If a new version fails, ODAC automatically rolls back. Your infrastructure never sleeps or breaks.
+*   🐳 **Secure Isolation:** Applications run in isolated lightweight containers, preventing "noisy neighbor" issues.
+*   🔒 **Autopilot Security:** Zero-touch SSL generation, auto-renewal, and strict traffic analysis (Replay Attack protection).
+*   📬 **Built-in Mail Server:** A production-ready SMTP/IMAP server included. No need for external email services.
 
 
 ## 🚀 Quick Start

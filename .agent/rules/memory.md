@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # User Preferences & Project Rules
 
 ## Communication & workflow
@@ -10,3 +14,4 @@
 
 ## Project Context
 - **Environment:** The system operates within a containerized environment (Docker/K8s). All code must be container-aware (handle PID 1 signals, respect read-only filesystems, use env vars for config).
+- **Architecture:** ODAC is a hybrid system (Node.js Core + Go Proxy). It acts as a zero-dependency solution, excluding external DBs (Redis, Postgres), proxies (Nginx, Traefik), and DNS.
