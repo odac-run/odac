@@ -302,10 +302,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		(p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "")
 	p.mu.RUnlock()
 
+	// Security: Strict Host Validation
+	// If the host is not in our configuration, drop the connection immediately (Status 444).
+	// This prevents IP-based scanners from fingerprinting the server.
 	if !exists {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("ODAC Server"))
+		debugLog("[SECURITY] Unknown host '%s' - rejecting request (anti-scan)", host)
+		if hijacker, ok := w.(http.Hijacker); ok {
+			conn, _, err := hijacker.Hijack()
+			if err == nil {
+				conn.Close()
+				return
+			}
+		}
+		http.Error(w, "", http.StatusNotFound)
 		return
+	}
+
+	// Security: Prevent Domain Fronting (SNI Mismatch)
+	// If TLS SNI exists but Host header differs significantly, it might be an attack.
+	// We allow case-insensitive match.
+	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
+		debugLog("[SECURITY] Host header '%s' mismatch with SNI '%s', possible domain fronting", host, r.TLS.ServerName)
+		// Option: Return 421 Misdirected Request, or just 403.
+		// For strict security, we should reject.
+		// However, to support wildcard certs nicely, we just log for now as 'website' resolution handled wildcard logic.
 	}
 
 	// Security: Force HTTPS if SSL is configured and available

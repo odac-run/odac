@@ -353,8 +353,9 @@ func optimizeTCPCongestion() {
 	// Step 2: If BBR not in kernel, try to load the module (fails on OpenVZ/shared hosting)
 	if !strings.Contains(string(available), "bbr") {
 		if err := loadKernelModule("tcp_bbr"); err != nil {
-			// OpenVZ, shared hosting, or unprivileged container
-			log.Printf("[INFO] BBR unavailable (virtualized/shared environment), using standard TCP")
+			// Log specific error for debugging (is it permission? is it missing file?)
+			log.Printf("[INFO] BBR unavailable. Kernel module load failed: %v", err)
+			log.Printf("[INFO] Using standard TCP congestion control")
 			return
 		}
 		// Re-check after loading module
@@ -386,7 +387,7 @@ func optimizeTCPCongestion() {
 }
 
 // loadKernelModule attempts to load a kernel module using modprobe.
-// This requires root/privileged access and is a best-effort operation.
+// This requires root/privileged access and /lib/modules mounted from host.
 func loadKernelModule(moduleName string) error {
 	cmd := exec.Command("modprobe", moduleName)
 	if output, err := cmd.CombinedOutput(); err != nil {
