@@ -207,6 +207,7 @@ func main() {
 	wg.Add(3)
 
 	go func() {
+		defer wg.Done()
 		if err := httpServer.Shutdown(ctx); err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
 		}
