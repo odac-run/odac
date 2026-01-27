@@ -507,17 +507,32 @@ func isCompressible(contentType string) bool {
 // GetCertificate implements tls.Config.GetCertificate with OCSP Stapling support.
 // OCSP Stapling eliminates the need for clients to contact the CA's OCSP responder,
 // reducing handshake latency by ~100ms and improving privacy.
+//
+// Security: Strict SNI validation is enforced to prevent domain discovery attacks.
+// Requests without SNI or with unknown SNI are rejected to prevent IP-based scanning
+// (Shodan, Censys, etc.) from discovering which domains are hosted on this server.
 func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := hello.ServerName
 	debugLog("[DEBUG] TLS Handshake for SNI: %s", host)
 
+	// Security: Reject empty SNI to prevent IP-based domain discovery
+	// Scanners like Shodan/Censys probe IPs directly without SNI
 	if host == "" {
-		debugLog("[DEBUG] SNI is empty")
-		return nil, nil // Fallback to default cert if any
+		debugLog("[DEBUG] SNI is empty - rejecting connection (anti-scan protection)")
+		return nil, nil // Returns TLS alert: unrecognized_name
 	}
 
 	p.mu.RLock()
 	website, exists := p.resolveWebsite(host)
+
+	// Security: Reject unknown SNI to prevent domain enumeration
+	// Only serve certificates for explicitly configured domains
+	if !exists {
+		p.mu.RUnlock()
+		debugLog("[DEBUG] Unknown SNI '%s' - rejecting connection (anti-scan protection)", host)
+		return nil, nil // Returns TLS alert: unrecognized_name
+	}
+
 	// Check cache
 	if cert, ok := p.sslCache[host]; ok {
 		// Check if OCSP response needs refresh (background refresh)
@@ -536,22 +551,21 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	var certKey, certFile string
 	var source string
 
-	if !exists || website.Cert.SSL.Key == "" || website.Cert.SSL.Cert == "" {
-		// Fallback to Global SSL
-		if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
-			debugLog("[DEBUG] Fallback to Global SSL for %s (Key: %s, Cert: %s)", host, p.globalSSL.Key, p.globalSSL.Cert)
-			certKey = p.globalSSL.Key
-			certFile = p.globalSSL.Cert
-			source = "global"
-		} else {
-			debugLog("[DEBUG] No cert found for %s and no global fallback available", host)
-			return nil, nil // No specific cert found and no global fallback
-		}
-	} else {
+	// Use site-specific cert or fallback to global for KNOWN websites only
+	if website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "" {
 		debugLog("[DEBUG] Found specific cert for %s (Key: %s, Cert: %s)", host, website.Cert.SSL.Key, website.Cert.SSL.Cert)
 		certKey = website.Cert.SSL.Key
 		certFile = website.Cert.SSL.Cert
 		source = "site"
+	} else if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
+		// Global SSL fallback - only for known websites without specific certs
+		debugLog("[DEBUG] Using Global SSL for known website %s", host)
+		certKey = p.globalSSL.Key
+		certFile = p.globalSSL.Cert
+		source = "global"
+	} else {
+		debugLog("[DEBUG] No cert available for known website %s", host)
+		return nil, nil
 	}
 
 	// Load certificate
