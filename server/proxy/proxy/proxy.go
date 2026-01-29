@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -639,68 +640,12 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 
 // fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
 // This is a best-effort operation - if it fails, the certificate works without stapling.
+// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
+// It assumes p.mu is held by the caller.
 func (p *Proxy) fetchAndStapleOCSP(host string, cert *tls.Certificate) {
-	if len(cert.Certificate) < 2 {
-		debugLog("[DEBUG] OCSP: Certificate chain too short for %s, skipping stapling", host)
-		return
-	}
-
-	// Parse leaf and issuer certificates
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
 	if err != nil {
-		debugLog("[DEBUG] OCSP: Failed to parse leaf cert for %s: %v", host, err)
-		return
-	}
-
-	issuer, err := x509.ParseCertificate(cert.Certificate[1])
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Failed to parse issuer cert for %s: %v", host, err)
-		return
-	}
-
-	if len(leaf.OCSPServer) == 0 {
-		debugLog("[DEBUG] OCSP: No OCSP server URL in cert for %s", host)
-		return
-	}
-
-	ocspURL := leaf.OCSPServer[0]
-	debugLog("[DEBUG] OCSP: Fetching staple from %s for %s", ocspURL, host)
-
-	// Create OCSP request
-	ocspReq, err := ocsp.CreateRequest(leaf, issuer, nil)
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Failed to create request for %s: %v", host, err)
-		return
-	}
-
-	// Send POST request (more reliable than GET for large requests)
-	resp, err := p.httpClient.Post(ocspURL, "application/ocsp-request", bytes.NewReader(ocspReq))
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Request failed for %s: %v", host, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		debugLog("[DEBUG] OCSP: Bad status %d for %s", resp.StatusCode, host)
-		return
-	}
-
-	ocspResp, err := io.ReadAll(resp.Body)
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Failed to read response for %s: %v", host, err)
-		return
-	}
-
-	// Parse and validate OCSP response
-	parsedResp, err := ocsp.ParseResponse(ocspResp, issuer)
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Failed to parse response for %s: %v", host, err)
-		return
-	}
-
-	if parsedResp.Status != ocsp.Good {
-		log.Printf("[WARN] OCSP: Certificate status is not good for %s: %d", host, parsedResp.Status)
+		debugLog("[DEBUG] OCSP: Fetch failed for %s: %v", host, err)
 		return
 	}
 
@@ -710,17 +655,95 @@ func (p *Proxy) fetchAndStapleOCSP(host string, cert *tls.Certificate) {
 	// Cache with expiration
 	p.ocspCache[host] = &ocspCacheEntry{
 		response:  ocspResp,
-		expiresAt: parsedResp.NextUpdate,
+		expiresAt: *nextUpdate,
 	}
 
-	debugLog("[DEBUG] OCSP: Successfully stapled for %s (valid until %s)", host, parsedResp.NextUpdate.Format(time.RFC3339))
+	debugLog("[DEBUG] OCSP: Successfully stapled for %s (valid until %s)", host, nextUpdate.Format(time.RFC3339))
+}
+
+// fetchOCSP performs the network request and parsing for OCSP.
+// It is safe to call without holding p.mu.
+func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Time, error) {
+	if len(cert.Certificate) < 2 {
+		return nil, nil, fmt.Errorf("certificate chain too short")
+	}
+
+	// Parse leaf and issuer certificates
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse leaf cert: %v", err)
+	}
+
+	issuer, err := x509.ParseCertificate(cert.Certificate[1])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse issuer cert: %v", err)
+	}
+
+	if len(leaf.OCSPServer) == 0 {
+		return nil, nil, fmt.Errorf("no OCSP server URL in cert")
+	}
+
+	ocspURL := leaf.OCSPServer[0]
+	// debugLog("[DEBUG] OCSP: Fetching staple from %s for %s", ocspURL, host) // Optional: avoid spamming logs
+
+	// Create OCSP request
+	ocspReq, err := ocsp.CreateRequest(leaf, issuer, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Send POST request (more reliable than GET for large requests)
+	resp, err := p.httpClient.Post(ocspURL, "application/ocsp-request", bytes.NewReader(ocspReq))
+	if err != nil {
+		return nil, nil, fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("bad status %d", resp.StatusCode)
+	}
+
+	ocspResp, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	// Parse and validate OCSP response
+	parsedResp, err := ocsp.ParseResponse(ocspResp, issuer)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if parsedResp.Status != ocsp.Good {
+		return nil, nil, fmt.Errorf("certificate status is not good: %d", parsedResp.Status)
+	}
+
+	return ocspResp, &parsedResp.NextUpdate, nil
 }
 
 // refreshOCSPStaple refreshes OCSP staple in background when nearing expiration.
 func (p *Proxy) refreshOCSPStaple(host string, cert *tls.Certificate) {
+	// Performance: Do network I/O WITHOUT holding the lock
+	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
+	if err != nil {
+		debugLog("[DEBUG] OCSP: Update failed for %s: %v", host, err)
+		return
+	}
+
+	// Safety: Clone the certificate struct to avoid Data Race.
+	// We only modify OCSPStaple (slice header), so shallow copy is safe.
+	// The active connections will continue to use the old pointer.
+	newCert := *cert
+	newCert.OCSPStaple = ocspResp
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Re-fetch OCSP
-	p.fetchAndStapleOCSP(host, cert)
+	// Update caches with the new pointer
+	p.sslCache[host] = &newCert
+	p.ocspCache[host] = &ocspCacheEntry{
+		response:  ocspResp,
+		expiresAt: *nextUpdate,
+	}
+	debugLog("[DEBUG] OCSP: Refreshed staple for %s", host)
 }
