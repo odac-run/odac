@@ -359,7 +359,12 @@ func optimizeTCPCongestion() {
 			return
 		}
 		// Re-check after loading module
-		available, _ = os.ReadFile(availablePath)
+		var err error
+		available, err = os.ReadFile(availablePath)
+		if err != nil {
+			log.Printf("[INFO] BBR module loaded but could not verify availability: %v, using standard TCP", err)
+			return
+		}
 		if !strings.Contains(string(available), "bbr") {
 			log.Printf("[INFO] BBR module loaded but not accepted by kernel, using standard TCP")
 			return
