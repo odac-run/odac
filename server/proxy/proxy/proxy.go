@@ -703,7 +703,9 @@ func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Tim
 		return nil, nil, fmt.Errorf("bad status %d", resp.StatusCode)
 	}
 
-	ocspResp, err := io.ReadAll(resp.Body)
+	// Security: Limit response size to prevent OOM attacks (100KB max)
+	// Typical OCSP responses are <4KB, so 100KB is a very safe upper bound.
+	ocspResp, err := io.ReadAll(io.LimitReader(resp.Body, 100*1024))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read response: %v", err)
 	}
