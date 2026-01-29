@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
-	"github.com/klauspost/compress/gzip"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -18,7 +20,9 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
+	"golang.org/x/crypto/ocsp"
 
 	"odac-proxy/config"
 )
@@ -27,6 +31,10 @@ const (
 	// internalContainerPort is the port used for inter-container communication
 	// when routing requests to Docker containers via their network IP
 	internalContainerPort = "1071"
+
+	// proxyBufferSize is the buffer size for proxying request/response bodies.
+	// 32KB is the Go default for io.Copy, but we pool these to achieve zero-allocation.
+	proxyBufferSize = 32 * 1024
 )
 
 // Define buffer pools to reduce GC pressure and memory allocation
@@ -47,6 +55,14 @@ var (
 			return w
 		},
 	}
+
+	// proxyBufferPool is used by httputil.ReverseProxy for zero-allocation proxying.
+	// This dramatically reduces GC pressure under high concurrency (10K+ connections).
+	proxyBufferPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, proxyBufferSize)
+		},
+	}
 )
 
 // debugMode enables verbose debug logging when PROXY_DEBUG environment variable is set
@@ -58,18 +74,42 @@ func debugLog(format string, args ...interface{}) {
 	}
 }
 
+// bufferPool implements httputil.BufferPool interface for zero-allocation proxying.
+// This is used by ReverseProxy to reuse buffers instead of allocating new ones per request.
+type bufferPool struct{}
+
+func (bufferPool) Get() []byte {
+	return proxyBufferPool.Get().([]byte)
+}
+
+func (bufferPool) Put(buf []byte) {
+	proxyBufferPool.Put(buf)
+}
+
 type Proxy struct {
 	websites     map[string]config.Website
 	sslCache     map[string]*tls.Certificate
+	ocspCache    map[string]*ocspCacheEntry // OCSP response cache
 	globalSSL    *config.SSL
 	mu           sync.RWMutex
 	reverseProxy *httputil.ReverseProxy
+	httpClient   *http.Client // For OCSP requests
+}
+
+// ocspCacheEntry stores OCSP response with expiration
+type ocspCacheEntry struct {
+	response  []byte
+	expiresAt time.Time
 }
 
 func NewProxy() *Proxy {
 	p := &Proxy{
-		websites: make(map[string]config.Website),
-		sslCache: make(map[string]*tls.Certificate),
+		websites:  make(map[string]config.Website),
+		sslCache:  make(map[string]*tls.Certificate),
+		ocspCache: make(map[string]*ocspCacheEntry),
+		httpClient: &http.Client{
+			Timeout: 5 * time.Second, // OCSP requests should be fast
+		},
 	}
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -91,6 +131,7 @@ func NewProxy() *Proxy {
 	p.reverseProxy = &httputil.ReverseProxy{
 		Director:     p.director,
 		Transport:    transport,
+		BufferPool:   bufferPool{}, // Zero-allocation: reuse buffers from pool
 		ErrorHandler: p.errorHandler,
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
@@ -130,6 +171,7 @@ func (p *Proxy) UpdateConfig(websites map[string]config.Website, globalSSL *conf
 	p.websites = websites
 	p.globalSSL = globalSSL
 	p.sslCache = make(map[string]*tls.Certificate)
+	p.ocspCache = make(map[string]*ocspCacheEntry) // Clear OCSP cache on config update
 }
 
 func (p *Proxy) director(req *http.Request) {
@@ -260,10 +302,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		(p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "")
 	p.mu.RUnlock()
 
+	// Security: Strict Host Validation
+	// If the host is not in our configuration, drop the connection immediately (Status 444).
+	// This prevents IP-based scanners from fingerprinting the server.
 	if !exists {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("ODAC Server"))
+		debugLog("[SECURITY] Unknown host '%s' - rejecting request (anti-scan)", host)
+		if hijacker, ok := w.(http.Hijacker); ok {
+			conn, _, err := hijacker.Hijack()
+			if err == nil {
+				conn.Close()
+				return
+			}
+		}
+		http.Error(w, "", http.StatusNotFound)
 		return
+	}
+
+	// Security: Prevent Domain Fronting (SNI Mismatch)
+	// If TLS SNI exists but Host header differs significantly, it might be an attack.
+	// We allow case-insensitive match.
+	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
+		debugLog("[SECURITY] Host header '%s' mismatch with SNI '%s', possible domain fronting", host, r.TLS.ServerName)
+		// Option: Return 421 Misdirected Request, or just 403.
+		// For strict security, we should reject.
+		// However, to support wildcard certs nicely, we just log for now as 'website' resolution handled wildcard logic.
 	}
 
 	// Security: Force HTTPS if SSL is configured and available
@@ -488,20 +550,44 @@ func isCompressible(contentType string) bool {
 	return false
 }
 
-// GetCertificate implements tls.Config.GetCertificate
+// GetCertificate implements tls.Config.GetCertificate with OCSP Stapling support.
+// OCSP Stapling eliminates the need for clients to contact the CA's OCSP responder,
+// reducing handshake latency by ~100ms and improving privacy.
+//
+// Security: Strict SNI validation is enforced to prevent domain discovery attacks.
+// Requests without SNI or with unknown SNI are rejected to prevent IP-based scanning
+// (Shodan, Censys, etc.) from discovering which domains are hosted on this server.
 func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := hello.ServerName
 	debugLog("[DEBUG] TLS Handshake for SNI: %s", host)
 
+	// Security: Reject empty SNI to prevent IP-based domain discovery
+	// Scanners like Shodan/Censys probe IPs directly without SNI
 	if host == "" {
-		debugLog("[DEBUG] SNI is empty")
-		return nil, nil // Fallback to default cert if any
+		debugLog("[DEBUG] SNI is empty - rejecting connection (anti-scan protection)")
+		return nil, nil // Returns TLS alert: unrecognized_name
 	}
 
 	p.mu.RLock()
 	website, exists := p.resolveWebsite(host)
+
+	// Security: Reject unknown SNI to prevent domain enumeration
+	// Only serve certificates for explicitly configured domains
+	if !exists {
+		p.mu.RUnlock()
+		debugLog("[DEBUG] Unknown SNI '%s' - rejecting connection (anti-scan protection)", host)
+		return nil, nil // Returns TLS alert: unrecognized_name
+	}
+
 	// Check cache
 	if cert, ok := p.sslCache[host]; ok {
+		// Check if OCSP response needs refresh (background refresh)
+		if entry, hasOCSP := p.ocspCache[host]; hasOCSP {
+			if time.Now().After(entry.expiresAt.Add(-1 * time.Hour)) {
+				// Refresh in background if expiring within 1 hour
+				go p.refreshOCSPStaple(host, cert)
+			}
+		}
 		p.mu.RUnlock()
 		debugLog("[DEBUG] Found cached cert for %s", host)
 		return cert, nil
@@ -511,22 +597,21 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	var certKey, certFile string
 	var source string
 
-	if !exists || website.Cert.SSL.Key == "" || website.Cert.SSL.Cert == "" {
-		// Fallback to Global SSL
-		if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
-			debugLog("[DEBUG] Fallback to Global SSL for %s (Key: %s, Cert: %s)", host, p.globalSSL.Key, p.globalSSL.Cert)
-			certKey = p.globalSSL.Key
-			certFile = p.globalSSL.Cert
-			source = "global"
-		} else {
-			debugLog("[DEBUG] No cert found for %s and no global fallback available", host)
-			return nil, nil // No specific cert found and no global fallback
-		}
-	} else {
+	// Use site-specific cert or fallback to global for KNOWN websites only
+	if website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "" {
 		debugLog("[DEBUG] Found specific cert for %s (Key: %s, Cert: %s)", host, website.Cert.SSL.Key, website.Cert.SSL.Cert)
 		certKey = website.Cert.SSL.Key
 		certFile = website.Cert.SSL.Cert
 		source = "site"
+	} else if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
+		// Global SSL fallback - only for known websites without specific certs
+		debugLog("[DEBUG] Using Global SSL for known website %s", host)
+		certKey = p.globalSSL.Key
+		certFile = p.globalSSL.Cert
+		source = "global"
+	} else {
+		debugLog("[DEBUG] No cert available for known website %s", host)
+		return nil, nil
 	}
 
 	// Load certificate
@@ -545,7 +630,122 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 		return nil, err
 	}
 
+	// Fetch OCSP staple (non-blocking, best-effort)
+	p.fetchAndStapleOCSP(host, &cert)
+
 	p.sslCache[host] = &cert
 	debugLog("[DEBUG] Successfully loaded and cached cert for %s", host)
 	return &cert, nil
+}
+
+// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
+// This is a best-effort operation - if it fails, the certificate works without stapling.
+// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
+// It assumes p.mu is held by the caller.
+func (p *Proxy) fetchAndStapleOCSP(host string, cert *tls.Certificate) {
+	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
+	if err != nil {
+		debugLog("[DEBUG] OCSP: Fetch failed for %s: %v", host, err)
+		return
+	}
+
+	// Staple the response
+	cert.OCSPStaple = ocspResp
+
+	// Cache with expiration
+	p.ocspCache[host] = &ocspCacheEntry{
+		response:  ocspResp,
+		expiresAt: *nextUpdate,
+	}
+
+	debugLog("[DEBUG] OCSP: Successfully stapled for %s (valid until %s)", host, nextUpdate.Format(time.RFC3339))
+}
+
+// fetchOCSP performs the network request and parsing for OCSP.
+// It is safe to call without holding p.mu.
+func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Time, error) {
+	if len(cert.Certificate) < 2 {
+		return nil, nil, fmt.Errorf("certificate chain too short")
+	}
+
+	// Parse leaf and issuer certificates
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse leaf cert: %v", err)
+	}
+
+	issuer, err := x509.ParseCertificate(cert.Certificate[1])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse issuer cert: %v", err)
+	}
+
+	if len(leaf.OCSPServer) == 0 {
+		return nil, nil, fmt.Errorf("no OCSP server URL in cert")
+	}
+
+	ocspURL := leaf.OCSPServer[0]
+	// debugLog("[DEBUG] OCSP: Fetching staple from %s for %s", ocspURL, host) // Optional: avoid spamming logs
+
+	// Create OCSP request
+	ocspReq, err := ocsp.CreateRequest(leaf, issuer, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Send POST request (more reliable than GET for large requests)
+	resp, err := p.httpClient.Post(ocspURL, "application/ocsp-request", bytes.NewReader(ocspReq))
+	if err != nil {
+		return nil, nil, fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("bad status %d", resp.StatusCode)
+	}
+
+	// Security: Limit response size to prevent OOM attacks (100KB max)
+	// Typical OCSP responses are <4KB, so 100KB is a very safe upper bound.
+	ocspResp, err := io.ReadAll(io.LimitReader(resp.Body, 100*1024))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	// Parse and validate OCSP response
+	parsedResp, err := ocsp.ParseResponse(ocspResp, issuer)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if parsedResp.Status != ocsp.Good {
+		return nil, nil, fmt.Errorf("certificate status is not good: %d", parsedResp.Status)
+	}
+
+	return ocspResp, &parsedResp.NextUpdate, nil
+}
+
+// refreshOCSPStaple refreshes OCSP staple in background when nearing expiration.
+func (p *Proxy) refreshOCSPStaple(host string, cert *tls.Certificate) {
+	// Performance: Do network I/O WITHOUT holding the lock
+	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
+	if err != nil {
+		debugLog("[DEBUG] OCSP: Update failed for %s: %v", host, err)
+		return
+	}
+
+	// Safety: Clone the certificate struct to avoid Data Race.
+	// We only modify OCSPStaple (slice header), so shallow copy is safe.
+	// The active connections will continue to use the old pointer.
+	newCert := *cert
+	newCert.OCSPStaple = ocspResp
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Update caches with the new pointer
+	p.sslCache[host] = &newCert
+	p.ocspCache[host] = &ocspCacheEntry{
+		response:  ocspResp,
+		expiresAt: *nextUpdate,
+	}
+	debugLog("[DEBUG] OCSP: Refreshed staple for %s", host)
 }

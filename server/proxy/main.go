@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -46,14 +47,10 @@ func main() {
 			log.Printf("File descriptor limit set to: %d", rLimit.Cur)
 		}
 	}
-	// Optimize UDP buffers for HTTP/3 (QUIC)
-	// QUIC requires larger buffers than TCP to perform well over UDP.
-	// Since we run in privileged mode, we can try to tune the host kernel.
-	// Optimize UDP buffers for HTTP/3 (QUIC)
-	// QUIC requires larger buffers than TCP to perform well over UDP.
-	// Since we run in privileged mode, we can try to tune the host kernel.
-	// This function contains internal checks to only run on Linux.
-	optimizeUDPBuffers()
+	// Optimize kernel parameters for high-performance networking
+	// These functions contain internal checks to only run on Linux with appropriate permissions
+	optimizeUDPBuffers()   // Larger UDP buffers for HTTP/3 (QUIC)
+	optimizeTCPCongestion() // BBR congestion control + FQ qdisc
 
 	// Initialize components
 	cfg := config.Firewall{Enabled: true} // Default
@@ -138,18 +135,54 @@ func main() {
 	}()
 
 	// Start HTTPS Server (Port 443)
+	// ============================================================================
+	// TLS PERFORMANCE & SECURITY OPTIMIZATION (Enterprise-Grade + Post-Quantum)
+	// ============================================================================
+	// 1. Post-Quantum: X25519MLKEM768 hybrid (ML-KEM-768 + X25519, NIST FIPS 203)
+	//    - Protects against "Harvest Now, Decrypt Later" quantum attacks
+	//    - Automatic fallback to X25519 for older clients
+	// 2. Session Tickets: Stateless session resumption (1-RTT, ~50% latency ↓)
+	// 3. Cipher Priority: AES-GCM for AES-NI CPUs, ChaCha20 fallback for ARM
+	// 4. Renegotiation: Disabled to prevent CVE-2009-3555 class attacks
+	// ============================================================================
 	tlsConfig := &tls.Config{
-		GetCertificate:           prx.GetCertificate,
-		NextProtos:               []string{"h3", "h2", "http/1.1"},
-		MinVersion:               tls.VersionTLS12,
-		PreferServerCipherSuites: true, // Stronger security for TLS 1.2
+		GetCertificate: prx.GetCertificate,
+		NextProtos:     []string{"h3", "h2", "http/1.1"},
+		MinVersion:     tls.VersionTLS12,
+
+		// Session Resumption: Critical for reducing handshake latency
+		// Go's TLS server automatically handles session tickets when SessionTicketsDisabled=false
+		// This enables returning clients to resume sessions with 1-RTT instead of full handshake
+		SessionTicketsDisabled: false,
+
+		// Security: Disable TLS renegotiation to prevent CVE-2009-3555 class attacks
+		// Client-initiated renegotiation can be used for DoS and MITM attacks
+		// For a reverse proxy, there's no legitimate use case for renegotiation
+		Renegotiation: tls.RenegotiateNever,
+
+		// Curve Preferences: Post-quantum hybrid first, then classical curves
+		// Order matters: most preferred first, client will use first mutually supported
+		CurvePreferences: []tls.CurveID{
+			tls.X25519MLKEM768, // Post-quantum hybrid: ML-KEM-768 + X25519 (NIST FIPS 203)
+			tls.X25519,         // Classical fallback, ~40% faster than P-256
+			tls.CurveP256,      // Widely compatible fallback
+			tls.CurveP384,      // High-security fallback (slower)
+		},
+
+		// Cipher Suite Priority (TLS 1.2 only - TLS 1.3 uses its own fixed suites)
+		// Order: ECDSA preferred (faster verification), RSA fallback
+		// AES-GCM first for Intel/AMD with AES-NI, ChaCha20 for ARM/mobile
+		PreferServerCipherSuites: true,
 		CipherSuites: []uint16{
+			// ECDSA suites (faster, requires ECDSA cert)
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, // Fastest with AES-NI
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305, // ARM/mobile friendly
+
+			// RSA suites (broader compatibility)
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		},
 	}
 
@@ -279,4 +312,91 @@ func optimizeUDPBuffers() {
 			// log.Printf("[DEBUG] Kernel param %s is already sufficient (%d)", path, currentVal)
 		}
 	}
+}
+
+// optimizeTCPCongestion enables BBR congestion control algorithm for better throughput.
+// BBR (Bottleneck Bandwidth and RTT) is Google's model-based congestion control that:
+// - Measures actual bandwidth and RTT instead of relying on packet loss signals
+// - Achieves 20-50% better throughput on high-latency links (intercontinental)
+// - Handles packet loss gracefully (up to ~20% loss with minimal degradation)
+// - Reduces bufferbloat by not filling intermediate buffers
+// FQ (Fair Queue) qdisc is required for BBR to function optimally.
+//
+// Note: This is a best-effort optimization. All errors are logged as warnings
+// and the proxy continues to function normally. Safe for shared hosting.
+func optimizeTCPCongestion() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+
+	const congestionPath = "/proc/sys/net/ipv4/tcp_congestion_control"
+	const qdiscPath = "/proc/sys/net/core/default_qdisc"
+	const availablePath = "/proc/sys/net/ipv4/tcp_available_congestion_control"
+
+	// Quick check: If BBR is already active, nothing to do
+	currentCC, err := os.ReadFile(congestionPath)
+	if err != nil {
+		// Can't read - probably containerized without /proc access
+		return
+	}
+	if strings.TrimSpace(string(currentCC)) == "bbr" {
+		// BBR already active, nothing to do
+		return
+	}
+
+	// Step 1: Check if BBR module is available
+	available, err := os.ReadFile(availablePath)
+	if err != nil {
+		return
+	}
+
+	// Step 2: If BBR not in kernel, try to load the module (fails on OpenVZ/shared hosting)
+	if !strings.Contains(string(available), "bbr") {
+		if err := loadKernelModule("tcp_bbr"); err != nil {
+			// Log specific error for debugging (is it permission? is it missing file?)
+			log.Printf("[INFO] BBR unavailable. Kernel module load failed: %v", err)
+			log.Printf("[INFO] Using standard TCP congestion control")
+			return
+		}
+		// Re-check after loading module
+		var err error
+		available, err = os.ReadFile(availablePath)
+		if err != nil {
+			log.Printf("[INFO] BBR module loaded but could not verify availability: %v, using standard TCP", err)
+			return
+		}
+		if !strings.Contains(string(available), "bbr") {
+			log.Printf("[INFO] BBR module loaded but not accepted by kernel, using standard TCP")
+			return
+		}
+		log.Printf("[INFO] Loaded tcp_bbr kernel module")
+	}
+
+	// Step 3: Set FQ qdisc (required for BBR to work optimally)
+	currentQdisc, _ := os.ReadFile(qdiscPath)
+	if strings.TrimSpace(string(currentQdisc)) != "fq" {
+		if err := os.WriteFile(qdiscPath, []byte("fq"), 0644); err == nil {
+			log.Printf("[INFO] Set default_qdisc: %s -> fq", strings.TrimSpace(string(currentQdisc)))
+		} else {
+			// Can't set qdisc but BBR might still work with default qdisc
+			log.Printf("[INFO] Could not set FQ qdisc, BBR may have reduced effectiveness")
+		}
+	}
+
+	// Step 4: Enable BBR congestion control
+	if err := os.WriteFile(congestionPath, []byte("bbr"), 0644); err == nil {
+		log.Printf("[INFO] Enabled TCP BBR: %s -> bbr", strings.TrimSpace(string(currentCC)))
+	} else {
+		log.Printf("[INFO] Could not enable BBR, continuing with %s", strings.TrimSpace(string(currentCC)))
+	}
+}
+
+// loadKernelModule attempts to load a kernel module using modprobe.
+// This requires root/privileged access and /lib/modules mounted from host.
+func loadKernelModule(moduleName string) error {
+	cmd := exec.Command("modprobe", moduleName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, string(output))
+	}
+	return nil
 }
