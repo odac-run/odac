@@ -116,6 +116,8 @@ func main() {
 	// Start HTTP Server (Port 80)
 	httpServer := &http.Server{
 		Handler:           handler,
+		ErrorLog:          createErrorLogger(),
+
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       0,
 		WriteTimeout:      0,
@@ -189,6 +191,8 @@ func main() {
 	httpsServer := &http.Server{
 		Handler:           handler,
 		TLSConfig:         tlsConfig,
+		ErrorLog:          createErrorLogger(),
+
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       0,
 		WriteTimeout:      0,
