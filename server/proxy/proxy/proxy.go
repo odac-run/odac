@@ -59,8 +59,7 @@ var (
 	// This dramatically reduces GC pressure under high concurrency (10K+ connections).
 	proxyBufferPool = sync.Pool{
 		New: func() interface{} {
-			buf := make([]byte, proxyBufferSize)
-			return &buf
+			return make([]byte, proxyBufferSize)
 		},
 	}
 )
@@ -79,11 +78,11 @@ func debugLog(format string, args ...interface{}) {
 type bufferPool struct{}
 
 func (bufferPool) Get() []byte {
-	return *(proxyBufferPool.Get().(*[]byte))
+	return proxyBufferPool.Get().([]byte)
 }
 
 func (bufferPool) Put(buf []byte) {
-	proxyBufferPool.Put(&buf)
+	proxyBufferPool.Put(buf)
 }
 
 type Proxy struct {
