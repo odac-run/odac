@@ -45,6 +45,23 @@ class Api {
   #unixServer = null
   #started = false
   #connectionHandler = null
+  #clientTokens = new Map() // Token -> Domain
+
+  addToken(domain) {
+    if (!domain) return
+    const token = this.generateToken(domain)
+    this.#clientTokens.set(token, domain)
+  }
+
+  removeToken(domain) {
+    if (!domain) return
+    const token = this.generateToken(domain)
+    this.#clientTokens.delete(token)
+  }
+
+  generateToken(domain) {
+    return nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(domain).digest('hex')
+  }
 
   allow(ip) {
     this.#allowed.add(ip)
@@ -60,6 +77,9 @@ class Api {
     if (!Odac.core('Config').config.api.auth) {
       Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
     }
+
+    // Pre-load all existing website tokens for O(1) lookup
+    this.reloadTokens()
 
     const handleConnection = (socket, skipIpCheck = false) => {
       // IP check for TCP connections only
@@ -86,11 +106,34 @@ class Api {
         }
 
         const {auth, action, data} = payload || {}
-        if (!auth || auth !== Odac.core('Config').config.api.auth) {
+
+        // Auth Logic: Root vs Client
+        let isRoot = false
+        let clientDomain = null
+
+        if (auth === Odac.core('Config').config.api.auth) {
+          isRoot = true
+        } else if (this.#clientTokens.has(auth)) {
+          clientDomain = this.#clientTokens.get(auth)
+        } else {
           return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
         }
+
         if (!action || !this.#commands[action]) {
           return socket.write(JSON.stringify({id, ...this.result(false, 'unknown_action')}))
+        }
+
+        // RBAC: Client restrictions
+        if (!isRoot) {
+          // Allow only specific commands for containers
+          const allowed = ['mail.send']
+          if (!allowed.includes(action)) {
+            Odac.core('Log').warn('Api', `Blocked unauthorized action '${action}' from domain '${clientDomain}'`)
+            return socket.write(JSON.stringify({id, ...this.result(false, 'permission_denied')}))
+          }
+
+          // Security: Inject Domain Identity into Payload for audit/logic if needed
+          // For now, we trust the Action handler to be safe, but we log the context.
         }
         try {
           const result = await this.#commands[action](...(data ?? []), (process, status, message) => {
@@ -187,6 +230,14 @@ class Api {
       this.#started = false
     } catch (e) {
       Odac.core('Log').error('Api', `Error stopping API services: ${e.message}`)
+    }
+  }
+
+  reloadTokens() {
+    this.#clientTokens.clear()
+    const websites = Odac.core('Config').config.websites || {}
+    for (const domain in websites) {
+      this.addToken(domain)
     }
   }
 

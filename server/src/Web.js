@@ -103,6 +103,7 @@ class Web {
     if (!Odac.core('Config').config.websites) Odac.core('Config').config.websites = {}
     web.cert = false
     Odac.core('Config').config.websites[web.domain] = web
+    Odac.server('Api').addToken(web.domain)
     progress('domain', 'success', __('Domain %s set.', domain))
     if (web.domain != 'localhost' && !web.domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
       progress('dns', 'progress', __('Setting up DNS records for %s...', domain))
@@ -204,6 +205,7 @@ class Web {
     for (const iterator of ['http://', 'https://', 'ftp://', 'www.']) if (domain.startsWith(iterator)) domain = domain.replace(iterator, '')
     if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, __('Website %s not found.', domain))
     const website = Odac.core('Config').config.websites[domain]
+    Odac.server('Api').removeToken(domain)
     delete Odac.core('Config').config.websites[domain]
 
     // Stop process if running
@@ -631,7 +633,7 @@ class Web {
         const env = {
           ODAC_API_HOST: 'host.docker.internal',
           ODAC_API_PORT: 1453,
-          ODAC_API_KEY: Odac.core('Config').config.api.auth,
+          ODAC_API_KEY: Odac.server('Api').generateToken(domain),
           ODAC_API_SOCKET: '/run/odac/api.sock',
           ODAC_HOST: '0.0.0.0'
         }
