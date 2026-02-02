@@ -18,6 +18,8 @@ const SCRIPT_RUNNERS = {
 class App {
   #apps = []
   #loaded = false
+  #processing = new Set()
+  #creating = new Set()
 
   // Lifecycle
   async init() {
@@ -32,12 +34,15 @@ class App {
     for (const app of this.#apps) {
       if (!app.active) continue
 
+      // If we are already processing this app, skip watchdog pulse for it
+      if (this.#processing.has(app.id)) continue
+
       const isRunning = await this.#isAppRunning(app)
 
       if (!isRunning && app.status === 'running') {
         log('App %s is not running. Restarting...', app.name)
         this.#run(app.id)
-      } else if (!isRunning && app.status !== 'stopped' && app.status !== 'errored') {
+      } else if (!isRunning && !['stopped', 'errored', 'starting', 'installing'].includes(app.status)) {
         this.#run(app.id)
       }
     }
@@ -127,39 +132,49 @@ class App {
       return Odac.server('Api').result(false, __('App %s already exists', name))
     }
 
-    const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
-    if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
-
-    const app = {
-      id: this.#getNextId(),
-      name,
-      type: 'container',
-      image: recipe.image,
-      ports: await this.#preparePorts(recipe.ports),
-      volumes: this.#prepareVolumes(recipe.volumes, appDir),
-      env: this.#prepareEnv(recipe.env),
-      active: true,
-      created: Date.now(),
-      status: 'installing'
+    if (this.#creating.has(name)) {
+      log('createFromRecipe: App %s is already being created', name)
+      return Odac.server('Api').result(false, __('App %s is already being created', name))
     }
-
-    log('createFromRecipe: App config: %j', app)
-
-    this.#apps.push(app)
-    this.#saveApps()
+    this.#creating.add(name)
 
     try {
-      log('createFromRecipe: Starting app...')
-      if (await this.#run(app.id)) {
-        log('createFromRecipe: App started successfully')
-        return Odac.server('Api').result(true, __('App %s created successfully.', name))
+      const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+      if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
+
+      const app = {
+        id: this.#getNextId(),
+        name,
+        type: 'container',
+        image: recipe.image,
+        ports: await this.#preparePorts(recipe.ports),
+        volumes: this.#prepareVolumes(recipe.volumes, appDir),
+        env: this.#prepareEnv(recipe.env),
+        active: true,
+        created: Date.now(),
+        status: 'installing'
       }
-      throw new Error('Failed to start app container. Check logs for details.')
-    } catch (e) {
-      error('createFromRecipe: Failed to start app: %s', e.message)
-      this.#apps = this.#apps.filter(s => s.id !== app.id)
+
+      log('createFromRecipe: App config: %j', app)
+
+      this.#apps.push(app)
       this.#saveApps()
-      return Odac.server('Api').result(false, e.message)
+
+      try {
+        log('createFromRecipe: Starting app...')
+        if (await this.#run(app.id)) {
+          log('createFromRecipe: App started successfully')
+          return Odac.server('Api').result(true, __('App %s created successfully.', name))
+        }
+        throw new Error('Failed to start app container. Check logs for details.')
+      } catch (e) {
+        error('createFromRecipe: Failed to start app: %s', e.message)
+        this.#apps = this.#apps.filter(s => s.id !== app.id)
+        this.#saveApps()
+        return Odac.server('Api').result(false, e.message)
+      }
+    } finally {
+      this.#creating.delete(name)
     }
   }
 
@@ -198,68 +213,77 @@ class App {
       return Odac.server('Api').result(false, __('App %s already exists', name))
     }
 
-    // Validate the app name to prevent path traversal.
-    if (path.basename(name) !== name) {
-      return Odac.server('Api').result(false, __('Invalid app name.'))
+    if (this.#creating.has(name)) {
+      return Odac.server('Api').result(false, __('App %s is already being created', name))
     }
-
-    // Create app directory
-    const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
-    log('createFromGit: App directory: %s', appDir)
-
-    if (fs.existsSync(appDir)) {
-      log('createFromGit: Removing existing directory')
-      fs.rmSync(appDir, {recursive: true, force: true})
-    }
-    fs.mkdirSync(appDir, {recursive: true})
-
-    // Build git URL with token if provided
-    // Security update: We now pass the token separately via env var to prevent exposure in process/docker history
-
-    const imageName = `odac-app-${name}`
+    this.#creating.add(name)
 
     try {
-      // Step 1: Clone repository
-      log('createFromGit: Cloning repository...')
-      await Odac.server('Container').cloneRepo(url, branch, appDir, token)
-      log('createFromGit: Clone successful')
-
-      // Step 2: Build with Nixpacks
-      log('createFromGit: Building image...')
-      await Odac.server('Container').build(appDir, imageName)
-      log('createFromGit: Build successful')
-
-      // Step 3: Create app record
-      const app = {
-        id: this.#getNextId(),
-        name,
-        type: 'git',
-        url,
-        branch,
-        image: imageName,
-        env,
-        active: true,
-        created: Date.now(),
-        status: 'starting'
+      // Validate the app name to prevent path traversal.
+      if (path.basename(name) !== name) {
+        return Odac.server('Api').result(false, __('Invalid app name.'))
       }
 
-      this.#apps.push(app)
-      this.#saveApps()
+      // Create app directory
+      const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+      log('createFromGit: App directory: %s', appDir)
 
-      // Step 4: Run the container
-      log('createFromGit: Starting container...')
-      await this.#runGitApp(app)
-
-      this.#set(app.id, {status: 'running', started: Date.now()})
-      log('createFromGit: App started successfully')
-
-      return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
-    } catch (e) {
-      error('createFromGit: Failed: %s', e.message)
       if (fs.existsSync(appDir)) {
+        log('createFromGit: Removing existing directory')
         fs.rmSync(appDir, {recursive: true, force: true})
       }
-      return Odac.server('Api').result(false, e.message)
+      fs.mkdirSync(appDir, {recursive: true})
+
+      // Build git URL with token if provided
+      // Security update: We now pass the token separately via env var to prevent exposure in process/docker history
+
+      const imageName = `odac-app-${name}`
+
+      try {
+        // Step 1: Clone repository
+        log('createFromGit: Cloning repository...')
+        await Odac.server('Container').cloneRepo(url, branch, appDir, token)
+        log('createFromGit: Clone successful')
+
+        // Step 2: Build with Nixpacks
+        log('createFromGit: Building image...')
+        await Odac.server('Container').build(appDir, imageName)
+        log('createFromGit: Build successful')
+
+        // Step 3: Create app record
+        const app = {
+          id: this.#getNextId(),
+          name,
+          type: 'git',
+          url,
+          branch,
+          image: imageName,
+          env,
+          active: true,
+          created: Date.now(),
+          status: 'starting'
+        }
+
+        this.#apps.push(app)
+        this.#saveApps()
+
+        // Step 4: Run the container
+        log('createFromGit: Starting container...')
+        await this.#runGitApp(app)
+
+        this.#set(app.id, {status: 'running', started: Date.now()})
+        log('createFromGit: App started successfully')
+
+        return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
+      } catch (e) {
+        error('createFromGit: Failed: %s', e.message)
+        if (fs.existsSync(appDir)) {
+          fs.rmSync(appDir, {recursive: true, force: true})
+        }
+        return Odac.server('Api').result(false, e.message)
+      }
+    } finally {
+      this.#creating.delete(name)
     }
   }
 
@@ -412,6 +436,14 @@ class App {
     const app = this.#get(id)
     if (!app) return false
 
+    // Prevent concurrent runs for the same app
+    if (this.#processing.has(id)) {
+      log('App %s is already being processed. Skipping duplicate run.', app.name)
+      return true
+    }
+
+    this.#processing.add(id)
+
     log('Starting app %s (Type: %s)...', app.name, app.type)
     this.#set(id, {status: 'starting', updated: Date.now()})
 
@@ -428,6 +460,8 @@ class App {
       error('Failed to start app %s: %s', app.name, err.message)
       this.#set(id, {status: 'errored', updated: Date.now()})
       return false
+    } finally {
+      this.#processing.delete(id)
     }
   }
 
