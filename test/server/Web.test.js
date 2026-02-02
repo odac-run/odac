@@ -63,6 +63,9 @@ describe('Web', () => {
 
     // Setup Api mock
     mockOdac.setMock('server', 'Api', {
+      addToken: jest.fn(),
+      removeToken: jest.fn(),
+      generateToken: jest.fn(() => 'mock-token'),
       result: jest.fn((success, message) => ({success, message}))
     })
 
@@ -429,7 +432,12 @@ describe('Web', () => {
         ip: '192.168.1.1'
       }
       mockOdac.setMock('server', 'DNS', mockDNS)
-      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'Api', {
+        addToken: jest.fn(),
+        removeToken: jest.fn(),
+        generateToken: jest.fn(() => 'mock-token'),
+        result: jest.fn((success, message) => ({success, message}))
+      })
 
       await Web.create(domain, mockProgress)
 
@@ -452,7 +460,12 @@ describe('Web', () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
       mockOdac.setMock('server', 'DNS', mockDNS)
-      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'Api', {
+        addToken: jest.fn(),
+        removeToken: jest.fn(),
+        generateToken: jest.fn(() => 'mock-token'),
+        result: jest.fn((success, message) => ({success, message}))
+      })
 
       await Web.create('localhost', mockProgress)
 
@@ -463,7 +476,12 @@ describe('Web', () => {
       const mockProgress = jest.fn()
       const mockDNS = {record: jest.fn()}
       mockOdac.setMock('server', 'DNS', mockDNS)
-      mockOdac.setMock('server', 'Api', {result: jest.fn((success, message) => ({success, message}))})
+      mockOdac.setMock('server', 'Api', {
+        addToken: jest.fn(),
+        removeToken: jest.fn(),
+        generateToken: jest.fn(() => 'mock-token'),
+        result: jest.fn((success, message) => ({success, message}))
+      })
 
       await Web.create('192.168.1.1', mockProgress)
 
