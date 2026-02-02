@@ -213,7 +213,7 @@ class Container {
     this.#activeBuilds.add(imageName)
 
     const hostPath = this.#resolveHostPath(sourceDir)
-    const sandboxImage = 'docker:26-dind-rootless' // Switch to Rootless for Security (P1 Fix)
+    const sandboxImage = 'docker:26-dind' // Downgrade to 26 for better compat with pack
 
     log(`Building image ${imageName} from ${hostPath} (Isolated Sandbox)`)
 
@@ -243,8 +243,8 @@ class Container {
           # Force API version for negotiation
           export DOCKER_API_VERSION=1.45
 
-          # 1. Start internal Docker Daemon (Rootless)
-          dockerd-rootless.sh > /var/log/dockerd.log 2>&1 &
+          # 1. Start internal Docker Daemon
+          dockerd > /var/log/dockerd.log 2>&1 &
           PID=$!
           
           echo "Waiting for internal Docker Daemon..."
@@ -326,8 +326,7 @@ class Container {
           Env: ['DOCKER_TLS_CERTDIR='],
           HostConfig: {
             Binds: binds,
-            Privileged: false, // Security: Disabled Privileged Mode
-            SecurityOpt: ['seccomp=unconfined', 'apparmor=unconfined'], // Required for Rootless DinD
+            Privileged: true,
             AutoRemove: false
           }
         })
