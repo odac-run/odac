@@ -18,9 +18,44 @@ class Log {
     }
   }
 
+  #sanitize(arg) {
+    if (!arg || typeof arg !== 'object') return arg
+
+    try {
+      // Handle array recursion
+      if (Array.isArray(arg)) {
+        return arg.map(item => this.#sanitize(item))
+      }
+
+      // Simple handling for common types to avoid destroying them
+      if (arg instanceof Date || arg instanceof RegExp || arg instanceof Error) return arg
+
+      // Shallow copy for objects to avoid mutation
+      const copy = {...arg}
+      const sensitive = ['token', 'password', 'secret', 'key', 'auth']
+
+      if (copy.env) {
+        copy.env = '{ ...redacted... }'
+      }
+
+      for (const key of Object.keys(copy)) {
+        if (sensitive.some(s => key.toLowerCase().includes(s))) {
+          copy[key] = '***'
+        } else if (typeof copy[key] === 'object') {
+          // Recurse for nested objects (limited depth implicitly by stack, but practically okay for configs)
+          copy[key] = this.#sanitize(copy[key])
+        }
+      }
+      return copy
+    } catch {
+      return arg
+    }
+  }
+
   error(...arg) {
     // Always show errors, even in CLI mode
-    console.error(this.module, ...arg)
+    const cleanArgs = arg.map(a => this.#sanitize(a))
+    console.error(this.module, ...cleanArgs)
   }
 
   log(...arg) {
@@ -28,15 +63,18 @@ class Log {
     if (this.#cliMode) return
 
     if (!arg.length) return this
-    if (typeof arg[0] === 'string' && arg[0].includes('%s')) {
-      let message = arg.shift()
-      while (message.includes('%s') && arg.length > 0) {
-        message = message.replace('%s', arg.shift())
+
+    let cleanArgs = arg.map(a => this.#sanitize(a))
+
+    if (typeof cleanArgs[0] === 'string' && cleanArgs[0].includes('%s')) {
+      let message = cleanArgs.shift()
+      while (message.includes('%s') && cleanArgs.length > 0) {
+        message = message.replace('%s', cleanArgs.shift())
       }
       message = message.replace(/%s/g, '')
-      arg.unshift(message)
+      cleanArgs.unshift(message)
     }
-    console.log(this.module, ...arg)
+    console.log(this.module, ...cleanArgs)
   }
 }
 
