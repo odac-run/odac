@@ -1,14 +1,14 @@
 const {log, error} = Odac.core('Log', false).init('Container')
 const Docker = require('dockerode')
 const path = require('path')
-const fs = require('fs')
-const os = require('os')
-const cp = require('child_process')
 
 const NODE_IMAGE = 'node:lts-alpine'
 
+const Builder = require('./Container/Builder')
+
 class Container {
   #docker
+  #builder
   #activeBuilds = new Set() // Track active builds to prevent parallel builds for same app
 
   constructor() {
@@ -16,6 +16,7 @@ class Container {
 
     // Initialize dockerode using default socket or from env DOCKER_HOST
     this.#docker = new Docker()
+    this.#builder = new Builder(this.#docker)
 
     this.#checkAvailability()
   }
@@ -49,10 +50,6 @@ class Container {
     } catch (err) {
       error(`Failed to ensure network ${networkName}: ${err.message}`)
     }
-  }
-
-  get available() {
-    return Odac.core('Config').config.container.available ?? false
   }
 
   /**
@@ -104,101 +101,11 @@ class Container {
     }
   }
 
-  /**
-   * Executes a command inside a temporary ephemeral container
-   * @param {string} volumePath - Host directory to mount
-   * @param {string} command - Command to execute
-   */
-  async exec(volumePath, command, extraBinds = []) {
-    if (!this.available) return false
-
-    const hostPath = this.#resolveHostPath(volumePath)
-    const image = NODE_IMAGE
-
-    // We use run with remove: true to mimic 'docker run --rm'
-    try {
-      await this.#ensureImage(image)
-
-      // Stream output to stdout/stderr
-      await this.#docker.run(image, ['sh', '-c', command], [process.stdout, process.stderr], {
-        HostConfig: {
-          Binds: [`${hostPath}:/app`, ...extraBinds],
-          AutoRemove: true
-        },
-        WorkingDir: '/app'
-      })
-      return true
-    } catch (err) {
-      error(`Container exec error: ${err.message}`)
-      return false
-    }
-  }
+  // ... (previous methods)
 
   /**
-   * Clones a git repository into a target directory
-   * @param {string} gitUrl - Git repository URL
-   * @param {string} branch - Branch to clone
-   * @param {string} targetDir - Target directory on host
-   * @param {string} [token] - Optional access token for private repos
-   */
-  async cloneRepo(gitUrl, branch, targetDir, token = null) {
-    if (!this.available) {
-      throw new Error('Docker is not available')
-    }
-
-    const hostPath = this.#resolveHostPath(targetDir)
-    const image = 'alpine/git'
-
-    log(`Cloning ${branch} branch to ${hostPath}`)
-
-    try {
-      await this.#ensureImage(image)
-
-      const containerConfig = {
-        Image: image,
-        HostConfig: {
-          Binds: [`${hostPath}:/repo`],
-          AutoRemove: true
-        }
-      }
-
-      if (token) {
-        // Use shell to expand the token variable, keeping it out of the command string
-        // Note: We assume the URL starts with https:// as per previous logic
-        const urlWithoutProtocol = gitUrl.replace(/^https:\/\//, '')
-        containerConfig.Entrypoint = ['/bin/sh', '-c']
-        containerConfig.Cmd = [`git clone --depth 1 --branch "${branch}" "https://x-access-token:$GIT_TOKEN@${urlWithoutProtocol}" /repo`]
-        containerConfig.Env = [`GIT_TOKEN=${token}`]
-      } else {
-        // Standard execution for public repos
-        containerConfig.Entrypoint = ['git']
-        containerConfig.Cmd = ['clone', '--depth', '1', '--branch', branch, gitUrl, '/repo']
-      }
-
-      // Create container for git clone
-      const container = await this.#docker.createContainer(containerConfig)
-
-      // Start and wait for completion
-      await container.start()
-
-      // Wait for container to finish
-      const result = await container.wait()
-
-      if (result.StatusCode !== 0) {
-        throw new Error(`Git clone failed with exit code ${result.StatusCode}`)
-      }
-
-      log('Repository cloned successfully')
-      return true
-    } catch (err) {
-      error(`Failed to clone repository: ${err.message}`)
-      throw err
-    }
-  }
-  /**
-   * Builds a Docker image from source code using Nixpacks
-   * Nixpacks CLI is automatically downloaded and cached on first use
-   * @param {string} sourceDir - Source directory on host
+   * Builds a Docker image from source code using Native Builder
+   * @param {string} sourceDir - Internal source directory
    * @param {string} imageName - Name for the built image
    */
   async build(sourceDir, imageName) {
@@ -212,268 +119,24 @@ class Container {
     }
     this.#activeBuilds.add(imageName)
 
-    const hostPath = this.#resolveHostPath(sourceDir)
-    const sandboxImage = 'docker:26-dind' // Downgrade to 26 for better compat with pack
-
-    log(`Building image ${imageName} from ${hostPath} (Isolated Sandbox)`)
-
     try {
-      await this.#ensureImage(sandboxImage)
+      const hostPath = this.#resolveHostPath(sourceDir)
 
-      // Create a temporary volume or simple bind for output
-      // We will assume sourceDir is writable or use a temp dir for output inside hostPath
-      // To keep it clean, we output the tarball to the source directory
-      // (which is mounted) and then load it from there.
+      // We pass both paths to the builder:
+      // internalPath: for reading package.json and writing temp Dockerfiles (FS ops)
+      // hostPath: for mounting into the runner containers (Docker ops)
+      await this.#builder.build(
+        {
+          internalPath: sourceDir,
+          hostPath: hostPath
+        },
+        imageName
+      )
 
-      const runBuild = async (useCache = true) => {
-        const packVersion = 'v0.33.2'
-        // We need to know arch of the CONTAINER, not the HOST.
-        // But docker:dind usually matches host arch.
-        // URL for pack cli (using specific version for stability)
-
-        // Shell script to run inside the isolated container
-        // 1. Start dockerd
-        // 2. Wait for it
-        // 3. Install pack (download binary)
-        // 4. Build
-        // 5. Save image
-        // 6. Chown to match host user (optional, but good for cleanup)
-
-        const buildScript = `
-          # Force API version for negotiation
-          export DOCKER_API_VERSION=1.45
-
-          # 1. Start internal Docker Daemon
-          dockerd > /var/log/dockerd.log 2>&1 &
-          PID=$!
-          
-          echo "Waiting for internal Docker Daemon..."
-          TIMEOUT=0
-          while ! docker info >/dev/null 2>&1; do
-            if [ $TIMEOUT -gt 30 ]; then
-              echo "Timeout waiting for dockerd"
-              echo "--- Daemon Logs ---"
-              cat /var/log/dockerd.log
-              echo "-------------------"
-              exit 1
-            fi
-            sleep 1
-            TIMEOUT=$((TIMEOUT+1))
-          done
-          echo "Internal Docker Daemon is ready."
-          
-          cd /app
-          BUILD_EXIT=0
-
-          if [ -f "Dockerfile" ]; then
-             echo "Dockerfile found! Using native Docker build..."
-             docker build -t ${imageName} .
-             BUILD_EXIT=$?
-          else
-             echo "No Dockerfile found. Using Cloud Native Buildpacks..."
-             
-             # Install pack CLI (Only needed if no Dockerfile)
-             ARCH=$(uname -m)
-             PACK_URL=""
-             if [ "$ARCH" = "aarch64" ]; then
-                PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux-arm64.tgz"
-             else
-                PACK_URL="https://github.com/buildpacks/pack/releases/download/${packVersion}/pack-${packVersion}-linux.tgz"
-             fi
-             
-             if [ -f "/odac-tools/pack" ]; then
-               echo "Using cached pack CLI..."
-               cp /odac-tools/pack /usr/local/bin/pack
-             else
-               echo "Downloading pack CLI from $PACK_URL..."
-               wget -qO- "$PACK_URL" | tar -xz -C /usr/local/bin
-               # Cache it
-               mkdir -p /odac-tools
-               cp /usr/local/bin/pack /odac-tools/pack
-             fi
-             
-             echo "Starting pack build..."
-             pack build ${imageName} --path . --builder heroku/builder:24 --trust-builder --pull-policy if-not-present --verbose
-             BUILD_EXIT=$?
-          fi
-          
-          if [ $BUILD_EXIT -ne 0 ]; then
-             echo "Build failed."
-             exit $BUILD_EXIT
-          fi
-          
-          # 4. Save Image to tarball
-          echo "Saving image to /image.tar..."
-          docker save ${imageName} -o /image.tar
-          exit $?
-        `
-
-        const binds = [
-          `${hostPath}:/app`,
-          'odac-tools-cache:/odac-tools' // Cache binaries like pack
-        ]
-
-        if (useCache) {
-          binds.push('odac-build-cache:/var/lib/docker') // Cache docker images/layers
-        } else {
-          log('[sandbox] Building WITHOUT cache (fresh start)...')
-        }
-
-        const container = await this.#docker.createContainer({
-          Image: sandboxImage,
-          Entrypoint: [],
-          Cmd: ['sh', '-c', buildScript],
-          Env: ['DOCKER_TLS_CERTDIR='],
-          HostConfig: {
-            Binds: binds,
-            Privileged: true,
-            AutoRemove: false
-          }
-        })
-
-        await container.start()
-
-        let buildLogs = ''
-        const stream = await container.logs({
-          follow: true,
-          stdout: true,
-          stderr: true
-        })
-
-        stream.on('data', chunk => {
-          const line = chunk.toString('utf8').trim()
-          if (line) {
-            log(`[sandbox] ${line}`)
-            buildLogs += line + '\n'
-          }
-        })
-
-        const result = await container.wait()
-
-        // Wait a bit for stream to flush
-        await new Promise(resolve => setTimeout(resolve, 500))
-
-        // If successful, load the image into Host Docker
-        if (result.StatusCode === 0) {
-          log(`[sandbox] Loading image ${imageName} into host docker...`)
-          // We use 'docker load' on the host via exec or direct API?
-          // Since we don't have direct API for loading from file easily without reading it into memory,
-          // and the file is in hostPath/image.tar, we can use a helper container or stream it.
-          // Easiest: Use a small helper container to load it, OR simply read it if small.
-          // Images can be large. Better to use a container with socket mounted just for LOADING.
-          // Or since this is Container.js running on Host, we can use the 'docker' CLI if installed,
-          // But we should stick to 'dockerode'.
-
-          // Dockerode loadImage takes a stream.
-          // We can create a read stream from the file on disk (since hostPath is local).
-
-          try {
-            const stream = await container.getArchive({path: '/image.tar'})
-
-            const dlTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'odac-dl-'))
-            const tarPath = path.join(dlTempDir, 'output.tar')
-
-            const fileStream = fs.createWriteStream(tarPath)
-
-            await new Promise((resolve, reject) => {
-              stream.pipe(fileStream)
-              stream.on('end', resolve)
-              stream.on('error', reject)
-            })
-
-            log(`[sandbox] Extracted archive to ${tarPath}, unpacking...`)
-
-            try {
-              cp.execSync(`tar -xf ${tarPath} -C ${dlTempDir}`)
-
-              const imageTarPath = path.join(dlTempDir, 'image.tar')
-              if (fs.existsSync(imageTarPath)) {
-                log(`[sandbox] Loading image.tar into Docker...`)
-                await this.#docker.loadImage(fs.createReadStream(imageTarPath))
-                log(`[sandbox] Image loaded successfully.`)
-              } else {
-                throw new Error('image.tar missing in archive')
-              }
-            } finally {
-              fs.rmSync(dlTempDir, {recursive: true, force: true})
-            }
-          } catch (loadErr) {
-            error(`[sandbox] Failed to load image: ${loadErr.message}`)
-            return {exitCode: 1, logs: buildLogs + '\nLoad Failed: ' + loadErr.message}
-          }
-        }
-
-        // Cleanup container (since AutoRemove is false)
-        try {
-          await container.remove({force: true})
-        } catch {
-          // ignore
-        }
-
-        return {exitCode: result.StatusCode, logs: buildLogs}
-      }
-
-      let result = await runBuild()
-
-      // If npm ci failed, try to fix package-lock and retry
-      if (result.exitCode !== 0 && result.logs.includes('npm ci')) {
-        log('[build] npm ci failed - attempting to sync package-lock.json...')
-
-        await this.#syncPackageLock(hostPath)
-
-        log('[build] Retrying build...')
-        result = await runBuild() // Retry with cache (default)
-      }
-
-      // If export failed (disk/cache issue), retry WITHOUT cache
-      if (result.exitCode !== 0 && result.logs.includes('failed to export')) {
-        log('[build] Export failed (Cache issue?) - Retrying WITHOUT cache...')
-        result = await runBuild(false)
-      }
-
-      if (result.exitCode !== 0) {
-        throw new Error(`Build failed with exit code ${result.exitCode}`)
-      }
-
-      log(`Image ${imageName} built successfully`)
       return true
-    } catch (err) {
-      error(`Failed to build image: ${err.message}`)
-      throw err
     } finally {
-      // Always clean up the lock, even on error
       this.#activeBuilds.delete(imageName)
     }
-  }
-  /**
-   * Syncs package-lock.json with package.json for Node.js projects
-   * @param {string} hostPath - Path to the app source
-   */
-  async #syncPackageLock(hostPath) {
-    log('[build] Syncing package-lock.json...')
-
-    const nodeImage = NODE_IMAGE
-    await this.#ensureImage(nodeImage)
-
-    const container = await this.#docker.createContainer({
-      Image: nodeImage,
-      Cmd: ['npm', 'install', '--package-lock-only'],
-      WorkingDir: '/app',
-      HostConfig: {
-        Binds: [`${hostPath}:/app`],
-        AutoRemove: true
-      }
-    })
-
-    await container.start()
-    const result = await container.wait()
-
-    if (result.StatusCode !== 0) {
-      throw new Error('Failed to sync package-lock.json')
-    }
-
-    log('[build] package-lock.json synced successfully')
-    log('[build] TIP: Commit this file to your repository to avoid this step')
   }
 
   /**
