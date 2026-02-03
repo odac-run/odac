@@ -15,7 +15,7 @@ const BUILD_STRATEGIES = {
     name: 'Python',
     triggers: ['requirements.txt', 'pyproject.toml'],
     image: 'python:3.11-slim',
-    installCmd: 'pip install --no-cache-dir -r requirements.txt --target /app/deps || exit 0',
+    installCmd: '[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps',
     buildCmd: 'rm -rf __pycache__',
     cleanupCmd: 'rm -rf .git',
     package: {
