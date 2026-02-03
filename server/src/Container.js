@@ -21,6 +21,10 @@ class Container {
     this.#checkAvailability()
   }
 
+  get available() {
+    return Odac.core('Config').config.container?.available || false
+  }
+
   async #checkAvailability() {
     try {
       await this.#docker.ping()
@@ -57,16 +61,24 @@ class Container {
    * @param {string} localPath
    */
   #resolveHostPath(localPath) {
-    if (!process.env.ODAC_HOST_ROOT) return localPath
+    if (!process.env.ODAC_HOST_ROOT) {
+      log(`[DEBUG] resolveHostPath: No ODAC_HOST_ROOT, returning as-is: ${localPath}`)
+      return localPath
+    }
     if (localPath.startsWith('/app')) {
-      return path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
+      const result = path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
+      log(`[DEBUG] resolveHostPath: /app prefix found. ${localPath} -> ${result}`)
+      return result
     }
     if (!path.isAbsolute(localPath)) {
       const absPath = path.resolve(localPath)
       if (absPath.startsWith('/app')) {
-        return path.join(process.env.ODAC_HOST_ROOT, absPath.substring(4))
+        const result = path.join(process.env.ODAC_HOST_ROOT, absPath.substring(4))
+        log(`[DEBUG] resolveHostPath: Relative path resolved. ${localPath} -> ${result}`)
+        return result
       }
     }
+    log(`[DEBUG] resolveHostPath: No transformation. ${localPath}`)
     return localPath
   }
 
@@ -136,6 +148,64 @@ class Container {
       return true
     } finally {
       this.#activeBuilds.delete(imageName)
+    }
+  }
+
+  /**
+   * Clones a git repository using an isolated container
+   * @param {string} url - Git URL
+   * @param {string} branch - Branch to clone
+   * @param {string} targetDir - Host directory to clone into
+   * @param {string} [token] - Optional auth token
+   */
+  async cloneRepo(url, branch, targetDir, token) {
+    if (!this.available) throw new Error('Docker is not available')
+
+    const gitImage = 'alpine/git'
+    await this.#ensureImage(gitImage)
+
+    // Securely construct URL with token inside the container env if needed
+    // But better: use git credentials helper or header.
+    // For simplicity and security, we'll strip protocol and re-add with token if https
+    let secureUrl = url
+    if (token && url.startsWith('https://')) {
+      // Basic auth insertion: https://oauth2:TOKEN@github.com/...
+      const noProto = url.substring(8)
+      secureUrl = `https://oauth2:${token}@${noProto}`
+    }
+
+    log(`[Git] Cloning ${url} (branch: ${branch}) into isolated sandbox...`)
+
+    const hostPath = this.#resolveHostPath(targetDir)
+
+    try {
+      // Run ephemeral git container
+      const container = await this.#docker.createContainer({
+        Image: gitImage,
+        Cmd: ['clone', '--depth', '1', '--branch', branch, secureUrl, '.'],
+        WorkingDir: '/git',
+        HostConfig: {
+          Binds: [`${hostPath}:/git`],
+          AutoRemove: true,
+          Privileged: false // SECURITY: Rootless git
+        }
+      })
+
+      await container.start()
+      const result = await container.wait()
+
+      if (result.StatusCode !== 0) {
+        // Fetch logs to debug failure
+        const logs = await container.logs({stdout: true, stderr: true})
+        const logStr = logs ? logs.toString('utf8') : 'No logs available'
+        log(`[Git] Container Logs: ${logStr}`)
+        throw new Error(`Git clone failed with exit code ${result.StatusCode}. Logs: ${logStr}`)
+      }
+
+      log('[Git] Clone successful.')
+    } catch (err) {
+      error(`[Git] Clone failed: ${err.message}`)
+      throw err
     }
   }
 

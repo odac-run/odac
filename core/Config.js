@@ -29,7 +29,7 @@ class Config {
     api: ['api'],
     firewall: ['firewall'],
     hub: ['hub'],
-    app: ['apps']
+    app: ['apps', 'app']
   }
 
   // Initialize default configuration for module keys
@@ -47,6 +47,8 @@ class Config {
           config[key] = {}
         } else if (key === 'apps') {
           config[key] = []
+        } else if (key === 'app') {
+          config[key] = {}
         } else if (key === 'firewall') {
           config[key] = {
             enabled: true,

@@ -39,7 +39,7 @@ describe('Builder', () => {
 
     // Mock Docker instance
     mockDocker = {
-      run: jest.fn().mockResolvedValue(mockStream),
+      run: jest.fn().mockResolvedValue([mockStream]),
       pull: jest.fn((img, cb) => cb(null, {})),
       getImage: jest.fn().mockReturnValue({
         inspect: jest.fn().mockResolvedValue({Id: 'sha256:...'})
@@ -53,8 +53,33 @@ describe('Builder', () => {
   })
 
   describe('detect', () => {
+    test('should detect Custom Dockerfile at top priority', async () => {
+      // Return true for Dockerfile AND package.json to test priority
+      fs.existsSync.mockImplementation(p => p.endsWith('Dockerfile') || p.endsWith('package.json'))
+
+      await builder.build(mockContext, 'custom-image')
+
+      // Should NOT run node:lts-alpine (compile)
+      // Should run docker:cli directly
+      const calls = mockDocker.run.mock.calls
+      const images = calls.map(c => c[0])
+      expect(images).toContain('docker:cli')
+      expect(images).not.toContain('node:lts-alpine')
+
+      // Verify build command targets existing Dockerfile
+      const cmd = calls.find(c => c[0] === 'docker:cli')[1]
+      expect(cmd).toEqual(['sh', '-c', 'docker build -t custom-image /app'])
+    })
+
+    test('should detect PHP project if composer.json exists', async () => {
+      fs.existsSync.mockImplementation(p => p.endsWith('composer.json'))
+      await builder.build(mockContext, 'php-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('composer:lts', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
     test('should detect Node.js project if package.json exists', async () => {
-      fs.existsSync.mockReturnValue(true) // package.json exists
+      // Return true only for package.json
+      fs.existsSync.mockImplementation(p => p.endsWith('package.json'))
 
       // Test via private method exposed functionality (we can't call private directly easily in JS without hacks)
       // Actually, we test via build() public interface
@@ -70,26 +95,47 @@ describe('Builder', () => {
       expect(fs.existsSync).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'package.json'))
 
       // Verify docker run was called with Node image (result of detection)
-      expect(mockDocker.run).toHaveBeenCalledWith('node:lts-alpine', expect.any(Array), expect.any(Array), expect.any(Object))
+      expect(mockDocker.run).toHaveBeenCalledWith('node:lts-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should detect Python project if requirements.txt exists', async () => {
+      fs.existsSync.mockImplementation(p => p.endsWith('requirements.txt'))
+      await builder.build(mockContext, 'python-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('python:3.11-slim', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should detect Go project if go.mod exists', async () => {
+      fs.existsSync.mockImplementation(p => p.endsWith('go.mod'))
+      await builder.build(mockContext, 'go-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('golang:1.22-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should detect Static Web project if index.html exists', async () => {
+      fs.existsSync.mockImplementation(p => p.endsWith('index.html'))
+      // Static web doesn't run compilation (image: alpine), so we expect alpine
+      // Or whatever configured for "Static Web" strategy's image which is 'alpine:latest'
+      // Note: Logic in detect says image: alpine:latest, installCmd: true
+      await builder.build(mockContext, 'static-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('alpine:latest', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should throw if no project type detected', async () => {
       fs.existsSync.mockReturnValue(false) // No package.json
-
       await expect(builder.build(mockContext, 'test-image')).rejects.toThrow('Could not detect project type')
     })
   })
 
   describe('compile', () => {
     beforeEach(() => {
-      fs.existsSync.mockReturnValue(true) // Bypass detection
+      fs.existsSync.mockImplementation(p => p.endsWith('package.json'))
     })
 
     test('should run compiler container with secure configuration', async () => {
       await builder.build(mockContext, 'test-image')
 
       // Check compilation step arguments
-      const [image, cmd, streams, hostConfig] = mockDocker.run.mock.calls[0]
+      const [image, cmd, streams, createOptions] = mockDocker.run.mock.calls[0]
+      const hostConfig = createOptions.HostConfig
 
       expect(image).toBe('node:lts-alpine')
       expect(hostConfig.Privileged).toBe(false) // CRITICAL SECURITY CHECK
@@ -99,7 +145,7 @@ describe('Builder', () => {
 
     test('should fail if compilation container exits with non-zero', async () => {
       // Mock failure for the first call (compile)
-      mockDocker.run.mockResolvedValueOnce({StatusCode: 1})
+      mockDocker.run.mockResolvedValueOnce([{StatusCode: 1}])
 
       await expect(builder.build(mockContext, 'test-image')).rejects.toThrow('Compilation failed with exit code 1')
     })
@@ -107,7 +153,7 @@ describe('Builder', () => {
 
   describe('package', () => {
     beforeEach(() => {
-      fs.existsSync.mockReturnValue(true) // Bypass detection
+      fs.existsSync.mockImplementation(p => p.endsWith('package.json') || p.endsWith('Dockerfile.odac'))
     })
 
     test('should generate Dockerfile and run packager container', async () => {
@@ -121,7 +167,8 @@ describe('Builder', () => {
 
       // Verify second docker run call (the packager)
       // The first call is compile, second is package
-      const [image, cmd, streams, hostConfig] = mockDocker.run.mock.calls[1]
+      const [image, cmd, streams, createOptions] = mockDocker.run.mock.calls[1]
+      const hostConfig = createOptions.HostConfig
 
       expect(image).toBe('docker:cli')
       expect(hostConfig.Binds).toContain('/var/run/docker.sock:/var/run/docker.sock')
