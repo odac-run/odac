@@ -1,5 +1,4 @@
 const Builder = require('../../server/src/Container/Builder')
-const fs = require('fs')
 const fsPromises = require('fs/promises')
 const path = require('path')
 
@@ -14,7 +13,6 @@ global.Odac = {
 }
 
 // Mock Dependencies
-jest.mock('fs')
 jest.mock('fs/promises')
 jest.mock('dockerode')
 
