@@ -24,6 +24,31 @@ class App {
   // Lifecycle
   async init() {
     log('Initializing apps...')
+
+    const appPath = Odac.core('Config').config.app?.path
+    try {
+      if (!appPath) {
+        if (!Odac.core('Config').config.app) Odac.core('Config').config.app = {}
+
+        // Check environment variable first (Docker support)
+        if (process.env.ODAC_APPS_PATH) {
+          Odac.core('Config').config.app.path = process.env.ODAC_APPS_PATH
+        } else if (os.platform() === 'win32' || os.platform() === 'darwin') {
+          Odac.core('Config').config.app.path = os.homedir() + '/Odac/apps/'
+        } else {
+          // Default for Linux (Prod & Dev)
+          // We prefer relative path inside the container/app structure
+          Odac.core('Config').config.app.path = '/app/.odac/apps/'
+        }
+      }
+
+      // Ensure directory exists
+      await fs.promises.mkdir(Odac.core('Config').config.app.path, {recursive: true})
+    } catch (e) {
+      if (e.code !== 'EEXIST') {
+        error('Failed to create apps directory: %s', e.message)
+      }
+    }
     this.#apps = this.#loadAppsFromConfig()
     this.#loaded = true
   }
@@ -139,7 +164,7 @@ class App {
     this.#creating.add(name)
 
     try {
-      const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+      const appDir = path.join(Odac.core('Config').config.app.path, name)
       if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
 
       const app = {
@@ -224,8 +249,7 @@ class App {
         return Odac.server('Api').result(false, __('Invalid app name.'))
       }
 
-      // Create app directory
-      const appDir = path.join(Odac.core('Config').config.web.path, 'apps', name)
+      const appDir = path.join(Odac.core('Config').config.app.path, name)
       log('createFromGit: App directory: %s', appDir)
 
       if (fs.existsSync(appDir)) {

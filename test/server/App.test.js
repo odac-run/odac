@@ -142,7 +142,7 @@ describe('App', () => {
 
     test('should prevent concurrent createFromGit calls for the same app name', async () => {
       // Setup web path for create()
-      mockConfig.web = {path: '/tmp/odac-test'}
+      mockConfig.app = {path: '/tmp/odac-test'}
 
       let resolveClone
       const clonePromise = new Promise(r => {
