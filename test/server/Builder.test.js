@@ -157,7 +157,7 @@ describe('Builder', () => {
       await builder.build(mockContext, 'test-image')
 
       // Check compilation step arguments
-      const [image, cmd, streams, createOptions] = mockDocker.run.mock.calls[0]
+      const [image, cmd, , createOptions] = mockDocker.run.mock.calls[0]
       const hostConfig = createOptions.HostConfig
 
       expect(image).toBe('node:lts-alpine')
@@ -199,7 +199,7 @@ describe('Builder', () => {
 
       // Verify second docker run call (the packager)
       // The first call is compile, second is package
-      const [image, cmd, streams, createOptions] = mockDocker.run.mock.calls[1]
+      const [image, cmd, , createOptions] = mockDocker.run.mock.calls[1]
       const hostConfig = createOptions.HostConfig
 
       expect(image).toBe('docker:cli')
