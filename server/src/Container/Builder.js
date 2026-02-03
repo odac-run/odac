@@ -1,14 +1,93 @@
 const path = require('path')
-const fs = require('fs')
+const fs = require('fs/promises')
+const {constants: fsConstants} = require('fs')
 const {PassThrough} = require('stream')
 
 // Using Odac.core('Log') is standard practice in this codebase
 const {log, error} = Odac.core('Log').init('Builder')
 
 /**
+ * Configuration for Build Strategies.
+ * Centralized to avoid magic strings and allow easy updates.
+ */
+const BUILD_STRATEGIES = {
+  PYTHON: {
+    name: 'Python',
+    triggers: ['requirements.txt', 'pyproject.toml'],
+    image: 'python:3.11-slim',
+    installCmd: 'pip install --no-cache-dir -r requirements.txt --target /app/deps || exit 0',
+    buildCmd: 'rm -rf __pycache__',
+    cleanupCmd: 'rm -rf .git',
+    package: {
+      baseImage: 'python:3.11-slim',
+      user: 'nobody',
+      cmd: ['python', 'app.py'],
+      env: {PYTHONPATH: '/app/deps'}
+    }
+  },
+  GO: {
+    name: 'Go',
+    triggers: ['go.mod'],
+    image: 'golang:1.22-alpine',
+    installCmd: 'go mod download',
+    buildCmd: 'go build -o app .',
+    cleanupCmd: 'rm -rf .git',
+    package: {
+      baseImage: 'alpine:latest',
+      user: 'nobody',
+      cmd: ['/app/app']
+    }
+  },
+  NODE: {
+    name: 'Node.js',
+    triggers: ['package.json'],
+    image: 'node:lts-alpine',
+    installCmd:
+      'if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; else npm install --omit=dev --no-audit --no-fund; fi',
+    buildCmd: 'if [ -f "tsconfig.json" ] || grep -q "build" package.json; then npm run build --if-present; fi',
+    cleanupCmd: 'rm -rf .git .github test tests',
+    package: {
+      baseImage: 'node:lts-alpine',
+      user: 'node',
+      cmd: ['npm', 'start']
+    }
+  },
+  PHP: {
+    name: 'PHP',
+    triggers: ['composer.json', 'index.php'],
+    image: 'composer:lts',
+    installCmd: 'if [ -f composer.json ]; then composer install --no-dev --ignore-platform-reqs; fi',
+    buildCmd: 'true',
+    cleanupCmd: 'rm -rf .git',
+    package: {
+      baseImage: 'php:8.2-apache',
+      user: 'www-data',
+      cmd: ['apache2-foreground']
+    }
+  },
+  STATIC: {
+    name: 'Static Web',
+    triggers: ['index.html'],
+    image: 'alpine:latest',
+    installCmd: 'true',
+    buildCmd: 'true',
+    cleanupCmd: 'rm -rf .git',
+    package: {
+      baseImage: 'nginx:alpine',
+      user: 'nginx',
+      cmd: ['nginx', '-g', 'daemon off;']
+    }
+  }
+}
+
+/**
  * ODAC Native Builder
  * Handles secure, 2-stage build process (Compile -> Package)
  * completely avoiding the need for DinD or Privileged mode.
+ *
+ * Performance Note:
+ * - Uses Host Bind Mounts for zero-copy I/O during builds.
+ * - Uses Socket Mounting for "Docker-out-of-Docker" (DooD) to avoid DinD overhead.
  */
 class Builder {
   /**
@@ -26,6 +105,7 @@ class Builder {
    * @param {string} context.hostPath - Absolute path to source code on HOST
    * @param {string} context.internalPath - Absolute path to source code INSIDE ODAC
    * @param {string} imageName - Target image tag
+   * @returns {Promise<boolean>}
    */
   async build(context, imageName) {
     const {hostPath, internalPath} = context
@@ -37,7 +117,7 @@ class Builder {
     // 1. Detect Strategy (Use internal path to read files)
     const strategy = await this.#detect(internalPath)
     if (!strategy) {
-      throw new Error('Could not detect project type (no package.json found)')
+      throw new Error('Could not detect project type (no package.json, requirements.txt, etc. found)')
     }
     log(`Detected project type: ${strategy.name}`)
 
@@ -59,6 +139,7 @@ class Builder {
       return true
     } catch (err) {
       error(`Build failed: ${err.message}`)
+      // Preserve stack trace by re-throwing the original error object
       throw err
     }
   }
@@ -72,7 +153,6 @@ class Builder {
 
     // Use docker:cli to forward build command to host
     const packagerImage = 'docker:cli'
-    // Build context is mapped to /app. Dockerfile is at /app/Dockerfile
     const buildCmd = `docker build -t ${imageName} /app`
 
     try {
@@ -98,112 +178,58 @@ class Builder {
   }
 
   /**
-   * Detects project language/framework
+   * Detects project language/framework using non-blocking I/O
    * @param {string} internalPath
    * @returns {Promise<Object>} Strategy object
    */
   async #detect(internalPath) {
-    // 0. CUSTOM DOCKERFILE Strategy (Joker - Highest Priority)
-    if (fs.existsSync(path.join(internalPath, 'Dockerfile'))) {
+    // 0. CUSTOM DOCKERFILE Strategy (Highest Priority)
+    if (await this.#exists(path.join(internalPath, 'Dockerfile'))) {
       return {
         name: 'Custom Dockerfile',
-        type: 'custom', // Special type flag
-        // No compile/install needed, direct build
+        type: 'custom',
         image: null,
         installCmd: null,
         buildCmd: null,
         cleanupCmd: null,
-        package: null // Will bypass standard package logic
+        package: null
       }
     }
 
-    // 1. PYTHON Strategy
-    if (fs.existsSync(path.join(internalPath, 'requirements.txt')) || fs.existsSync(path.join(internalPath, 'pyproject.toml'))) {
-      return {
-        name: 'Python',
-        image: 'python:3.11-slim',
-        installCmd: 'pip install --no-cache-dir -r requirements.txt --target /app/deps || exit 0', // Install to local dir for extraction
-        buildCmd: 'rm -rf __pycache__',
-        cleanupCmd: 'rm -rf .git',
-        package: {
-          baseImage: 'python:3.11-slim',
-          user: 'nobody',
-          // Env to find deps installed in phase 1
-          cmd: ['python', 'app.py'],
-          env: {PYTHONPATH: '/app/deps'}
-        }
-      }
-    }
+    // Check all strategies defined in order (Priority implicitly defined by insertion order in constant if iterated)
+    // But we manually order them for safety: Python, Go, Node, PHP, Static
 
-    // 2. GO Strategy (Static Binary)
-    if (fs.existsSync(path.join(internalPath, 'go.mod'))) {
-      return {
-        name: 'Go',
-        image: 'golang:1.22-alpine',
-        installCmd: 'go mod download',
-        buildCmd: 'go build -o app .',
-        cleanupCmd: 'rm -rf .git',
-        package: {
-          baseImage: 'alpine:latest', // Tiny runtime
-          user: 'nobody',
-          cmd: ['/app/app']
-        }
-      }
-    }
-
-    // 3. NODE.JS Strategy
-    if (fs.existsSync(path.join(internalPath, 'package.json'))) {
-      return {
-        name: 'Node.js',
-        image: 'node:lts-alpine',
-        installCmd:
-          'if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; else npm install --omit=dev --no-audit --no-fund; fi',
-        buildCmd: 'if [ -f "tsconfig.json" ] || grep -q "build" package.json; then npm run build --if-present; fi',
-        cleanupCmd: 'rm -rf .git .github test tests',
-        package: {
-          baseImage: 'node:lts-alpine',
-          user: 'node',
-          cmd: ['npm', 'start']
-        }
-      }
-    }
-
-    // 4. PHP Strategy
-    if (fs.existsSync(path.join(internalPath, 'composer.json')) || fs.existsSync(path.join(internalPath, 'index.php'))) {
-      return {
-        name: 'PHP',
-        image: 'composer:lts',
-        installCmd: 'if [ -f composer.json ]; then composer install --no-dev --ignore-platform-reqs; fi',
-        buildCmd: 'true',
-        cleanupCmd: 'rm -rf .git',
-        package: {
-          baseImage: 'php:8.2-apache',
-          user: 'www-data',
-          cmd: ['apache2-foreground'] // Standard Apache endpoint
-        }
-      }
-    }
-
-    // 4. STATIC WEB Strategy (Fallback if index.html exists but no specific backend match)
-    // Note: React/Vue apps often have package.json, so they hit Node strategy.
-    // If the intent is to serve static build output, the user might need to specify 'type: static' explicitly.
-    // For now, if ONLY index.html exists:
-    if (fs.existsSync(path.join(internalPath, 'index.html'))) {
-      return {
-        name: 'Static Web',
-        image: 'alpine:latest', // No compile needed for pure static, or Node if build needed logic added later
-        installCmd: 'true',
-        buildCmd: 'true',
-        cleanupCmd: 'rm -rf .git',
-        package: {
-          baseImage: 'nginx:alpine',
-          user: 'nginx',
-          cmd: ['nginx', '-g', 'daemon off;']
-        }
-      }
-    }
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PYTHON)) return BUILD_STRATEGIES.PYTHON
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.GO)) return BUILD_STRATEGIES.GO
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE)) return BUILD_STRATEGIES.NODE
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PHP)) return BUILD_STRATEGIES.PHP
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.STATIC)) return BUILD_STRATEGIES.STATIC
 
     return null
+  }
+
+  /**
+   * Helper to check if any trigger file exists for a strategy
+   * @param {string} internalPath
+   * @param {Object} strategy
+   */
+  async #checkStrategyTriggers(internalPath, strategy) {
+    for (const trigger of strategy.triggers) {
+      if (await this.#exists(path.join(internalPath, trigger))) {
+        return true
+      }
+    }
+    return false
+  }
+
+  // Non-blocking file existence check
+  async #exists(filePath) {
+    try {
+      await fs.access(filePath, fsConstants.F_OK)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -230,12 +256,9 @@ class Builder {
     try {
       await this.#ensureImage(strategy.image)
 
-      // Create a safe stream that won't close process.stdout
       const logStream = new PassThrough()
       logStream.on('data', chunk => log(chunk.toString().trim()))
 
-      // Pass full containerConfig as createOptions (4th param)
-      // docker.run signature: run(image, cmd, outputStream, createOptions, startOptions)
       const [data] = await this.#docker.run(strategy.image, ['sh', '-c', commands], logStream, {
         WorkingDir: '/app',
         HostConfig: containerConfig.HostConfig
@@ -277,14 +300,15 @@ USER ${strategy.package.user}
     dockerfileContent += `CMD ${JSON.stringify(strategy.package.cmd)}\n`
 
     const dockerfilePath = path.join(context.internalPath, 'Dockerfile.odac')
-    fs.writeFileSync(dockerfilePath, dockerfileContent)
+
+    // Async file write
+    await fs.writeFile(dockerfilePath, dockerfileContent)
 
     // 2. Use a specialized "Docker Client" container to perform the build on HOST
     // using the socket. This avoids DinD (we just talk to the socket).
     const packagerImage = 'docker:cli'
 
     // Commands to run inside the packager container
-    // It basically tells the HOST docker daemon to build the context at /app (which is context.hostPath)
     const buildCmd = `docker build -f /app/Dockerfile.odac -t ${imageName} /app`
 
     try {
@@ -319,8 +343,10 @@ USER ${strategy.package.user}
       throw err
     } finally {
       // Cleanup ephemeral Dockerfile
-      if (fs.existsSync(dockerfilePath)) {
-        fs.unlinkSync(dockerfilePath)
+      try {
+        await fs.unlink(dockerfilePath)
+      } catch {
+        // Ignore unlink errors (already deleted or access denied)
       }
     }
   }
@@ -343,6 +369,7 @@ USER ${strategy.package.user}
       }
     } catch (e) {
       error(`Failed to pull ${imageName}: ${e.message}`)
+      throw e // Re-throw critical image pull errors
     }
   }
 }
