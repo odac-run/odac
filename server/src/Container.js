@@ -197,7 +197,13 @@ class Container {
       if (result.StatusCode !== 0) {
         // Fetch logs to debug failure
         const logs = await container.logs({stdout: true, stderr: true})
-        const logStr = logs ? logs.toString('utf8') : 'No logs available'
+        let logStr = logs ? logs.toString('utf8') : 'No logs available'
+
+        // Sanitize sensitive token from logs
+        if (token) {
+          logStr = logStr.replaceAll(token, '*****')
+        }
+
         log(`[Git] Container Logs: ${logStr}`)
         throw new Error(`Git clone failed with exit code ${result.StatusCode}. Logs: ${logStr}`)
       }
