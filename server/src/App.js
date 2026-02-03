@@ -25,26 +25,27 @@ class App {
   async init() {
     log('Initializing apps...')
 
-    if (!Odac.core('Config').config.app?.path || !fs.existsSync(Odac.core('Config').config.app.path)) {
-      if (!Odac.core('Config').config.app) Odac.core('Config').config.app = {}
+    const appPath = Odac.core('Config').config.app?.path
+    try {
+      if (!appPath) {
+        if (!Odac.core('Config').config.app) Odac.core('Config').config.app = {}
 
-      // Check environment variable first (Docker support)
-      if (process.env.ODAC_APPS_PATH) {
-        Odac.core('Config').config.app.path = process.env.ODAC_APPS_PATH
-      } else if (os.platform() === 'win32' || os.platform() === 'darwin') {
-        Odac.core('Config').config.app.path = os.homedir() + '/Odac/apps/'
-      } else {
-        // Default for Linux (Prod & Dev)
-        // We prefer relative path inside the container/app structure
-        Odac.core('Config').config.app.path = '/app/.odac/apps/'
+        // Check environment variable first (Docker support)
+        if (process.env.ODAC_APPS_PATH) {
+          Odac.core('Config').config.app.path = process.env.ODAC_APPS_PATH
+        } else if (os.platform() === 'win32' || os.platform() === 'darwin') {
+          Odac.core('Config').config.app.path = os.homedir() + '/Odac/apps/'
+        } else {
+          // Default for Linux (Prod & Dev)
+          // We prefer relative path inside the container/app structure
+          Odac.core('Config').config.app.path = '/app/.odac/apps/'
+        }
       }
-    }
 
-    // Ensure directory exists
-    if (!fs.existsSync(Odac.core('Config').config.app.path)) {
-      try {
-        fs.mkdirSync(Odac.core('Config').config.app.path, {recursive: true})
-      } catch (e) {
+      // Ensure directory exists
+      await fs.promises.mkdir(Odac.core('Config').config.app.path, {recursive: true})
+    } catch (e) {
+      if (e.code !== 'EEXIST') {
         error('Failed to create apps directory: %s', e.message)
       }
     }
