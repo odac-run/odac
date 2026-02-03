@@ -1,5 +1,6 @@
 const Builder = require('../../server/src/Container/Builder')
 const fs = require('fs')
+const fsPromises = require('fs/promises')
 const path = require('path')
 
 // Mock Odac core
@@ -14,6 +15,7 @@ global.Odac = {
 
 // Mock Dependencies
 jest.mock('fs')
+jest.mock('fs/promises')
 jest.mock('dockerode')
 
 describe('Builder', () => {
@@ -55,7 +57,10 @@ describe('Builder', () => {
   describe('detect', () => {
     test('should detect Custom Dockerfile at top priority', async () => {
       // Return true for Dockerfile AND package.json to test priority
-      fs.existsSync.mockImplementation(p => p.endsWith('Dockerfile') || p.endsWith('package.json'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('Dockerfile') || p.endsWith('package.json')) return
+        throw new Error('ENOENT')
+      })
 
       await builder.build(mockContext, 'custom-image')
 
@@ -68,18 +73,24 @@ describe('Builder', () => {
 
       // Verify build command targets existing Dockerfile
       const cmd = calls.find(c => c[0] === 'docker:cli')[1]
-      expect(cmd).toEqual(['sh', '-c', 'docker build -t custom-image /app'])
+      expect(cmd).toEqual(['sh', '-c', 'docker build --progress=plain -t custom-image /app'])
     })
 
     test('should detect PHP project if composer.json exists', async () => {
-      fs.existsSync.mockImplementation(p => p.endsWith('composer.json'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('composer.json')) return
+        throw new Error('ENOENT')
+      })
       await builder.build(mockContext, 'php-image')
       expect(mockDocker.run).toHaveBeenCalledWith('composer:lts', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Node.js project if package.json exists', async () => {
       // Return true only for package.json
-      fs.existsSync.mockImplementation(p => p.endsWith('package.json'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('package.json')) return
+        throw new Error('ENOENT')
+      })
 
       // Test via private method exposed functionality (we can't call private directly easily in JS without hacks)
       // Actually, we test via build() public interface
@@ -92,26 +103,35 @@ describe('Builder', () => {
       await builder.build(mockContext, 'test-image')
 
       // Verify fs.existsSync was called with internal path
-      expect(fs.existsSync).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'package.json'))
+      expect(fsPromises.access).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'package.json'), expect.anything())
 
       // Verify docker run was called with Node image (result of detection)
       expect(mockDocker.run).toHaveBeenCalledWith('node:lts-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Python project if requirements.txt exists', async () => {
-      fs.existsSync.mockImplementation(p => p.endsWith('requirements.txt'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('requirements.txt')) return
+        throw new Error('ENOENT')
+      })
       await builder.build(mockContext, 'python-image')
       expect(mockDocker.run).toHaveBeenCalledWith('python:3.11-slim', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Go project if go.mod exists', async () => {
-      fs.existsSync.mockImplementation(p => p.endsWith('go.mod'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('go.mod')) return
+        throw new Error('ENOENT')
+      })
       await builder.build(mockContext, 'go-image')
       expect(mockDocker.run).toHaveBeenCalledWith('golang:1.22-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Static Web project if index.html exists', async () => {
-      fs.existsSync.mockImplementation(p => p.endsWith('index.html'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('index.html')) return
+        throw new Error('ENOENT')
+      })
       // Static web doesn't run compilation (image: alpine), so we expect alpine
       // Or whatever configured for "Static Web" strategy's image which is 'alpine:latest'
       // Note: Logic in detect says image: alpine:latest, installCmd: true
@@ -120,14 +140,17 @@ describe('Builder', () => {
     })
 
     test('should throw if no project type detected', async () => {
-      fs.existsSync.mockReturnValue(false) // No package.json
+      fsPromises.access.mockRejectedValue(new Error('ENOENT'))
       await expect(builder.build(mockContext, 'test-image')).rejects.toThrow('Could not detect project type')
     })
   })
 
   describe('compile', () => {
     beforeEach(() => {
-      fs.existsSync.mockImplementation(p => p.endsWith('package.json'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('package.json')) return
+        throw new Error('ENOENT')
+      })
     })
 
     test('should run compiler container with secure configuration', async () => {
@@ -138,6 +161,12 @@ describe('Builder', () => {
       const hostConfig = createOptions.HostConfig
 
       expect(image).toBe('node:lts-alpine')
+
+      // Validate command execution
+      expect(cmd[0]).toBe('sh')
+      expect(cmd[1]).toBe('-c')
+      expect(cmd[2]).toContain('npm install')
+
       expect(hostConfig.Privileged).toBe(false) // CRITICAL SECURITY CHECK
       expect(hostConfig.Binds).toContain(`${mockContext.hostPath}:/app`)
       expect(hostConfig.AutoRemove).toBe(true)
@@ -153,14 +182,17 @@ describe('Builder', () => {
 
   describe('package', () => {
     beforeEach(() => {
-      fs.existsSync.mockImplementation(p => p.endsWith('package.json') || p.endsWith('Dockerfile.odac'))
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('package.json') || p.endsWith('Dockerfile.odac')) return
+        throw new Error('ENOENT')
+      })
     })
 
     test('should generate Dockerfile and run packager container', async () => {
       await builder.build(mockContext, 'test-image')
 
       // Verify Dockerfile generation
-      expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect(fsPromises.writeFile).toHaveBeenCalledWith(
         path.join(mockContext.internalPath, 'Dockerfile.odac'),
         expect.stringContaining('FROM node:lts-alpine')
       )
@@ -175,10 +207,10 @@ describe('Builder', () => {
       expect(hostConfig.Binds).toContain(`${mockContext.hostPath}:/app`)
 
       // Verify command uses correct paths
-      expect(cmd).toEqual(['sh', '-c', `docker build -f /app/Dockerfile.odac -t test-image /app`])
+      expect(cmd).toEqual(['sh', '-c', `docker build --progress=plain -f /app/Dockerfile.odac -t test-image /app`])
 
       // Verify cleanup
-      expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'Dockerfile.odac'))
+      expect(fsPromises.unlink).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'Dockerfile.odac'))
     })
   })
 })
