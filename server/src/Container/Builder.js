@@ -4,7 +4,7 @@ const {constants: fsConstants} = require('fs')
 const {PassThrough} = require('stream')
 
 // Using Odac.core('Log') is standard practice in this codebase
-const {log, error} = Odac.core('Log').init('Builder')
+const {log, error} = Odac.core('Log').init('Container', 'Builder')
 
 /**
  * Configuration for Build Strategies.
@@ -153,7 +153,7 @@ class Builder {
 
     // Use docker:cli to forward build command to host
     const packagerImage = 'docker:cli'
-    const buildCmd = `docker build -t ${imageName} /app`
+    const buildCmd = `docker build --progress=plain -t ${imageName} /app`
 
     try {
       await this.#ensureImage(packagerImage)
@@ -245,6 +245,7 @@ class Builder {
       Image: strategy.image,
       Cmd: ['sh', '-c', commands],
       WorkingDir: '/app',
+      Env: ['CI=true', 'NPM_CONFIG_SPIN=false', 'NPM_CONFIG_PROGRESS=false'],
       HostConfig: {
         Binds: [`${context.hostPath}:/app`], // Mount HOST path
         AutoRemove: true,
@@ -309,7 +310,7 @@ USER ${strategy.package.user}
     const packagerImage = 'docker:cli'
 
     // Commands to run inside the packager container
-    const buildCmd = `docker build -f /app/Dockerfile.odac -t ${imageName} /app`
+    const buildCmd = `docker build --progress=plain -f /app/Dockerfile.odac -t ${imageName} /app`
 
     try {
       await this.#ensureImage(packagerImage)

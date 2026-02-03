@@ -12,6 +12,7 @@ trigger: always_on
 
 - **Mandatory Lint Verification:** After ANY code modification, you MUST run the linter (`npm run lint` or `npx eslint <file>`) and fix ALL errors until the command returns success (exit code 0). Do not assume the code is correct; verify it.
 - **Non-Blocking I/O:** Always use asynchronous, non-blocking methods for File System operations (e.g., `fs/promises` or `fs.readFile` with callback) instead of synchronous ones (`fs.readFileSync`, `fs.existsSync`) in server-side code to prevent Event Loop blocking, unless purely for startup initialization.
+- **Hierarchical Logging:** Sub-modules must use hierarchical log initialization, e.g., `Odac.core('Log').init('Parent', 'Child')`, to ensure clear log tracing.
 
 ## Architectural Principles (Non-Negotiable)
 - **Root Cause over Patching:** Never implement local "quick fixes" for systemic requirements (logging, auth, validation). Modify the Core foundation (`core/`) instead of patching individual files.
