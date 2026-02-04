@@ -318,41 +318,39 @@ class Monitor {
     }
 
     execFile('docker', ['logs', '-t', '--tail', String(this.#height), containerName], (error, stdout, stderr) => {
-      const output = stdout + stderr
+      const rawLines = (stdout + '\n' + stderr)
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .filter(l => l.trim())
 
-      if (error && !output) {
+      if (error && rawLines.length === 0) {
         this.#logs.content = [Odac.cli('Cli').color('Error fetching logs: ' + error.message, 'red')]
       } else {
-        this.#logs.content = output
-          .replace(/\r\n/g, '\n')
-          .trim()
-          .split('\n')
-          .filter(l => l)
+        this.#logs.content = rawLines
           .map(line => {
-            // Docker -t output format: 2024-12-24T11:22:33.444444444Z Content...
             const firstSpace = line.indexOf(' ')
-            if (firstSpace === -1) return line
-
-            const rawDate = line.substring(0, firstSpace)
-            let content = line.substring(firstSpace + 1)
-
-            // Try parse date
-            const date = new Date(rawDate)
-            let formattedDate = ''
-            if (!isNaN(date.getTime())) {
-              formattedDate = Odac.cli('Cli').formatDate(date)
-            } else {
-              // If not a valid date, maybe it wasn't a timestamped line (shouldn't happen with -t)
-              return line
+            let timestamp = 0
+            let dateObj = null
+            if (firstSpace !== -1) {
+              const rawDate = line.substring(0, firstSpace)
+              dateObj = new Date(rawDate)
+              if (!isNaN(dateObj.getTime())) timestamp = dateObj.getTime()
             }
+            return {line, timestamp, dateObj}
+          })
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .map(item => {
+            const {line, dateObj} = item
+            const firstSpace = line.indexOf(' ')
+            if (firstSpace === -1 || !dateObj || isNaN(dateObj.getTime())) return line
+
+            let content = line.substring(firstSpace + 1)
+            const formattedDate = Odac.cli('Cli').formatDate(dateObj)
 
             let color = 'green'
-
-            // Heuristic to detect error logs if not explicitly marked
             if (content.includes('[ERR]') || content.toLowerCase().includes('error')) {
               color = 'red'
             }
-
             return Odac.cli('Cli').color(`[${formattedDate}]`, color, 'bold') + ' ' + content
           })
           .slice(-(this.#height - 4))
@@ -487,7 +485,11 @@ class Monitor {
       this.#maxStatsLen = {cpu: maxCpuLen, mem: maxMemLen}
     })
   }
-
+  #getLogLine(index) {
+    const offset = this.#height - 4 - this.#logs.content.length
+    if (index < offset) return ' '
+    return this.#logs.content[index - offset] || ' '
+  }
   #getSelectedItem() {
     const domainsCount = this.#domains.length
     const appsCount = this.#apps.length
@@ -653,8 +655,7 @@ class Monitor {
 
       result += Odac.cli('Cli').color(' │', 'gray')
 
-      const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
-      result += this.#safeLog(logLine, this.#width - c1)
+      result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
       result += Odac.cli('Cli').color('│\n', 'gray')
 
       ctx.globalIndex++
@@ -673,8 +674,7 @@ class Monitor {
         result += ' ' + Odac.cli('Cli').color(title) + ' '
         result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
         result += Odac.cli('Cli').color(this.#domains.length > 0 ? '┤' : '│', 'gray')
-        const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
-        result += this.#safeLog(logLine, this.#width - c1)
+        result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
         result += Odac.cli('Cli').color('│\n', 'gray')
         ctx.renderedLines++
       }
@@ -714,12 +714,7 @@ class Monitor {
 
       result += Odac.cli('Cli').color(' │', 'gray')
 
-      if (this.#logs.selected == ctx.globalIndex) {
-        const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
-        result += this.#safeLog(logLine, this.#width - c1)
-      } else {
-        result += ' '.repeat(this.#width - c1)
-      }
+      result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
       result += Odac.cli('Cli').color('│\n', 'gray')
       ctx.globalIndex++
       ctx.renderedLines++
@@ -734,8 +729,7 @@ class Monitor {
       result += ' '.repeat(c1)
       result += Odac.cli('Cli').color('│', 'gray')
 
-      const logLine = this.#logs.content[ctx.renderedLines] ? this.#logs.content[ctx.renderedLines] : ' '
-      result += this.#safeLog(logLine, this.#width - c1)
+      result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
 
       result += Odac.cli('Cli').color('│\n', 'gray')
       ctx.renderedLines++
