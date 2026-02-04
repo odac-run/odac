@@ -22,6 +22,7 @@ class Api {
     auth: (...args) => Odac.server('Hub').auth(...args),
     update: (...args) => Odac.server('Updater').start(...args),
     'app.start': (...args) => Odac.server('App').start(...args),
+    'app.restart': (...args) => Odac.server('App').restart(...args),
     'app.delete': (...args) => Odac.server('App').delete(...args),
     'app.list': (...args) => Odac.server('App').list(...args),
     'app.create': (...args) => Odac.server('App').create(...args),

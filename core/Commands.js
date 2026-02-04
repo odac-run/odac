@@ -74,6 +74,16 @@ module.exports = {
           })
         }
       },
+      restart: {
+        description: 'Restart an App',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+          await Odac.cli('Connector').call({action: 'app.restart', data: [app]})
+        }
+      },
       delete: {
         description: 'Delete an App',
         args: ['-i', '--id'],

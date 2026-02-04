@@ -2,6 +2,7 @@ require('../../core/Odac.js')
 
 const fs = require('fs')
 const os = require('os')
+const net = require('net')
 const {execFile} = require('child_process')
 
 class Monitor {
@@ -513,14 +514,40 @@ class Monitor {
     this.#logs.restarting[name] = Odac.cli('Cli').color(`Restarting ${name}...`, 'yellow')
     this.#monitor()
 
-    execFile('docker', ['restart', name], err => {
-      if (err) {
-        this.#logs.restarting[name] = Odac.cli('Cli').color(`Error restarting ${name}: ${err.message}`, 'red')
-      } else {
-        this.#logs.restarting[name] = Odac.cli('Cli').color(`Successfully restarted ${name}`, 'green')
+    const client = net.createConnection({port: 1453}, () => {
+      const payload = {
+        auth: Odac.core('Config').config.api.auth,
+        action: 'app.restart',
+        data: [name]
       }
+      client.write(JSON.stringify(payload))
+    })
+
+    client.on('data', data => {
+      try {
+        const response = JSON.parse(data.toString())
+        if (response.result) {
+          this.#logs.restarting[name] = Odac.cli('Cli').color(`Successfully restarted ${name}`, 'green')
+        } else {
+          this.#logs.restarting[name] = Odac.cli('Cli').color(`Error restarting ${name}: ${response.message || 'Unknown error'}`, 'red')
+        }
+      } catch {
+        this.#logs.restarting[name] = Odac.cli('Cli').color(`Error restarting ${name}: Invalid API response`, 'red')
+      }
+      client.end()
       this.#monitor()
 
+      setTimeout(() => {
+        if (this.#logs.restarting && this.#logs.restarting[name]) {
+          delete this.#logs.restarting[name]
+          this.#monitor()
+        }
+      }, 2000)
+    })
+
+    client.on('error', err => {
+      this.#logs.restarting[name] = Odac.cli('Cli').color(`Connection failed: ${err.message}`, 'red')
+      this.#monitor()
       setTimeout(() => {
         if (this.#logs.restarting && this.#logs.restarting[name]) {
           delete this.#logs.restarting[name]

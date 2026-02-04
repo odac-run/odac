@@ -363,6 +363,28 @@ class App {
     return Odac.server('Api').result(true, __('App %s deleted successfully.', app.name))
   }
 
+  async restart(id) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    log('Restarting app %s', app.name)
+
+    // Stop the app first
+    await this.stop(app.id)
+
+    // Wait a brief moment to ensure resources are released (optional but often helpful in container envs)
+    await new Promise(resolve => setTimeout(resolve, 1000))
+
+    // Start it again
+    if (await this.#run(app.id)) {
+      return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
+    }
+
+    return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
+  }
+
   // Status & Listing
   async status() {
     const apps = this.#loadAppsFromConfig()

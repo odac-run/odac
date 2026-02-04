@@ -66,7 +66,7 @@ class Hub {
       return
     }
 
-    if (this.checkCounter % this.statsInterval === 0) this.sendContainerStats()
+    if (this.checkCounter % this.statsInterval === 0) this.sendAppStats()
     if (this.checkCounter % this.handshakeInterval === 0) this.sendInitialHandshake()
   }
 
@@ -82,10 +82,10 @@ class Hub {
   async sendInitialHandshake() {
     if (!this.ws.connected) return
 
-    const containers = await this.#getFormattedContainers()
+    const apps = await this.#getFormattedApps()
     const system = System.getSystemInfo()
 
-    this.#sendSignedMessage('connect_info', {system, containers})
+    this.#sendSignedMessage('system.info', {system, apps})
   }
 
   sendWebSocketStatus() {
@@ -95,23 +95,20 @@ class Hub {
     this.#sendSignedMessage('status', status)
   }
 
-  async sendContainerStats() {
+  async sendAppStats() {
     if (!this.ws.connected) return
-    if (!Odac.server('Container').available) return
 
-    const containers = await Odac.server('Container').list()
-    const relevantContainers = this.#filterRelevantContainers(containers)
-
-    if (relevantContainers.length === 0) return
-
+    const apps = await Odac.server('App').status()
     const statsData = {}
-    for (const c of relevantContainers) {
-      const name = this.#getContainerName(c)
-      const stats = await Odac.server('Container').getStats(c.id)
-      if (stats) statsData[name] = stats
+
+    for (const app of apps) {
+      if (app.status === 'running') {
+        const stats = await Odac.server('Container').getStats(app.name)
+        if (stats) statsData[app.name] = stats
+      }
     }
 
-    this.#sendSignedMessage('container_stats', statsData)
+    this.#sendSignedMessage('app.stats', statsData)
   }
 
   // HTTP API
@@ -202,6 +199,9 @@ class Hub {
       case 'app.create':
         this.#handleAppCreate(command)
         break
+      case 'app.restart':
+        this.#handleAppRestart(command)
+        break
       case 'updater.start':
         Odac.server('Updater').start()
         break
@@ -227,7 +227,7 @@ class Hub {
       const result = await Odac.server('App').create(payload)
       this.#sendCommandResponse(command.requestId, result)
 
-      // Immediately update Hub with new container list
+      // Immediately update Hub with new app list
       await this.sendInitialHandshake()
     } catch (e) {
       log('app.create failed: %s', e.message)
@@ -238,8 +238,39 @@ class Hub {
     }
   }
 
+  async #handleAppRestart(command) {
+    const payload = command.payload
+
+    if (!payload?.container) {
+      log('app.restart: Missing payload (container)')
+      this.#sendCommandResponse(command.requestId, {
+        success: false,
+        message: 'Missing payload (container)'
+      })
+      return
+    }
+
+    const target = payload.container
+    try {
+      log('Restarting app: %s', target)
+      const result = await Odac.server('App').restart(target)
+      this.#sendCommandResponse(command.requestId, result)
+
+      // Update Hub stats
+      await this.sendAppStats()
+      // Update Container List (New IDs, Status etc.)
+      await this.sendInitialHandshake()
+    } catch (e) {
+      log('app.restart failed: %s', e.message)
+      this.#sendCommandResponse(command.requestId, {
+        success: false,
+        message: e.message
+      })
+    }
+  }
+
   #sendCommandResponse(requestId, result) {
-    this.#sendSignedMessage('command_response', {
+    this.#sendSignedMessage('command.response', {
       requestId,
       success: result.success,
       message: result.message,
@@ -252,60 +283,9 @@ class Hub {
     return Odac.core('Config').config.hub
   }
 
-  #getContainerName(container) {
-    return container.names?.[0]?.replace(/^\//, '') || 'unknown'
+  async #getFormattedApps() {
+    return Odac.server('App').status()
   }
-
-  #filterRelevantContainers(containers) {
-    const websites = Odac.core('Config').config.websites || {}
-    const apps = Odac.core('Config').config.apps || []
-
-    return containers.filter(c => {
-      const name = this.#getContainerName(c)
-      return websites[name] || apps.find(s => s.name === name)
-    })
-  }
-
-  async #getFormattedContainers() {
-    if (!Odac.server('Container').available) return []
-
-    const containers = await Odac.server('Container').list()
-    const websites = Odac.core('Config').config.websites || {}
-    const apps = Odac.core('Config').config.apps || []
-
-    return containers
-      .filter(c => {
-        const name = this.#getContainerName(c)
-        return websites[name] || apps.find(s => s.name === name)
-      })
-      .map(c => this.#formatContainer(c, websites))
-  }
-
-  #formatContainer(c, websites) {
-    const name = this.#getContainerName(c)
-    const app = {
-      type: websites[name] ? 'website' : 'app',
-      framework: websites[name] ? 'odac' : c.image || 'unknown'
-    }
-
-    if (websites[name]) app.domain = name
-
-    return {
-      id: c.id,
-      name,
-      image: c.image,
-      state: c.state,
-      status: c.status,
-      created: c.created,
-      app,
-      ports: (c.ports || []).map(p => ({
-        private: p.PrivatePort,
-        public: p.PublicPort,
-        type: p.Type
-      }))
-    }
-  }
-
   #sendSignedMessage(type, data) {
     const timestamp = Math.floor(Date.now() / 1000)
     const hub = this.#getHubConfig()
