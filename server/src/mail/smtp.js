@@ -10,6 +10,7 @@ const DKIMSign = require('dkim-signer').DKIMSign
 
 // DNS resolver promisify
 const resolveMx = promisify(dns.resolveMx)
+const resolve6 = promisify(dns.resolve6)
 
 class smtp {
   constructor() {
@@ -293,20 +294,122 @@ class smtp {
     log('Connection Pool', `Added connection to ${key}`)
   }
 
-  async #connectWithRetry(sender, host, port, retryCount = 0) {
+  async #connectWithRetry(sender, host, port, retryCount = 0, forceIPv4 = false) {
     try {
-      return await this.#connect(sender, host, port)
+      // Check if target host supports IPv6 (has AAAA record)
+      const targetSupportsIPv6 = forceIPv4 ? false : await this.#hostSupportsIPv6(host)
+
+      // Resolve the best local IP for this sender domain using PTR matching
+      const localAddress = this.#getLocalAddressForDomain(sender, targetSupportsIPv6)
+      return await this.#connect(sender, host, port, localAddress)
     } catch (err) {
+      // Check if this is a network unreachable error (IPv6 not working)
+      const isIPv6NetworkError =
+        err.code === 'ENETUNREACH' ||
+        err.code === 'EHOSTUNREACH' ||
+        err.code === 'EADDRNOTAVAIL' ||
+        err.message.includes('network is unreachable')
+
+      // If IPv6 failed, retry with IPv4
+      if (isIPv6NetworkError && !forceIPv4) {
+        log('SMTP', `IPv6 connection failed, falling back to IPv4 for ${host}:${port}`)
+        return await this.#connectWithRetry(sender, host, port, 0, true)
+      }
+
       if (retryCount < this.config.retryAttempts) {
         log('SMTP Retry', `Retrying connection to ${host}:${port} (attempt ${retryCount + 1})`)
         await new Promise(resolve => setTimeout(resolve, this.config.retryDelay * (retryCount + 1)))
-        return await this.#connectWithRetry(sender, host, port, retryCount + 1)
+        return await this.#connectWithRetry(sender, host, port, retryCount + 1, forceIPv4)
       }
       throw err
     }
   }
 
-  #connect(sender, host, port) {
+  /**
+   * Checks if target host has AAAA (IPv6) record
+   * @param {string} host - Target hostname
+   * @returns {Promise<boolean>} - true if IPv6 supported
+   */
+  async #hostSupportsIPv6(host) {
+    try {
+      const addresses = await Promise.race([
+        resolve6(host),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DNS timeout')), 3000))
+      ])
+      return addresses && addresses.length > 0
+    } catch {
+      // No AAAA record or DNS error
+      return false
+    }
+  }
+
+  /**
+   * Gets the best local IP address for sending mail from a domain
+   * Uses DNS PTR matching to find an IP with matching reverse DNS
+   * Priority (when target supports IPv6): 1) PTR-matched IPv6, 2) PTR-matched IPv4, 3) First public IPv6, 4) First public IPv4
+   * Priority (when target is IPv4 only): 1) PTR-matched IPv4, 2) First public IPv4
+   * @param {string} domain - Sender domain
+   * @param {boolean} targetSupportsIPv6 - Whether target host has AAAA record
+   * @returns {string|null} - Local IP address or null to use default
+   */
+  #getLocalAddressForDomain(domain, targetSupportsIPv6 = true) {
+    try {
+      const DNS = require('./DNS')
+      if (!DNS || !DNS.ips) return null
+
+      // 1. Find IPv6 with PTR matching this domain (highest priority, if target supports)
+      if (targetSupportsIPv6) {
+        for (const ipObj of DNS.ips.ipv6) {
+          if (!ipObj.public) continue
+          if (!ipObj.ptr) continue
+
+          if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+            log('SMTP', `Using PTR-matched IPv6 ${ipObj.address} (${ipObj.ptr}) for domain ${domain}`)
+            return ipObj.address
+          }
+        }
+      }
+
+      // 2. Find IPv4 with PTR matching this domain
+      for (const ipObj of DNS.ips.ipv4) {
+        if (!ipObj.public) continue
+        if (!ipObj.ptr) continue
+
+        if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+          log('SMTP', `Using PTR-matched IPv4 ${ipObj.address} (${ipObj.ptr}) for domain ${domain}`)
+          return ipObj.address
+        }
+      }
+
+      // 3. First public IPv6 (no PTR match, if target supports)
+      if (targetSupportsIPv6) {
+        const publicIPv6 = DNS.ips.ipv6.find(i => i.public)
+        if (publicIPv6) {
+          log('SMTP', `Using default public IPv6 ${publicIPv6.address} for domain ${domain}`)
+          return publicIPv6.address
+        }
+      }
+
+      // 4. First public IPv4 (no PTR match)
+      const publicIPv4 = DNS.ips.ipv4.find(i => i.public)
+      if (publicIPv4) {
+        log('SMTP', `Using default public IPv4 ${publicIPv4.address} for domain ${domain}`)
+        return publicIPv4.address
+      }
+
+      // Fallback to DNS primary IP
+      if (DNS.ip && DNS.ip !== '127.0.0.1') {
+        return DNS.ip
+      }
+
+      return null
+    } catch {
+      // DNS module may not be initialized, use default
+      return null
+    }
+  }
+
+  #connect(sender, host, port, localAddress = null) {
     return new Promise((resolve, reject) => {
       // Check connection pool first
       this.#getConnectionFromPool(host, port)
@@ -328,40 +431,42 @@ class smtp {
           }
 
           if (port == 465) {
-            socket = tls.connect(
-              {
-                host: host,
-                port: port,
-                rejectUnauthorized: false,
-                timeout: this.config.timeout,
-                ...this.config.tls
-              },
-              async () => {
-                cleanup()
-                try {
-                  socket.setEncoding('utf8')
-                  await new Promise(resolve => socket.once('data', resolve))
-                  await this.#commandWithTimeout(socket, `EHLO ${this.#sanitizeInput(sender)}\r\n`)
-                  this.#addToConnectionPool(host, port, socket)
-                  resolve(socket)
-                } catch (err) {
-                  socket.destroy()
-                  reject(err)
-                }
+            const tlsOptions = {
+              host: host,
+              port: port,
+              rejectUnauthorized: false,
+              timeout: this.config.timeout,
+              ...this.config.tls
+            }
+            if (localAddress) tlsOptions.localAddress = localAddress
+
+            socket = tls.connect(tlsOptions, async () => {
+              cleanup()
+              try {
+                socket.setEncoding('utf8')
+                await new Promise(resolve => socket.once('data', resolve))
+                await this.#commandWithTimeout(socket, `EHLO ${this.#sanitizeInput(sender)}\r\n`)
+                this.#addToConnectionPool(host, port, socket)
+                resolve(socket)
+              } catch (err) {
+                socket.destroy()
+                reject(err)
               }
-            )
+            })
 
             socket.on('error', err => {
               if (err.code === 'ERR_SSL_NO_SHARED_CIPHER') {
                 error('TLS Cipher Error on port 465 - Trying fallback:', err.message)
                 // Try with minimal TLS configuration
-                const fallbackSocket = tls.connect({
+                const fallbackOptions = {
                   host: host,
                   port: port,
                   rejectUnauthorized: false,
                   timeout: this.config.timeout,
                   minVersion: 'TLSv1.2'
-                })
+                }
+                if (localAddress) fallbackOptions.localAddress = localAddress
+                const fallbackSocket = tls.connect(fallbackOptions)
                 fallbackSocket.on('secureConnect', async () => {
                   log('Fallback SSL connection successful on port 465')
                   try {
@@ -386,7 +491,10 @@ class smtp {
               }
             })
           } else {
-            socket = net.createConnection(port, host, async () => {
+            const connOptions = {port, host}
+            if (localAddress) connOptions.localAddress = localAddress
+
+            socket = net.createConnection(connOptions, async () => {
               cleanup()
               try {
                 socket.setEncoding('utf8')
