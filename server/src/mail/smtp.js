@@ -434,8 +434,8 @@ class smtp {
             const tlsOptions = {
               host: host,
               port: port,
-              rejectUnauthorized: false,
               timeout: this.config.timeout,
+              rejectUnauthorized: true, // Security Hardening: Validate certificates by default
               ...this.config.tls
             }
             if (localAddress) tlsOptions.localAddress = localAddress
@@ -461,9 +461,10 @@ class smtp {
                 const fallbackOptions = {
                   host: host,
                   port: port,
-                  rejectUnauthorized: false,
                   timeout: this.config.timeout,
-                  minVersion: 'TLSv1.2'
+                  minVersion: 'TLSv1.2',
+                  rejectUnauthorized: true, // Security Hardening: Validate certificates by default
+                  ...this.config.tls
                 }
                 if (localAddress) fallbackOptions.localAddress = localAddress
                 const fallbackSocket = tls.connect(fallbackOptions)
@@ -518,7 +519,7 @@ class smtp {
                   {
                     socket: socket,
                     servername: host,
-                    rejectUnauthorized: false,
+                    rejectUnauthorized: true, // Security Hardening: Validate certificates by default
                     ...this.config.tls
                   },
                   async () => {
