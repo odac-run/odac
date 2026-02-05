@@ -4,18 +4,31 @@ const axios = require('axios')
 const dns = require('native-dns')
 const {execSync} = require('child_process')
 const fs = require('fs')
+const nodeDns = require('dns')
 const os = require('os')
 const {randomUUID} = require('crypto')
 
 class DNS {
-  ip = '127.0.0.1'
+  ips = {ipv4: [], ipv6: []} // Arrays of {address, ptr} objects
+  ip = '127.0.0.1' // Primary IPv4 for backward compatibility
   #loaded = false
+  #ptrCache = new Map() // PTR -> {address, type} for O(1) lookup
   #tcp
 
   #udp
   #requestCount = new Map() // Rate limiting
   #rateLimit = 2500 // requests per minute per IP
   #rateLimitWindow = 60000 // 1 minute
+
+  // Private IPv4 ranges (RFC 1918, RFC 6598, Link-local)
+  #privateIPv4Ranges = [
+    {start: 0x0a000000, end: 0x0affffff}, // 10.0.0.0/8
+    {start: 0xac100000, end: 0xac1fffff}, // 172.16.0.0/12
+    {start: 0xc0a80000, end: 0xc0a8ffff}, // 192.168.0.0/16
+    {start: 0xa9fe0000, end: 0xa9feffff}, // 169.254.0.0/16 (link-local)
+    {start: 0x64400000, end: 0x647fffff}, // 100.64.0.0/10 (CGNAT)
+    {start: 0x7f000000, end: 0x7fffffff} // 127.0.0.0/8 (loopback)
+  ]
 
   #execHost(cmd, options = {}) {
     // Check if running in Docker
@@ -199,8 +212,11 @@ class DNS {
   }
 
   async #getExternalIP() {
-    // Multiple IP detection services as fallbacks
-    const ipServices = [
+    // Collect all IPs from local interfaces first
+    this.#collectLocalIPs()
+
+    // IPv4 detection services
+    const ipv4Services = [
       'https://curlmyip.org/',
       'https://ipv4.icanhazip.com/',
       'https://api.ipify.org/',
@@ -208,50 +224,239 @@ class DNS {
       'https://ipinfo.io/ip'
     ]
 
-    for (const service of ipServices) {
+    // IPv6 detection services
+    const ipv6Services = ['https://ipv6.icanhazip.com/', 'https://api64.ipify.org/', 'https://v6.ident.me/']
+
+    // Detect external IPv4
+    for (const service of ipv4Services) {
       try {
-        log(`Attempting to get external IP from ${service}`)
+        log(`Attempting to get external IPv4 from ${service}`)
         const response = await axios.get(service, {
           timeout: 5000,
-          headers: {
-            'User-Agent': 'Odac-DNS/1.0'
-          }
+          headers: {'User-Agent': 'Odac-DNS/1.0'}
         })
 
         const ip = response.data.trim()
         if (ip && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-          log('External IP detected:', ip)
-          this.ip = ip
-          return
+          log('External IPv4 detected:', ip)
+          // Add to IPv4 list if not already present - external IPs are always public
+          if (!this.ips.ipv4.find(i => i.address === ip)) {
+            this.ips.ipv4.unshift({address: ip, ptr: null, public: true}) // External IP first
+          }
+          this.ip = ip // Set primary IP
+          break
         } else {
-          log(`Invalid IP format from ${service}:`, ip)
+          log(`Invalid IPv4 format from ${service}:`, ip)
         }
       } catch (err) {
-        log(`Failed to get IP from ${service}:`, err.message)
+        log(`Failed to get IPv4 from ${service}:`, err.message)
         continue
       }
     }
 
-    // If all services fail, try to get local network IP
+    // Detect external IPv6
+    for (const service of ipv6Services) {
+      try {
+        log(`Attempting to get external IPv6 from ${service}`)
+        const response = await axios.get(service, {
+          timeout: 5000,
+          headers: {'User-Agent': 'Odac-DNS/1.0'},
+          family: 6 // Force IPv6
+        })
+
+        const ip = response.data.trim()
+        // Basic IPv6 validation
+        if (ip && /^[0-9a-fA-F:]+$/.test(ip) && ip.includes(':')) {
+          log('External IPv6 detected:', ip)
+          if (!this.ips.ipv6.find(i => i.address === ip)) {
+            this.ips.ipv6.unshift({address: ip, ptr: null, public: true}) // External IP first
+          }
+          break
+        } else {
+          log(`Invalid IPv6 format from ${service}:`, ip)
+        }
+      } catch (err) {
+        log(`Failed to get IPv6 from ${service}:`, err.message)
+        continue
+      }
+    }
+
+    // Use first local IPv4 as fallback if no external IP detected
+    if (this.ips.ipv4.length === 0) {
+      log('Could not determine external IPv4, using default 127.0.0.1')
+      error('DNS', 'All IPv4 detection methods failed, DNS A records will use 127.0.0.1')
+    } else {
+      // Use first public IPv4 as primary, fallback to first available
+      const publicIPv4 = this.ips.ipv4.find(i => i.public)
+      this.ip = publicIPv4 ? publicIPv4.address : this.ips.ipv4[0].address
+    }
+
+    // Perform PTR lookups for all detected IPs
+    await this.#lookupPTRRecords()
+
+    log(
+      `Detected IPs - IPv4: [${this.ips.ipv4.map(i => `${i.address}${i.public ? ' [public]' : ' [private]'}${i.ptr ? ` (${i.ptr})` : ''}`).join(', ')}]`
+    )
+    log(
+      `Detected IPs - IPv6: [${this.ips.ipv6.map(i => `${i.address}${i.public ? ' [public]' : ' [private]'}${i.ptr ? ` (${i.ptr})` : ''}`).join(', ')}]`
+    )
+  }
+
+  /**
+   * Performs PTR (reverse DNS) lookups for all detected IP addresses
+   * Updates ips.ipv4 and ips.ipv6 arrays with ptr field
+   */
+  async #lookupPTRRecords() {
+    const lookupPromises = []
+
+    // Lookup IPv4 PTR records
+    for (let i = 0; i < this.ips.ipv4.length; i++) {
+      const ipObj = this.ips.ipv4[i]
+      lookupPromises.push(
+        this.#reverseLookup(ipObj.address)
+          .then(ptr => {
+            this.ips.ipv4[i].ptr = ptr
+            if (ptr) log(`PTR record for ${ipObj.address}: ${ptr}`)
+          })
+          .catch(() => {
+            this.ips.ipv4[i].ptr = null
+          })
+      )
+    }
+
+    // Lookup IPv6 PTR records
+    for (let i = 0; i < this.ips.ipv6.length; i++) {
+      const ipObj = this.ips.ipv6[i]
+      lookupPromises.push(
+        this.#reverseLookup(ipObj.address)
+          .then(ptr => {
+            this.ips.ipv6[i].ptr = ptr
+            if (ptr) log(`PTR record for ${ipObj.address}: ${ptr}`)
+          })
+          .catch(() => {
+            this.ips.ipv6[i].ptr = null
+          })
+      )
+    }
+
+    // Wait for all lookups with timeout
+    await Promise.race([
+      Promise.allSettled(lookupPromises),
+      new Promise(resolve => setTimeout(resolve, 5000)) // 5 second timeout for all PTR lookups
+    ])
+
+    // Build PTR cache for O(1) lookup during DNS queries
+    this.#buildPTRCache()
+  }
+
+  /**
+   * Builds the PTR cache Map from collected IP addresses
+   * Called once after PTR lookups complete
+   */
+  #buildPTRCache() {
+    this.#ptrCache.clear()
+
+    // Cache IPv4 PTR records
+    for (const ipObj of this.ips.ipv4) {
+      if (ipObj.ptr) {
+        this.#ptrCache.set(ipObj.ptr, {address: ipObj.address, type: 'ipv4'})
+      }
+    }
+
+    // Cache IPv6 PTR records
+    for (const ipObj of this.ips.ipv6) {
+      if (ipObj.ptr) {
+        this.#ptrCache.set(ipObj.ptr, {address: ipObj.address, type: 'ipv6'})
+      }
+    }
+
+    log(`PTR cache built with ${this.#ptrCache.size} entries`)
+  }
+
+  /**
+   * Performs a reverse DNS lookup for an IP address
+   * @param {string} ip - IPv4 or IPv6 address
+   * @returns {Promise<string|null>} - Hostname or null if not found
+   */
+  async #reverseLookup(ip) {
+    try {
+      const hostnames = await nodeDns.promises.reverse(ip)
+      return hostnames && hostnames.length > 0 ? hostnames[0] : null
+    } catch {
+      // ENOTFOUND, ENODATA, or other DNS errors mean no PTR record
+      return null
+    }
+  }
+
+  /**
+   * Checks if an IPv4 address is in a private range
+   * @param {string} ip - IPv4 address
+   * @returns {boolean} - true if private, false if public
+   */
+  #isPrivateIPv4(ip) {
+    const parts = ip.split('.').map(Number)
+    if (parts.length !== 4) return false
+
+    // Convert to 32-bit integer for range comparison
+    const ipNum = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+
+    for (const range of this.#privateIPv4Ranges) {
+      if (ipNum >= range.start && ipNum <= range.end) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Checks if an IPv6 address is private/link-local
+   * @param {string} ip - IPv6 address
+   * @returns {boolean} - true if private, false if public
+   */
+  #isPrivateIPv6(ip) {
+    const normalized = ip.toLowerCase()
+    // Link-local (fe80::)
+    if (normalized.startsWith('fe80:')) return true
+    // Unique local (fc00::/7 - fc00:: to fdff::)
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+    // Loopback (::1)
+    if (normalized === '::1') return true
+    return false
+  }
+
+  /**
+   * Collects all non-internal IP addresses from local network interfaces
+   * Populates this.ips.ipv4 and this.ips.ipv6 arrays
+   */
+  #collectLocalIPs() {
     try {
       const networkInterfaces = require('os').networkInterfaces()
       for (const interfaceName in networkInterfaces) {
         const interfaces = networkInterfaces[interfaceName]
         for (const iface of interfaces) {
-          // Skip loopback and non-IPv4 addresses
-          if (!iface.internal && iface.family === 'IPv4') {
-            log('Using local network IP as fallback:', iface.address)
-            this.ip = iface.address
-            return
+          // Skip loopback and internal addresses
+          if (iface.internal) continue
+
+          if (iface.family === 'IPv4') {
+            if (!this.ips.ipv4.find(i => i.address === iface.address)) {
+              const isPublic = !this.#isPrivateIPv4(iface.address)
+              this.ips.ipv4.push({address: iface.address, ptr: null, public: isPublic})
+              log(`Local IPv4 detected on ${interfaceName}: ${iface.address} [${isPublic ? 'public' : 'private'}]`)
+            }
+          } else if (iface.family === 'IPv6') {
+            // Skip link-local addresses (fe80::) - already handled in isPrivateIPv6
+            if (iface.address.startsWith('fe80:')) continue
+            if (!this.ips.ipv6.find(i => i.address === iface.address)) {
+              const isPublic = !this.#isPrivateIPv6(iface.address)
+              this.ips.ipv6.push({address: iface.address, ptr: null, public: isPublic})
+              log(`Local IPv6 detected on ${interfaceName}: ${iface.address} [${isPublic ? 'public' : 'private'}]`)
+            }
           }
         }
       }
     } catch (err) {
-      log('Failed to get local network IP:', err.message)
+      error('Failed to collect local network IPs:', err.message)
     }
-
-    log('Could not determine external IP, using default 127.0.0.1')
-    error('DNS', 'All IP detection methods failed, DNS A records will use 127.0.0.1')
   }
 
   #publish() {
@@ -930,7 +1135,7 @@ nameserver 8.8.4.4
         response.answer.push(
           dns.A({
             name: record.name,
-            address: record.value ?? this.ip,
+            address: record.value ?? this.#resolveIPByPTR(questionName, 'ipv4'),
             ttl: record.ttl ?? 3600
           })
         )
@@ -940,14 +1145,54 @@ nameserver 8.8.4.4
     }
   }
 
+  /**
+   * Resolves an IP address by matching PTR record to the given domain
+   * Uses O(1) cache lookup for exact matches, O(n) fallback for subdomain matching
+   * @param {string} domain - Domain to match against PTR records
+   * @param {string} type - 'ipv4' or 'ipv6'
+   * @returns {string} - Matching IP address or default IP
+   */
+  #resolveIPByPTR(domain, type = 'ipv4') {
+    const ipList = type === 'ipv6' ? this.ips.ipv6 : this.ips.ipv4
+
+    // Default: first PUBLIC IPv4 or first PUBLIC IPv6
+    // Only use public IPs for DNS responses
+    const publicIP = ipList.find(i => i.public)
+    const defaultIP = type === 'ipv6' ? (publicIP ? publicIP.address : null) : publicIP ? publicIP.address : this.ip
+
+    // O(1) exact match lookup from cache
+    const cached = this.#ptrCache.get(domain)
+    if (cached && (type === 'ipv4' ? cached.type === 'ipv4' : cached.type === 'ipv6')) {
+      // Verify the cached IP is public before returning
+      const cachedIPObj = ipList.find(i => i.address === cached.address)
+      if (cachedIPObj && cachedIPObj.public) {
+        return cached.address
+      }
+    }
+
+    // O(n) fallback for subdomain matching (rare case) - only match public IPs
+    for (const ipObj of ipList) {
+      if (!ipObj.ptr || !ipObj.public) continue
+      // Subdomain match: ptr "server.example.com" matches query "example.com"
+      // Or query "api.server.example.com" matches ptr "server.example.com"
+      if (ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+        return ipObj.address
+      }
+    }
+
+    return defaultIP
+  }
+
   #processAAAARecords(records, questionName, response) {
     try {
       for (const record of records ?? []) {
         if (record.name !== questionName) continue
+        const address = record.value ?? this.#resolveIPByPTR(questionName, 'ipv6')
+        if (!address) continue // Skip if no IPv6 address available
         response.answer.push(
           dns.AAAA({
             name: record.name,
-            address: record.value,
+            address: address,
             ttl: record.ttl ?? 3600
           })
         )
