@@ -354,7 +354,7 @@ class smtp {
    */
   #getLocalAddressForDomain(domain, targetSupportsIPv6 = true) {
     try {
-      const DNS = require('./DNS')
+      const DNS = Odac.server('DNS')
       if (!DNS || !DNS.ips) return null
 
       // 1. Find IPv6 with PTR matching this domain (highest priority, if target supports)
