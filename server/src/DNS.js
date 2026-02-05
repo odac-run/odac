@@ -46,6 +46,11 @@ class DNS {
     return execSync(cmd, options)
   }
 
+  #isSafe(key) {
+    const prohibited = ['__proto__', 'constructor', 'prototype']
+    return typeof key === 'string' && !prohibited.includes(key.toLowerCase())
+  }
+
   delete(...args) {
     if (!Odac.core('Config').config.dns) return
 
@@ -53,16 +58,19 @@ class DNS {
 
     for (let obj of args) {
       let domain = obj.name
+      if (!this.#isSafe(domain)) continue
+
       // Find the root domain
-      while (!Odac.core('Config').config.dns[domain] && domain.includes('.')) {
+      const config = Odac.core('Config').config
+      while (domain.includes('.') && (!Object.prototype.hasOwnProperty.call(config.dns, domain) || !this.#isSafe(domain))) {
         domain = domain.split('.').slice(1).join('.')
       }
 
-      if (!Odac.core('Config').config.dns[domain]) continue
+      if (!this.#isSafe(domain) || !Object.prototype.hasOwnProperty.call(config.dns, domain)) continue
       if (!obj.type) continue
 
       const type = obj.type.toUpperCase()
-      const zone = Odac.core('Config').config.dns[domain]
+      const zone = config.dns[domain]
 
       const initialLength = zone.records.length
       zone.records = zone.records.filter(
@@ -1391,7 +1399,7 @@ nameserver 8.8.4.4
       // Try to find existing zone
       let temp = domain
       while (temp.includes('.')) {
-        if (dnsConfig[temp]) {
+        if (this.#isSafe(temp) && Object.prototype.hasOwnProperty.call(dnsConfig, temp)) {
           zoneDomain = temp
           found = true
           break
@@ -1400,13 +1408,14 @@ nameserver 8.8.4.4
       }
 
       // If we didn't find a parent zone, and this is seemingly a new domain (e.g. from Web.create), we initialize it
-      // Standard logic: The domain passed in the first record is the zone root usually
       if (!found) {
         zoneDomain = domain
       }
 
+      if (!this.#isSafe(zoneDomain)) continue
+
       // Initialize zone if missing
-      if (!dnsConfig[zoneDomain]) {
+      if (!Object.prototype.hasOwnProperty.call(dnsConfig, zoneDomain)) {
         const dateStr = new Date()
           .toISOString()
           .replace(/[^0-9]/g, '')
