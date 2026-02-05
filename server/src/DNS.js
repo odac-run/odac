@@ -1147,40 +1147,58 @@ nameserver 8.8.4.4
 
   /**
    * Resolves an IP address by matching PTR record to the given domain
-   * Uses O(1) cache lookup for exact matches, O(n) fallback for subdomain matching
+   * Priority: 1. Exact match, 2. Subdomain match, 3. Root domain match
    * @param {string} domain - Domain to match against PTR records
    * @param {string} type - 'ipv4' or 'ipv6'
    * @returns {string} - Matching IP address or default IP
    */
   #resolveIPByPTR(domain, type = 'ipv4') {
     const ipList = type === 'ipv6' ? this.ips.ipv6 : this.ips.ipv4
+    const queryRoot = this.#getRootDomain(domain)
 
     // Default: first PUBLIC IPv4 or first PUBLIC IPv6
-    // Only use public IPs for DNS responses
     const publicIP = ipList.find(i => i.public)
     const defaultIP = type === 'ipv6' ? (publicIP ? publicIP.address : null) : publicIP ? publicIP.address : this.ip
 
     // O(1) exact match lookup from cache
     const cached = this.#ptrCache.get(domain)
     if (cached && (type === 'ipv4' ? cached.type === 'ipv4' : cached.type === 'ipv6')) {
-      // Verify the cached IP is public before returning
       const cachedIPObj = ipList.find(i => i.address === cached.address)
-      if (cachedIPObj && cachedIPObj.public) {
-        return cached.address
-      }
+      if (cachedIPObj && cachedIPObj.public) return cached.address
     }
 
-    // O(n) fallback for subdomain matching (rare case) - only match public IPs
+    // O(n) scan for subdomain or root domain matching
     for (const ipObj of ipList) {
       if (!ipObj.ptr || !ipObj.public) continue
-      // Subdomain match: ptr "server.example.com" matches query "example.com"
-      // Or query "api.server.example.com" matches ptr "server.example.com"
+
+      // 1. Subdomain matching: ptr "mail.example.com" matches query "example.com" or vice versa
       if (ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+        return ipObj.address
+      }
+
+      // 2. Root domain matching: ptr root "example.com" matches query root "example.com"
+      if (queryRoot && this.#getRootDomain(ipObj.ptr) === queryRoot) {
         return ipObj.address
       }
     }
 
     return defaultIP
+  }
+
+  /**
+   * Extracts root domain (e.g., example.com) from a hostname
+   * @param {string} hostname
+   * @returns {string|null}
+   */
+  #getRootDomain(hostname) {
+    if (!hostname) return null
+    const parts = hostname.toLowerCase().split('.')
+    if (parts.length < 2) return null
+
+    // Simple root domain logic: last two parts
+    // Note: In production, this would need a Public Suffix List for co.uk etc.
+    // but for our internal matching, comparing the last two parts is usually sufficient.
+    return parts.slice(-2).join('.')
   }
 
   #processAAAARecords(records, questionName, response) {
