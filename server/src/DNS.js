@@ -5,12 +5,13 @@ const dns = require('native-dns')
 const {execSync} = require('child_process')
 const fs = require('fs')
 const os = require('os')
+const {randomUUID} = require('crypto')
 
 class DNS {
   ip = '127.0.0.1'
   #loaded = false
   #tcp
-  #types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SOA', 'CAA']
+
   #udp
   #requestCount = new Map() // Rate limiting
   #rateLimit = 2500 // requests per minute per IP
@@ -33,17 +34,40 @@ class DNS {
   }
 
   delete(...args) {
+    if (!Odac.core('Config').config.dns) return
+
+    let changedDomains = new Set()
+
     for (let obj of args) {
       let domain = obj.name
-      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
-      if (!Odac.core('Config').config.websites[domain]) continue
+      // Find the root domain
+      while (!Odac.core('Config').config.dns[domain] && domain.includes('.')) {
+        domain = domain.split('.').slice(1).join('.')
+      }
+
+      if (!Odac.core('Config').config.dns[domain]) continue
       if (!obj.type) continue
-      let type = obj.type.toUpperCase()
-      if (!this.#types.includes(type)) continue
-      if (!Odac.core('Config').config.websites[domain].DNS || !Odac.core('Config').config.websites[domain].DNS[type]) continue
-      Odac.core('Config').config.websites[domain].DNS[type] = Odac.core('Config').config.websites[domain].DNS[type].filter(
-        record => !(record.name === obj.name && (!obj.value || record.value === obj.value))
+
+      const type = obj.type.toUpperCase()
+      const zone = Odac.core('Config').config.dns[domain]
+
+      const initialLength = zone.records.length
+      zone.records = zone.records.filter(
+        record => !(record.type === type && record.name === obj.name && (!obj.value || record.value === obj.value))
       )
+
+      if (zone.records.length !== initialLength) {
+        changedDomains.add(domain)
+      }
+    }
+
+    // Update SOA serial for changed zones
+    for (const domain of changedDomains) {
+      this.#updateSOASerial(domain)
+    }
+
+    if (changedDomains.size > 0) {
+      if (Odac.core('Config').force) Odac.core('Config').force()
     }
   }
 
@@ -57,6 +81,100 @@ class DNS {
           if (err.code !== 'ECONNRESET') error('DNS TCP Socket Error:', err.message)
         })
       })
+    }
+
+    // MIGRATION: Move DNS records from websites to dns config
+    this.#migrateDNS()
+  }
+
+  #migrateDNS() {
+    const config = Odac.core('Config').config
+    if (!config.websites) return
+
+    // Initialize dns config if missing
+    if (!config.dns) config.dns = {}
+
+    let migrationNeeded = false
+    const dnsConfig = config.dns
+
+    // Check websites for legacy DNS records
+    for (const domain in config.websites) {
+      const site = config.websites[domain]
+      if (site.DNS && !dnsConfig[domain]) {
+        migrationNeeded = true
+        log(`Migrating DNS records for ${domain}...`)
+
+        // Create new zone structure
+        const zone = {
+          soa: {},
+          records: []
+        }
+
+        // Migrate SOA
+        if (site.DNS.SOA && site.DNS.SOA[0]) {
+          const oldSoa = site.DNS.SOA[0]
+          const parts = oldSoa.value.split(' ')
+          zone.soa = {
+            primary: parts[0] || `ns1.${domain}`,
+            email: parts[1] || `hostmaster.${domain}`,
+            serial:
+              parseInt(parts[2]) ||
+              parseInt(
+                new Date()
+                  .toISOString()
+                  .replace(/[^0-9]/g, '')
+                  .slice(0, 8) + '01'
+              ),
+            refresh: parseInt(parts[3]) || 3600,
+            retry: parseInt(parts[4]) || 600,
+            expire: parseInt(parts[5]) || 604800,
+            minimum: parseInt(parts[6]) || 3600,
+            ttl: oldSoa.ttl || 3600
+          }
+        } else {
+          // Create default SOA if missing
+          const dateStr = new Date()
+            .toISOString()
+            .replace(/[^0-9]/g, '')
+            .slice(0, 8)
+          zone.soa = {
+            primary: `ns1.${domain}`,
+            email: `hostmaster.${domain}`,
+            serial: parseInt(dateStr + '01'),
+            refresh: 3600,
+            retry: 600,
+            expire: 604800,
+            minimum: 3600,
+            ttl: 3600
+          }
+        }
+
+        // Migrate other records
+        const recordTypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'CAA']
+        for (const type of recordTypes) {
+          if (site.DNS[type] && Array.isArray(site.DNS[type])) {
+            for (const rec of site.DNS[type]) {
+              zone.records.push({
+                id: randomUUID(),
+                type: type,
+                name: rec.name,
+                value: rec.value,
+                priority: rec.priority, // Only for MX
+                ttl: rec.ttl || 3600
+              })
+            }
+          }
+        }
+
+        dnsConfig[domain] = zone
+        // Remove legacy DNS data
+        delete site.DNS
+      }
+    }
+
+    if (migrationNeeded) {
+      if (Odac.core('Config').force) Odac.core('Config').force()
+      log('DNS migration completed successfully.')
     }
   }
 
@@ -137,7 +255,10 @@ class DNS {
   }
 
   #publish() {
-    if (this.#loaded || !Object.keys(Odac.core('Config').config.websites ?? {}).length) return
+    if (this.#loaded) return
+    // Ensure we have dns config
+    if (!Odac.core('Config').config.dns) Odac.core('Config').config.dns = {}
+
     this.#loaded = true
 
     // Set up request handlers
@@ -667,59 +788,99 @@ nameserver 8.8.4.4
       const questionType = response.question[0].type
       response.question[0].name = questionName
 
+      // Resolve Zone
       let domain = questionName
-      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) {
+      // Try exact match first, then walk up the tree
+      while (!Odac.core('Config').config.dns[domain] && domain.includes('.')) {
         domain = domain.split('.').slice(1).join('.')
       }
 
-      if (!Odac.core('Config').config.websites[domain] || !Odac.core('Config').config.websites[domain].DNS) {
-        // For unknown domains, send proper NXDOMAIN response instead of empty response
+      const zone = Odac.core('Config').config.dns[domain]
+
+      if (!zone) {
+        // For unknown domains, send search on public DNS? No, we are authoritative only for our zones.
+        // Or if recursion is enabled (it's not), we would forward.
+        // Send NXDOMAIN
         response.header.rcode = dns.consts.NAME_TO_RCODE.NXDOMAIN
         return response.send()
       }
 
-      const dnsRecords = Odac.core('Config').config.websites[domain].DNS
+      const records = zone.records || []
+      const soa = zone.soa
+
+      // SECURITY: Handle ANY queries strictly
+      // Refuse ANY queries to prevent amplification attacks (RFC 8482 approach or just minimal response)
+      if (questionType === dns.consts.NAME_TO_QTYPE.ANY) {
+        // Return only HINFO or just SOA to minimize response size
+        if (soa) {
+          this.#processSOARecordObj(soa, domain, response)
+        }
+        return response.send()
+      }
 
       // Only process records relevant to the question type for better performance
       switch (questionType) {
         case dns.consts.NAME_TO_QTYPE.A:
-          this.#processARecords(dnsRecords.A, questionName, response)
+          this.#processARecords(
+            records.filter(r => r?.type === 'A'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.AAAA:
-          this.#processAAAARecords(dnsRecords.AAAA, questionName, response)
+          this.#processAAAARecords(
+            records.filter(r => r?.type === 'AAAA'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.CNAME:
-          this.#processCNAMERecords(dnsRecords.CNAME, questionName, response)
+          this.#processCNAMERecords(
+            records.filter(r => r?.type === 'CNAME'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.MX:
-          this.#processMXRecords(dnsRecords.MX, questionName, response)
+          this.#processMXRecords(
+            records.filter(r => r?.type === 'MX'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.TXT:
-          this.#processTXTRecords(dnsRecords.TXT, questionName, response)
+          this.#processTXTRecords(
+            records.filter(r => r?.type === 'TXT'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.NS:
-          this.#processNSRecords(dnsRecords.NS, questionName, response, domain)
+          this.#processNSRecords(
+            records.filter(r => r?.type === 'NS'),
+            questionName,
+            response,
+            domain
+          )
           break
         case dns.consts.NAME_TO_QTYPE.SOA:
-          this.#processSOARecords(dnsRecords.SOA, questionName, response)
+          if (soa) {
+            this.#processSOARecordObj(soa, domain, response)
+          }
           break
-        case dns.consts.NAME_TO_QTYPE.CAA:
-          this.#processCAARecords(dnsRecords.CAA, questionName, response)
+        case dns.consts.NAME_TO_QTYPE.CAA: {
+          const caaRecords = records.filter(r => r?.type === 'CAA')
+          this.#processCAARecords(caaRecords, questionName, response)
           // If no CAA records found, add default Let's Encrypt CAA records
-          if (!response.answer.length && dnsRecords.CAA?.length === 0) {
+          if (response.answer.length === 0 && caaRecords.length === 0) {
             this.#addDefaultCAARecords(questionName, response)
           }
           break
+        }
         default:
-          // For ANY queries or unknown types, process all relevant records
-          this.#processARecords(dnsRecords.A, questionName, response)
-          this.#processAAAARecords(dnsRecords.AAAA, questionName, response)
-          this.#processCNAMERecords(dnsRecords.CNAME, questionName, response)
-          this.#processMXRecords(dnsRecords.MX, questionName, response)
-          this.#processTXTRecords(dnsRecords.TXT, questionName, response)
-          this.#processNSRecords(dnsRecords.NS, questionName, response, domain)
-          this.#processSOARecords(dnsRecords.SOA, questionName, response)
-          this.#processCAARecords(dnsRecords.CAA, questionName, response)
+          // For unknown types, do nothing (NODATA)
+          // Do NOT dump all records
+          break
       }
 
       response.send()
@@ -737,6 +898,28 @@ nameserver 8.8.4.4
       } catch (sendErr) {
         error('Failed to send DNS error response:', sendErr.message)
       }
+    }
+  }
+
+  // Helper to process SOA from object instead of record array
+  #processSOARecordObj(soa, domain, response) {
+    try {
+      response.header.aa = 1
+      response.answer.push(
+        dns.SOA({
+          name: domain,
+          primary: soa.primary,
+          admin: soa.email,
+          serial: soa.serial,
+          refresh: soa.refresh,
+          retry: soa.retry,
+          expiration: soa.expire,
+          minimum: soa.minimum || 3600,
+          ttl: soa.ttl || 3600
+        })
+      )
+    } catch (err) {
+      error('Error processing SOA object:', err.message)
     }
   }
 
@@ -844,32 +1027,6 @@ nameserver 8.8.4.4
     }
   }
 
-  #processSOARecords(records, questionName, response) {
-    try {
-      for (const record of records ?? []) {
-        if (!record || !record.value) continue
-        const soaParts = record.value.split(' ')
-        if (soaParts.length < 7) continue
-        response.header.aa = 1
-        response.authority.push(
-          dns.SOA({
-            name: record.name,
-            primary: soaParts[0],
-            admin: soaParts[1],
-            serial: parseInt(soaParts[2]) || 1,
-            refresh: parseInt(soaParts[3]) || 3600,
-            retry: parseInt(soaParts[4]) || 600,
-            expiration: parseInt(soaParts[5]) || 604800,
-            minimum: parseInt(soaParts[6]) || 3600,
-            ttl: record.ttl ?? 3600
-          })
-        )
-      }
-    } catch (err) {
-      error('Error processing SOA records:', err.message)
-    }
-  }
-
   #processCAARecords(records, questionName, response) {
     try {
       for (const record of records ?? []) {
@@ -952,54 +1109,132 @@ nameserver 8.8.4.4
   }
 
   record(...args) {
-    let domains = []
+    if (!Odac.core('Config').config.dns) Odac.core('Config').config.dns = {}
+
+    let changedDomains = new Set()
+
     for (let obj of args) {
       let domain = obj.name
-      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
-      if (!Odac.core('Config').config.websites[domain]) continue
-      if (!obj.type) continue
-      let type = obj.type.toUpperCase()
-      delete obj.type
-      if (!this.#types.includes(type)) continue
-      if (!Odac.core('Config').config.websites[domain].DNS) Odac.core('Config').config.websites[domain].DNS = {}
-      if (!Odac.core('Config').config.websites[domain].DNS[type]) Odac.core('Config').config.websites[domain].DNS[type] = []
-      if (obj.unique !== false) {
-        Odac.core('Config').config.websites[domain].DNS[type] = Odac.core('Config').config.websites[domain].DNS[type].filter(
-          record => record.name !== obj.name
-        )
-      }
-      Odac.core('Config').config.websites[domain].DNS[type].push(obj)
-      domains.push(domain)
-    }
-    let date = new Date()
-      .toISOString()
-      .replace(/[^0-9]/g, '')
-      .slice(0, 10)
-    for (let domain of domains) {
-      // Add SOA record
-      Odac.core('Config').config.websites[domain].DNS.SOA = [
-        {
-          name: domain,
-          value: 'ns1.' + domain + ' hostmaster.' + domain + ' ' + date + ' 3600 600 604800 3600'
-        }
-      ]
+      // Walk up to find the root domain zone
+      // Note: If domain doesn't exist yet, we stick to the provided name unless it's a subdomain we want to attach to parent
+      // But creating a new record usually implies creating context.
+      // Logic: If exact domain exists in DNS, use it. If not, try parents. If none, assume creating new zone.
 
-      // Add default CAA records for Let's Encrypt SSL certificates
-      if (!Odac.core('Config').config.websites[domain].DNS.CAA) {
-        Odac.core('Config').config.websites[domain].DNS.CAA = [
-          {
-            name: domain,
-            value: '0 issue letsencrypt.org',
+      let zoneDomain = domain
+      let found = false
+
+      const dnsConfig = Odac.core('Config').config.dns
+
+      // Try to find existing zone
+      let temp = domain
+      while (temp.includes('.')) {
+        if (dnsConfig[temp]) {
+          zoneDomain = temp
+          found = true
+          break
+        }
+        temp = temp.split('.').slice(1).join('.')
+      }
+
+      // If we didn't find a parent zone, and this is seemingly a new domain (e.g. from Web.create), we initialize it
+      // Standard logic: The domain passed in the first record is the zone root usually
+      if (!found) {
+        zoneDomain = domain
+      }
+
+      // Initialize zone if missing
+      if (!dnsConfig[zoneDomain]) {
+        const dateStr = new Date()
+          .toISOString()
+          .replace(/[^0-9]/g, '')
+          .slice(0, 8)
+        dnsConfig[zoneDomain] = {
+          soa: {
+            primary: `ns1.${zoneDomain}`,
+            email: `hostmaster.${zoneDomain}`,
+            serial: parseInt(dateStr + '01'),
+            refresh: 3600,
+            retry: 600,
+            expire: 604800,
+            minimum: 3600,
             ttl: 3600
           },
-          {
-            name: domain,
-            value: '0 issuewild letsencrypt.org',
-            ttl: 3600
-          }
-        ]
-        log("Added default CAA records for Let's Encrypt to domain:", domain)
+          records: []
+        }
+        // Add default Let's Encrypt CAA
+        dnsConfig[zoneDomain].records.push({
+          id: randomUUID(),
+          type: 'CAA',
+          name: zoneDomain,
+          value: '0 issue letsencrypt.org',
+          ttl: 3600
+        })
+        dnsConfig[zoneDomain].records.push({
+          id: randomUUID(),
+          type: 'CAA',
+          name: zoneDomain,
+          value: '0 issuewild letsencrypt.org',
+          ttl: 3600
+        })
       }
+
+      const zone = dnsConfig[zoneDomain]
+      if (!obj.type) continue
+
+      let type = obj.type.toUpperCase()
+      const validTypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'CAA']
+      if (!validTypes.includes(type)) continue
+
+      // Filter functionality: If we are setting a record that must be unique (like CNAME for a specific subdomain?), remove old one?
+      // The original code had logic: if (obj.unique !== false) remove existing
+
+      // If updating a record, remove conflict
+      if (obj.unique !== false) {
+        zone.records = zone.records.filter(r => !(r.type === type && r.name === obj.name))
+      }
+
+      zone.records.push({
+        id: randomUUID(),
+        type: type,
+        name: obj.name,
+        value: obj.value,
+        priority: obj.priority,
+        ttl: obj.ttl || 3600
+      })
+
+      changedDomains.add(zoneDomain)
+    }
+
+    // Update SOA serials
+    for (const domain of changedDomains) {
+      this.#updateSOASerial(domain)
+    }
+
+    if (changedDomains.size > 0) {
+      if (Odac.core('Config').force) Odac.core('Config').force()
+    }
+  }
+
+  #updateSOASerial(domain) {
+    const zone = Odac.core('Config').config.dns[domain]
+    if (!zone || !zone.soa) return
+
+    const dateStr = new Date()
+      .toISOString()
+      .replace(/[^0-9]/g, '')
+      .slice(0, 8)
+
+    // Logic: If serial starts with today's date, increment. Else set to Today + 01
+    // SOA format: YYYYMMDDNN
+
+    let currentSerial = zone.soa.serial
+    let currentSerialStr = currentSerial.toString()
+    let currentDatePrefix = currentSerialStr.slice(0, 8)
+
+    if (currentDatePrefix === dateStr) {
+      zone.soa.serial++
+    } else {
+      zone.soa.serial = parseInt(dateStr + '01')
     }
   }
 }
