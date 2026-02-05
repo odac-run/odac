@@ -177,6 +177,10 @@ describe('Hub', () => {
         getStats: jest.fn().mockResolvedValue({cpu: 10, memory: 100})
       })
 
+      mockOdac.setMock('server', 'App', {
+        status: jest.fn().mockResolvedValue([{name: 'test-container', status: 'running'}])
+      })
+
       // Mock connected state and send
       Object.defineProperty(Hub.ws, 'connected', {get: () => true})
       const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
@@ -194,7 +198,7 @@ describe('Hub', () => {
       const hasStats = sendCalls.some(call => {
         // data is passed as object or string, check args
         const data = typeof call[0] === 'string' ? JSON.parse(call[0]) : call[0]
-        return data.type === 'container_stats'
+        return data.type === 'app.stats'
       })
       expect(hasStats).toBe(true)
 

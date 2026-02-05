@@ -101,10 +101,12 @@ class Hub {
     const apps = await Odac.server('App').status()
     const statsData = {}
 
-    for (const app of apps) {
-      if (app.status === 'running') {
-        const stats = await Odac.server('Container').getStats(app.name)
-        if (stats) statsData[app.name] = stats
+    if (Array.isArray(apps)) {
+      for (const app of apps) {
+        if (app.status === 'running') {
+          const stats = await Odac.server('Container').getStats(app.name)
+          if (stats) statsData[app.name] = stats
+        }
       }
     }
 
