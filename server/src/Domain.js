@@ -88,16 +88,41 @@ class Domain {
       return Odac.server('Api').result(false, __('App %s not found.', appId))
     }
 
-    // Phase 4: Create DNS records for the domain
+    // Phase 4: Create DNS records for the domain (skip for localhost and IP addresses)
+    let sslEnabled = false
     if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
       try {
+        // Build DNS records - A and AAAA without value, DNS will resolve dynamically via PTR matching
         const dnsRecords = [
           {name: domain, type: 'A'},
           {name: domain, type: 'AAAA'},
-          {name: 'www.' + domain, type: 'CNAME', value: domain}
+          {name: 'www.' + domain, type: 'CNAME', value: domain},
+          {name: domain, type: 'MX', value: domain},
+          {
+            name: '_dmarc.' + domain,
+            type: 'TXT',
+            value: 'v=DMARC1; p=reject; rua=mailto:postmaster@' + domain
+          }
         ]
+
+        // Build SPF record - needs explicit IPs for external validation
+        const publicIPv4 = Odac.server('DNS').ip
+        const publicIPv6 = Odac.server('DNS').ips?.ipv6?.find(i => i.public)
+        let spfValue = 'v=spf1 a mx'
+        if (publicIPv4 && publicIPv4 !== '127.0.0.1') {
+          spfValue += ' ip4:' + publicIPv4
+        }
+        if (publicIPv6) {
+          spfValue += ' ip6:' + publicIPv6.address
+        }
+        spfValue += ' ~all'
+        dnsRecords.push({name: domain, type: 'TXT', value: spfValue})
+
         Odac.server('DNS').record(...dnsRecords)
         log('Created DNS records for domain %s', domain)
+
+        // Mark SSL as enabled for certificate provisioning
+        sslEnabled = true
       } catch (e) {
         error('Failed to create DNS records for %s: %s', domain, e.message)
         return Odac.server('Api').result(false, __('Failed to create DNS records: %s', e.message))
@@ -105,14 +130,33 @@ class Domain {
     }
 
     // Phase 5: Add domain record to domains config
-    domains.push({
+    const domainRecord = {
       appId: targetApp.name,
       created: Date.now(),
-      domain
-    })
+      domain,
+      subdomain: ['www']
+    }
+
+    // Initialize SSL cert tracking if SSL is enabled
+    if (sslEnabled) {
+      domainRecord.cert = {}
+    }
+
+    domains.push(domainRecord)
 
     // Phase 6: Persist configuration (triggers auto-save via proxy)
     Odac.core('Config').config.domains = domains
+
+    // Phase 7: Trigger SSL certificate provisioning for non-localhost domains
+    if (sslEnabled) {
+      try {
+        Odac.server('SSL').renew(domain)
+        log('Initiated SSL certificate provisioning for %s', domain)
+      } catch (e) {
+        // Non-fatal: SSL will be retried later
+        error('SSL provisioning failed for %s: %s', domain, e.message)
+      }
+    }
 
     log('Domain %s added to app %s', domain, targetApp.name)
     return Odac.server('Api').result(true, __('Domain %s added to app %s.', domain, targetApp.name))
