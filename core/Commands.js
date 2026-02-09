@@ -119,6 +119,34 @@ module.exports = {
             data: [domain, app]
           })
         }
+      },
+      delete: {
+        description: 'Delete a domain',
+        args: ['-d', '--domain'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let domain = cli.parseArg(args, ['-d', '--domain']) || args[0]
+
+          if (!domain) domain = await cli.question(__('Enter the domain name: '))
+
+          await Odac.cli('Connector').call({
+            action: 'domain.delete',
+            data: [domain]
+          })
+        }
+      },
+      list: {
+        description: 'List all domains',
+        args: ['-a', '--app'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          const app = cli.parseArg(args, ['-a', '--app']) || args[0]
+
+          await Odac.cli('Connector').call({
+            action: 'domain.list',
+            data: app ? [app] : []
+          })
+        }
       }
     }
   },

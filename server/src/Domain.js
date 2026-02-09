@@ -161,6 +161,98 @@ class Domain {
     log('Domain %s added to app %s', domain, targetApp.name)
     return Odac.server('Api').result(true, __('Domain %s added to app %s.', domain, targetApp.name))
   }
+
+  /**
+   * Deletes a domain and removes its DNS records.
+   *
+   * @param {string} domain - The domain name to delete
+   * @returns {Promise<{result: boolean, message: string}>} API result object
+   */
+  async delete(domain) {
+    // Phase 1: Input Validation
+    const validation = this.#validate(domain)
+    if (!validation.valid) {
+      return Odac.server('Api').result(false, validation.error)
+    }
+    domain = validation.domain
+
+    // Phase 2: Find domain in config
+    const domains = this.#getDomains()
+    const index = domains.findIndex(d => d.domain === domain)
+    if (index === -1) {
+      return Odac.server('Api').result(false, __('Domain %s not found.', domain))
+    }
+
+    const domainRecord = domains[index]
+
+    // Phase 3: Delete DNS records (skip for localhost and IP addresses)
+    if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+      try {
+        // Delete all DNS records associated with this domain
+        const recordsToDelete = [
+          {name: domain, type: 'A'},
+          {name: domain, type: 'AAAA'},
+          {name: 'www.' + domain, type: 'CNAME'},
+          {name: domain, type: 'MX'},
+          {name: domain, type: 'TXT'},
+          {name: '_dmarc.' + domain, type: 'TXT'}
+        ]
+
+        for (const record of recordsToDelete) {
+          try {
+            Odac.server('DNS').delete(record)
+          } catch {
+            // Ignore individual record deletion failures
+          }
+        }
+        log('Deleted DNS records for domain %s', domain)
+      } catch (e) {
+        error('Failed to delete DNS records for %s: %s', domain, e.message)
+        // Continue with domain removal even if DNS cleanup fails
+      }
+    }
+
+    // Phase 4: Remove domain from config
+    domains.splice(index, 1)
+    Odac.core('Config').config.domains = domains
+
+    log('Domain %s deleted (was assigned to app %s)', domain, domainRecord.appId)
+    return Odac.server('Api').result(true, __('Domain %s deleted successfully.', domain))
+  }
+
+  /**
+   * Lists all registered domains.
+   *
+   * @param {string} [appId] - Optional: filter by App ID or name
+   * @returns {Promise<{result: boolean, message: string}>} API result object
+   */
+  async list(appId) {
+    const domains = this.#getDomains()
+
+    if (domains.length === 0) {
+      return Odac.server('Api').result(false, __('No domains found.'))
+    }
+
+    // Filter by appId if provided
+    let filtered = domains
+    if (appId) {
+      filtered = domains.filter(d => d.appId === appId)
+      if (filtered.length === 0) {
+        return Odac.server('Api').result(false, __('No domains found for app %s.', appId))
+      }
+    }
+
+    // Build table output
+    const header = 'DOMAIN'.padEnd(30) + 'APP'.padEnd(20) + 'CREATED'
+    const separator = '-'.repeat(65)
+
+    const rows = filtered.map(d => {
+      const created = new Date(d.created).toISOString().split('T')[0]
+      return d.domain.padEnd(30) + (d.appId || '-').padEnd(20) + created
+    })
+
+    return Odac.server('Api').result(true, [header, separator, ...rows].join('\n'))
+  }
 }
 
 module.exports = new Domain()
