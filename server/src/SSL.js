@@ -22,6 +22,7 @@ class SSL {
         await this.#ssl(domain)
     }
     this.#checking = false
+    this.#checking = false
   }
 
   renew(domain) {
