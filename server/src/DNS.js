@@ -405,8 +405,9 @@ class DNS {
     const parts = ip.split('.').map(Number)
     if (parts.length !== 4) return false
 
-    // Convert to 32-bit integer for range comparison
-    const ipNum = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+    // Convert to unsigned 32-bit integer for range comparison
+    // Using >>> 0 to prevent signed integer overflow for IPs like 192.168.x.x
+    const ipNum = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
 
     for (const range of this.#privateIPv4Ranges) {
       if (ipNum >= range.start && ipNum <= range.end) {
