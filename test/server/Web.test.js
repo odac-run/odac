@@ -429,7 +429,8 @@ describe('Web', () => {
       const domain = 'example.com'
       const mockDNS = {
         record: jest.fn(),
-        ip: '192.168.1.1'
+        ip: '192.168.1.1',
+        ips: {ipv4: [], ipv6: []}
       }
       mockOdac.setMock('server', 'DNS', mockDNS)
       mockOdac.setMock('server', 'Api', {
@@ -441,17 +442,27 @@ describe('Web', () => {
 
       await Web.create(domain, mockProgress)
 
-      expect(mockDNS.record).toHaveBeenCalledWith(
-        {name: 'example.com', type: 'A', value: '192.168.1.1'},
-        {name: 'www.example.com', type: 'CNAME', value: 'example.com'},
-        {name: 'example.com', type: 'MX', value: 'example.com'},
-        {name: 'example.com', type: 'TXT', value: 'v=spf1 a mx ip4:192.168.1.1 ~all'},
-        {
-          name: '_dmarc.example.com',
-          type: 'TXT',
-          value: 'v=DMARC1; p=reject; rua=mailto:postmaster@example.com'
-        }
-      )
+      // Verify DNS.record was called with spread arguments
+      expect(mockDNS.record).toHaveBeenCalled()
+      const recordArgs = mockDNS.record.mock.calls[0]
+
+      // Check A record (no value - dynamic resolution)
+      expect(recordArgs).toContainEqual({name: 'example.com', type: 'A'})
+      // Check AAAA record (no value - dynamic resolution)
+      expect(recordArgs).toContainEqual({name: 'example.com', type: 'AAAA'})
+      // Check CNAME record
+      expect(recordArgs).toContainEqual({name: 'www.example.com', type: 'CNAME', value: 'example.com'})
+      // Check MX record
+      expect(recordArgs).toContainEqual({name: 'example.com', type: 'MX', value: 'example.com'})
+      // Check SPF TXT record
+      expect(recordArgs).toContainEqual({name: 'example.com', type: 'TXT', value: 'v=spf1 a mx ip4:192.168.1.1 ~all'})
+      // Check DMARC record
+      expect(recordArgs).toContainEqual({
+        name: '_dmarc.example.com',
+        type: 'TXT',
+        value: 'v=DMARC1; p=reject; rua=mailto:postmaster@example.com'
+      })
+
       expect(mockProgress).toHaveBeenCalledWith('dns', 'progress', expect.stringContaining('Setting up DNS records'))
       expect(mockProgress).toHaveBeenCalledWith('dns', 'success', expect.stringContaining('DNS records for example.com set'))
     })

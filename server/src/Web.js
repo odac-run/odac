@@ -108,17 +108,34 @@ class Web {
     if (web.domain != 'localhost' && !web.domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
       progress('dns', 'progress', __('Setting up DNS records for %s...', domain))
       Odac.core('Config').config.websites[web.domain].subdomain = ['www']
-      Odac.server('DNS').record(
-        {name: web.domain, type: 'A', value: Odac.server('DNS').ip},
+
+      // Build DNS records - A and AAAA without value, DNS will resolve dynamically via PTR matching
+      const dnsRecords = [
+        {name: web.domain, type: 'A'}, // DNS will resolve via PTR or default public IP
+        {name: web.domain, type: 'AAAA'}, // DNS will resolve via PTR or default public IPv6
         {name: 'www.' + web.domain, type: 'CNAME', value: web.domain},
         {name: web.domain, type: 'MX', value: web.domain},
-        {name: web.domain, type: 'TXT', value: 'v=spf1 a mx ip4:' + Odac.server('DNS').ip + ' ~all'},
         {
           name: '_dmarc.' + web.domain,
           type: 'TXT',
           value: 'v=DMARC1; p=reject; rua=mailto:postmaster@' + web.domain
         }
-      )
+      ]
+
+      // Build SPF record - needs explicit IPs for external validation
+      const publicIPv4 = Odac.server('DNS').ip
+      const publicIPv6 = Odac.server('DNS').ips?.ipv6?.find(i => i.public)
+      let spfValue = 'v=spf1 a mx'
+      if (publicIPv4 && publicIPv4 !== '127.0.0.1') {
+        spfValue += ' ip4:' + publicIPv4
+      }
+      if (publicIPv6) {
+        spfValue += ' ip6:' + publicIPv6.address
+      }
+      spfValue += ' ~all'
+      dnsRecords.push({name: web.domain, type: 'TXT', value: spfValue})
+
+      Odac.server('DNS').record(...dnsRecords)
       progress('dns', 'success', __('DNS records for %s set.', domain))
       Odac.core('Config').config.websites[web.domain].cert = {}
       progress('ssl', 'progress', __('Setting up SSL certificate for %s...', domain))

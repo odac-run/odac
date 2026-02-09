@@ -159,9 +159,16 @@ class Mail {
     })
   }
 
-  exists(email) {
+  async exists(email) {
+    if (!this.#db) this.init()
+    if (!this.#db) return false // Still no DB after init attempt
+
     return new Promise(resolve => {
       this.#db.get('SELECT * FROM mail_account WHERE email = ?', [email], (err, row) => {
+        if (err) {
+          error('Database error in exists():', err.message)
+          return resolve(false)
+        }
         if (row) resolve(row)
         else resolve(false)
       })
@@ -169,17 +176,17 @@ class Mail {
   }
 
   init() {
-    let start = false
-    for (let domain in Odac.core('Config').config.websites) {
-      let web = Odac.core('Config').config.websites[domain]
-      if (web && web.DNS && web.DNS.MX) start = true
-    }
-    if (!start || this.#started) return
+    if (this.#db) return // Already initialized
+
+    // We should always initialize DB if we are starting mail services,
+    // even if no websites currently have MX records configured.
+    if (this.#started) return // Only initialize once if already started
     this.#started = true
     if (!fs.existsSync(os.homedir() + '/.odac/db')) fs.mkdirSync(os.homedir() + '/.odac/db', {recursive: true})
     this.#db = new sqlite3.Database(os.homedir() + '/.odac/db/mail', err => {
-      if (err) error(err.message)
+      if (err) error('Failed to open mail database:', err.message)
     })
+
     this.#db.serialize(() => {
       this.#db.run(`CREATE TABLE IF NOT EXISTS mail_received ('id'          INTEGER PRIMARY KEY AUTOINCREMENT,
                                                                     'uid'         INTEGER NOT NULL,
@@ -222,6 +229,7 @@ class Mail {
   }
 
   start() {
+    this.init() // Ensure DB is initialized before server starts
     if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
 
     const self = this
