@@ -100,6 +100,28 @@ module.exports = {
       }
     }
   },
+  domain: {
+    title: 'DOMAIN',
+    sub: {
+      add: {
+        description: 'Add a domain to an application',
+        args: ['-d', '--domain', '-a', '--app'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let domain = cli.parseArg(args, ['-d', '--domain']) || args[0]
+          let app = cli.parseArg(args, ['-a', '--app']) || args[1]
+
+          if (!domain) domain = await cli.question(__('Enter the domain name: '))
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+
+          await Odac.cli('Connector').call({
+            action: 'domain.add',
+            data: [domain, app]
+          })
+        }
+      }
+    }
+  },
   mail: {
     title: 'MAIL',
     sub: {
