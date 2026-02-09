@@ -82,9 +82,9 @@ describe('SSL', () => {
     })
     mockLog = mockLogInstance
 
-    // Setup API mock
+    // Setup API mock (matches real Api.result() signature: {result, message})
     mockOdac.setMock('server', 'Api', {
-      result: jest.fn((success, message) => ({success, message}))
+      result: jest.fn((result, message) => ({result, message}))
     })
 
     // Setup DNS mock
@@ -178,7 +178,7 @@ describe('SSL', () => {
     test('should renew certificate for valid domain', async () => {
       const result = await SSL.renew('example.com')
 
-      expect(result.success).toBe(true)
+      expect(result.result).toBe(true)
 
       // Wait for detached async operation
       await wait()
@@ -210,7 +210,7 @@ describe('SSL', () => {
       // Mock lookup where 'www.example.com' maps to 'example.com'
       const result = await SSL.renew('www.example.com')
 
-      expect(result.success).toBe(true)
+      expect(result.result).toBe(true)
 
       // Wait for detached async operation
       await wait()
@@ -224,7 +224,7 @@ describe('SSL', () => {
     test('should fail for non-existent domain', async () => {
       const result = await SSL.renew('unknown.com')
 
-      expect(result.success).toBe(false)
+      expect(result.result).toBe(false)
       expect(result.message).toContain('Domain unknown.com not found')
       expect(acme.Client).not.toHaveBeenCalled()
     })
@@ -232,7 +232,7 @@ describe('SSL', () => {
     test('should fail for IP addresses', async () => {
       const result = await SSL.renew('1.2.3.4')
 
-      expect(result.success).toBe(false)
+      expect(result.result).toBe(false)
       expect(result.message).toContain('SSL renewal is not available for IP addresses')
     })
   })
