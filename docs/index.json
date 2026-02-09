@@ -117,6 +117,24 @@
           "title": "Change Account Password"
         }
       ]
+    },
+    {
+      "file": "08-domain",
+      "title": "Managing Domains",
+      "children": [
+        {
+          "file": "01-add-a-domain.md",
+          "title": "Add a Domain"
+        },
+        {
+          "file": "02-list-domains.md",
+          "title": "List Domains"
+        },
+        {
+          "file": "03-delete-a-domain.md",
+          "title": "Delete a Domain"
+        }
+      ]
     }
   ]
 }

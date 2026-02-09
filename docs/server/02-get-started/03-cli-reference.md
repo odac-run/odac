@@ -116,6 +116,50 @@ List all configured websites.
 odac web list
 ```
 
+### Domain Management
+
+#### `odac domain add`
+Add a new domain and link it to an application. This automatically sets up DNS and SSL.
+
+**Interactive:**
+```bash
+odac domain add
+```
+
+**Single-line:**
+```bash
+odac domain add -d example.com -i my-app
+odac domain add --domain example.com --id my-app
+```
+
+#### `odac domain delete`
+Delete a domain configuration and its DNS records.
+
+**Interactive:**
+```bash
+odac domain delete
+```
+
+**Single-line:**
+```bash
+odac domain delete -d example.com
+odac domain delete --domain example.com
+```
+
+#### `odac domain list`
+List all domains or filter by application.
+
+**Interactive:**
+```bash
+odac domain list
+```
+
+**Single-line:**
+```bash
+odac domain list -i my-app
+odac domain list --id my-app
+```
+
 ### Subdomain Management
 
 #### `odac subdomain create`
