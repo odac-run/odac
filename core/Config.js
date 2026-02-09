@@ -20,16 +20,17 @@ class Config {
 
   // Module mapping configuration - defines which config keys belong to which module files
   #moduleMap = {
-    server: ['server'],
-    web: ['websites', 'web'],
-    service: ['services'],
-    ssl: ['ssl'],
-    mail: ['mail'],
-    dns: ['dns'],
     api: ['api'],
+    app: ['apps', 'app'],
+    dns: ['dns'],
+    domain: ['domains'],
     firewall: ['firewall'],
     hub: ['hub'],
-    app: ['apps', 'app']
+    mail: ['mail'],
+    server: ['server'],
+    service: ['services'],
+    ssl: ['ssl'],
+    web: ['websites', 'web']
   }
 
   // Initialize default configuration for module keys
@@ -47,6 +48,8 @@ class Config {
           config[key] = {}
         } else if (key === 'apps') {
           config[key] = []
+        } else if (key === 'domains') {
+          config[key] = {}
         } else if (key === 'app') {
           config[key] = {}
         } else if (key === 'firewall') {

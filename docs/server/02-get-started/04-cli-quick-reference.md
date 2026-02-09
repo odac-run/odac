@@ -29,6 +29,13 @@ odac web delete [-d|--domain] <domain>   # Delete website
 odac web list                             # List websites
 ```
 
+### Domains
+```bash
+odac domain add [-d|--domain] <domain> [-i|--id] <appId>  # Add domain
+odac domain delete [-d|--domain] <domain>                  # Delete domain
+odac domain list [-i|--id] <appId>                        # List domains
+```
+
 ### Subdomains
 ```bash
 odac subdomain create [-s|--subdomain] <subdomain>  # Create subdomain
