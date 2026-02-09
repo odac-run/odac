@@ -204,6 +204,9 @@ class Hub {
       case 'app.restart':
         this.#handleAppRestart(command)
         break
+      case 'domain.add':
+        this.#handleDomainAdd(command)
+        break
       case 'updater.start':
         Odac.server('Updater').start()
         break
@@ -264,6 +267,34 @@ class Hub {
       await this.sendInitialHandshake()
     } catch (e) {
       log('app.restart failed: %s', e.message)
+      this.#sendCommandResponse(command.requestId, {
+        success: false,
+        message: e.message
+      })
+    }
+  }
+
+  async #handleDomainAdd(command) {
+    const payload = command.payload
+
+    if (!payload?.domain || !payload?.appId) {
+      log('domain.add: Missing payload (domain or appId)')
+      this.#sendCommandResponse(command.requestId, {
+        success: false,
+        message: 'Missing payload (domain or appId)'
+      })
+      return
+    }
+
+    try {
+      log('Adding domain: %s for app: %s', payload.domain, payload.appId)
+      const result = await Odac.server('Domain').add(payload.domain, payload.appId)
+      this.#sendCommandResponse(command.requestId, result)
+
+      // Immediately update Hub with new domain list/system info
+      await this.sendInitialHandshake()
+    } catch (e) {
+      log('domain.add failed: %s', e.message)
       this.#sendCommandResponse(command.requestId, {
         success: false,
         message: e.message
