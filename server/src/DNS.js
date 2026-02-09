@@ -1162,18 +1162,20 @@ nameserver 8.8.4.4
    */
   #resolveIPByPTR(domain, type = 'ipv4') {
     const ipList = type === 'ipv6' ? this.ips.ipv6 : this.ips.ipv4
-    const queryRoot = this.#getRootDomain(domain)
+
+    // O(1) cache lookup FIRST - skip all processing if hit
+    const cached = this.#ptrCache.get(domain)
+    if (cached && cached.type === type) {
+      const cachedIPObj = ipList.find(i => i.address === cached.address)
+      if (cachedIPObj && cachedIPObj.public) return cached.address
+    }
 
     // Default: first PUBLIC IPv4 or first PUBLIC IPv6
     const publicIP = ipList.find(i => i.public)
     const defaultIP = type === 'ipv6' ? (publicIP ? publicIP.address : null) : publicIP ? publicIP.address : this.ip
 
-    // O(1) exact match lookup from cache
-    const cached = this.#ptrCache.get(domain)
-    if (cached && (type === 'ipv4' ? cached.type === 'ipv4' : cached.type === 'ipv6')) {
-      const cachedIPObj = ipList.find(i => i.address === cached.address)
-      if (cachedIPObj && cachedIPObj.public) return cached.address
-    }
+    // Calculate root domain only when needed (cache miss)
+    const queryRoot = this.#getRootDomain(domain)
 
     // O(n) scan for subdomain or root domain matching
     for (const ipObj of ipList) {
@@ -1181,11 +1183,13 @@ nameserver 8.8.4.4
 
       // 1. Subdomain matching: ptr "mail.example.com" matches query "example.com" or vice versa
       if (ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+        this.#ptrCache.set(domain, {address: ipObj.address, type})
         return ipObj.address
       }
 
       // 2. Root domain matching: ptr root "example.com" matches query root "example.com"
       if (queryRoot && this.#getRootDomain(ipObj.ptr) === queryRoot) {
+        this.#ptrCache.set(domain, {address: ipObj.address, type})
         return ipObj.address
       }
     }
@@ -1193,20 +1197,24 @@ nameserver 8.8.4.4
     return defaultIP
   }
 
-  /**
-   * Extracts root domain (e.g., example.com) from a hostname
-   * @param {string} hostname
-   * @returns {string|null}
-   */
   #getRootDomain(hostname) {
     if (!hostname) return null
-    const parts = hostname.toLowerCase().split('.')
-    if (parts.length < 2) return null
+    const dnsConfig = Odac.core('Config').config.dns
+    const domain = hostname.toLowerCase()
 
-    // Simple root domain logic: last two parts
-    // Note: In production, this would need a Public Suffix List for co.uk etc.
-    // but for our internal matching, comparing the last two parts is usually sufficient.
-    return parts.slice(-2).join('.')
+    if (dnsConfig) {
+      // 1. Check if the domain (or its parent) is a managed zone in ODAC
+      let temp = domain
+      while (temp.includes('.')) {
+        if (this.#isSafe(temp) && Object.prototype.hasOwnProperty.call(dnsConfig, temp)) {
+          return temp
+        }
+        temp = temp.split('.').slice(1).join('.')
+      }
+    }
+
+    // 2. Fallback to the simple last two parts for unmanaged domains
+    return domain.split('.').slice(-2).join('.')
   }
 
   #processAAAARecords(records, questionName, response) {
