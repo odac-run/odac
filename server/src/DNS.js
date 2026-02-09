@@ -1141,10 +1141,13 @@ nameserver 8.8.4.4
     try {
       for (const record of records ?? []) {
         if (record.name !== questionName) continue
+        const address = record.value ?? this.#resolveIPByPTR(questionName, 'ipv4')
+        // Skip A record if no valid public IPv4 available (prevents serving 127.0.0.1)
+        if (!address || address === '127.0.0.1') continue
         response.answer.push(
           dns.A({
             name: record.name,
-            address: record.value ?? this.#resolveIPByPTR(questionName, 'ipv4'),
+            address: address,
             ttl: record.ttl ?? 3600
           })
         )

@@ -999,11 +999,11 @@ describe('DNS Module', () => {
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
-    it('should use default values when record values are missing', () => {
+    it('should skip A record when resolved IP is 127.0.0.1', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.A = 1
 
-      // Add A record without value (should use server IP)
+      // Add A record without value (would resolve to 127.0.0.1 since no public IP)
       DNS.record({name: 'example.com', type: 'A'})
 
       mockResponse.question[0] = {name: 'example.com', type: 1}
@@ -1012,13 +1012,13 @@ describe('DNS Module', () => {
       const udpServer = dns.createServer.mock.results[0].value
       const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
 
+      // Reset dns.A mock to check calls
+      dns.A.mockClear()
+
       requestHandler(mockRequest, mockResponse)
 
-      expect(dns.A).toHaveBeenCalledWith({
-        name: 'example.com',
-        address: DNS.ip, // Should use server IP as default
-        ttl: 3600
-      })
+      // A record should NOT be created when IP is 127.0.0.1
+      expect(dns.A).not.toHaveBeenCalled()
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
