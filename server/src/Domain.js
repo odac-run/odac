@@ -6,20 +6,20 @@ const {log, error} = Odac.core('Log', false).init('Domain')
  * Provides domain-to-app binding functionality for routing traffic.
  *
  * Config structure (config.domains):
- * [
- *   { domain: "example.com", appId: "myapp", created: 1234567890 },
- *   { domain: "api.example.com", appId: "myapp", created: 1234567890 }
- * ]
+ * {
+ *   "example.com": { appId: "myapp", created: 1234567890, subdomain: ['www'], cert: {...} },
+ *   "api.example.com": { appId: "myapp", created: 1234567890, subdomain: [], cert: {...} }
+ * }
  */
 class Domain {
   /**
-   * Returns the domains configuration array.
+   * Returns the domains configuration object.
    * Initializes if not present.
-   * @returns {Array} domains array
+   * @returns {Object} domains object
    */
   #getDomains() {
     if (!Odac.core('Config').config.domains) {
-      Odac.core('Config').config.domains = []
+      Odac.core('Config').config.domains = {}
     }
     return Odac.core('Config').config.domains
   }
@@ -76,8 +76,7 @@ class Domain {
 
     // Phase 2: Check if domain already exists in domains config
     const domains = this.#getDomains()
-    const existing = domains.find(d => d.domain === domain)
-    if (existing) {
+    if (domains[domain]) {
       return Odac.server('Api').result(false, __('Domain %s is already registered.', domain))
     }
 
@@ -133,7 +132,6 @@ class Domain {
     const domainRecord = {
       appId: targetApp.name,
       created: Date.now(),
-      domain,
       subdomain: ['www']
     }
 
@@ -142,7 +140,7 @@ class Domain {
       domainRecord.cert = {}
     }
 
-    domains.push(domainRecord)
+    domains[domain] = domainRecord
 
     // Phase 6: Persist configuration (triggers auto-save via proxy)
     Odac.core('Config').config.domains = domains
@@ -178,12 +176,11 @@ class Domain {
 
     // Phase 2: Find domain in config
     const domains = this.#getDomains()
-    const index = domains.findIndex(d => d.domain === domain)
-    if (index === -1) {
+    if (!domains[domain]) {
       return Odac.server('Api').result(false, __('Domain %s not found.', domain))
     }
 
-    const domainRecord = domains[index]
+    const domainRecord = domains[domain]
 
     // Phase 3: Delete DNS records (skip for localhost and IP addresses)
     if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
@@ -213,7 +210,7 @@ class Domain {
     }
 
     // Phase 4: Remove domain from config
-    domains.splice(index, 1)
+    delete domains[domain]
     Odac.core('Config').config.domains = domains
 
     log('Domain %s deleted (was assigned to app %s)', domain, domainRecord.appId)
@@ -228,25 +225,33 @@ class Domain {
    */
   async list(appId) {
     const domains = this.#getDomains()
+    const domainKeys = Object.keys(domains)
 
-    if (domains.length === 0) {
+    if (domainKeys.length === 0) {
       return Odac.server('Api').result(false, __('No domains found.'))
     }
 
-    // Filter by appId if provided
-    let filtered = domains
-    if (appId) {
-      filtered = domains.filter(d => d.appId === appId)
-      if (filtered.length === 0) {
-        return Odac.server('Api').result(false, __('No domains found for app %s.', appId))
+    let filteredRecords = []
+
+    // Transform to array for filtering and display
+    for (const [domain, record] of Object.entries(domains)) {
+      if (!appId || record.appId === appId) {
+        filteredRecords.push({
+          domain,
+          ...record
+        })
       }
+    }
+
+    if (filteredRecords.length === 0) {
+      return Odac.server('Api').result(false, __('No domains found for app %s.', appId))
     }
 
     // Build table output
     const header = 'DOMAIN'.padEnd(30) + 'APP'.padEnd(20) + 'CREATED'
     const separator = '-'.repeat(65)
 
-    const rows = filtered.map(d => {
+    const rows = filteredRecords.map(d => {
       const created = new Date(d.created).toISOString().split('T')[0]
       return d.domain.padEnd(30) + (d.appId || '-').padEnd(20) + created
     })

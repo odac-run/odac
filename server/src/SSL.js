@@ -10,14 +10,14 @@ class SSL {
   #checked = {}
 
   async check() {
-    if (this.#checking || !Odac.core('Config').config.websites) return
+    if (this.#checking || !Odac.core('Config').config.domains) return
     this.#checking = true
     this.#self()
-    for (const domain of Object.keys(Odac.core('Config').config.websites)) {
-      if (Odac.core('Config').config.websites[domain].cert === false) continue
+    for (const domain of Object.keys(Odac.core('Config').config.domains)) {
+      if (Odac.core('Config').config.domains[domain].cert === false) continue
       if (
-        !Odac.core('Config').config.websites[domain].cert?.ssl ||
-        Date.now() + 1000 * 60 * 60 * 24 * 30 > Odac.core('Config').config.websites[domain].cert.ssl.expiry
+        !Odac.core('Config').config.domains[domain].cert?.ssl ||
+        Date.now() + 1000 * 60 * 60 * 24 * 30 > Odac.core('Config').config.domains[domain].cert.ssl.expiry
       )
         await this.#ssl(domain)
     }
@@ -27,16 +27,21 @@ class SSL {
   renew(domain) {
     if (domain.match(/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/))
       return Odac.server('Api').result(false, __('SSL renewal is not available for IP addresses.'))
-    if (!Odac.core('Config').config.websites[domain]) {
-      for (const key of Object.keys(Odac.core('Config').config.websites)) {
-        for (const subdomain of Odac.core('Config').config.websites[key].subdomain)
-          if (subdomain + '.' + key == domain) {
-            domain = key
-            break
-          }
+
+    // Direct lookup in domains object
+    if (!Odac.core('Config').config.domains[domain]) {
+      // Check if it's a subdomain being requested
+      let found = false
+      for (const [key, record] of Object.entries(Odac.core('Config').config.domains)) {
+        if (record.subdomain && record.subdomain.some(sub => sub + '.' + key === domain)) {
+          domain = key
+          found = true
+          break
+        }
       }
-      if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, __('Domain %s not found.', domain))
+      if (!found) return Odac.server('Api').result(false, __('Domain %s not found.', domain))
     }
+
     this.#ssl(domain)
     return Odac.server('Api').result(true, __('SSL certificate for domain %s renewed successfully.', domain))
   }
@@ -70,9 +75,12 @@ class SSL {
         accountKey: accountPrivateKey
       })
 
+      const domainRecord = Odac.core('Config').config.domains[domain]
       let subdomains = [domain]
-      for (const subdomain of Odac.core('Config').config.websites[domain].subdomain ?? []) {
-        subdomains.push(subdomain + '.' + domain)
+      if (domainRecord && domainRecord.subdomain) {
+        for (const subdomain of domainRecord.subdomain) {
+          subdomains.push(subdomain + '.' + domain)
+        }
       }
 
       const [key, csr] = await acme.forge.createCsr({
@@ -153,22 +161,32 @@ class SSL {
       fs.writeFileSync(os.homedir() + '/.odac/cert/ssl/' + domain + '.key', key)
       fs.writeFileSync(os.homedir() + '/.odac/cert/ssl/' + domain + '.crt', cert)
 
-      let websites = Odac.core('Config').config.websites ?? {}
-      let website = websites[domain]
-      if (!website) return
+      let domains = Odac.core('Config').config.domains ?? {}
+      let domainRecord = domains[domain]
+      if (!domainRecord) return
 
-      if (!website.cert) website.cert = {}
-      website.cert.ssl = {
+      if (!domainRecord.cert) domainRecord.cert = {}
+      domainRecord.cert.ssl = {
         key: os.homedir() + '/.odac/cert/ssl/' + domain + '.key',
         cert: os.homedir() + '/.odac/cert/ssl/' + domain + '.crt',
         expiry: Date.now() + 1000 * 60 * 60 * 24 * 30 * 3
       }
 
-      websites[domain] = website
-      Odac.core('Config').config.websites = websites
+      domains[domain] = domainRecord
+      Odac.core('Config').config.domains = domains
 
-      Odac.server('Web').clearSSLCache(domain)
-      Odac.server('Mail').clearSSLCache(domain)
+      // Clear caches if services are available
+      try {
+        if (Odac.server('Web')) Odac.server('Web').clearSSLCache(domain)
+      } catch {
+        // Ignore error
+      }
+
+      try {
+        if (Odac.server('Mail')) Odac.server('Mail').clearSSLCache(domain)
+      } catch {
+        // Ignore error
+      }
 
       log('SSL certificate successfully generated and saved for domain %s', domain)
     } catch (err) {

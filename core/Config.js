@@ -46,8 +46,10 @@ class Config {
           }
         } else if (key === 'websites') {
           config[key] = {}
-        } else if (key === 'apps' || key === 'domains') {
+        } else if (key === 'apps') {
           config[key] = []
+        } else if (key === 'domains') {
+          config[key] = {}
         } else if (key === 'app') {
           config[key] = {}
         } else if (key === 'firewall') {
