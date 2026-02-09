@@ -303,9 +303,11 @@ class Hub {
   }
 
   #sendCommandResponse(requestId, result) {
+    // Normalize: Api.result() returns {result, message}, but we need {success, message}
+    const success = result.success !== undefined ? result.success : result.result
     this.#sendSignedMessage('command.response', {
       requestId,
-      success: result.success,
+      success,
       message: result.message,
       data: result.data
     })
