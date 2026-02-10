@@ -36,9 +36,6 @@ class Api {
     'mail.send': (...args) => Odac.server('Mail').send(...args),
     'server.stop': () => Odac.server('Server').stop(),
     'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
-    'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),
-    'subdomain.delete': (...args) => Odac.server('Subdomain').delete(...args),
-    'subdomain.list': (...args) => Odac.server('Subdomain').list(...args),
     'web.create': (...args) => Odac.server('Web').create(...args),
     'web.delete': (...args) => Odac.server('Web').delete(...args),
     'web.list': (...args) => Odac.server('Web').list(...args)

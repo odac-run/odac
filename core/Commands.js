@@ -294,53 +294,6 @@ module.exports = {
       }
     }
   },
-  subdomain: {
-    title: 'SUBDOMAIN',
-    sub: {
-      create: {
-        description: 'Create a new subdomain',
-        args: ['-s', '--subdomain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let subdomain = cli.parseArg(args, ['-s', '--subdomain'])
-          if (!subdomain) subdomain = await cli.question(__('Enter the subdomain name (subdomain.example.com): '))
-
-          await Odac.cli('Connector').call({
-            action: 'subdomain.create',
-            data: [subdomain]
-          })
-        }
-      },
-      delete: {
-        description: 'Delete a subdomain',
-        args: ['-s', '--subdomain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let subdomain = cli.parseArg(args, ['-s', '--subdomain'])
-          if (!subdomain) subdomain = await cli.question(__('Enter the subdomain name (subdomain.example.com): '))
-
-          await Odac.cli('Connector').call({
-            action: 'subdomain.delete',
-            data: [subdomain]
-          })
-        }
-      },
-      list: {
-        description: 'List all domain subdomains',
-        args: ['-d', '--domain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let domain = cli.parseArg(args, ['-d', '--domain'])
-          if (!domain) domain = await cli.question(__('Enter the domain name: '))
-
-          await Odac.cli('Connector').call({
-            action: 'subdomain.list',
-            data: [domain]
-          })
-        }
-      }
-    }
-  },
   web: {
     title: 'WEBSITE',
     sub: {

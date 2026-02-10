@@ -63,7 +63,7 @@ describe('Commands', () => {
       expect(Commands.run).toBeDefined()
       expect(Commands.mail).toBeDefined()
       expect(Commands.ssl).toBeDefined()
-      expect(Commands.subdomain).toBeDefined()
+
       expect(Commands.web).toBeDefined()
       expect(Commands.update).toBeDefined()
     })
@@ -406,80 +406,6 @@ describe('Commands', () => {
     })
   })
 
-  describe('subdomain commands', () => {
-    describe('create', () => {
-      it('should create subdomain', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue('sub.example.com')
-
-        await Commands.subdomain.sub.create.action(args)
-
-        expect(mockConnector.call).toHaveBeenCalledWith({
-          action: 'subdomain.create',
-          data: ['sub.example.com']
-        })
-      })
-
-      it('should prompt for subdomain when not provided', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue(null)
-        mockCli.question.mockResolvedValue('sub.example.com')
-
-        await Commands.subdomain.sub.create.action(args)
-
-        expect(mockCli.question).toHaveBeenCalledWith('Enter the subdomain name (subdomain.example.com): ')
-      })
-    })
-
-    describe('delete', () => {
-      it('should delete subdomain', async () => {
-        mockCli.question.mockResolvedValue('sub.example.com')
-
-        await Commands.subdomain.sub.delete.action()
-
-        expect(mockCli.question).toHaveBeenCalledWith('Enter the subdomain name (subdomain.example.com): ')
-        expect(mockConnector.call).toHaveBeenCalledWith({
-          action: 'subdomain.delete',
-          data: ['sub.example.com']
-        })
-      })
-
-      it('should prompt for subdomain when not provided', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue(null)
-        mockCli.question.mockResolvedValue('sub.example.com')
-
-        await Commands.subdomain.sub.delete.action(args)
-
-        expect(mockCli.question).toHaveBeenCalledWith('Enter the subdomain name (subdomain.example.com): ')
-      })
-    })
-
-    describe('list', () => {
-      it('should list subdomains for domain', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue('example.com')
-
-        await Commands.subdomain.sub.list.action(args)
-
-        expect(mockConnector.call).toHaveBeenCalledWith({
-          action: 'subdomain.list',
-          data: ['example.com']
-        })
-      })
-
-      it('should prompt for domain when not provided', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue(null)
-        mockCli.question.mockResolvedValue('example.com')
-
-        await Commands.subdomain.sub.list.action(args)
-
-        expect(mockCli.question).toHaveBeenCalledWith('Enter the domain name: ')
-      })
-    })
-  })
-
   describe('web commands', () => {
     describe('create', () => {
       it('should create website', async () => {
@@ -562,14 +488,6 @@ describe('Commands', () => {
       expect(Commands.ssl.title).toBe('SSL')
       expect(Commands.ssl.sub).toBeDefined()
       expect(Commands.ssl.sub.renew).toBeDefined()
-    })
-
-    it('should have correct subdomain command structure', () => {
-      expect(Commands.subdomain.title).toBe('SUBDOMAIN')
-      expect(Commands.subdomain.sub).toBeDefined()
-      expect(Commands.subdomain.sub.create).toBeDefined()
-      expect(Commands.subdomain.sub.delete).toBeDefined()
-      expect(Commands.subdomain.sub.list).toBeDefined()
     })
 
     it('should have correct web command structure', () => {

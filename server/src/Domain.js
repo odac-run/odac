@@ -87,6 +87,45 @@ class Domain {
       return Odac.server('Api').result(false, __('App %s not found.', appId))
     }
 
+    // Phase 3.5: Check if domain is a subdomain of an existing domain for the same app
+    const sortedDomains = Object.keys(domains).sort((a, b) => b.length - a.length)
+
+    for (const parentDomain of sortedDomains) {
+      const record = domains[parentDomain]
+      // Check if domain ends with .parentDomain and belongs to the same app
+      if (record.appId === targetApp.name && domain.endsWith('.' + parentDomain) && domain !== parentDomain) {
+        const sub = domain.slice(0, -(parentDomain.length + 1))
+
+        // Add to subdomain list if not exists
+        if (!record.subdomain) record.subdomain = []
+        if (!record.subdomain.includes(sub)) {
+          record.subdomain.push(sub)
+
+          // Persist config
+          Odac.core('Config').config.domains = domains
+
+          // Create DNS record (CNAME to parent)
+          try {
+            Odac.server('DNS').record({name: domain, type: 'CNAME', value: parentDomain})
+            log('Added subdomain %s to %s', sub, parentDomain)
+          } catch (e) {
+            error('Failed to create DNS for subdomain %s: %s', domain, e.message)
+          }
+
+          // Renew SSL for parent to include new subdomain
+          try {
+            Odac.server('SSL').renew(parentDomain)
+          } catch (e) {
+            error('Failed to trigger SSL renew for %s: %s', parentDomain, e.message)
+          }
+
+          return Odac.server('Api').result(true, __('Added %s as a subdomain of %s.', domain, parentDomain))
+        }
+
+        return Odac.server('Api').result(true, __('Subdomain %s already exists on %s.', sub, parentDomain))
+      }
+    }
+
     // Phase 4: Create DNS records for the domain (skip for localhost and IP addresses)
     let sslEnabled = false
     if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
@@ -176,45 +215,82 @@ class Domain {
 
     // Phase 2: Find domain in config
     const domains = this.#getDomains()
-    if (!domains[domain]) {
-      return Odac.server('Api').result(false, __('Domain %s not found.', domain))
+
+    // Case A: Domain is a main domain
+    if (domains[domain]) {
+      const domainRecord = domains[domain]
+
+      // Phase 3: Delete DNS records (skip for localhost and IP addresses)
+      if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+        try {
+          // Delete all DNS records associated with this domain
+          const recordsToDelete = [
+            {name: domain, type: 'A'},
+            {name: domain, type: 'AAAA'},
+            {name: 'www.' + domain, type: 'CNAME'},
+            {name: domain, type: 'MX'},
+            {name: domain, type: 'TXT'},
+            {name: '_dmarc.' + domain, type: 'TXT'}
+          ]
+
+          for (const record of recordsToDelete) {
+            try {
+              Odac.server('DNS').delete(record)
+            } catch {
+              // Ignore individual record deletion failures
+            }
+          }
+          log('Deleted DNS records for domain %s', domain)
+        } catch (e) {
+          error('Failed to delete DNS records for %s: %s', domain, e.message)
+          // Continue with domain removal even if DNS cleanup fails
+        }
+      }
+
+      // Phase 4: Remove domain from config
+      delete domains[domain]
+      Odac.core('Config').config.domains = domains
+
+      log('Domain %s deleted (was assigned to app %s)', domain, domainRecord.appId)
+      return Odac.server('Api').result(true, __('Domain %s deleted successfully.', domain))
     }
 
-    const domainRecord = domains[domain]
+    // Case B: Check if domain is a subdomain of an existing domain
+    const sortedDomains = Object.keys(domains).sort((a, b) => b.length - a.length)
 
-    // Phase 3: Delete DNS records (skip for localhost and IP addresses)
-    if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
-      try {
-        // Delete all DNS records associated with this domain
-        const recordsToDelete = [
-          {name: domain, type: 'A'},
-          {name: domain, type: 'AAAA'},
-          {name: 'www.' + domain, type: 'CNAME'},
-          {name: domain, type: 'MX'},
-          {name: domain, type: 'TXT'},
-          {name: '_dmarc.' + domain, type: 'TXT'}
-        ]
+    for (const parentDomain of sortedDomains) {
+      if (domain.endsWith('.' + parentDomain) && domain !== parentDomain) {
+        const sub = domain.slice(0, -(parentDomain.length + 1))
+        const record = domains[parentDomain]
 
-        for (const record of recordsToDelete) {
+        if (record.subdomain && record.subdomain.includes(sub)) {
+          // 1. Remove from subdomain list
+          record.subdomain = record.subdomain.filter(s => s !== sub)
+
+          // 2. Persist config
+          Odac.core('Config').config.domains = domains
+
+          // 3. Delete DNS record (CNAME)
           try {
-            Odac.server('DNS').delete(record)
-          } catch {
-            // Ignore individual record deletion failures
+            Odac.server('DNS').delete({name: domain, type: 'CNAME'})
+            log('Deleted CNAME record for subdomain %s', domain)
+          } catch (e) {
+            error('Failed to delete DNS for subdomain %s: %s', domain, e.message)
           }
+
+          // 4. Trigger SSL renew for parent to update cert
+          try {
+            Odac.server('SSL').renew(parentDomain)
+          } catch (e) {
+            error('Failed to trigger SSL renew for %s: %s', parentDomain, e.message)
+          }
+
+          return Odac.server('Api').result(true, __('Subdomain %s removed from %s.', sub, parentDomain))
         }
-        log('Deleted DNS records for domain %s', domain)
-      } catch (e) {
-        error('Failed to delete DNS records for %s: %s', domain, e.message)
-        // Continue with domain removal even if DNS cleanup fails
       }
     }
 
-    // Phase 4: Remove domain from config
-    delete domains[domain]
-    Odac.core('Config').config.domains = domains
-
-    log('Domain %s deleted (was assigned to app %s)', domain, domainRecord.appId)
-    return Odac.server('Api').result(true, __('Domain %s deleted successfully.', domain))
+    return Odac.server('Api').result(false, __('Domain %s not found.', domain))
   }
 
   /**

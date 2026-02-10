@@ -17,7 +17,6 @@ Most commands support prefix arguments that allow you to provide values directly
 - `-d`, `--domain`: Domain name
 - `-e`, `--email`: Email address  
 - `-p`, `--password`: Password
-- `-s`, `--subdomain`: Subdomain name
 - `-i`, `--id`: Service ID or name
 - `-k`, `--key`: Authentication key
 
@@ -160,49 +159,7 @@ odac domain list -i my-app
 odac domain list --id my-app
 ```
 
-### Subdomain Management
 
-#### `odac subdomain create`
-Create a new subdomain.
-
-**Interactive:**
-```bash
-odac subdomain create
-```
-
-**Single-line:**
-```bash
-odac subdomain create -s blog.example.com
-odac subdomain create --subdomain blog.example.com
-```
-
-#### `odac subdomain delete`
-Delete a subdomain.
-
-**Interactive:**
-```bash
-odac subdomain delete
-```
-
-**Single-line:**
-```bash
-odac subdomain delete -s blog.example.com
-odac subdomain delete --subdomain blog.example.com
-```
-
-#### `odac subdomain list`
-List all subdomains for a domain.
-
-**Interactive:**
-```bash
-odac subdomain list
-```
-
-**Single-line:**
-```bash
-odac subdomain list -d example.com
-odac subdomain list --domain example.com
-```
 
 ### SSL Certificate Management
 
@@ -291,9 +248,9 @@ odac mail create -e support@example.com -p support123
 odac mail create -e sales@example.com -p sales123
 
 # Set up subdomains
-odac subdomain create -s blog.example.com
-odac subdomain create -s shop.example.com
-odac subdomain create -s api.example.com
+odac domain add -d blog.example.com -i my-app
+odac domain add -d shop.example.com -i my-app
+odac domain add -d api.example.com -i my-app
 ```
 
 #### Mixed Usage

@@ -512,48 +512,6 @@ describe('Api', () => {
       expect(mockMailService.send).toHaveBeenCalledWith('test@example.com', 'Subject', 'Body', expect.any(Function))
     })
 
-    it('should execute all subdomain commands', async () => {
-      if (!dataHandler) {
-        throw new Error('Data handler not found')
-        return
-      }
-
-      const mockSubdomainService = global.Odac.server('Subdomain')
-      mockSubdomainService.create.mockResolvedValue(Api.result(true, 'Created'))
-      mockSubdomainService.delete.mockResolvedValue(Api.result(true, 'Deleted'))
-      mockSubdomainService.list.mockResolvedValue(Api.result(true, ['www', 'api']))
-
-      // Test subdomain.create
-      let payload = JSON.stringify({
-        auth: global.Odac.core('Config').config.api.auth,
-        action: 'subdomain.create',
-        data: ['api.example.com']
-      })
-
-      await dataHandler(Buffer.from(payload))
-      expect(mockSubdomainService.create).toHaveBeenCalledWith('api.example.com', expect.any(Function))
-
-      // Test subdomain.delete
-      payload = JSON.stringify({
-        auth: global.Odac.core('Config').config.api.auth,
-        action: 'subdomain.delete',
-        data: ['api.example.com']
-      })
-
-      await dataHandler(Buffer.from(payload))
-      expect(mockSubdomainService.delete).toHaveBeenCalledWith('api.example.com', expect.any(Function))
-
-      // Test subdomain.list
-      payload = JSON.stringify({
-        auth: global.Odac.core('Config').config.api.auth,
-        action: 'subdomain.list',
-        data: ['example.com']
-      })
-
-      await dataHandler(Buffer.from(payload))
-      expect(mockSubdomainService.list).toHaveBeenCalledWith('example.com', expect.any(Function))
-    })
-
     it('should execute all web commands', async () => {
       if (!dataHandler) {
         throw new Error('Data handler not found')

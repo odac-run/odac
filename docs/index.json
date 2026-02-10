@@ -69,24 +69,6 @@
       ]
     },
     {
-      "file": "05-subdomain",
-      "title": "Managing Subdomains",
-      "children": [
-        {
-          "file": "01-create-a-subdomain.md",
-          "title": "Create a Subdomain"
-        },
-        {
-          "file": "02-list-subdomains.md",
-          "title": "List Subdomains"
-        },
-        {
-          "file": "03-delete-a-subdomain.md",
-          "title": "Delete a Subdomain"
-        }
-      ]
-    },
-    {
       "file": "06-ssl",
       "title": "Managing SSL",
       "children": [

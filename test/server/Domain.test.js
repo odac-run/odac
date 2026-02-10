@@ -136,6 +136,34 @@ describe('Domain', () => {
       expect(Odac.server('DNS').record).not.toHaveBeenCalled()
       expect(Odac.server('SSL').renew).not.toHaveBeenCalled()
     })
+
+    test('should add a subdomain to an existing parent domain', async () => {
+      // Setup parent domain
+      mockConfig.config.domains['example.com'] = {appId: 'myapp', created: Date.now()}
+
+      const result = await Domain.add('sub.example.com', 'myapp')
+
+      expect(result.result).toBe(true)
+      expect(result.message).toContain('Added sub.example.com as a subdomain of example.com')
+
+      // Verify parent record updated
+      const parent = mockConfig.config.domains['example.com']
+      expect(parent.subdomain).toContain('sub')
+
+      // Verify subdomain is NOT added as a separate domain
+      expect(mockConfig.config.domains['sub.example.com']).toBeUndefined()
+
+      // Verify DNS CNAME record
+      const dnsMock = Odac.server('DNS')
+      expect(dnsMock.record).toHaveBeenCalledWith({
+        name: 'sub.example.com',
+        type: 'CNAME',
+        value: 'example.com'
+      })
+
+      // Verify SSL renew for parent
+      expect(Odac.server('SSL').renew).toHaveBeenCalledWith('example.com')
+    })
   })
 
   describe('delete()', () => {
@@ -161,6 +189,33 @@ describe('Domain', () => {
 
       expect(result.result).toBe(false)
       expect(result.message).toContain('Domain other.com not found')
+    })
+
+    test('should delete an existing subdomain', async () => {
+      // Setup parent with subdomain
+      mockConfig.config.domains['example.com'] = {
+        appId: 'myapp',
+        created: Date.now(),
+        subdomain: ['sub']
+      }
+
+      const result = await Domain.delete('sub.example.com')
+
+      expect(result.result).toBe(true)
+      expect(result.message).toContain('Subdomain sub removed from example.com')
+
+      // Verify removal from parent
+      expect(mockConfig.config.domains['example.com'].subdomain).toStrictEqual([])
+
+      // Verify DNS delete
+      const dnsMock = Odac.server('DNS')
+      expect(dnsMock.delete).toHaveBeenCalledWith({
+        name: 'sub.example.com',
+        type: 'CNAME'
+      })
+
+      // Verify SSL renew for parent
+      expect(Odac.server('SSL').renew).toHaveBeenCalledWith('example.com')
     })
   })
 
