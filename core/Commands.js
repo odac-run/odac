@@ -293,44 +293,5 @@ module.exports = {
         }
       }
     }
-  },
-  web: {
-    title: 'WEBSITE',
-    sub: {
-      create: {
-        description: 'Create a new website',
-        args: ['-d', '--domain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let domain = cli.parseArg(args, ['-d', '--domain'])
-          if (!domain) {
-            domain = await cli.question(__('Enter the domain name: '))
-          }
-          await Odac.cli('Connector').call({
-            action: 'web.create',
-            data: [domain]
-          })
-        }
-      },
-      delete: {
-        description: 'Delete a website',
-        args: ['-d', '--domain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let domain = cli.parseArg(args, ['-d', '--domain'])
-          if (!domain) {
-            domain = await cli.question(__('Enter the domain name: '))
-          }
-          await Odac.cli('Connector').call({
-            action: 'web.delete',
-            data: [domain]
-          })
-        }
-      },
-      list: {
-        description: 'List all websites',
-        action: async () => await Odac.cli('Connector').call({action: 'web.list'})
-      }
-    }
   }
 }

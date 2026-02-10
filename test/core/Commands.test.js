@@ -64,7 +64,6 @@ describe('Commands', () => {
       expect(Commands.mail).toBeDefined()
       expect(Commands.ssl).toBeDefined()
 
-      expect(Commands.web).toBeDefined()
       expect(Commands.update).toBeDefined()
     })
 
@@ -406,66 +405,6 @@ describe('Commands', () => {
     })
   })
 
-  describe('web commands', () => {
-    describe('create', () => {
-      it('should create website', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue('newsite.com')
-
-        await Commands.web.sub.create.action(args)
-
-        expect(mockConnector.call).toHaveBeenCalledWith({
-          action: 'web.create',
-          data: ['newsite.com']
-        })
-      })
-
-      it('should prompt for domain when not provided', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue(null)
-        mockCli.question.mockResolvedValue('newsite.com')
-
-        await Commands.web.sub.create.action(args)
-
-        expect(mockCli.question).toHaveBeenCalledWith('Enter the domain name: ')
-      })
-    })
-
-    describe('delete', () => {
-      it('should delete website', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue('oldsite.com')
-
-        await Commands.web.sub.delete.action(args)
-
-        expect(mockConnector.call).toHaveBeenCalledWith({
-          action: 'web.delete',
-          data: ['oldsite.com']
-        })
-      })
-
-      it('should prompt for domain when not provided', async () => {
-        const args = []
-        mockCli.parseArg.mockReturnValue(null)
-        mockCli.question.mockResolvedValue('oldsite.com')
-
-        await Commands.web.sub.delete.action(args)
-
-        expect(mockCli.question).toHaveBeenCalledWith('Enter the domain name: ')
-      })
-    })
-
-    describe('list', () => {
-      it('should list all websites', async () => {
-        await Commands.web.sub.list.action()
-
-        expect(mockConnector.call).toHaveBeenCalledWith({
-          action: 'web.list'
-        })
-      })
-    })
-  })
-
   describe('command structure validation', () => {
     it('should have correct app command structure', () => {
       expect(Commands.app.title).toBe('APP')
@@ -488,14 +427,6 @@ describe('Commands', () => {
       expect(Commands.ssl.title).toBe('SSL')
       expect(Commands.ssl.sub).toBeDefined()
       expect(Commands.ssl.sub.renew).toBeDefined()
-    })
-
-    it('should have correct web command structure', () => {
-      expect(Commands.web.title).toBe('WEBSITE')
-      expect(Commands.web.sub).toBeDefined()
-      expect(Commands.web.sub.create).toBeDefined()
-      expect(Commands.web.sub.delete).toBeDefined()
-      expect(Commands.web.sub.list).toBeDefined()
     })
   })
 

@@ -512,48 +512,6 @@ describe('Api', () => {
       expect(mockMailService.send).toHaveBeenCalledWith('test@example.com', 'Subject', 'Body', expect.any(Function))
     })
 
-    it('should execute all web commands', async () => {
-      if (!dataHandler) {
-        throw new Error('Data handler not found')
-        return
-      }
-
-      const mockWebService = global.Odac.server('Proxy')
-      mockWebService.create.mockResolvedValue(Api.result(true, 'Created'))
-      mockWebService.delete.mockResolvedValue(Api.result(true, 'Deleted'))
-      mockWebService.list.mockResolvedValue(Api.result(true, ['example.com']))
-
-      // Test web.create
-      let payload = JSON.stringify({
-        auth: global.Odac.core('Config').config.api.auth,
-        action: 'web.create',
-        data: ['example.com']
-      })
-
-      await dataHandler(Buffer.from(payload))
-      expect(mockWebService.create).toHaveBeenCalledWith('example.com', expect.any(Function))
-
-      // Test web.delete
-      payload = JSON.stringify({
-        auth: global.Odac.core('Config').config.api.auth,
-        action: 'web.delete',
-        data: ['example.com']
-      })
-
-      await dataHandler(Buffer.from(payload))
-      expect(mockWebService.delete).toHaveBeenCalledWith('example.com', expect.any(Function))
-
-      // Test web.list
-      payload = JSON.stringify({
-        auth: global.Odac.core('Config').config.api.auth,
-        action: 'web.list',
-        data: []
-      })
-
-      await dataHandler(Buffer.from(payload))
-      expect(mockWebService.list).toHaveBeenCalledWith(expect.any(Function))
-    })
-
     it('should execute ssl.renew command', async () => {
       if (!dataHandler) {
         throw new Error('Data handler not found')
@@ -688,24 +646,6 @@ describe('Api', () => {
 
       expect(mockMailService.send).toHaveBeenCalled()
       expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"result":true'))
-    })
-
-    it('should block unauthorized actions for client tokens', async () => {
-      const domain = 'example.com'
-      const token = Api.generateToken(domain)
-      Api.addToken(domain)
-
-      const mockWebService = global.Odac.server('Proxy')
-      const payload = JSON.stringify({
-        auth: token,
-        action: 'web.delete',
-        data: ['other-site.com']
-      })
-
-      await dataHandler(Buffer.from(payload))
-
-      expect(mockWebService.delete).not.toHaveBeenCalled()
-      expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"message":"permission_denied"'))
     })
 
     it('should persist tokens via reloadTokens on startup', () => {
