@@ -214,7 +214,7 @@ class App {
   }
 
   async #createFromGit(config) {
-    const {url, token, branch, name, env = {}} = config
+    const {url, token, branch, name, dev = false, env = {}} = config
 
     log('createFromGit: Starting git deployment')
     log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
@@ -288,6 +288,7 @@ class App {
           branch,
           image: imageName,
           env,
+          dev,
           active: true,
           created: Date.now(),
           status: 'starting'
@@ -317,10 +318,17 @@ class App {
   }
 
   async #runGitApp(app) {
+    const volumes = []
+    if (app.dev) {
+      // Mount total app directory to /app for live development
+      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+      volumes.push({host: appDir, container: '/app'})
+    }
+
     await Odac.server('Container').runApp(app.name, {
       image: app.image,
       ports: [],
-      volumes: [],
+      volumes,
       env: app.env || {}
     })
   }
@@ -332,7 +340,7 @@ class App {
       return
     }
 
-    if (app.type === 'container' || (Odac.server('Container').available && !app.pid)) {
+    if (['container', 'git'].includes(app.type) || (Odac.server('Container').available && !app.pid)) {
       await Odac.server('Container').stop(app.name)
     } else if (app.pid) {
       try {
@@ -383,6 +391,7 @@ class App {
     await new Promise(resolve => setTimeout(resolve, 1000))
 
     // Start it again
+    this.#set(id, {active: true})
     if (await this.#run(app.id)) {
       return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
     }
@@ -503,6 +512,8 @@ class App {
         await this.#runScript(app)
       } else if (app.type === 'container') {
         await this.#runContainer(app)
+      } else if (app.type === 'git') {
+        await this.#runGitApp(app)
       }
 
       this.#set(id, {status: 'running', started: Date.now()})

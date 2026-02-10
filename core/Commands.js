@@ -59,18 +59,72 @@ module.exports = {
     sub: {
       create: {
         description: 'Create a new application',
-        args: ['-t', '--type'],
+        args: ['-t', '--type', '-n', '--name', '-u', '--url', '-b', '--branch', '--token', '-D', '--dev'],
         action: async args => {
           const cli = Odac.cli('Cli')
-          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+          let type = cli.parseArg(args, ['-t', '--type'])
+
+          if (!type) {
+            // Find first non-flag argument to be used as type/repo
+            type = args.find(arg => !arg.startsWith('-'))
+          }
+
+          const isDev = args.includes('-D') || args.includes('--dev')
+
+          // Interactive: Logic to handle git vs standard app
+          if (type === 'git' || type === 'github') {
+            const url = cli.parseArg(args, ['-u', '--url']) || (await cli.question(__('Enter Git URL: ')))
+            const branch = cli.parseArg(args, ['-b', '--branch'])
+            const token = cli.parseArg(args, ['--token'])
+
+            // Auto-derive name from URL if not provided
+            let name = cli.parseArg(args, ['-n', '--name'])
+            if (!name) {
+              const path = require('path')
+              name = path.basename(url, '.git').replace(/[^a-zA-Z0-9-]/g, '-')
+            }
+
+            const config = {
+              type: 'git',
+              url,
+              name,
+              branch,
+              token,
+              dev: isDev
+            }
+
+            await Odac.cli('Connector').call({
+              action: 'app.create',
+              data: [config]
+            })
+            return
+          }
 
           if (!type) {
             type = await cli.question(__('Enter the app type or repo: '))
           }
 
+          let config = type
+
+          // Auto-detect Git URL
+          if (typeof type === 'string' && (/^(https?|git|ssh):\/\//.test(type) || /^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/.test(type))) {
+            const path = require('path')
+            const name = path.basename(type, '.git').replace(/[^a-zA-Z0-9-]/g, '-')
+
+            config = {
+              type: 'git',
+              url: type,
+              name,
+              dev: isDev
+            }
+          } else if (isDev && typeof type === 'string') {
+            // Non-git app with dev flag
+            config = {type: 'app', app: type, dev: true}
+          }
+
           await Odac.cli('Connector').call({
             action: 'app.create',
-            data: [type]
+            data: [config]
           })
         }
       },
