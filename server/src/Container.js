@@ -154,7 +154,7 @@ class Container {
   /**
    * Clones a git repository using an isolated container
    * @param {string} url - Git URL
-   * @param {string} branch - Branch to clone
+   * @param {string} [branch] - Branch to clone (uses remote default if omitted)
    * @param {string} targetDir - Host directory to clone into
    * @param {string} [token] - Optional auth token
    */
@@ -174,7 +174,7 @@ class Container {
       secureUrl = `https://oauth2:${token}@${noProto}`
     }
 
-    log(`[Git] Cloning ${url} (branch: ${branch}) into isolated sandbox...`)
+    log(`[Git] Cloning ${url} (branch: ${branch || 'default'}) into isolated sandbox...`)
 
     const hostPath = this.#resolveHostPath(targetDir)
 
@@ -182,7 +182,7 @@ class Container {
       // Run ephemeral git container
       const container = await this.#docker.createContainer({
         Image: gitImage,
-        Cmd: ['clone', '--depth', '1', '--branch', branch, secureUrl, '.'],
+        Cmd: ['clone', '--depth', '1', ...(branch ? ['--branch', branch] : []), secureUrl, '.'],
         WorkingDir: '/git',
         HostConfig: {
           Binds: [`${hostPath}:/git`],

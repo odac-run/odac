@@ -159,7 +159,8 @@ class Builder {
       await this.#ensureImage(packagerImage)
 
       const logStream = new PassThrough()
-      logStream.on('data', chunk => log(chunk.toString().trim()))
+      const chunks = []
+      logStream.on('data', chunk => chunks.push(chunk.toString()))
 
       const [data] = await this.#docker.run(packagerImage, ['sh', '-c', buildCmd], logStream, {
         Binds: ['/var/run/docker.sock:/var/run/docker.sock', `${context.hostPath}:/app`],
@@ -168,6 +169,7 @@ class Builder {
       })
 
       if (data && data.StatusCode !== 0) {
+        error(`Custom build logs:\n${chunks.join('')}`)
         throw new Error(`Custom build failed with exit code ${data.StatusCode}`)
       }
       log('[Builder] Custom build successful.')
@@ -258,7 +260,8 @@ class Builder {
       await this.#ensureImage(strategy.image)
 
       const logStream = new PassThrough()
-      logStream.on('data', chunk => log(chunk.toString().trim()))
+      const chunks = []
+      logStream.on('data', chunk => chunks.push(chunk.toString()))
 
       const [data] = await this.#docker.run(strategy.image, ['sh', '-c', commands], logStream, {
         WorkingDir: '/app',
@@ -266,6 +269,7 @@ class Builder {
       })
 
       if (data && data.StatusCode !== 0) {
+        error(`Compilation logs:\n${chunks.join('')}`)
         throw new Error(`Compilation failed with exit code ${data.StatusCode}`)
       }
       log('[Phase 1] Compilation successful.')
@@ -329,13 +333,15 @@ USER ${strategy.package.user}
       }
 
       const logStream = new PassThrough()
-      logStream.on('data', chunk => log(chunk.toString().trim()))
+      const chunks = []
+      logStream.on('data', chunk => chunks.push(chunk.toString()))
 
       const [data] = await this.#docker.run(packagerImage, ['sh', '-c', buildCmd], logStream, {
         HostConfig: packagerConfig.HostConfig
       })
 
       if (data && data.StatusCode !== 0) {
+        error(`Packaging logs:\n${chunks.join('')}`)
         throw new Error(`Packaging failed with exit code ${data.StatusCode}`)
       }
       log('[Phase 2] Packaging successful.')

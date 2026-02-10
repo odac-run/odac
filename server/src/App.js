@@ -108,7 +108,12 @@ class App {
     // Object: create({type: "github", repo: "...", token: "...", name: "myapp"})
 
     if (typeof config === 'string') {
-      config = {type: 'app', app: config}
+      if (/^(https?|git|ssh):\/\//.test(config) || /^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/.test(config)) {
+        const name = this.#generateUniqueName(path.basename(config, '.git').replace(/[^a-zA-Z0-9-]/g, '-'))
+        config = {type: 'git', url: config, name}
+      } else {
+        config = {type: 'app', app: config}
+      }
     }
 
     log('Creating app: %j', config)
@@ -209,7 +214,7 @@ class App {
   }
 
   async #createFromGit(config) {
-    const {url, token, branch = 'main', name, env = {}} = config
+    const {url, token, branch, name, env = {}} = config
 
     log('createFromGit: Starting git deployment')
     log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
