@@ -194,7 +194,7 @@ module.exports = {
         args: ['-a', '--app'],
         action: async args => {
           const cli = Odac.cli('Cli')
-          const app = cli.parseArg(args, ['-a', '--app']) || args[0]
+          const app = cli.parseArg(args, ['-a', '--app']) || (typeof args[0] === 'string' ? args[0] : undefined)
 
           await Odac.cli('Connector').call({
             action: 'domain.list',

@@ -224,6 +224,16 @@ class Domain {
    * @returns {Promise<{result: boolean, message: string}>} API result object
    */
   async list(appId) {
+    // Sanitize appId input to handle string "undefined" or "null" or non-string inputs (like functions accidentally passed)
+    if (typeof appId !== 'string') {
+      appId = undefined
+    } else {
+      const normalized = appId.trim().toLowerCase()
+      if (normalized === 'undefined' || normalized === 'null') {
+        appId = undefined
+      }
+    }
+
     const domains = this.#getDomains()
     const domainKeys = Object.keys(domains)
 
@@ -231,7 +241,7 @@ class Domain {
       return Odac.server('Api').result(false, __('No domains found.'))
     }
 
-    let filteredRecords = []
+    const filteredRecords = []
 
     // Transform to array for filtering and display
     for (const [domain, record] of Object.entries(domains)) {
@@ -244,16 +254,17 @@ class Domain {
     }
 
     if (filteredRecords.length === 0) {
-      return Odac.server('Api').result(false, __('No domains found for app %s.', appId))
+      return Odac.server('Api').result(false, appId ? __('No domains found for app %s.', appId) : __('No domains found.'))
     }
 
     // Build table output
-    const header = 'DOMAIN'.padEnd(30) + 'APP'.padEnd(20) + 'CREATED'
-    const separator = '-'.repeat(65)
+    const header = 'DOMAIN'.padEnd(30) + 'SUBDOMAINS'.padEnd(30) + 'APP'.padEnd(20) + 'CREATED'
+    const separator = '-'.repeat(95)
 
     const rows = filteredRecords.map(d => {
       const created = new Date(d.created).toISOString().split('T')[0]
-      return d.domain.padEnd(30) + (d.appId || '-').padEnd(20) + created
+      const subdomains = (d.subdomain || []).join(', ')
+      return d.domain.padEnd(30) + subdomains.padEnd(30) + (d.appId || '-').padEnd(20) + created
     })
 
     return Odac.server('Api').result(true, [header, separator, ...rows].join('\n'))
