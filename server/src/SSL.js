@@ -176,13 +176,6 @@ class SSL {
       domains[domain] = domainRecord
       Odac.core('Config').config.domains = domains
 
-      // Clear caches if services are available
-      try {
-        if (Odac.server('Proxy')) Odac.server('Proxy').clearSSLCache(domain)
-      } catch {
-        // Ignore error
-      }
-
       try {
         if (Odac.server('Mail')) Odac.server('Mail').clearSSLCache(domain)
       } catch {

@@ -29,40 +29,8 @@ class OdacProxy {
     this.#firewall = new WebFirewall()
   }
 
-  clearSSLCache() {
-    // Deprecated: SSL cache is now managed by Go Proxy
-    // We could implement an API call to clear Go cache if needed
-  }
-
   check() {
     if (!this.#loaded) return
-    for (const domain of Object.keys(Odac.core('Config').config.websites ?? {})) {
-      if (!Odac.core('Config').config.websites[domain].pid) {
-        this.start(domain)
-      } else if (!this.#watcher[Odac.core('Config').config.websites[domain].pid]) {
-        Odac.core('Process').stop(Odac.core('Config').config.websites[domain].pid)
-        Odac.core('Config').config.websites[domain].pid = null
-        this.start(domain)
-      }
-      if (this.#logs.log[domain]) {
-        const logDir = path.join(os.homedir(), '.odac', 'logs')
-        if (!fs.existsSync(logDir)) {
-          try {
-            fs.mkdirSync(logDir, {recursive: true})
-          } catch (e) {
-            log(e)
-          }
-        }
-        fs.writeFile(path.join(logDir, domain + '.log'), this.#logs.log[domain], function (err) {
-          if (err) log(err)
-        })
-      }
-      if (this.#logs.err[domain]) {
-        fs.writeFile(Odac.core('Config').config.websites[domain].path + '/error.log', this.#logs.err[domain], function (err) {
-          if (err) log(err)
-        })
-      }
-    }
     this.spawnProxy()
   }
 
