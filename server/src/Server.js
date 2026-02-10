@@ -6,14 +6,14 @@ class Server {
     Odac.core('Config').config.server.started = Date.now()
     Odac.server('App')
     Odac.server('DNS')
-    Odac.server('Web')
+    Odac.server('Proxy')
     Odac.server('Mail')
     Odac.server('Api')
     Odac.server('Hub')
     Odac.server('Container')
 
     Odac.server('Updater').onReady(() => {
-      Odac.server('Web').start()
+      Odac.server('Proxy').start()
       Odac.server('DNS').start()
       Odac.server('Hub').start()
       setTimeout(() => {
@@ -26,7 +26,7 @@ class Server {
       this.#checkInterval = setInterval(() => {
         Odac.server('App').check()
         Odac.server('SSL').check()
-        Odac.server('Web').check()
+        Odac.server('Proxy').check()
         Odac.server('Mail').check()
         Odac.server('Hub').check()
       }, 1000)
@@ -48,7 +48,7 @@ class Server {
     // Web is stopped last (or not at all if exceptWeb=true)
     // This allows new container's Web to start BEFORE old one stops (SO_REUSEPORT)
     if (!exceptWeb) {
-      Odac.server('Web').stop()
+      Odac.server('Proxy').stop()
     }
   }
 }

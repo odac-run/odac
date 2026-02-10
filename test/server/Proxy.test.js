@@ -1,5 +1,5 @@
 /**
- * Unit tests for Web.js module
+ * Unit tests for Proxy.js module
  * Tests web hosting, proxy functionality, and website management
  */
 
@@ -27,8 +27,8 @@ const {mockOdac} = require('./__mocks__/globalOdac')
 const {createMockRequest, createMockResponse} = require('./__mocks__/testFactories')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
 
-describe('Web', () => {
-  let Web
+describe('Proxy', () => {
+  let ProxyService
   let mockConfig
   let mockLog
   let mockHttpServer
@@ -154,8 +154,8 @@ describe('Web', () => {
     const mockSecureContext = {context: 'mock-context'}
     tls.createSecureContext.mockReturnValue(mockSecureContext)
 
-    // Import Web after mocks are set up
-    Web = require('../../server/src/Web')
+    // Import Proxy after mocks are set up
+    ProxyService = require('../../server/src/Proxy')
   })
 
   afterEach(() => {
@@ -165,9 +165,9 @@ describe('Web', () => {
 
   describe('initialization', () => {
     test('should initialize with default configuration', async () => {
-      await Web.init()
+      await ProxyService.init()
 
-      // Web.server is no longer exposed as the architecture changed to use Go Proxy
+      // ProxyService.server is no longer exposed as the architecture changed to use Go Proxy
       // We verify initialization by ensuring no error is thrown and config is set
       expect(mockConfig.config.web).toBeDefined()
     })
@@ -177,7 +177,7 @@ describe('Web', () => {
       os.platform.mockReturnValue('linux')
       mockConfig.config.web = undefined
 
-      await Web.init()
+      await ProxyService.init()
 
       expect(mockConfig.config.web.path).toBe('/var/odac/')
 
@@ -185,7 +185,7 @@ describe('Web', () => {
       os.platform.mockReturnValue('darwin')
       mockConfig.config.web = undefined
 
-      await Web.init()
+      await ProxyService.init()
 
       expect(mockConfig.config.web.path).toBe('/home/user/Odac/')
 
@@ -193,7 +193,7 @@ describe('Web', () => {
       os.platform.mockReturnValue('win32')
       mockConfig.config.web = undefined
 
-      await Web.init()
+      await ProxyService.init()
 
       expect(mockConfig.config.web.path).toBe('/home/user/Odac/')
     })
@@ -202,7 +202,7 @@ describe('Web', () => {
       fs.existsSync.mockReturnValue(false)
       mockConfig.config.web = {path: '/custom/path'}
 
-      await Web.init()
+      await ProxyService.init()
 
       expect(fs.existsSync).toHaveBeenCalledWith('/custom/path')
     })
@@ -210,12 +210,12 @@ describe('Web', () => {
 
   describe.skip('server creation', () => {
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
       mockConfig.config.websites = {'example.com': createMockWebsiteConfig()}
     })
 
     test('should create HTTP server on port 80', () => {
-      Web.server()
+      ProxyService.server()
 
       expect(http.createServer).toHaveBeenCalledWith(expect.any(Function))
       expect(mockHttpServer.listen).toHaveBeenCalledWith(80)
@@ -231,15 +231,15 @@ describe('Web', () => {
       }
       http.createServer.mockReturnValue(freshMockHttpServer)
 
-      // Reset the Web module's server instances to force recreation
-      Web['_Web__server_http'] = null
-      Web['_Web__server_https'] = null
-      Web['_Web__loaded'] = true // Ensure Web module is marked as loaded
+      // Reset the ProxyService module's server instances to force recreation
+      ProxyService['_OdacProxy__server_http'] = null
+      ProxyService['_OdacProxy__server_https'] = null
+      ProxyService['_OdacProxy__loaded'] = true // Ensure ProxyService module is marked as loaded
 
       // Ensure we have websites configured (required for server creation)
       mockConfig.config.websites = {'example.com': createMockWebsiteConfig()}
 
-      Web.server()
+      ProxyService.server()
 
       // Verify HTTP server was created
       expect(http.createServer).toHaveBeenCalled()
@@ -265,7 +265,7 @@ describe('Web', () => {
         cert: '/path/to/cert.pem'
       }
 
-      Web.server()
+      ProxyService.server()
 
       expect(https.createServer).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -293,15 +293,15 @@ describe('Web', () => {
       }
       https.createServer.mockReturnValue(freshMockHttpsServer)
 
-      // Reset the Web module's server instances to force recreation
-      Web['_Web__server_http'] = null
-      Web['_Web__server_https'] = null
-      Web['_Web__loaded'] = true // Ensure Web module is marked as loaded
+      // Reset the ProxyService module's server instances to force recreation
+      ProxyService['_OdacProxy__server_http'] = null
+      ProxyService['_OdacProxy__server_https'] = null
+      ProxyService['_OdacProxy__loaded'] = true // Ensure ProxyService module is marked as loaded
 
       // Ensure we have websites configured (required for server creation)
       mockConfig.config.websites = {'example.com': createMockWebsiteConfig()}
 
-      Web.server()
+      ProxyService.server()
 
       // Verify HTTPS server was created
       expect(https.createServer).toHaveBeenCalled()
@@ -324,7 +324,7 @@ describe('Web', () => {
     test('should not create HTTPS server without SSL configuration', () => {
       mockConfig.config.ssl = undefined
 
-      Web.server()
+      ProxyService.server()
 
       expect(https.createServer).not.toHaveBeenCalled()
     })
@@ -336,7 +336,7 @@ describe('Web', () => {
       }
       fs.existsSync.mockImplementation(path => !path.includes('key.pem') && !path.includes('cert.pem'))
 
-      Web.server()
+      ProxyService.server()
 
       expect(https.createServer).not.toHaveBeenCalled()
     })
@@ -344,7 +344,7 @@ describe('Web', () => {
 
   describe('website creation', () => {
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
       mockConfig.config.web = {path: '/var/odac'}
     })
 
@@ -352,7 +352,7 @@ describe('Web', () => {
       const mockProgress = jest.fn()
       const domain = 'example.com'
 
-      const result = await Web.create(domain, mockProgress)
+      const result = await ProxyService.create(domain, mockProgress)
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('Website example.com created')
@@ -364,12 +364,12 @@ describe('Web', () => {
       const mockProgress = jest.fn()
 
       // Test short domain
-      let result = await Web.create('ab', mockProgress)
+      let result = await ProxyService.create('ab', mockProgress)
       expect(result.success).toBe(false)
       expect(result.message).toBe('Invalid domain.')
 
       // Test domain without dot (except localhost)
-      result = await Web.create('invalid', mockProgress)
+      result = await ProxyService.create('invalid', mockProgress)
       expect(result.success).toBe(false)
       expect(result.message).toBe('Invalid domain.')
     })
@@ -377,7 +377,7 @@ describe('Web', () => {
     test('should allow localhost as valid domain', async () => {
       const mockProgress = jest.fn()
 
-      const result = await Web.create('localhost', mockProgress)
+      const result = await ProxyService.create('localhost', mockProgress)
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('Website localhost created')
@@ -386,7 +386,7 @@ describe('Web', () => {
     test('should strip protocol prefixes from domain', async () => {
       const mockProgress = jest.fn()
 
-      await Web.create('https://example.com', mockProgress)
+      await ProxyService.create('https://example.com', mockProgress)
 
       expect(mockConfig.config.websites['example.com']).toBeDefined()
       expect(mockConfig.config.websites['https://example.com']).toBeUndefined()
@@ -396,7 +396,7 @@ describe('Web', () => {
       const mockProgress = jest.fn()
       mockConfig.config.websites = {'example.com': {}}
 
-      const result = await Web.create('example.com', mockProgress)
+      const result = await ProxyService.create('example.com', mockProgress)
 
       expect(result.success).toBe(false)
       expect(result.message).toBe('Website example.com already exists.')
@@ -412,7 +412,7 @@ describe('Web', () => {
         return true
       })
 
-      await Web.create(domain, mockProgress)
+      await ProxyService.create(domain, mockProgress)
 
       expect(fs.mkdirSync).toHaveBeenCalledWith('/var/odac/example.com', {recursive: true})
 
@@ -440,7 +440,7 @@ describe('Web', () => {
         result: jest.fn((success, message) => ({success, message}))
       })
 
-      await Web.create(domain, mockProgress)
+      await ProxyService.create(domain, mockProgress)
 
       // Verify DNS.record was called with spread arguments
       expect(mockDNS.record).toHaveBeenCalled()
@@ -478,7 +478,7 @@ describe('Web', () => {
         result: jest.fn((success, message) => ({success, message}))
       })
 
-      await Web.create('localhost', mockProgress)
+      await ProxyService.create('localhost', mockProgress)
 
       expect(mockDNS.record).not.toHaveBeenCalled()
     })
@@ -494,7 +494,7 @@ describe('Web', () => {
         result: jest.fn((success, message) => ({success, message}))
       })
 
-      await Web.create('192.168.1.1', mockProgress)
+      await ProxyService.create('192.168.1.1', mockProgress)
 
       expect(mockDNS.record).not.toHaveBeenCalled()
     })
@@ -504,7 +504,7 @@ describe('Web', () => {
     let mockReq, mockRes
 
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
       mockReq = createMockRequest()
       mockRes = createMockResponse()
 
@@ -525,14 +525,14 @@ describe('Web', () => {
       }
 
       // Mock watcher to indicate process is running
-      Web['_Web__watcher'] = {12345: true}
+      ProxyService['_OdacProxy__watcher'] = {12345: true}
     })
 
     test('should redirect HTTP requests to HTTPS', () => {
       mockReq.headers.host = 'example.com'
       mockReq.url = '/test-path'
 
-      Web.request(mockReq, mockRes, false)
+      ProxyService.request(mockReq, mockRes, false)
 
       expect(mockRes.writeHead).toHaveBeenCalled()
       expect(mockRes.end).toHaveBeenCalled()
@@ -541,7 +541,7 @@ describe('Web', () => {
     test('should serve default index for requests without host header', () => {
       mockReq.headers = {}
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
@@ -550,7 +550,7 @@ describe('Web', () => {
     test('should serve default index for unknown hosts', () => {
       mockReq.headers.host = 'unknown.com'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
@@ -560,7 +560,7 @@ describe('Web', () => {
       mockReq.headers.host = 'www.example.com'
       mockReq.url = '/test'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -577,7 +577,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com'
       mockReq.url = '/api/test'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -594,7 +594,7 @@ describe('Web', () => {
       mockConfig.config.websites['example.com'].pid = null
       mockReq.headers.host = 'example.com'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
@@ -602,10 +602,10 @@ describe('Web', () => {
     })
 
     test('should serve default index when watcher indicates process is not running', () => {
-      Web['_Web__watcher'] = {12345: false}
+      ProxyService['_OdacProxy__watcher'] = {12345: false}
       mockReq.headers.host = 'example.com'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
       expect(mockRes.end).toHaveBeenCalled()
@@ -616,7 +616,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com'
       mockReq.socket = {remoteAddress: '192.168.1.100'}
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -635,7 +635,7 @@ describe('Web', () => {
         throw new Error('Request creation failed')
       })
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(mockLog).toHaveBeenCalledWith(expect.any(Error))
       expect(mockRes.write).toHaveBeenCalledWith('Odac Server')
@@ -646,7 +646,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com'
       mockReq.url = '/test-path?param=value&other=123'
 
-      Web.request(mockReq, mockRes, false)
+      ProxyService.request(mockReq, mockRes, false)
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(301, {
         Location: 'https://example.com/test-path?param=value&other=123'
@@ -658,7 +658,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com'
       mockReq.url = '/test-path#section'
 
-      Web.request(mockReq, mockRes, false)
+      ProxyService.request(mockReq, mockRes, false)
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(301, {
         Location: 'https://example.com/test-path#section'
@@ -676,12 +676,12 @@ describe('Web', () => {
           port: 3000
         }
       }
-      Web['_Web__watcher'] = {12345: true}
+      ProxyService['_OdacProxy__watcher'] = {12345: true}
 
       mockReq.headers.host = 'api.staging.example.com'
       mockReq.url = '/test'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -696,7 +696,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com:8080'
       mockReq.url = '/test'
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -711,7 +711,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com'
       mockReq.socket = {remoteAddress: '192.168.1.100'}
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -727,7 +727,7 @@ describe('Web', () => {
       mockReq.headers.host = 'example.com'
       mockReq.socket = {}
 
-      Web.request(mockReq, mockRes, true)
+      ProxyService.request(mockReq, mockRes, true)
 
       expect(http.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -745,7 +745,7 @@ describe('Web', () => {
     let mockChild
 
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
       mockConfig.config.web = {path: '/var/odac'}
 
       // Setup mock child process
@@ -757,13 +757,13 @@ describe('Web', () => {
       }
       childProcess.spawn.mockReturnValue(mockChild)
 
-      // Initialize Web module's private properties
-      Web['_Web__active'] = {}
-      Web['_Web__error_counts'] = {}
-      Web['_Web__logs'] = {log: {}, err: {}}
-      Web['_Web__ports'] = {}
-      Web['_Web__started'] = {}
-      Web['_Web__watcher'] = {}
+      // Initialize ProxyService module's private properties
+      ProxyService['_OdacProxy__active'] = {}
+      ProxyService['_OdacProxy__error_counts'] = {}
+      ProxyService['_OdacProxy__logs'] = {log: {}, err: {}}
+      ProxyService['_OdacProxy__ports'] = {}
+      ProxyService['_OdacProxy__started'] = {}
+      ProxyService['_OdacProxy__watcher'] = {}
     })
 
     test('should test port checking functionality', async () => {
@@ -778,7 +778,7 @@ describe('Web', () => {
       }
       net.createServer.mockReturnValue(mockNetServer)
 
-      const result = await Web.checkPort(3000)
+      const result = await ProxyService.checkPort(3000)
 
       expect(result).toBe(true)
       expect(mockNetServer.listen).toHaveBeenCalledWith(3000, '127.0.0.1')
@@ -797,7 +797,7 @@ describe('Web', () => {
       }
       net.createServer.mockReturnValue(mockNetServer)
 
-      const result = await Web.checkPort(3000)
+      const result = await ProxyService.checkPort(3000)
 
       expect(result).toBe(false)
     })
@@ -812,15 +812,15 @@ describe('Web', () => {
       }
 
       // Mark domain as active
-      Web['_Web__active'][domain] = true
+      ProxyService['_OdacProxy__active'][domain] = true
 
-      await Web.start(domain)
+      await ProxyService.start(domain)
 
       expect(childProcess.spawn).not.toHaveBeenCalled()
     })
 
     test('should not start process if website does not exist', async () => {
-      await Web.start('nonexistent.com')
+      await ProxyService.start('nonexistent.com')
 
       expect(childProcess.spawn).not.toHaveBeenCalled()
     })
@@ -838,9 +838,9 @@ describe('Web', () => {
       }
 
       // Set error count to 2 (should wait 2 seconds)
-      Web['_Web__error_counts'][domain] = 2
+      ProxyService['_OdacProxy__error_counts'][domain] = 2
 
-      await Web.start(domain)
+      await ProxyService.start(domain)
 
       expect(childProcess.spawn).not.toHaveBeenCalled()
     })
@@ -857,7 +857,7 @@ describe('Web', () => {
       // Mock index.js file as missing
       fs.existsSync.mockImplementation(path => !path.includes('index.js'))
 
-      await Web.start(domain)
+      await ProxyService.start(domain)
 
       expect(childProcess.spawn).not.toHaveBeenCalled()
       expect(mockLog).toHaveBeenCalledWith("Website example.com doesn't have index.js file.")
@@ -874,9 +874,9 @@ describe('Web', () => {
       }
 
       // Spy on the start method
-      const startSpy = jest.spyOn(Web, 'start')
+      const startSpy = jest.spyOn(ProxyService, 'start')
 
-      Web.check()
+      ProxyService.check()
 
       expect(startSpy).toHaveBeenCalledWith(domain)
     })
@@ -893,16 +893,16 @@ describe('Web', () => {
       }
 
       // Mark process as not running in watcher
-      Web['_Web__watcher'][pid] = false
+      ProxyService['_OdacProxy__watcher'][pid] = false
 
       const mockProcess = {
         stop: jest.fn()
       }
       mockOdac.setMock('core', 'Process', mockProcess)
 
-      const startSpy = jest.spyOn(Web, 'start')
+      const startSpy = jest.spyOn(ProxyService, 'start')
 
-      Web.check()
+      ProxyService.check()
 
       expect(mockProcess.stop).toHaveBeenCalledWith(pid)
       expect(mockConfig.config.websites[domain].pid).toBeNull()
@@ -920,13 +920,13 @@ describe('Web', () => {
       }
 
       // Setup logs
-      Web['_Web__logs'].log[domain] = 'Test log content'
-      Web['_Web__logs'].err[domain] = 'Test error content'
-      Web['_Web__watcher'][12345] = true
+      ProxyService['_OdacProxy__logs'].log[domain] = 'Test log content'
+      ProxyService['_OdacProxy__logs'].err[domain] = 'Test error content'
+      ProxyService['_OdacProxy__watcher'][12345] = true
 
       os.homedir.mockReturnValue('/home/user')
 
-      Web.check()
+      ProxyService.check()
 
       expect(fs.writeFile).toHaveBeenCalledWith('/home/user/.odac/logs/example.com.log', 'Test log content', expect.any(Function))
       expect(fs.writeFile).toHaveBeenCalledWith('/var/odac/example.com/error.log', 'Test error content', expect.any(Function))
@@ -942,15 +942,15 @@ describe('Web', () => {
         }
       }
 
-      Web['_Web__logs'].log[domain] = 'Test log content'
-      Web['_Web__watcher'][12345] = true
+      ProxyService['_OdacProxy__logs'].log[domain] = 'Test log content'
+      ProxyService['_OdacProxy__watcher'][12345] = true
 
       // Mock fs.writeFile to call callback with error
       fs.writeFile.mockImplementation((path, data, callback) => {
         callback(new Error('Write failed'))
       })
 
-      Web.check()
+      ProxyService.check()
 
       // Should not throw, error should be logged
       expect(mockLog).toHaveBeenCalledWith(expect.any(Error))
@@ -959,7 +959,7 @@ describe('Web', () => {
 
   describe.skip('website deletion and resource cleanup', () => {
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
     })
 
     test('should delete website and cleanup all resources', async () => {
@@ -977,36 +977,36 @@ describe('Web', () => {
       }
 
       // Setup internal state
-      Web['_Web__watcher'][pid] = true
-      Web['_Web__ports'][port] = true
-      Web['_Web__logs'].log[domain] = 'log content'
-      Web['_Web__logs'].err[domain] = 'error content'
-      Web['_Web__error_counts'][domain] = 2
-      Web['_Web__active'][domain] = false
-      Web['_Web__started'][domain] = Date.now()
+      ProxyService['_OdacProxy__watcher'][pid] = true
+      ProxyService['_OdacProxy__ports'][port] = true
+      ProxyService['_OdacProxy__logs'].log[domain] = 'log content'
+      ProxyService['_OdacProxy__logs'].err[domain] = 'error content'
+      ProxyService['_OdacProxy__error_counts'][domain] = 2
+      ProxyService['_OdacProxy__active'][domain] = false
+      ProxyService['_OdacProxy__started'][domain] = Date.now()
 
       const mockProcess = {
         stop: jest.fn()
       }
       mockOdac.setMock('core', 'Process', mockProcess)
 
-      const result = await Web.delete(domain)
+      const result = await ProxyService.delete(domain)
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('Website example.com deleted')
       expect(mockConfig.config.websites[domain]).toBeUndefined()
       expect(mockProcess.stop).toHaveBeenCalledWith(pid)
-      expect(Web['_Web__watcher'][pid]).toBeUndefined()
-      expect(Web['_Web__ports'][port]).toBeUndefined()
-      expect(Web['_Web__logs'].log[domain]).toBeUndefined()
-      expect(Web['_Web__logs'].err[domain]).toBeUndefined()
-      expect(Web['_Web__error_counts'][domain]).toBeUndefined()
-      expect(Web['_Web__active'][domain]).toBeUndefined()
-      expect(Web['_Web__started'][domain]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__watcher'][pid]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__ports'][port]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__logs'].log[domain]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__logs'].err[domain]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__error_counts'][domain]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__active'][domain]).toBeUndefined()
+      expect(ProxyService['_OdacProxy__started'][domain]).toBeUndefined()
     })
 
     test('should handle deletion of non-existent website', async () => {
-      const result = await Web.delete('nonexistent.com')
+      const result = await ProxyService.delete('nonexistent.com')
 
       expect(result.success).toBe(false)
       expect(result.message).toContain('Website nonexistent.com not found')
@@ -1023,7 +1023,7 @@ describe('Web', () => {
         }
       }
 
-      const result = await Web.delete(domain)
+      const result = await ProxyService.delete(domain)
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('Website example.com deleted')
@@ -1040,7 +1040,7 @@ describe('Web', () => {
         }
       }
 
-      const result = await Web.delete('https://example.com')
+      const result = await ProxyService.delete('https://example.com')
 
       expect(result.success).toBe(true)
       expect(mockConfig.config.websites[domain]).toBeUndefined()
@@ -1062,7 +1062,7 @@ describe('Web', () => {
       }
       mockOdac.setMock('core', 'Process', mockProcess)
 
-      Web.stopAll()
+      ProxyService.stopAll()
 
       expect(mockProcess.stop).toHaveBeenCalledWith(pid1)
       expect(mockProcess.stop).toHaveBeenCalledWith(pid2)
@@ -1078,7 +1078,7 @@ describe('Web', () => {
       }
       mockOdac.setMock('core', 'Process', mockProcess)
 
-      expect(() => Web.stopAll()).not.toThrow()
+      expect(() => ProxyService.stopAll()).not.toThrow()
       expect(mockProcess.stop).not.toHaveBeenCalled()
     })
 
@@ -1094,7 +1094,7 @@ describe('Web', () => {
       }
       mockOdac.setMock('core', 'Process', mockProcess)
 
-      Web.stopAll()
+      ProxyService.stopAll()
 
       expect(mockProcess.stop).not.toHaveBeenCalled()
     })
@@ -1102,7 +1102,7 @@ describe('Web', () => {
 
   describe.skip('SSL certificate handling and SNI', () => {
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
       mockConfig.config.ssl = {
         key: '/path/to/default.key',
         cert: '/path/to/default.cert'
@@ -1125,7 +1125,7 @@ describe('Web', () => {
     })
 
     test('should use website-specific SSL certificate via SNI', () => {
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1143,7 +1143,7 @@ describe('Web', () => {
     })
 
     test('should fall back to default SSL certificate for websites without specific certs', () => {
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1159,7 +1159,7 @@ describe('Web', () => {
     })
 
     test('should resolve subdomain to parent domain for SSL certificate', () => {
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1172,7 +1172,7 @@ describe('Web', () => {
     })
 
     test('should use default certificate for unknown domains', () => {
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1195,7 +1195,7 @@ describe('Web', () => {
         return 'mock-file-content'
       })
 
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1210,7 +1210,7 @@ describe('Web', () => {
     test('should handle missing SSL certificate files gracefully', () => {
       fs.existsSync.mockImplementation(path => !path.includes('example.key') && !path.includes('example.cert'))
 
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1227,7 +1227,7 @@ describe('Web', () => {
     })
 
     test('should handle multi-level subdomain SSL certificate resolution', () => {
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1253,7 +1253,7 @@ describe('Web', () => {
         }
       }
 
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1277,7 +1277,7 @@ describe('Web', () => {
         }
       }
 
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1298,7 +1298,7 @@ describe('Web', () => {
         // Missing ssl property
       }
 
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1315,7 +1315,7 @@ describe('Web', () => {
     })
 
     test('should handle hostname without dots in SNI callback', () => {
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1336,7 +1336,7 @@ describe('Web', () => {
         throw new Error('Invalid certificate format')
       })
 
-      Web.server()
+      ProxyService.server()
 
       const httpsOptions = https.createServer.mock.calls[0][0]
       const sniCallback = httpsOptions.SNICallback
@@ -1351,7 +1351,7 @@ describe('Web', () => {
 
   describe('website deletion', () => {
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
       mockConfig.config.websites = {
         'example.com': {
           domain: 'example.com',
@@ -1360,15 +1360,15 @@ describe('Web', () => {
           port: 3000
         }
       }
-      Web['_Web__watcher'] = {12345: true}
-      Web['_Web__ports'] = {3000: true}
-      Web['_Web__logs'] = {
+      ProxyService['_OdacProxy__watcher'] = {12345: true}
+      ProxyService['_OdacProxy__ports'] = {3000: true}
+      ProxyService['_OdacProxy__logs'] = {
         log: {'example.com': 'log content'},
         err: {'example.com': 'error content'}
       }
-      Web['_Web__error_counts'] = {'example.com': 2}
-      Web['_Web__active'] = {'example.com': false}
-      Web['_Web__started'] = {'example.com': Date.now()}
+      ProxyService['_OdacProxy__error_counts'] = {'example.com': 2}
+      ProxyService['_OdacProxy__active'] = {'example.com': false}
+      ProxyService['_OdacProxy__started'] = {'example.com': Date.now()}
     })
 
     test('should delete website and cleanup all resources', async () => {
@@ -1377,7 +1377,7 @@ describe('Web', () => {
       }
       mockOdac.setMock('core', 'Process', mockProcess)
 
-      const result = await Web.delete('example.com')
+      const result = await ProxyService.delete('example.com')
 
       expect(result.success).toBe(true)
       expect(result.message).toBe('Website example.com deleted.')
@@ -1386,14 +1386,14 @@ describe('Web', () => {
     })
 
     test('should strip protocol prefixes before deletion', async () => {
-      const result = await Web.delete('https://example.com')
+      const result = await ProxyService.delete('https://example.com')
 
       expect(result.success).toBe(true)
       expect(mockConfig.config.websites['example.com']).toBeUndefined()
     })
 
     test('should return error for non-existent website', async () => {
-      const result = await Web.delete('nonexistent.com')
+      const result = await ProxyService.delete('nonexistent.com')
 
       expect(result.success).toBe(false)
       expect(result.message).toBe('Website nonexistent.com not found.')
@@ -1402,7 +1402,7 @@ describe('Web', () => {
     test('should handle deletion of website without running process', async () => {
       mockConfig.config.websites['example.com'].pid = null
 
-      const result = await Web.delete('example.com')
+      const result = await ProxyService.delete('example.com')
 
       expect(result.success).toBe(true)
       expect(mockConfig.config.websites['example.com']).toBeUndefined()
@@ -1411,7 +1411,7 @@ describe('Web', () => {
 
   describe('utility methods', () => {
     beforeEach(async () => {
-      await Web.init()
+      await ProxyService.init()
     })
 
     test('should list all websites', async () => {
@@ -1420,7 +1420,7 @@ describe('Web', () => {
         'test.com': {}
       }
 
-      const result = await Web.list()
+      const result = await ProxyService.list()
 
       expect(result.success).toBe(true)
       expect(result.message).toContain('example.com')
@@ -1430,7 +1430,7 @@ describe('Web', () => {
     test('should return error when no websites exist', async () => {
       mockConfig.config.websites = {}
 
-      const result = await Web.list()
+      const result = await ProxyService.list()
 
       expect(result.success).toBe(false)
       expect(result.message).toBe('No websites found.')
@@ -1439,14 +1439,14 @@ describe('Web', () => {
     test('should return website status', async () => {
       mockConfig.config.websites = {'example.com': {}}
 
-      const result = await Web.status()
+      const result = await ProxyService.status()
 
       expect(result).toEqual({'example.com': {}})
     })
 
     test('should set website configuration', () => {
       const data = {domain: 'new.com'}
-      Web.set('new.com', data)
+      ProxyService.set('new.com', data)
       expect(mockConfig.config.websites['new.com']).toEqual(data)
     })
 
@@ -1469,7 +1469,7 @@ describe('Web', () => {
         'site2.com': {pid: 2, domain: 'site2.com'}
       }
 
-      Web.stopAll()
+      ProxyService.stopAll()
 
       expect(mockOdac.core('Process').stop).toHaveBeenCalledWith(1)
       expect(mockOdac.core('Process').stop).toHaveBeenCalledWith(2)
@@ -1481,7 +1481,7 @@ describe('Web', () => {
       const req = {}
       const res = {write: jest.fn(), end: jest.fn()}
 
-      Web.index(req, res)
+      ProxyService.index(req, res)
 
       expect(res.write).toHaveBeenCalledWith('ODAC Server')
       expect(res.end).toHaveBeenCalled()

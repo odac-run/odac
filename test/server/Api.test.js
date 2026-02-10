@@ -518,7 +518,7 @@ describe('Api', () => {
         return
       }
 
-      const mockWebService = global.Odac.server('Web')
+      const mockWebService = global.Odac.server('Proxy')
       mockWebService.create.mockResolvedValue(Api.result(true, 'Created'))
       mockWebService.delete.mockResolvedValue(Api.result(true, 'Deleted'))
       mockWebService.list.mockResolvedValue(Api.result(true, ['example.com']))
@@ -695,7 +695,7 @@ describe('Api', () => {
       const token = Api.generateToken(domain)
       Api.addToken(domain)
 
-      const mockWebService = global.Odac.server('Web')
+      const mockWebService = global.Odac.server('Proxy')
       const payload = JSON.stringify({
         auth: token,
         action: 'web.delete',

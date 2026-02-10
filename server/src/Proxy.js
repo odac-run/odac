@@ -1,5 +1,5 @@
 const noop = () => {}
-const {log, error} = typeof Odac !== 'undefined' && Odac.core ? Odac.core('Log', false).init('Web') : {log: noop, error: noop}
+const {log, error} = typeof Odac !== 'undefined' && Odac.core ? Odac.core('Log', false).init('Proxy') : {log: noop, error: noop}
 
 const childProcess = require('child_process')
 const fs = require('fs')
@@ -8,9 +8,9 @@ const os = require('os')
 const path = require('path')
 const axios = require('axios')
 
-const WebFirewall = require('./Web/Firewall.js')
+const WebFirewall = require('./Proxy/Firewall.js')
 
-class Web {
+class OdacProxy {
   #active = {}
   #error_counts = {}
   #loaded = false
@@ -877,4 +877,4 @@ class Web {
   }
 }
 
-module.exports = new Web()
+module.exports = new OdacProxy()

@@ -14,7 +14,7 @@ class TestServer {
     }
 
     this.mockDNS = {}
-    this.mockWeb = {
+    this.mockProxy = {
       check: jest.fn(),
       stopAll: jest.fn()
     }
@@ -45,8 +45,8 @@ class TestServer {
             return this.mockService
           case 'DNS':
             return this.mockDNS
-          case 'Web':
-            return this.mockWeb
+          case 'Proxy':
+            return this.mockProxy
           case 'Mail':
             return this.mockMail
           case 'Api':
@@ -68,7 +68,7 @@ class TestServer {
     global.Odac.core('Config').config.server.started = Date.now()
     global.Odac.server('Service')
     global.Odac.server('DNS')
-    global.Odac.server('Web')
+    global.Odac.server('Proxy')
     global.Odac.server('Mail')
     global.Odac.server('Api')
 
@@ -86,9 +86,9 @@ class TestServer {
           // Ignore SSL check errors
         }
         try {
-          global.Odac.server('Web').check()
+          global.Odac.server('Proxy').check()
         } catch (e) {
-          // Ignore Web check errors
+          // Ignore Proxy check errors
         }
         try {
           global.Odac.server('Mail').check()
@@ -106,9 +106,9 @@ class TestServer {
       // Ignore service stop errors
     }
     try {
-      global.Odac.server('Web').stopAll()
+      global.Odac.server('Proxy').stopAll()
     } catch (e) {
-      // Ignore web stop errors
+      // Ignore Proxy stop errors
     }
     if (this.intervalId) {
       clearInterval(this.intervalId)
@@ -184,13 +184,13 @@ describe('Server', () => {
       // Verify all services are initialized
       expect(global.Odac.server).toHaveBeenCalledWith('Service')
       expect(global.Odac.server).toHaveBeenCalledWith('DNS')
-      expect(global.Odac.server).toHaveBeenCalledWith('Web')
+      expect(global.Odac.server).toHaveBeenCalledWith('Proxy')
       expect(global.Odac.server).toHaveBeenCalledWith('Mail')
       expect(global.Odac.server).toHaveBeenCalledWith('Api')
 
       // Verify call order
       const serverCalls = global.Odac.server.mock.calls.map(call => call[0])
-      expect(serverCalls).toEqual(['Service', 'DNS', 'Web', 'Mail', 'Api'])
+      expect(serverCalls).toEqual(['Service', 'DNS', 'Proxy', 'Mail', 'Api'])
     })
 
     test('should setup periodic health checks after initialization delay', () => {
@@ -199,7 +199,7 @@ describe('Server', () => {
       // Initially no checks should be called
       expect(server.mockService.check).not.toHaveBeenCalled()
       expect(server.mockSSL.check).not.toHaveBeenCalled()
-      expect(server.mockWeb.check).not.toHaveBeenCalled()
+      expect(server.mockProxy.check).not.toHaveBeenCalled()
       expect(server.mockMail.check).not.toHaveBeenCalled()
 
       // Fast-forward past initial delay
@@ -214,7 +214,7 @@ describe('Server', () => {
       // Now checks should be called
       expect(server.mockService.check).toHaveBeenCalledTimes(1)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
       expect(server.mockMail.check).toHaveBeenCalledTimes(1)
     })
 
@@ -226,7 +226,7 @@ describe('Server', () => {
 
       expect(server.mockService.check).toHaveBeenCalledTimes(1)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
       expect(server.mockMail.check).toHaveBeenCalledTimes(1)
 
       // Fast-forward another second
@@ -234,7 +234,7 @@ describe('Server', () => {
 
       expect(server.mockService.check).toHaveBeenCalledTimes(2)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(2)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(2)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(2)
       expect(server.mockMail.check).toHaveBeenCalledTimes(2)
 
       // Fast-forward multiple intervals
@@ -242,7 +242,7 @@ describe('Server', () => {
 
       expect(server.mockService.check).toHaveBeenCalledTimes(5)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(5)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(5)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(5)
       expect(server.mockMail.check).toHaveBeenCalledTimes(5)
     })
   })
@@ -275,7 +275,7 @@ describe('Server', () => {
       // Verify that the same service instances are being called during health checks
       expect(global.Odac.server).toHaveBeenCalledWith('Service')
       expect(global.Odac.server).toHaveBeenCalledWith('SSL')
-      expect(global.Odac.server).toHaveBeenCalledWith('Web')
+      expect(global.Odac.server).toHaveBeenCalledWith('Proxy')
       expect(global.Odac.server).toHaveBeenCalledWith('Mail')
     })
   })
@@ -291,7 +291,7 @@ describe('Server', () => {
 
       expect(server.mockService.check).toHaveBeenCalledTimes(1)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
       expect(server.mockMail.check).toHaveBeenCalledTimes(1)
     })
 
@@ -308,7 +308,7 @@ describe('Server', () => {
 
       // Other services should still be checked
       expect(server.mockSSL.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
       expect(server.mockMail.check).toHaveBeenCalledTimes(1)
     })
 
@@ -373,8 +373,8 @@ describe('Server', () => {
         serviceStatuses.push('Service checked')
       })
 
-      server.mockWeb.check.mockImplementation(() => {
-        serviceStatuses.push('Web checked')
+      server.mockProxy.check.mockImplementation(() => {
+        serviceStatuses.push('Proxy checked')
       })
 
       // Run multiple monitoring cycles
@@ -384,11 +384,11 @@ describe('Server', () => {
 
       expect(serviceStatuses).toEqual([
         'Service checked',
-        'Web checked',
+        'Proxy checked',
         'Service checked',
-        'Web checked',
+        'Proxy checked',
         'Service checked',
-        'Web checked'
+        'Proxy checked'
       ])
     })
 
@@ -399,7 +399,7 @@ describe('Server', () => {
       // Verify all service types are monitored consistently
       expect(server.mockService.check).toHaveBeenCalledTimes(3)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(3)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(3)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(3)
       expect(server.mockMail.check).toHaveBeenCalledTimes(3)
     })
 
@@ -430,7 +430,7 @@ describe('Server', () => {
       // All services should have been called despite individual failures
       expect(server.mockService.check).toHaveBeenCalledTimes(3)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(3)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(3)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(3)
       expect(server.mockMail.check).toHaveBeenCalledTimes(3)
     })
 
@@ -457,7 +457,7 @@ describe('Server', () => {
       server.stop()
 
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
     })
 
     test('should handle service stop errors gracefully', () => {
@@ -472,7 +472,7 @@ describe('Server', () => {
       }).not.toThrow()
 
       // Web service should still be stopped
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
     })
 
     test('should stop services in correct order', () => {
@@ -482,7 +482,7 @@ describe('Server', () => {
         stopOrder.push('Service')
       })
 
-      server.mockWeb.stopAll.mockImplementation(() => {
+      server.mockProxy.stopAll.mockImplementation(() => {
         stopOrder.push('Web')
       })
 
@@ -493,8 +493,8 @@ describe('Server', () => {
 
     test('should handle partial service stop failures', () => {
       // Mock Web stopAll to fail
-      server.mockWeb.stopAll.mockImplementation(() => {
-        throw new Error('Web stop failed')
+      server.mockProxy.stopAll.mockImplementation(() => {
+        throw new Error('Proxy stop failed')
       })
 
       expect(() => {
@@ -503,7 +503,7 @@ describe('Server', () => {
 
       // Service should still be stopped
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
     })
 
     test('should clear health check intervals during shutdown', () => {
@@ -525,7 +525,7 @@ describe('Server', () => {
 
       // Verify shutdown methods are called
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
 
       // Test should not throw and shutdown should complete successfully
       expect(() => {
@@ -545,13 +545,13 @@ describe('Server', () => {
 
       // Verify all cleanup actions
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
 
       // Verify no more health checks after cleanup
       jest.advanceTimersByTime(10000)
       expect(server.mockService.check).toHaveBeenCalledTimes(1)
       expect(server.mockSSL.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
       expect(server.mockMail.check).toHaveBeenCalledTimes(1)
     })
 
@@ -563,7 +563,7 @@ describe('Server', () => {
 
       // Services should only be stopped once
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(3)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(3)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(3)
     })
   })
 
@@ -598,7 +598,7 @@ describe('Server', () => {
       }).not.toThrow()
 
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
     })
 
     test('should perform complete resource cleanup sequence', () => {
@@ -608,8 +608,8 @@ describe('Server', () => {
         cleanupOrder.push('Service cleanup')
       })
 
-      server.mockWeb.stopAll.mockImplementation(() => {
-        cleanupOrder.push('Web cleanup')
+      server.mockProxy.stopAll.mockImplementation(() => {
+        cleanupOrder.push('Proxy cleanup')
       })
 
       // Start monitoring to create resources
@@ -618,7 +618,7 @@ describe('Server', () => {
       // Perform cleanup
       server.stop()
 
-      expect(cleanupOrder).toEqual(['Service cleanup', 'Web cleanup'])
+      expect(cleanupOrder).toEqual(['Service cleanup', 'Proxy cleanup'])
     })
 
     test('should handle resource cleanup errors without failing', () => {
@@ -627,8 +627,8 @@ describe('Server', () => {
         throw new Error('Service cleanup failed')
       })
 
-      server.mockWeb.stopAll.mockImplementation(() => {
-        throw new Error('Web cleanup failed')
+      server.mockProxy.stopAll.mockImplementation(() => {
+        throw new Error('Proxy cleanup failed')
       })
 
       // Should not throw during cleanup
@@ -638,7 +638,7 @@ describe('Server', () => {
 
       // Verify cleanup was attempted
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
     })
 
     test('should ensure no memory leaks from monitoring intervals', () => {
@@ -675,19 +675,19 @@ describe('Server', () => {
 
       // Verify services are being monitored
       expect(server.mockService.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
 
       // Stop server
       server.stop()
 
       // Verify service cleanup was called
       expect(server.mockService.stopAll).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.stopAll).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.stopAll).toHaveBeenCalledTimes(1)
 
       // Verify no further service interactions
       jest.advanceTimersByTime(5000)
       expect(server.mockService.check).toHaveBeenCalledTimes(1)
-      expect(server.mockWeb.check).toHaveBeenCalledTimes(1)
+      expect(server.mockProxy.check).toHaveBeenCalledTimes(1)
     })
   })
 

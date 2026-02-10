@@ -31,7 +31,7 @@ global.Odac = {
   })
 }
 
-const Firewall = require('../../../server/src/Web/Firewall.js')
+const Firewall = require('../../../server/src/Proxy/Firewall.js')
 
 describe('Firewall', () => {
   let firewall

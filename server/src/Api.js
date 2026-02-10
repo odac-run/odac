@@ -36,9 +36,9 @@ class Api {
     'mail.send': (...args) => Odac.server('Mail').send(...args),
     'server.stop': () => Odac.server('Server').stop(),
     'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
-    'web.create': (...args) => Odac.server('Web').create(...args),
-    'web.delete': (...args) => Odac.server('Web').delete(...args),
-    'web.list': (...args) => Odac.server('Web').list(...args)
+    'web.create': (...args) => Odac.server('Proxy').create(...args),
+    'web.delete': (...args) => Odac.server('Proxy').delete(...args),
+    'web.list': (...args) => Odac.server('Proxy').list(...args)
   }
   #connections = {}
   #allowed = new Set()

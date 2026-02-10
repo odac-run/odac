@@ -18,7 +18,7 @@ global.Odac = mockOdac
 
 // Mock dependencies of Web.js
 jest.mock(
-  '../../server/src/Web/Firewall.js',
+  '../../server/src/Proxy/Firewall.js',
   () =>
     class {
       check() {
@@ -33,8 +33,8 @@ const fs = require('fs')
 const os = require('os')
 const axios = require('axios')
 
-describe('Web Proxy Integration', () => {
-  let Web
+describe('ProxyProxy Integration', () => {
+  let ProxyProxy
   let mockSpawn
   let mockStdout
   let mockStderr
@@ -73,10 +73,10 @@ describe('Web Proxy Integration', () => {
       return {}
     })
 
-    // Import Web module (singleton)
-    Web = require('../../server/src/Web')
+    // Import Proxy module (singleton)
+    ProxyProxy = require('../../server/src/Proxy')
     // Reset internal state
-    if (Web.reset) Web.reset()
+    if (ProxyProxy.reset) ProxyProxy.reset()
   })
 
   afterEach(() => {
@@ -90,7 +90,7 @@ describe('Web Proxy Integration', () => {
     os.platform = jest.fn(() => 'linux')
     os.tmpdir = jest.fn(() => '/tmp')
 
-    Web.spawnProxy()
+    ProxyProxy.spawnProxy()
 
     expect(childProcess.spawn).toHaveBeenCalledWith(
       expect.stringContaining('odac-proxy'),
@@ -111,7 +111,7 @@ describe('Web Proxy Integration', () => {
     const originalPlatform = os.platform
     os.platform = jest.fn(() => 'win32')
 
-    Web.spawnProxy()
+    ProxyProxy.spawnProxy()
 
     // On Windows, ODAC_SOCKET_PATH should NOT be in env
     const spawnCall = childProcess.spawn.mock.calls[0]
@@ -130,7 +130,7 @@ describe('Web Proxy Integration', () => {
     os.platform = jest.fn(() => 'linux')
     os.tmpdir = jest.fn(() => '/tmp')
 
-    Web.spawnProxy()
+    ProxyProxy.spawnProxy()
 
     // Advance timers to trigger syncConfig (it has setTimeout 500ms)
     jest.advanceTimersByTime(1000)

@@ -133,7 +133,7 @@ class MockOdac {
         delete: jest.fn(),
         list: jest.fn()
       },
-      Web: {
+      Proxy: {
         init: jest.fn(),
         start: jest.fn(),
         stop: jest.fn(),

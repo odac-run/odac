@@ -178,7 +178,7 @@ class SSL {
 
       // Clear caches if services are available
       try {
-        if (Odac.server('Web')) Odac.server('Web').clearSSLCache(domain)
+        if (Odac.server('Proxy')) Odac.server('Proxy').clearSSLCache(domain)
       } catch {
         // Ignore error
       }

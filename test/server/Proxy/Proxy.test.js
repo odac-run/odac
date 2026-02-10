@@ -6,9 +6,9 @@
 jest.mock('http')
 
 const http = require('http')
-const WebProxy = require('../../../server/src/Web/Proxy.js')
+const ProxyProxy = require('../../../server/src/Proxy/Proxy.js')
 
-describe('WebProxy', () => {
+describe('ProxyProxy', () => {
   let proxy
   let mockLog
   let mockReq
@@ -19,7 +19,7 @@ describe('WebProxy', () => {
     jest.clearAllMocks()
 
     mockLog = jest.fn()
-    proxy = new WebProxy(mockLog)
+    proxy = new ProxyProxy(mockLog)
 
     mockReq = {
       url: '/test',
