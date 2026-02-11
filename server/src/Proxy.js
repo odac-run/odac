@@ -267,12 +267,17 @@ class OdacProxy {
         try {
           containerIP = await Odac.server('Container').getIP(app.name)
           if (!containerIP) {
-            if (typeof log !== 'undefined') log('Proxy: Could not resolve IP for %s (domain: %s)', app.name, domainName)
-            continue
+            if (typeof log !== 'undefined') {
+              log('Proxy: Could not resolve IP for %s (domain: %s). App might be down. Using loopback.', app.name, domainName)
+            }
+            // Fallback to loopback to ensure Domain exists in Proxy Config -> SSL Handshake works -> 502 Bad Gateway
+            containerIP = '127.0.0.1'
           }
         } catch (e) {
-          if (typeof log !== 'undefined') log('Proxy: Failed to get IP for %s: %s', app.name, e.message)
-          continue
+          if (typeof log !== 'undefined') {
+            log('Proxy: Failed to get IP for %s: %s. Using loopback.', app.name, e.message)
+          }
+          containerIP = '127.0.0.1'
         }
       }
 
