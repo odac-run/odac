@@ -928,6 +928,35 @@ nameserver 8.8.4.4
       const records = zone.records || []
       const soa = zone.soa
 
+      // Check if the name exists in the zone at all (for any type)
+      // We look for strict name match.
+      // NOTE: We assume record names are stored in a consistent case (or we should match case-insensitively).
+      // Based on questionName being lowercased, we compare with lowercased record names.
+      const nameExists = records.some(r => r.name.toLowerCase() === questionName)
+
+      if (!nameExists) {
+        // Name does not exist in this zone -> Return NXDOMAIN
+        response.header.rcode = dns.consts.NAME_TO_RCODE.NXDOMAIN
+
+        // RFC 2308: Include SOA in Authority section for negative caching
+        if (soa) {
+          response.authority.push(
+            dns.SOA({
+              name: domain,
+              primary: soa.primary,
+              admin: soa.email,
+              serial: soa.serial,
+              refresh: soa.refresh,
+              retry: soa.retry,
+              expiration: soa.expire,
+              minimum: soa.minimum || 3600,
+              ttl: soa.ttl || 3600
+            })
+          )
+        }
+        return response.send()
+      }
+
       // SECURITY: Handle ANY queries strictly
       // Refuse ANY queries to prevent amplification attacks (RFC 8482 approach or just minimal response)
       if (questionType === dns.consts.NAME_TO_QTYPE.ANY) {
@@ -935,6 +964,21 @@ nameserver 8.8.4.4
         if (soa) {
           this.#processSOARecordObj(soa, domain, response)
         }
+        return response.send()
+      }
+
+      // RFC 1034: If a CNAME exists for a name, that is the only record allowed.
+      // We should return the CNAME record for ANY query type (except explicitly prohibited ones, but broad support is safer).
+      const cnameRecord = records.find(r => r.type === 'CNAME' && r.name === questionName)
+
+      if (cnameRecord) {
+        // If we found a CNAME, we must return it regardless of the query type
+        // (Unless the query type is CNAME, which is also fine to return here)
+        this.#processCNAMERecords([cnameRecord], questionName, response)
+
+        // Optional: If we want to be helpful and we are authoritative for the target of the CNAME,
+        // we could also include the A/AAAA records of the target in the Additional section (CNAME flattening/chaining).
+        // For now, returning the CNAME is sufficient for the client to follow.
         return response.send()
       }
 
@@ -955,6 +999,7 @@ nameserver 8.8.4.4
           )
           break
         case dns.consts.NAME_TO_QTYPE.CNAME:
+          // Already handled above, but kept for switch completeness/fallback
           this.#processCNAMERecords(
             records.filter(r => r?.type === 'CNAME'),
             questionName,
