@@ -227,7 +227,10 @@ class OdacProxy {
       // However, we should arguably still register it so we can show a "Bad Gateway" or "Not Running" page
       // instead of "Not Found" / Security rejection.
       // For now, consistent with enterprise "fail secure", we only proxy valid, running-capable targets.
-      if (!app) continue
+      if (!app) {
+        if (typeof log !== 'undefined') log('Proxy: App %s not found for domain %s', record.appId, domainName)
+        continue
+      }
 
       let port = 0
       let containerIP = ''
@@ -250,7 +253,10 @@ class OdacProxy {
       }
 
       // If no port found, we skip this domain as we don't know where to route it.
-      if (!port) continue
+      if (!port) {
+        if (typeof log !== 'undefined') log('Proxy: No port found for app %s (domain: %s)', app.name, domainName)
+        continue
+      }
 
       proxyDomains[domainName] = {
         domain: domainName,
@@ -263,6 +269,8 @@ class OdacProxy {
         containerIP: containerIP // reserved for future use
       }
     }
+
+    if (typeof log !== 'undefined') log('Proxy: Syncing %d domains', Object.keys(proxyDomains).length)
 
     const config = {
       domains: proxyDomains,

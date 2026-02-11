@@ -233,8 +233,8 @@ class Api {
 
   reloadTokens() {
     this.#clientTokens.clear()
-    const websites = Odac.core('Config').config.websites || {}
-    for (const domain in websites) {
+    const domains = Odac.core('Config').config.domains || {}
+    for (const domain in domains) {
       this.addToken(domain)
     }
   }
