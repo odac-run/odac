@@ -84,9 +84,9 @@ class Mail {
     if (!this.#started) this.init()
     if (!this.#started) return
     this.#checking = true
-    for (const domain of Object.keys(Odac.core('Config').config.websites)) {
-      if (!Odac.core('Config').config.websites[domain].DNS || !Odac.core('Config').config.websites[domain].DNS.MX) continue
-      if (Odac.core('Config').config.websites[domain].cert !== false && !Odac.core('Config').config.websites[domain].cert?.dkim)
+    for (const domain of Object.keys(Odac.core('Config').config.domains ?? {})) {
+      if (!Odac.core('Config').config.domains[domain].DNS || !Odac.core('Config').config.domains[domain].DNS.MX) continue
+      if (Odac.core('Config').config.domains[domain].cert !== false && !Odac.core('Config').config.domains[domain].cert?.dkim)
         this.#dkim(domain)
     }
     this.#checking = false
@@ -104,15 +104,17 @@ class Mail {
     if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (await this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s already exists.', email))
     let domain = email.split('@')[1]
-    if (!Odac.core('Config').config.websites[domain]) {
-      for (let d in Odac.core('Config').config.websites) {
+    if (!Odac.core('Config').config.domains?.[domain]) {
+      for (let d in Odac.core('Config').config.domains ?? {}) {
         if (domain.substr(-d.length) != d) continue
-        if (Odac.core('Config').config.websites[d].subdomain.includes(domain.substr(-d.length))) {
+        if (Odac.core('Config').config.domains[d].subdomain?.includes(domain.substr(0, domain.length - d.length - 1))) {
           domain = d
           break
         }
       }
-      return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+      if (!Odac.core('Config').config.domains?.[domain]) {
+        return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+      }
     }
     this.#db.serialize(() => {
       let stmt = this.#db.prepare("INSERT INTO mail_account ('email', 'password', 'domain') VALUES (?, ?, ?)")
@@ -147,8 +149,8 @@ class Mail {
       .replace('-----END PUBLIC KEY-----', '')
       .replace(/\r\n/g, '')
       .replace(/\n/g, '')
-    if (!Odac.core('Config').config.websites[domain].cert) Odac.core('Config').config.websites[domain].cert = {}
-    Odac.core('Config').config.websites[domain].cert.dkim = {
+    if (!Odac.core('Config').config.domains[domain].cert) Odac.core('Config').config.domains[domain].cert = {}
+    Odac.core('Config').config.domains[domain].cert.dkim = {
       private: os.homedir() + '/.odac/cert/dkim/' + domain + '.key',
       public: os.homedir() + '/.odac/cert/dkim/' + domain + '.pub'
     }
@@ -179,7 +181,7 @@ class Mail {
     if (this.#db) return // Already initialized
 
     // We should always initialize DB if we are starting mail services,
-    // even if no websites currently have MX records configured.
+    // even if no domains currently have MX records configured.
     if (this.#started) return // Only initialize once if already started
     this.#started = true
     if (!fs.existsSync(os.homedir() + '/.odac/db')) fs.mkdirSync(os.homedir() + '/.odac/db', {recursive: true})
@@ -531,11 +533,11 @@ class Mail {
 
       let ssl = Odac.core('Config').config.ssl ?? {}
       let sslOptions = {}
-      while (!Odac.core('Config').config.websites[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
-      let website = Odac.core('Config').config.websites[hostname]
+      while (!Odac.core('Config').config.domains?.[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
+      let website = Odac.core('Config').config.domains?.[hostname]
       if (
         website &&
-        website.cert.ssl &&
+        website.cert?.ssl &&
         website.cert.ssl.key &&
         website.cert.ssl.cert &&
         fs.existsSync(website.cert.ssl.key) &&
@@ -604,7 +606,7 @@ class Mail {
 
   async list(domain) {
     if (!domain) return Odac.server('Api').result(false, await __('Domain is required.'))
-    if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
     let accounts = []
     await new Promise((resolve, reject) => {
       this.#db.each(
@@ -647,9 +649,9 @@ class Mail {
     if (!this.#isValidEmail(data.from.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (!this.#isValidEmail(data.to.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     let domain = data.from.value[0].address.split('@')[1].split('.')
-    while (domain.length > 2 && !Odac.core('Config').config.websites[domain.join('.')]) domain.shift()
+    while (domain.length > 2 && !Odac.core('Config').config.domains?.[domain.join('.')]) domain.shift()
     domain = domain.join('.')
-    if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
     let mail = {
       atttachments: [],
       headerLines: [],

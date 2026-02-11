@@ -39,7 +39,7 @@ describe('Hub', () => {
       config: {
         hub: null,
         server: {started: Date.now()},
-        websites: {},
+        domains: {},
         apps: [],
         mail: {accounts: {}}
       }
@@ -166,7 +166,7 @@ describe('Hub', () => {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
           server: {started: Date.now()},
-          websites: {'test-container': {}},
+          domains: {'test-container': {}},
           apps: []
         }
       })
@@ -291,7 +291,7 @@ describe('Hub', () => {
     it('should get services info', () => {
       mockOdac.setMock('core', 'Config', {
         config: {
-          websites: {
+          domains: {
             'example.com': {},
             'test.com': {}
           },
@@ -307,7 +307,7 @@ describe('Hub', () => {
 
       const services = System.getServicesInfo()
 
-      expect(services.websites).toBe(2)
+      expect(services.domains).toBe(2)
       expect(services.apps).toBe(2)
       expect(services.mail).toBe(2)
     })
@@ -317,7 +317,7 @@ describe('Hub', () => {
 
       const services = System.getServicesInfo()
 
-      expect(services.websites).toBe(0)
+      expect(services.domains).toBe(0)
       expect(services.apps).toBe(0)
       expect(services.mail).toBe(0)
     })

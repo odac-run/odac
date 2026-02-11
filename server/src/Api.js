@@ -76,7 +76,7 @@ class Api {
       Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
     }
 
-    // Pre-load all existing website tokens for O(1) lookup
+    // Pre-load all existing domain tokens for O(1) lookup
     this.reloadTokens()
 
     const handleConnection = (socket, skipIpCheck = false) => {

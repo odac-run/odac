@@ -650,7 +650,7 @@ describe('Api', () => {
 
     it('should persist tokens via reloadTokens on startup', () => {
       const domain = 'persistent.com'
-      global.Odac.core('Config').config.websites = {
+      global.Odac.core('Config').config.domains = {
         [domain]: {domain}
       }
 

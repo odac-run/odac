@@ -71,7 +71,7 @@ describe('Commands', () => {
       expect(Commands.auth.description).toBe('Define your server to your ODAC account')
       expect(Commands.debug.description).toBe('Debug ODAC Server')
       expect(Commands.help.description).toBe('List all available commands')
-      expect(Commands.monit.description).toBe('Monitor Website or Service')
+      expect(Commands.monit.description).toBe('Monitor Applications and Services')
       expect(Commands.restart.description).toBe('Restart ODAC Server')
       expect(Commands.run.description).toBe('Run a script or file as a service')
       expect(Commands.update.description).toBe('Update ODAC Server')

@@ -626,7 +626,7 @@ class smtp {
       let signature = ''
       if (this.config.enableDKIM) {
         try {
-          let dkim = Odac.core('Config').config.websites[domain]?.cert?.dkim
+          let dkim = Odac.core('Config').config.domains?.[domain]?.cert?.dkim
           if (dkim && this.#validateDKIMConfig(dkim)) {
             signature = this.#dkim({
               header: headers,
@@ -782,7 +782,7 @@ class smtp {
 
       try {
         // Authentication if configured
-        const config = Odac.core('Config').config.websites[sender]
+        const config = Odac.core('Config').config.domains?.[sender]
         if (config?.smtp?.auth) {
           const authSuccess = await this.#authenticateSocket(socket, config.smtp.username, config.smtp.password)
           if (!authSuccess) {

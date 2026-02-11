@@ -103,100 +103,6 @@ class DNS {
         })
       })
     }
-
-    // MIGRATION: Move DNS records from websites to dns config
-    this.#migrateDNS()
-  }
-
-  #migrateDNS() {
-    const config = Odac.core('Config').config
-    if (!config.websites) return
-
-    // Initialize dns config if missing
-    if (!config.dns) config.dns = {}
-
-    let migrationNeeded = false
-    const dnsConfig = config.dns
-
-    // Check websites for legacy DNS records
-    for (const domain in config.websites) {
-      const site = config.websites[domain]
-      if (site.DNS && !dnsConfig[domain]) {
-        migrationNeeded = true
-        log(`Migrating DNS records for ${domain}...`)
-
-        // Create new zone structure
-        const zone = {
-          soa: {},
-          records: []
-        }
-
-        // Migrate SOA
-        if (site.DNS.SOA && site.DNS.SOA[0]) {
-          const oldSoa = site.DNS.SOA[0]
-          const parts = oldSoa.value.split(' ')
-          zone.soa = {
-            primary: parts[0] || `ns1.${domain}`,
-            email: parts[1] || `hostmaster.${domain}`,
-            serial:
-              parseInt(parts[2]) ||
-              parseInt(
-                new Date()
-                  .toISOString()
-                  .replace(/[^0-9]/g, '')
-                  .slice(0, 8) + '01'
-              ),
-            refresh: parseInt(parts[3]) || 3600,
-            retry: parseInt(parts[4]) || 600,
-            expire: parseInt(parts[5]) || 604800,
-            minimum: parseInt(parts[6]) || 3600,
-            ttl: oldSoa.ttl || 3600
-          }
-        } else {
-          // Create default SOA if missing
-          const dateStr = new Date()
-            .toISOString()
-            .replace(/[^0-9]/g, '')
-            .slice(0, 8)
-          zone.soa = {
-            primary: `ns1.${domain}`,
-            email: `hostmaster.${domain}`,
-            serial: parseInt(dateStr + '01'),
-            refresh: 3600,
-            retry: 600,
-            expire: 604800,
-            minimum: 3600,
-            ttl: 3600
-          }
-        }
-
-        // Migrate other records
-        const recordTypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'CAA']
-        for (const type of recordTypes) {
-          if (site.DNS[type] && Array.isArray(site.DNS[type])) {
-            for (const rec of site.DNS[type]) {
-              zone.records.push({
-                id: randomUUID(),
-                type: type,
-                name: rec.name,
-                value: rec.value,
-                priority: rec.priority, // Only for MX
-                ttl: rec.ttl || 3600
-              })
-            }
-          }
-        }
-
-        dnsConfig[domain] = zone
-        // Remove legacy DNS data
-        delete site.DNS
-      }
-    }
-
-    if (migrationNeeded) {
-      if (Odac.core('Config').force) Odac.core('Config').force()
-      log('DNS migration completed successfully.')
-    }
   }
 
   start() {
@@ -1419,7 +1325,7 @@ nameserver 8.8.4.4
         temp = temp.split('.').slice(1).join('.')
       }
 
-      // If we didn't find a parent zone, and this is seemingly a new domain (e.g. from Web.create), we initialize it
+      // If we didn't find a parent zone, and this is seemingly a new domain (e.g. from Domain.add), we initialize it
       if (!found) {
         zoneDomain = domain
       }

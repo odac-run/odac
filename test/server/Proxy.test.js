@@ -51,8 +51,8 @@ describe('Proxy', () => {
 
     mockConfig = mockOdac.core('Config')
     mockConfig.config = {
-      websites: {},
-      web: {path: '/var/odac'},
+      domains: {},
+      app: {path: '/var/odac'},
       firewall: {enabled: true},
       ssl: null
     }

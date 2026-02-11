@@ -26,7 +26,7 @@ module.exports = {
     action: async () => Odac.cli('Cli').help()
   },
   monit: {
-    description: 'Monitor Website or Service',
+    description: 'Monitor Applications and Services',
     action: async () => Odac.cli('Monitor').monit()
   },
   restart: {
