@@ -670,12 +670,12 @@ class Container {
             if (portHex) {
               const port = parseInt(portHex, 16)
 
-              // Filter out loopback addresses
-              // 00000000 = 0.0.0.0 (IPv4 Any)
-              // 00000000000000000000000000000000 = :: (IPv6 Any)
-              const isAny = ipHex === '00000000' || ipHex === '00000000000000000000000000000000'
+              // Filter out loopback addresses (127.0.0.1)
+              // 0100007F = 127.0.0.1 (IPv4 Loopback in Little Endian)
+              // 00000000000000000000000001000000 = ::1 (IPv6 Loopback)
+              const isLoopback = ipHex === '0100007F' || ipHex === '00000000000000000000000001000000'
 
-              if (isAny && port > 0 && port < 60000) {
+              if (!isLoopback && port > 0 && port < 60000) {
                 ports.add(port)
               }
             }
