@@ -194,6 +194,8 @@ class App {
         log('createFromRecipe: Starting app...')
         if (await this.#run(app.id)) {
           log('createFromRecipe: App started successfully')
+          // Notify Hub
+          Odac.server('Hub').trigger('app.list')
           return Odac.server('Api').result(true, __('App %s created successfully.', name))
         }
         throw new Error('Failed to start app container. Check logs for details.')
@@ -319,6 +321,9 @@ class App {
 
         this.#set(app.id, {status: 'running', started: Date.now()})
         log('createFromGit: App started successfully')
+
+        // Notify Hub
+        Odac.server('Hub').trigger('app.list')
 
         return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
       } catch (e) {
@@ -480,6 +485,9 @@ class App {
 
     await Odac.server('Container').remove(app.name)
 
+    // Notify Hub
+    Odac.server('Hub').trigger('app.list')
+
     return Odac.server('Api').result(true, __('App %s deleted successfully.', app.name))
   }
 
@@ -500,6 +508,8 @@ class App {
     // Start it again
     this.#set(id, {active: true})
     if (await this.#run(app.id)) {
+      // Notify Hub
+      Odac.server('Hub').trigger('app.list')
       return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
     }
 
@@ -507,7 +517,7 @@ class App {
   }
 
   // Status & Listing
-  async status() {
+  async list(detailed = false) {
     const apps = this.#loadAppsFromConfig()
     const container = Odac.server('Container')
 
@@ -523,26 +533,23 @@ class App {
       }
     }
 
-    return apps
-  }
-
-  async list() {
-    const apps = await this.status()
-
     if (apps.length === 0) {
       return Odac.server('Api').result(false, __('No apps found.'))
     }
 
-    const header = 'NAME'.padEnd(20) + 'TYPE'.padEnd(15) + 'STATUS'.padEnd(15) + 'UPTIME'
-    const separator = '-'.repeat(60)
+    if (detailed !== true) {
+      return Odac.server('Api').result(
+        true,
+        apps.map(app => ({
+          name: app.name,
+          image: app.image,
+          status: app.status,
+          uptime: app.uptime
+        }))
+      )
+    }
 
-    const rows = apps.map(app => {
-      const status = app.status || 'stopped'
-      const uptime = app.uptime || '-'
-      return app.name.padEnd(20) + app.type.padEnd(15) + status.padEnd(15) + uptime
-    })
-
-    return Odac.server('Api').result(true, [header, separator, ...rows].join('\n'))
+    return Odac.server('Api').result(true, apps)
   }
 
   // Private: App Data Management

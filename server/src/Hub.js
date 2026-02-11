@@ -8,18 +8,42 @@ const https = require('https')
 const System = require('./Hub/System')
 const {WebSocketClient, MessageSigner} = require('./Hub/WebSocket')
 
-const HUB_URL = 'https://hub.odac.run'
-const HUB_WS_URL = 'wss://hub.odac.run/ws'
-const CHECK_COUNTER_MAX = 3600
+const HUB_URL = process.env.ODAC_HUB_URL || 'https://hub.odac.run'
+const HUB_WS_URL = HUB_URL.replace(/^http/, 'ws') + '/ws'
 
 class Hub {
   #active = false
 
   constructor() {
     this.ws = new WebSocketClient()
-    this.checkCounter = 0
-    this.statsInterval = 60
-    this.handshakeInterval = 60
+
+    // Task Definitions
+    this.tasks = [
+      {
+        name: 'system.info',
+        fn: () => System.getSystemInfo(),
+        interval: 60 * 60 * 1000,
+        lastRun: 0
+      },
+      {
+        name: 'app.list',
+        fn: () => Odac.server('App').list(true),
+        interval: 30 * 60 * 1000,
+        lastRun: 0
+      },
+      {
+        name: 'domain.list',
+        fn: () => Odac.server('Domain').list(),
+        interval: 30 * 60 * 1000,
+        lastRun: 0
+      },
+      {
+        name: 'app.stats',
+        fn: () => this.getAppStats(),
+        interval: 60 * 1000,
+        lastRun: 0
+      }
+    ]
 
     this.agent = new https.Agent({
       rejectUnauthorized: true,
@@ -30,7 +54,11 @@ class Hub {
     })
 
     this.ws.setHandlers({
-      onConnect: () => this.sendInitialHandshake(),
+      onConnect: () => {
+        this.trigger('system.info')
+        this.trigger('app.list')
+        this.trigger('domain.list')
+      },
       onMessage: data => this.#handleMessage(data),
       onDisconnect: () => {}
     })
@@ -55,9 +83,6 @@ class Hub {
   check() {
     if (!this.#active) return
 
-    this.checkCounter++
-    if (this.checkCounter > CHECK_COUNTER_MAX) this.checkCounter = 1
-
     const hub = this.#getHubConfig()
     if (!hub?.token) return
 
@@ -66,8 +91,38 @@ class Hub {
       return
     }
 
-    if (this.checkCounter % this.statsInterval === 0) this.sendAppStats()
-    if (this.checkCounter % this.handshakeInterval === 0) this.sendInitialHandshake()
+    const now = Date.now()
+    for (const task of this.tasks) {
+      // Skip disabled tasks (interval is 0, false, null, undefined)
+      if (!task.interval || task.interval <= 0) continue
+
+      if (now - task.lastRun >= task.interval) {
+        task.lastRun = now
+        // Execute task without blocking the loop
+        this.#executeTask(task)
+      }
+    }
+  }
+
+  // Trigger a specific task manually (e.g. after an event)
+  async trigger(name) {
+    const task = this.tasks.find(t => t.name === name)
+    if (task) {
+      task.lastRun = Date.now() // Reset timer
+      await this.#executeTask(task)
+    }
+  }
+
+  async #executeTask(task) {
+    if (!this.ws.connected) return
+    try {
+      const data = await task.fn()
+      if (data !== undefined) {
+        this.#sendSignedMessage(task.name, data)
+      }
+    } catch (e) {
+      log(`Task ${task.name} error: ${e.message}`)
+    }
   }
 
   getSystemStatus() {
@@ -78,27 +133,9 @@ class Hub {
     return System.getLinuxDistro()
   }
 
-  // WebSocket Messages
-  async sendInitialHandshake() {
-    if (!this.ws.connected) return
-
-    const apps = await this.#getFormattedApps()
-    const system = System.getSystemInfo()
-
-    this.#sendSignedMessage('system.info', {system, apps})
-  }
-
-  sendWebSocketStatus() {
-    if (!this.ws.connected) return
-
-    const status = this.getSystemStatus()
-    this.#sendSignedMessage('status', status)
-  }
-
-  async sendAppStats() {
-    if (!this.ws.connected) return
-
-    const apps = await Odac.server('App').status()
+  async getAppStats() {
+    const res = await Odac.server('App').list(true)
+    const apps = res.result ? res.data : []
     const statsData = {}
 
     if (Array.isArray(apps)) {
@@ -110,7 +147,7 @@ class Hub {
       }
     }
 
-    this.#sendSignedMessage('app.stats', statsData)
+    return statsData
   }
 
   // HTTP API
@@ -232,8 +269,8 @@ class Hub {
       const result = await Odac.server('App').create(payload)
       this.#sendCommandResponse(command.requestId, result)
 
-      // Immediately update Hub with new app list
-      await this.sendInitialHandshake()
+      // Immediately trigger update
+      await this.trigger('app.list')
     } catch (e) {
       log('app.create failed: %s', e.message)
       this.#sendCommandResponse(command.requestId, {
@@ -261,10 +298,9 @@ class Hub {
       const result = await Odac.server('App').restart(target)
       this.#sendCommandResponse(command.requestId, result)
 
-      // Update Hub stats
-      await this.sendAppStats()
-      // Update Container List (New IDs, Status etc.)
-      await this.sendInitialHandshake()
+      // Update Hub stats & info
+      await this.trigger('app.stats')
+      await this.trigger('app.list')
     } catch (e) {
       log('app.restart failed: %s', e.message)
       this.#sendCommandResponse(command.requestId, {
@@ -291,8 +327,9 @@ class Hub {
       const result = await Odac.server('Domain').add(payload.domain, payload.appId)
       this.#sendCommandResponse(command.requestId, result)
 
-      // Immediately update Hub with new domain list/system info
-      await this.sendInitialHandshake()
+      // Immediately trigger update
+      await this.trigger('domain.list')
+      await this.trigger('system.info')
     } catch (e) {
       log('domain.add failed: %s', e.message)
       this.#sendCommandResponse(command.requestId, {
@@ -318,9 +355,6 @@ class Hub {
     return Odac.core('Config').config.hub
   }
 
-  async #getFormattedApps() {
-    return Odac.server('App').status()
-  }
   #sendSignedMessage(type, data) {
     const timestamp = Math.floor(Date.now() / 1000)
     const hub = this.#getHubConfig()
@@ -370,10 +404,24 @@ class Hub {
     }
 
     const {intervals} = payload
-    if (intervals?.stats) this.statsInterval = intervals.stats
-    if (intervals?.handshake) this.handshakeInterval = intervals.handshake
+    let updated = false
 
-    log('Configuration updated: stats=%ds, handshake=%ds', this.statsInterval, this.handshakeInterval)
+    for (const [key, value] of Object.entries(intervals)) {
+      if (value === undefined) continue
+
+      const task = this.tasks.find(t => t.name === key)
+      if (task) {
+        // If 0, false or null is sent, it will disable the task (interval = 0)
+        const newInterval = value ? value * 1000 : 0
+        if (task.interval !== newInterval) {
+          task.interval = newInterval
+          updated = true
+          log('Task interval updated: %s = %sms', key, newInterval)
+        }
+      }
+    }
+
+    if (updated) log('Configuration updated: intervals synced')
   }
 
   #validateSchema(data, schema) {

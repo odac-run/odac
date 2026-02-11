@@ -290,8 +290,12 @@ class Api {
     return this.#connections[id].write(JSON.stringify({process, status, message}) + '\r\n')
   }
 
-  result(result, message) {
-    return {result, message}
+  result(status, message, data) {
+    if (data === undefined && typeof message === 'object' && message !== null) {
+      data = message
+      message = null
+    }
+    return {result: status, message, data}
   }
 }
 
