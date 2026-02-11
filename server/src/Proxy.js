@@ -206,6 +206,8 @@ class OdacProxy {
   }
 
   async syncConfig(retryCount = 0) {
+    if (typeof log !== 'undefined') log('Proxy: syncConfig called (Retry: %d)', retryCount)
+
     if (typeof Odac === 'undefined') return
     if (!this.#proxyProcess) return
     if (!this.#proxySocketPath && !this.#proxyApiPort) return
@@ -257,6 +259,9 @@ class OdacProxy {
         if (typeof log !== 'undefined') log('Proxy: No port found for app %s (domain: %s)', app.name, domainName)
         continue
       }
+
+      if (typeof log !== 'undefined')
+        log('Proxy: Adding domain %s -> %s:%d (Container: %s)', domainName, app.name, port, useInternal ? 'Yes' : 'No')
 
       proxyDomains[domainName] = {
         domain: domainName,
