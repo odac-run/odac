@@ -297,7 +297,7 @@ class Container {
     const socketDir = Odac.server('Api').hostSocketDir
     if (socketDir) {
       const hostSocketDir = this.#resolveHostPath(socketDir)
-      bindings.push(`${hostSocketDir}:/run/odac:ro`)
+      bindings.push(`${hostSocketDir}:/odac:ro`)
     }
 
     if (extraBinds && Array.isArray(extraBinds)) {

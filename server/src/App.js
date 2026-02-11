@@ -353,15 +353,31 @@ class App {
       this.#saveApps()
     }
 
+    const env = {
+      ODAC_APP: 'true',
+      ...(app.env || {})
+    }
+
+    // API Permission Injection
+    if (app.api) {
+      const api = Odac.server('Api')
+      env.ODAC_API_KEY = api.generateAppToken(app.name, app.api)
+
+      // Mount API Socket
+      if (api.hostSocketDir) {
+        volumes.push({host: api.hostSocketDir, container: '/odac:ro'})
+        env.ODAC_API_SOCKET = '/odac/api.sock'
+      }
+    }
+
+    // Inject PORT
+    env.PORT = port.toString()
+
     await Odac.server('Container').runApp(app.name, {
       image: app.image,
       ports: [],
       volumes,
-      env: {
-        ODAC_APP: 'true',
-        PORT: port.toString(), // Inject PORT env var
-        ...(app.env || {})
-      }
+      env
     })
 
     // Runtime Port Discovery:
@@ -664,11 +680,25 @@ class App {
     const ext = path.extname(filename)
     const runner = SCRIPT_RUNNERS[ext] || SCRIPT_RUNNERS['.js']
 
+    const env = {ODAC_APP: 'true'}
+    const volumes = [{host: dir, container: '/app'}]
+
+    // API Permission Injection
+    if (app.api) {
+      const api = Odac.server('Api')
+      env.ODAC_API_KEY = api.generateAppToken(app.name, app.api)
+
+      if (api.hostSocketDir) {
+        volumes.push({host: api.hostSocketDir, container: '/odac:ro'})
+        env.ODAC_API_SOCKET = '/odac/api.sock'
+      }
+    }
+
     await Odac.server('Container').runApp(app.name, {
       image: runner.image,
       cmd: [runner.cmd, ...(runner.args || []), filename],
-      volumes: [{host: dir, container: '/app'}],
-      env: {ODAC_APP: 'true'}
+      volumes,
+      env
     })
   }
 
@@ -677,11 +707,25 @@ class App {
       throw new Error('Docker is not available via Container service.')
     }
 
+    const env = {...(app.env || {})}
+    const volumes = [...(app.volumes || [])]
+
+    // API Permission Injection
+    if (app.api) {
+      const api = Odac.server('Api')
+      env.ODAC_API_KEY = api.generateAppToken(app.name, app.api)
+
+      if (api.hostSocketDir) {
+        volumes.push({host: api.hostSocketDir, container: '/odac:ro'})
+        env.ODAC_API_SOCKET = '/odac/api.sock'
+      }
+    }
+
     await Odac.server('Container').runApp(app.name, {
       image: app.image,
       ports: app.ports,
-      volumes: app.volumes,
-      env: app.env
+      volumes,
+      env
     })
   }
 

@@ -690,4 +690,110 @@ describe('Api', () => {
       expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"message":"unauthorized"'))
     })
   })
+  describe('App Tokens & Permissions', () => {
+    let mockSocket
+    let dataHandler
+
+    beforeEach(() => {
+      const net = require('net')
+      const mockRootKey = 'mock-root-key-32-bytes-long-test-key'
+      global.Odac.core('Config').config.api = {auth: mockRootKey}
+
+      Api.init()
+      Api.start()
+
+      // Reset mockSocket
+      const connectionHandler = net.createServer.mock.calls[0][0]
+      mockSocket = {
+        remoteAddress: '127.0.0.1',
+        on: jest.fn(),
+        write: jest.fn(),
+        destroy: jest.fn()
+      }
+      connectionHandler(mockSocket)
+      dataHandler = mockSocket.on.mock.calls.find(call => call[0] === 'data')[1]
+    })
+
+    it('should generate and verify app tokens', () => {
+      const appName = 'test-app'
+      const permissions = ['mail.send']
+      const token = Api.generateAppToken(appName, permissions)
+
+      expect(token).toContain('.')
+      const payload = Api.verifyAppToken(token)
+
+      expect(payload).toBeDefined()
+      expect(payload.n).toBe(appName)
+      expect(payload.p).toEqual(permissions)
+    })
+
+    it('should reject tampered tokens', () => {
+      const appName = 'test-app'
+      const permissions = ['headers']
+      const token = Api.generateAppToken(appName, permissions)
+
+      const [b64, sig] = token.split('.')
+      // Tamper signature
+      const badToken = b64 + '.invalid_signature'
+
+      expect(Api.verifyAppToken(badToken)).toBeNull()
+    })
+
+    it('should allow authorized actions based on permissions', async () => {
+      const appName = 'mailer-app'
+      const permissions = ['mail.send']
+      const token = Api.generateAppToken(appName, permissions)
+
+      const mockMailService = global.Odac.server('Mail')
+      mockMailService.send.mockResolvedValue(Api.result(true, 'Sent'))
+
+      const payload = JSON.stringify({
+        auth: token,
+        action: 'mail.send',
+        data: ['to@val.com', 'Subject', 'Body']
+      })
+
+      await dataHandler(Buffer.from(payload))
+
+      expect(mockMailService.send).toHaveBeenCalled()
+      expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"result":true'))
+    })
+
+    it('should block unauthorized actions', async () => {
+      const appName = 'mailer-app'
+      const permissions = ['mail.send']
+      const token = Api.generateAppToken(appName, permissions)
+
+      // Try to restart an app (not allowed)
+      const payload = JSON.stringify({
+        auth: token,
+        action: 'app.restart',
+        data: ['other-app']
+      })
+
+      await dataHandler(Buffer.from(payload))
+
+      expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"message":"permission_denied"'))
+    })
+
+    it('should allow all actions if permission is true (wildcard)', async () => {
+      const appName = 'admin-app'
+      const permissions = true
+      const token = Api.generateAppToken(appName, permissions)
+
+      const mockAppService = global.Odac.server('App')
+      mockAppService.list.mockResolvedValue(Api.result(true, 'List'))
+
+      const payload = JSON.stringify({
+        auth: token,
+        action: 'app.list',
+        data: []
+      })
+
+      await dataHandler(Buffer.from(payload))
+
+      expect(mockAppService.list).toHaveBeenCalled()
+      expect(mockSocket.write).toHaveBeenCalledWith(expect.stringContaining('"result":true'))
+    })
+  })
 })

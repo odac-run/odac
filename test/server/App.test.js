@@ -48,7 +48,9 @@ describe('App', () => {
         }
         if (module === 'Api') {
           return {
-            result: jest.fn((success, message) => ({success, message}))
+            result: jest.fn((success, message) => ({success, message})),
+            generateAppToken: jest.fn(() => 'mock-app-token'),
+            hostSocketDir: '/tmp/odac-socket'
           }
         }
         // Legacy fallback or other modules
@@ -173,6 +175,42 @@ describe('App', () => {
 
       // Wait for first creation to finish
       await promise1
+    })
+  })
+
+  describe('api permission handling', () => {
+    test('should inject API token and socket when app has api permission', async () => {
+      mockConfig.apps = [
+        {
+          id: 101,
+          name: 'api-aware-app',
+          active: true,
+          type: 'container',
+          image: 'test:latest',
+          api: true
+        }
+      ]
+      mockConfig.app = {path: '/tmp/odac-test'}
+
+      mockRunApp.mockResolvedValue(true)
+
+      // Use check() to trigger run for the existing active app
+      await App.check()
+
+      // Check the arguments passed to Container.runApp
+      expect(mockRunApp).toHaveBeenCalled()
+      const args = mockRunApp.mock.calls[0][1] // Second arg is options object
+
+      // Verify Env Injection
+      expect(args.env).toBeDefined()
+      expect(args.env.ODAC_API_KEY).toBe('mock-app-token')
+      expect(args.env.ODAC_API_SOCKET).toBe('/odac/api.sock')
+
+      // Verify Volume Mount
+      expect(args.volumes).toBeDefined()
+      const socketMount = args.volumes.find(v => v.container === '/odac:ro')
+      expect(socketMount).toBeDefined()
+      expect(socketMount.host).toBe('/tmp/odac-socket')
     })
   })
 })

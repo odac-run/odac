@@ -61,6 +61,33 @@ class Api {
     return nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(domain).digest('hex')
   }
 
+  generateAppToken(appName, permissions) {
+    const payload = JSON.stringify({
+      n: appName,
+      p: permissions,
+      t: Date.now()
+    })
+    const signature = nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(payload).digest('hex')
+    return Buffer.from(payload).toString('base64') + '.' + signature
+  }
+
+  verifyAppToken(token) {
+    if (!token || !token.includes('.')) return null
+    const [b64, sig] = token.split('.')
+    if (!b64 || !sig) return null
+
+    const payloadStr = Buffer.from(b64, 'base64').toString()
+    const expectedSig = nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(payloadStr).digest('hex')
+
+    if (sig !== expectedSig) return null
+
+    try {
+      return JSON.parse(payloadStr)
+    } catch {
+      return null
+    }
+  }
+
   allow(ip) {
     this.#allowed.add(ip)
   }
@@ -108,13 +135,20 @@ class Api {
         // Auth Logic: Root vs Client
         let isRoot = false
         let clientDomain = null
+        let appPermissions = null
 
         if (auth === Odac.core('Config').config.api.auth) {
           isRoot = true
         } else if (this.#clientTokens.has(auth)) {
           clientDomain = this.#clientTokens.get(auth)
         } else {
-          return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
+          const appAuth = this.verifyAppToken(auth)
+          if (appAuth) {
+            clientDomain = appAuth.n // App Name as identifier
+            appPermissions = appAuth.p || []
+          } else {
+            return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
+          }
         }
 
         if (!action || !this.#commands[action]) {
@@ -123,10 +157,22 @@ class Api {
 
         // RBAC: Client restrictions
         if (!isRoot) {
-          // Allow only specific commands for containers
-          const allowed = ['mail.send']
-          if (!allowed.includes(action)) {
-            Odac.core('Log').warn('Api', `Blocked unauthorized action '${action}' from domain '${clientDomain}'`)
+          // 1. Client Domain (legacy/web) - Only mail.send allowed for now
+          // 2. App - check appPermissions
+          let allowed = false
+
+          if (appPermissions) {
+            // If app has explicit permission '*' or specific action
+            if (appPermissions === true || appPermissions.includes('*') || appPermissions.includes(action)) {
+              allowed = true
+            }
+          } else {
+            // Fallback for Domain tokens
+            if (['mail.send'].includes(action)) allowed = true
+          }
+
+          if (!allowed) {
+            Odac.core('Log').warn('Api', `Blocked unauthorized action '${action}' from '${clientDomain}'`)
             return socket.write(JSON.stringify({id, ...this.result(false, 'permission_denied')}))
           }
 
