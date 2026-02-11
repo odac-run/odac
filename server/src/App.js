@@ -381,7 +381,16 @@ class App {
 
       if (listeningPorts.length > 0) {
         // App has started listening!
-        if (!listeningPorts.includes(expectedPort)) {
+
+        // If expected port is found, we are matched and good to go.
+        if (listeningPorts.includes(expectedPort)) return
+
+        // If expected port is NOT found (but some other port is),
+        // we should not immediately jump to config update.
+        // It might be an ephemeral/debug port (like 45769) while the main port (3000) is starting.
+        // We give it 5 seconds (attempts < 5) to see if the expected port appears.
+        if (attempts >= 5) {
+          // Timeout reached, accept the random port
           // Prefer 80/8080/3000 if available in the list to avoid random ancillary ports
           const preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
 
@@ -391,8 +400,10 @@ class App {
 
           // Trigger Proxy Sync to apply new port
           Odac.server('Proxy').syncConfig()
+          return
         }
-        return
+
+        // Return fallthrough to setTimeout for retry
       }
     } catch {
       // Ignore errors during polling (container might not be ready yet)
