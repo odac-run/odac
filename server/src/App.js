@@ -370,32 +370,37 @@ class App {
     // let's verify if the app is actually listening there or somewhere else.
     // This handles apps that ignore PORT env var (like n8n, ComfyUI).
 
-    // Give app a moment to start
-    setTimeout(async () => {
-      try {
-        const container = Odac.server('Container')
-        const listeningPorts = await container.getListeningPorts(app.name)
+    this.#pollForPort(app, port)
+  }
 
-        if (listeningPorts.length === 0) return
+  async #pollForPort(app, expectedPort, attempts = 0) {
+    if (attempts >= 20) return // Give up after 20 seconds
 
-        const currentPort = port
+    try {
+      const container = Odac.server('Container')
+      const listeningPorts = await container.getListeningPorts(app.name)
 
-        // If current port is NOT in listening list, switch to the first available listening port
-        if (!listeningPorts.includes(currentPort)) {
+      if (listeningPorts.length > 0) {
+        // App has started listening!
+        if (!listeningPorts.includes(expectedPort)) {
           // Prefer 80/8080/3000 if available in the list to avoid random ancillary ports
           const preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
 
-          log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, currentPort)
+          log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, expectedPort)
           app.ports = [{container: preferred}]
           this.#saveApps()
 
           // Trigger Proxy Sync to apply new port
           Odac.server('Proxy').syncConfig()
         }
-      } catch (e) {
-        log('Auto-Discovery failed for %s: %s', app.name, e.message)
+        return
       }
-    }, 5000) // 5 seconds delay for app startup
+    } catch {
+      // Ignore errors during polling (container might not be ready yet)
+    }
+
+    // Retry after 1 second
+    setTimeout(() => this.#pollForPort(app, expectedPort, attempts + 1), 1000)
   }
 
   async stop(id) {

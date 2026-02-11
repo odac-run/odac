@@ -36,7 +36,6 @@ jest.mock('fs', () => mockFs)
 jest.mock('child_process', () => mockChildProcess)
 jest.mock('os', () => mockOs)
 jest.mock('axios', () => mockAxios)
-const path = require('path')
 const {mockOdac} = require('./__mocks__/globalOdac')
 
 describe('Proxy', () => {
