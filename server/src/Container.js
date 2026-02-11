@@ -356,6 +356,7 @@ class Container {
    * @param {Array} options.volumes - Array of volume mappings [{host: '/path', container: '/data'}]
    * @param {Object} options.env - Environment variables {KEY: 'VALUE'}
    * @param {Array} options.cmd - Command to run (optional)
+   * @param {string} options.user - User to run as (optional, e.g., 'root')
    */
   async runApp(name, options) {
     if (!this.available) return false
@@ -411,6 +412,10 @@ class Container {
 
       if (options.cmd) {
         containerConfig.Cmd = options.cmd
+      }
+
+      if (options.user) {
+        containerConfig.User = options.user
       }
 
       const container = await this.#docker.createContainer(containerConfig)

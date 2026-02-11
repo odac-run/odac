@@ -373,12 +373,23 @@ class App {
     // Inject PORT
     env.PORT = port.toString()
 
-    await Odac.server('Container').runApp(app.name, {
+    const runOptions = {
       image: app.image,
       ports: [],
       volumes,
       env
-    })
+    }
+
+    // Enterprise Security Exception:
+    // In Dev Mode, we mount the host directory which is owned by the host user/root.
+    // To prevent 'EACCES: permission denied' when the container tries to write (npm install, logs),
+    // we must run the container as root. This is acceptable for development environments.
+    if (app.dev) {
+      log('Active Dev Mode detected for %s. Forcing container to run as ROOT to handle volume permissions.', app.name)
+      runOptions.user = 'root'
+    }
+
+    await Odac.server('Container').runApp(app.name, runOptions)
 
     // Runtime Port Discovery:
     // If we relied on a default (3000) but didn't actually detect it from image,
