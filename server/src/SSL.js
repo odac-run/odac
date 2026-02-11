@@ -4,25 +4,70 @@ const acme = require('acme-client')
 const fs = require('fs')
 const os = require('os')
 const selfsigned = require('selfsigned')
+const nodeCrypto = require('crypto')
 
 class SSL {
   #checking = false
   #checked = {}
+  #processing = new Set()
+  #queued = new Set()
 
   async check() {
     if (this.#checking || !Odac.core('Config').config.domains) return
     this.#checking = true
     this.#self()
     for (const domain of Object.keys(Odac.core('Config').config.domains)) {
-      if (Odac.core('Config').config.domains[domain].cert === false) continue
-      if (
-        !Odac.core('Config').config.domains[domain].cert?.ssl ||
-        Date.now() + 1000 * 60 * 60 * 24 * 30 > Odac.core('Config').config.domains[domain].cert.ssl.expiry
-      )
+      const record = Odac.core('Config').config.domains[domain]
+      if (record.cert === false) continue
+
+      // Check Expiry
+      if (!record.cert?.ssl || Date.now() + 1000 * 60 * 60 * 24 * 30 > record.cert.ssl.expiry) {
         await this.#ssl(domain)
+        continue
+      }
+
+      // Check SAN Mismatch (Missing subdomains) - Run every 5 minutes
+      if (!this.#checked[domain]) this.#checked[domain] = {}
+      if ((this.#checked[domain].lastSanCheck || 0) + 1000 * 60 * 5 < Date.now()) {
+        this.#checked[domain].lastSanCheck = Date.now()
+        if (this.#checkSanMismatch(domain)) {
+          log('Detected missing subdomains in SSL certificate for %s. Queuing renewal.', domain)
+          await this.#ssl(domain)
+        }
+      }
     }
     this.#checking = false
-    this.#checking = false
+  }
+
+  // ... helper
+  #checkSanMismatch(domain) {
+    try {
+      const record = Odac.core('Config').config.domains[domain]
+      const certPath = record.cert?.ssl?.cert
+      if (!certPath || !fs.existsSync(certPath)) return true // Missing cert, needs generation
+
+      const certBuffer = fs.readFileSync(certPath)
+      const x509 = new nodeCrypto.X509Certificate(certBuffer)
+
+      // x509.subjectAltName returns string like "DNS:example.com, DNS:www.example.com"
+      const sanString = x509.subjectAltName || ''
+      const sans = sanString.split(',').map(s => s.trim().replace('DNS:', ''))
+
+      const expected = [domain]
+      if (record.subdomain) {
+        record.subdomain.forEach(sub => expected.push(sub + '.' + domain))
+      }
+
+      // Check if every expected domain is in SANs
+      const missing = expected.some(d => !sans.includes(d))
+      if (missing) {
+        log('SSL SAN Mismatch for %s. Expected: [%s], Found: [%s]', domain, expected.join(', '), sans.join(', '))
+        return true
+      }
+    } catch (e) {
+      error('Failed to parse certificate for SAN check for %s: %s', domain, e.message)
+    }
+    return false
   }
 
   renew(domain) {
@@ -65,7 +110,23 @@ class SSL {
   }
 
   async #ssl(domain) {
+    if (this.#processing.has(domain)) {
+      log('SSL generation for %s is already in progress. Queuing next run.', domain)
+      this.#queued.add(domain)
+      return
+    }
+
+    // If queued, we want to run immediately, so we ignore the interval check
+    // But if it's a standard check, we respect it.
+    // We can check if it was queued to bypass, but implicit is fine:
+    // If it was queued, it's called from finally block where we might want to reset interval?
+    // Actually, simply: if in queue, we assume "force update".
+    // But here we are entering the function. #queued was deleted before calling this recursively?
+    // Let's handle logic inside finally block carefully.
+
     if (this.#checked[domain]?.interval > Date.now()) return
+
+    this.#processing.add(domain)
 
     try {
       const accountPrivateKey = await acme.forge.createPrivateKey()
@@ -128,26 +189,58 @@ class SSL {
       this.#saveCertificate(domain, key, cert)
     } catch (err) {
       this.#handleSSLError(domain, err)
+    } finally {
+      this.#processing.delete(domain)
+      if (this.#queued.has(domain)) {
+        this.#queued.delete(domain)
+        // Clear collision/error interval to force retry because configuration changed (presumed, since it was queued)
+        delete this.#checked[domain]
+        log('Processing queued SSL generation for %s', domain)
+        this.#ssl(domain)
+      }
     }
   }
 
   #handleSSLError(domain, err) {
     if (!this.#checked[domain]) this.#checked[domain] = {error: 0}
-    if (this.#checked[domain].error < 5) {
-      this.#checked[domain].error = this.#checked[domain].error + 1
+    this.#checked[domain].error += 1
+
+    const errorCount = this.#checked[domain].error
+    let backoffMs = 1000 * 30 // Start with 30s
+    if (errorCount === 2) {
+      backoffMs = 1000 * 60 * 2 // 2m
+    } else if (errorCount === 3) {
+      backoffMs = 1000 * 60 * 10 // 10m
+    } else if (errorCount >= 4) {
+      backoffMs = 1000 * 60 * 30 // 30m
     }
-    this.#checked[domain].interval = this.#checked[domain].error * 1000 * 60 * 5 + Date.now()
+
+    this.#checked[domain].interval = Date.now() + backoffMs
 
     // More specific error handling
     if (err.message && err.message.includes('validateStatus')) {
       error(
-        'SSL certificate request failed due to HTTP validation error for domain %s. This may be due to network issues or ACME server problems.',
-        domain
+        'SSL certificate request failed for domain %s (Attempt %d). Next retry in %ds. Reason: HTTP validation error.',
+        domain,
+        errorCount,
+        backoffMs / 1000
       )
     } else if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      error('SSL certificate request failed due to network connectivity issues for domain %s: %s', domain, err.message)
+      error(
+        'SSL request failed for domain %s (Attempt %d). Next retry in %ds. Network issue: %s',
+        domain,
+        errorCount,
+        backoffMs / 1000,
+        err.message
+      )
     } else {
-      error('SSL certificate request failed for domain %s: %s', domain, err.message)
+      error(
+        'SSL request failed for domain %s (Attempt %d). Next retry in %ds. Error: %s',
+        domain,
+        errorCount,
+        backoffMs / 1000,
+        err.message
+      )
     }
   }
 
