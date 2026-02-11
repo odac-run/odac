@@ -71,7 +71,7 @@ describe('DNS Module', () => {
       get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
     }))
 
-    // Setup mock config with websites
+    // Setup mock config with domains
     mockConfig = {
       config: {
         dns: {
@@ -107,7 +107,7 @@ describe('DNS Module', () => {
             records: []
           }
         },
-        websites: {
+        domains: {
           'example.com': createMockWebsiteConfig('example.com'),
           'test.org': createMockWebsiteConfig('test.org')
         }
@@ -152,7 +152,7 @@ describe('DNS Module', () => {
       })
     })
 
-    it('should start DNS servers on port 53 when websites exist', async () => {
+    it('should start DNS servers on port 53 when domains exist', async () => {
       const dns = require('native-dns')
 
       DNS.init()
@@ -288,7 +288,7 @@ describe('DNS Module', () => {
       expect(typeof requestHandler).toBe('function')
     })
 
-    it('should not start servers when no websites are configured', () => {
+    it('should not start servers when no domains are configured', () => {
       const dns = require('native-dns')
       const udpServer = {on: jest.fn(), serve: jest.fn()}
       const tcpServer = {on: jest.fn(), serve: jest.fn()}
@@ -296,8 +296,8 @@ describe('DNS Module', () => {
       dns.createServer.mockReturnValue(udpServer)
       dns.createTCPServer.mockReturnValue(tcpServer)
 
-      // Clear websites config
-      mockConfig.config.websites = {}
+      // Clear domains config
+      global.Odac.core('Config').config.domains = {}
 
       DNS.init()
       DNS.start()
@@ -408,7 +408,7 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      expect(mockConfig.config.websites).not.toHaveProperty('nonexistent.com')
+      expect(mockConfig.config.domains).not.toHaveProperty('nonexistent.com')
     })
 
     it('should replace existing unique records by default', () => {
@@ -495,7 +495,7 @@ describe('DNS Module', () => {
       const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
       DNS.record(record)
 
-      expect(mockConfig.config.websites['example.com'].DNS).toBeDefined()
+      expect(mockConfig.config.domains['example.com']).toBeDefined()
       expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
         expect.objectContaining({
           name: 'example.com',
@@ -1335,7 +1335,7 @@ describe('DNS Module', () => {
 
       mockConfig = {
         config: {
-          websites: {
+          domains: {
             'example.com': createMockWebsiteConfig('example.com')
           }
         }
@@ -1517,7 +1517,7 @@ describe('port management and conflict resolution', () => {
 
     mockConfig = {
       config: {
-        websites: {
+        domains: {
           'example.com': createMockWebsiteConfig('example.com')
         }
       }
@@ -1861,7 +1861,7 @@ describe('alternative port and system DNS configuration', () => {
 
     mockConfig = {
       config: {
-        websites: {
+        domains: {
           'example.com': createMockWebsiteConfig('example.com')
         }
       }

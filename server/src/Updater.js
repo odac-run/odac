@@ -499,7 +499,7 @@ class Updater {
 
           // Stop Web service immediately - NEW's Web is proven to work
           try {
-            Odac.server('Web').stop()
+            Odac.server('Proxy').stop()
             log('Old Web stopped. Zero-downtime handover complete (overlap: ~3s).')
           } catch (e) {
             error('Failed to stop Web: %s', e.message)
@@ -548,7 +548,7 @@ class Updater {
 
     // Stop Web service now (was kept running during handover for zero-downtime)
     try {
-      Odac.server('Web').stop()
+      Odac.server('Proxy').stop()
       log('Web service stopped.')
     } catch (e) {
       error('Failed to stop Web: %s', e.message)

@@ -20,6 +20,8 @@ trigger: always_on
 - **Enterprise Mindset:** Solutions must be scalable and modular. Ask: "Will this implementation hold up if the codebase grows 10x?" Avoid temporary hacks.
 - **No Hardcoding / Environment Agnostic:** NEVER hardcode local paths, environment-specific directories (e.g., `/Users/...` or `/root/...`), or sensitive data. All configuration MUST come from Environment Variables or the `Config` provider. Temporary hardcoded fixes are strictly forbidden.
 - **Service Locators:** Always use the ODAC service locator patterns (`Odac.server('Name')`, `Odac.core('Name')`) to access cross-module singletons instead of using local `require` paths. This ensures access to initialized instances and prevents relative path errors.
+- **Zero-Config Philosophy:** The system must infer as much configuration as possible (e.g., auto-detecting ports from Docker images). Do not ask the user for configuration unless absolutely necessary. Defaults should be intelligent and production-ready.
+- **Native Builder:** Use the internal `Container/Builder` class for building Docker images. DO NOT use Nixpacks or external builders. The project has its own optimized build pipeline.
 
 
 ## Project Context

@@ -7,19 +7,18 @@ const {execFile} = require('child_process')
 
 class Monitor {
   #current = ''
-  #domains = []
   #height
   #logs = {content: [], mtime: null, selected: null, watched: [], lastFetch: 0}
   #logging = false
-  #modules = ['api', 'app', 'config', 'container', 'dns', 'hub', 'mail', 'proxy', 'server', 'ssl', 'subdomain', 'updater', 'web']
+  #modules = ['api', 'app', 'config', 'container', 'dns', 'hub', 'mail', 'proxy', 'server', 'ssl', 'updater']
   #printing = false
   #selected = 0
   #apps = []
   #maxStatsLen = {cpu: 0, mem: 0}
   #watch = []
-  #websites = {}
   #width
   #stats = {}
+  #lineToAppIndex = []
 
   constructor() {
     process.stdout.write(process.platform === 'win32' ? `title ODAC Debug\n` : `\x1b]2;ODAC Debug\x1b\x5c`)
@@ -167,19 +166,11 @@ class Monitor {
     this.#logs.selected = this.#selected
     let file = null
 
-    const domainsCount = this.#domains.length
     const appsCount = this.#apps.length
 
-    if (this.#selected < domainsCount) {
-      const domain = this.#domains[this.#selected]
-      if (this.#websites[domain]?.container) {
-        this.#fetchDockerLogs(this.#websites[domain].container)
-        return
-      }
-      file = os.homedir() + '/.odac/logs/' + domain + '.log'
-    } else if (this.#selected < domainsCount + appsCount) {
+    if (this.#selected < appsCount) {
       // Apps are now all containers
-      const app = this.#apps[this.#selected - domainsCount]
+      const app = this.#apps[this.#selected]
       if (app && app.name) {
         this.#fetchDockerLogs(app.name)
         return
@@ -379,7 +370,7 @@ class Monitor {
     process.stdin.on('data', chunk => {
       const buffer = Buffer.from(chunk)
 
-      const totalItems = this.#domains.length + this.#apps.length
+      const totalItems = this.#apps.length
 
       if (buffer.length >= 6 && buffer[0] === 0x1b && buffer[1] === 0x5b && buffer[2] === 0x4d) {
         // Mouse wheel up
@@ -407,26 +398,10 @@ class Monitor {
             if (c1 % 1 != 0) c1 = Math.floor(c1)
             if (c1 > 50) c1 = 50
             if (x > 1 && x < c1 && y < this.#height - 4) {
-              const clickedIndex = y - 2
-              let targetIndex = -1
-              let currentLine = 0
-
-              if (this.#domains.length > 0) {
-                if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#domains.length) {
-                  targetIndex = clickedIndex - currentLine
-                }
-                currentLine += this.#domains.length
-                if (this.#apps.length > 0) currentLine++
-              }
-
-              if (targetIndex === -1 && this.#apps.length > 0) {
-                if (clickedIndex >= currentLine && clickedIndex < currentLine + this.#apps.length) {
-                  targetIndex = this.#domains.length + (clickedIndex - currentLine)
-                }
-              }
-
-              if (targetIndex !== -1) {
-                this.#selected = targetIndex
+              const clickedLine = y - 2
+              const appIndex = this.#lineToAppIndex[clickedLine]
+              if (appIndex !== undefined) {
+                this.#selected = appIndex
                 this.#monitor()
               }
             }
@@ -452,7 +427,7 @@ class Monitor {
       // Up/Down arrow keys
       if (buffer.length === 3 && buffer[0] === 27 && buffer[1] === 91) {
         if (buffer[2] === 65 && this.#selected > 0) this.#selected-- // up
-        if (buffer[2] === 66 && this.#selected + 1 < totalItems) this.#selected++ // down
+        if (buffer[2] === 66 && this.#selected + 1 < this.#apps.length) this.#selected++ // down
         this.#monitor()
       }
       process.stdout.write('\x1b[?25l')
@@ -492,15 +467,10 @@ class Monitor {
     return this.#logs.content[index - offset] || ' '
   }
   #getSelectedItem() {
-    const domainsCount = this.#domains.length
     const appsCount = this.#apps.length
 
-    if (this.#selected < domainsCount) {
-      const name = this.#domains[this.#selected]
-      const container = this.#websites[name]?.container || name
-      return {type: 'website', name, container}
-    } else if (this.#selected < domainsCount + appsCount) {
-      const index = this.#selected - domainsCount
+    if (this.#selected < appsCount) {
+      const index = this.#selected
       const app = this.#apps[index]
       if (app) {
         return {type: 'app', name: app.name, container: app.name}
@@ -599,46 +569,56 @@ class Monitor {
   #monitor() {
     if (this.#printing) return
     this.#printing = true
-    this.#websites = Odac.core('Config').config.websites ?? {}
-    this.#apps = Odac.core('Config').config.apps ?? []
+    const config = Odac.core('Config').config
+    const apps = config.apps ?? []
+    const domains = config.domains ?? {}
 
-    this.#domains = Object.keys(this.#websites)
+    const appToDomains = {}
+    for (const [name, conf] of Object.entries(domains)) {
+      if (conf.appId) {
+        if (!appToDomains[conf.appId]) appToDomains[conf.appId] = []
+        appToDomains[conf.appId].push(name)
+      }
+    }
+
+    const publicApps = apps
+      .filter(app => appToDomains[app.id] || appToDomains[app.name])
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    const internalApps = apps
+      .filter(app => !appToDomains[app.id] && !appToDomains[app.name])
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+
+    this.#apps = [...publicApps, ...internalApps]
+
+    let mainTitle = __('Apps')
+    if (publicApps.length > 0 && internalApps.length > 0) mainTitle = __('Public')
 
     this.#width = process.stdout.columns - 3
     this.#height = process.stdout.rows
     this.#load()
+    this.#lineToAppIndex = []
     let c1 = (this.#width / 12) * 3
     if (c1 % 1 != 0) c1 = Math.floor(c1)
     if (c1 > 50) c1 = 50
 
     const ctx = {renderedLines: 0, globalIndex: 0}
 
-    let result = this.#renderHeader(c1)
-    result += this.#renderWebsites(c1, ctx)
-    result += this.#renderAppsSeparator(c1, ctx)
-    result += this.#renderApps(c1, ctx)
+    let result = this.#renderHeader(c1, mainTitle)
+    result += this.#renderApps(c1, ctx, publicApps.length)
     result += this.#renderEmptyLines(c1, ctx)
     result += this.#renderFooter(c1)
 
     this.#finalizeRender(result)
   }
 
-  #renderHeader(c1) {
+  #renderHeader(c1, titleText) {
     let result = ''
     result += Odac.cli('Cli').color('┌', 'gray')
-
-    if (this.#domains.length) {
-      result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
-      let title = Odac.cli('Cli').color(__('Websites'), null)
+    if (this.#apps.length) {
+      result += Odac.cli('Cli').color('─'.repeat(1), 'gray')
+      let title = Odac.cli('Cli').color(titleText, null)
       result += ' ' + Odac.cli('Cli').color(title) + ' '
-      result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-    } else if (this.#apps.length) {
-      result += Odac.cli('Cli').color('─'.repeat(this.#apps.length ? 5 : c1), 'gray')
-      if (this.#apps.length) {
-        let title = Odac.cli('Cli').color(__('Apps'), null)
-        result += ' ' + Odac.cli('Cli').color(title) + ' '
-        result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-      }
+      result += Odac.cli('Cli').color('─'.repeat(c1 - titleText.length - 3), 'gray')
     } else {
       result += Odac.cli('Cli').color('─'.repeat(c1), 'gray')
     }
@@ -649,80 +629,34 @@ class Monitor {
     return result
   }
 
-  #renderWebsites(c1, ctx) {
+  #renderApps(c1, ctx, publicCount) {
     let result = ''
-    for (let i = 0; i < this.#domains.length; i++) {
-      if (ctx.renderedLines >= this.#height - 4) break
+    let shownInternalHeader = false
 
-      let stats = ''
-      const containerName = this.#websites[this.#domains[i]].container || this.#domains[i]
-      if (this.#stats[containerName]) {
-        const s = this.#stats[containerName]
-        stats = `[${s.mem.padEnd(this.#maxStatsLen.mem, ' ')}| ${s.cpu.padStart(this.#maxStatsLen.cpu, ' ')}]`
-      }
-
-      result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(this.#websites[this.#domains[i]].status ?? null, ctx.globalIndex == this.#selected)
-
-      const name = this.#domains[i] || ''
-      const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length)) // -5 for icon + padding
-      let display = name.length > maxLen ? name.substr(0, maxLen) : name
-      display = display.padEnd(maxLen, ' ')
-
-      result += Odac.cli('Cli').color(
-        display,
-        ctx.globalIndex == this.#selected ? 'blue' : 'white',
-        ctx.globalIndex == this.#selected ? 'white' : null,
-        ctx.globalIndex == this.#selected ? 'bold' : null
-      )
-
-      const statsColor = ctx.globalIndex == this.#selected ? 'blue' : 'cyan'
-      if (stats) result += Odac.cli('Cli').color(stats, statsColor, ctx.globalIndex == this.#selected ? 'white' : null)
-      result += Odac.cli('Cli').color(' ', 'white', ctx.globalIndex == this.#selected ? 'white' : null)
-
-      result += Odac.cli('Cli').color(' │', 'gray')
-
-      result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
-      result += Odac.cli('Cli').color('│\n', 'gray')
-
-      ctx.globalIndex++
-      ctx.renderedLines++
-    }
-    return result
-  }
-
-  #renderAppsSeparator(c1, ctx) {
-    let result = ''
-    if (this.#apps.length > 0 && this.#domains.length > 0) {
-      if (ctx.renderedLines < this.#height - 4) {
-        result += Odac.cli('Cli').color(this.#domains.length > 0 ? '├' : '│', 'gray')
-        result += Odac.cli('Cli').color('─'.repeat(5), 'gray')
-        let title = Odac.cli('Cli').color(__('Apps'), null)
-        result += ' ' + Odac.cli('Cli').color(title) + ' '
-        result += Odac.cli('Cli').color('─'.repeat(c1 - title.length - 7), 'gray')
-        result += Odac.cli('Cli').color(this.#domains.length > 0 ? '┤' : '│', 'gray')
-        result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
-        result += Odac.cli('Cli').color('│\n', 'gray')
-        ctx.renderedLines++
-      }
-    }
-    return result
-  }
-
-  #renderApps(c1, ctx) {
-    let result = ''
     for (let i = 0; i < this.#apps.length; i++) {
       if (ctx.renderedLines >= this.#height - 4) break
 
+      const isPublic = i < publicCount
+
+      if (!isPublic && publicCount > 0 && !shownInternalHeader) {
+        result += this.#renderGroupHeader(c1, ctx, __('Internal'))
+        shownInternalHeader = true
+      }
+
+      if (ctx.renderedLines >= this.#height - 4) break
+
+      this.#lineToAppIndex[ctx.renderedLines] = ctx.globalIndex
+
       let stats = ''
-      const appName = this.#apps[i].name
+      const app = this.#apps[i]
+      const appName = app.name
       if (this.#stats[appName]) {
         const s = this.#stats[appName]
         stats = `[${s.mem.padEnd(this.#maxStatsLen.mem, ' ')}| ${s.cpu.padStart(this.#maxStatsLen.cpu, ' ')}]`
       }
 
       result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(this.#apps[i].status ?? null, ctx.globalIndex == this.#selected)
+      result += Odac.cli('Cli').icon(app.status ?? null, ctx.globalIndex == this.#selected)
 
       const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length))
       let display = appName.length > maxLen ? appName.substr(0, maxLen) : appName
@@ -746,6 +680,25 @@ class Monitor {
       ctx.globalIndex++
       ctx.renderedLines++
     }
+    return result
+  }
+
+  #renderGroupHeader(c1, ctx, titleText) {
+    if (ctx.renderedLines >= this.#height - 4) return ''
+    let result = ''
+    result += Odac.cli('Cli').color('│', 'gray')
+
+    result += Odac.cli('Cli').color('─'.repeat(1), 'gray')
+    let title = Odac.cli('Cli').color(titleText, null)
+    result += ' ' + Odac.cli('Cli').color(title) + ' '
+    const padding = Math.max(0, c1 - titleText.length - 3)
+    result += Odac.cli('Cli').color('─'.repeat(padding), 'gray')
+
+    result += Odac.cli('Cli').color('│', 'gray')
+    result += this.#safeLog(this.#getLogLine(ctx.renderedLines), this.#width - c1)
+    result += Odac.cli('Cli').color('│\n', 'gray')
+
+    ctx.renderedLines++
     return result
   }
 

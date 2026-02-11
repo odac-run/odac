@@ -208,6 +208,7 @@ class Cli {
   async #status() {
     let status = {
       online: false,
+      domains: 0,
       apps: 0,
       auth: false,
       uptime: 0
@@ -227,15 +228,16 @@ class Cli {
     if (minutes && !days) uptimeString += minutes + 'm '
     if (seconds && !hours) uptimeString += seconds + 's'
     status.uptime = uptimeString
+    const domains = Odac.core('Config').config.domains
+    status.domains = domains ? Object.keys(domains).length : 0
     const apps = Odac.core('Config').config.apps
     status.apps = Array.isArray(apps) ? apps.length : 0
-    status.websites = Odac.core('Config').config.websites ? Object.keys(Odac.core('Config').config.websites).length : 0
     status.auth = Odac.server('Hub').isAuthenticated()
     var args = process.argv.slice(2)
     if (args.length == 0) {
       let length = 0
       for (let i = 0; i < 2; i++) {
-        for (let iterator of ['Status', 'Uptime', 'Websites', 'Apps', 'Auth']) {
+        for (let iterator of ['Status', 'Uptime', 'Apps', 'Domains', 'Auth']) {
           let title = __(iterator)
           if (title.length > length) length = title.length
           if (i) {
@@ -248,11 +250,11 @@ class Cli {
               case 'Uptime':
                 if (status.online) console.log(title + space + ' : ' + '\x1b[32m ' + status.uptime + '\x1b[0m')
                 break
-              case 'Websites':
-                if (status.online) console.log(title + space + ' : ' + '\x1b[32m ' + status.websites + '\x1b[0m')
-                break
               case 'Apps':
                 if (status.online) console.log(title + space + ' : ' + '\x1b[32m ' + status.apps + '\x1b[0m')
+                break
+              case 'Domains':
+                if (status.online) console.log(title + space + ' : ' + '\x1b[32m ' + status.domains + '\x1b[0m')
                 break
               case 'Auth':
                 console.log(

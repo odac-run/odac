@@ -176,17 +176,17 @@ class SSL {
       domains[domain] = domainRecord
       Odac.core('Config').config.domains = domains
 
-      // Clear caches if services are available
-      try {
-        if (Odac.server('Web')) Odac.server('Web').clearSSLCache(domain)
-      } catch {
-        // Ignore error
-      }
-
       try {
         if (Odac.server('Mail')) Odac.server('Mail').clearSSLCache(domain)
       } catch {
         // Ignore error
+      }
+
+      // Sync proxy config to reload SSL certificates
+      try {
+        if (Odac.server('Proxy')) Odac.server('Proxy').syncConfig()
+      } catch (e) {
+        error('Failed to sync proxy config after SSL update: %s', e.message)
       }
 
       log('SSL certificate successfully generated and saved for domain %s', domain)

@@ -214,7 +214,7 @@ class App {
   }
 
   async #createFromGit(config) {
-    const {url, token, branch, name, dev = false, env = {}} = config
+    const {url, token, branch, name, dev = false, env = {}, port = 3000} = config
 
     log('createFromGit: Starting git deployment')
     log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
@@ -274,10 +274,24 @@ class App {
         await Odac.server('Container').cloneRepo(url, branch, appDir, token)
         log('createFromGit: Clone successful')
 
-        // Step 2: Build with Nixpacks
+        // Step 2: Build with Native Builder
         log('createFromGit: Building image...')
         await Odac.server('Container').build(appDir, imageName)
         log('createFromGit: Build successful')
+
+        // Auto-detect port from Image EXPOSE if not manually specified
+        let detectedPort = port
+        if (!config.port) {
+          try {
+            const exposed = await Odac.server('Container').getImageExposedPorts(imageName)
+            if (exposed && exposed.length > 0) {
+              detectedPort = exposed[0]
+              log('createFromGit: Auto-detected port from image: %d', detectedPort)
+            }
+          } catch (e) {
+            log('createFromGit: Failed to detect port from image: %s', e.message)
+          }
+        }
 
         // Step 3: Create app record
         const app = {
@@ -288,6 +302,8 @@ class App {
           branch,
           image: imageName,
           env,
+          // Store internal port for Proxy routing (Metadata only, does not expose to host)
+          ports: [{container: parseInt(detectedPort)}],
           dev,
           active: true,
           created: Date.now(),
@@ -325,12 +341,65 @@ class App {
       volumes.push({host: appDir, container: '/app'})
     }
 
+    // Safety check for legacy apps without ports config
+    let port = 3000
+    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
+      port = app.ports[0].container
+    } else {
+      // Legacy fix: If no port in config, assume 3000 and SAVE IT
+      // so Proxy service can see it immediately
+      log('Legacy App Fix: Assigning default port 3000 to app %s', app.name)
+      app.ports = [{container: 3000}]
+      this.#saveApps()
+    }
+
     await Odac.server('Container').runApp(app.name, {
       image: app.image,
       ports: [],
       volumes,
-      env: app.env || {}
+      env: {
+        ODAC_APP: 'true',
+        PORT: port.toString(), // Inject PORT env var
+        ...(app.env || {})
+      }
     })
+
+    // Runtime Port Discovery:
+    // If we relied on a default (3000) but didn't actually detect it from image,
+    // let's verify if the app is actually listening there or somewhere else.
+    // This handles apps that ignore PORT env var (like n8n, ComfyUI).
+
+    this.#pollForPort(app, port)
+  }
+
+  async #pollForPort(app, expectedPort, attempts = 0) {
+    if (attempts >= 20) return // Give up after 20 seconds
+
+    try {
+      const container = Odac.server('Container')
+      const listeningPorts = await container.getListeningPorts(app.name)
+
+      if (listeningPorts.length > 0) {
+        // App has started listening!
+        if (!listeningPorts.includes(expectedPort)) {
+          // Prefer 80/8080/3000 if available in the list to avoid random ancillary ports
+          const preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
+
+          log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, expectedPort)
+          app.ports = [{container: preferred}]
+          this.#saveApps()
+
+          // Trigger Proxy Sync to apply new port
+          Odac.server('Proxy').syncConfig()
+        }
+        return
+      }
+    } catch {
+      // Ignore errors during polling (container might not be ready yet)
+    }
+
+    // Retry after 1 second
+    setTimeout(() => this.#pollForPort(app, expectedPort, attempts + 1), 1000)
   }
 
   async stop(id) {

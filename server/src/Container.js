@@ -620,6 +620,86 @@ class Container {
   }
 
   /**
+   * Retrieves ExposedPorts from image configuration
+   * @param {string} imageName
+   * @returns {Promise<number[]>} Array of exposed ports
+   */
+  async getImageExposedPorts(imageName) {
+    if (!this.available) return []
+    try {
+      const image = this.#docker.getImage(imageName)
+      const data = await image.inspect()
+      const exposed = data.Config.ExposedPorts || {}
+      return Object.keys(exposed)
+        .map(p => parseInt(p.split('/')[0]))
+        .filter(p => !isNaN(p))
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to inspect image ${imageName}: ${err.message}`)
+      }
+      return []
+    }
+  }
+
+  /**
+   * Detects actively listening ports inside the container by reading /proc/net/tcp
+   * This is much faster and reliable than port scanning.
+   * works on all linux containers (alpine, debian etc)
+   * @param {string} name - Container name
+   * @returns {Promise<number[]>} Array of listening ports
+   */
+  async getListeningPorts(name) {
+    if (!this.available) return []
+    try {
+      const ports = new Set()
+
+      // Helper to parse proc file content
+      const parseProc = output => {
+        const lines = output.split('\n').filter(l => l.trim().length > 0)
+        for (let i = 1; i < lines.length; i++) {
+          const parts = lines[i].trim().split(/\s+/)
+          if (parts.length < 4) continue
+
+          const localAddress = parts[1]
+          const state = parts[3]
+
+          if (state === '0A') {
+            const portHex = localAddress.split(':')[1]
+            const ipHex = localAddress.split(':')[0]
+
+            if (portHex) {
+              const port = parseInt(portHex, 16)
+
+              // Filter out loopback addresses (127.0.0.1)
+              // 0100007F = 127.0.0.1 (IPv4 Loopback in Little Endian)
+              // 00000000000000000000000001000000 = ::1 (IPv6 Loopback)
+              const isLoopback = ipHex === '0100007F' || ipHex === '00000000000000000000000001000000'
+
+              if (!isLoopback && port > 0 && port < 60000) {
+                ports.add(port)
+              }
+            }
+          }
+        }
+      }
+
+      // Read both IPv4 and IPv6 tables
+      // Some apps bind only to IPv6 (::) which covers IPv4 too
+      const [tcp4, tcp6] = await Promise.all([
+        this.execInContainer(name, 'cat /proc/net/tcp').catch(() => ''),
+        this.execInContainer(name, 'cat /proc/net/tcp6').catch(() => '')
+      ])
+
+      if (tcp4) parseProc(tcp4)
+      if (tcp6) parseProc(tcp6)
+
+      return Array.from(ports)
+    } catch {
+      return []
+    }
+  }
+
+  /**
    * Returns the Docker instance
    */
   get docker() {

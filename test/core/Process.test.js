@@ -87,7 +87,7 @@ describe('Process', () => {
             watchdog: 100,
             pid: 200
           },
-          websites: {
+          domains: {
             'example.com': {pid: 301},
             'test.com': {pid: 302}
           },
@@ -115,7 +115,7 @@ describe('Process', () => {
           server: {
             pid: 200
           },
-          websites: {
+          domains: {
             'example.com': {pid: 301}
           },
           services: []
@@ -133,7 +133,7 @@ describe('Process', () => {
       global.Odac.core = () => ({
         config: {
           server: {},
-          websites: {},
+          domains: {},
           services: []
         }
       })

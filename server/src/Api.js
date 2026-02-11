@@ -35,10 +35,7 @@ class Api {
     'mail.password': (...args) => Odac.server('Mail').password(...args),
     'mail.send': (...args) => Odac.server('Mail').send(...args),
     'server.stop': () => Odac.server('Server').stop(),
-    'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
-    'web.create': (...args) => Odac.server('Web').create(...args),
-    'web.delete': (...args) => Odac.server('Web').delete(...args),
-    'web.list': (...args) => Odac.server('Web').list(...args)
+    'ssl.renew': (...args) => Odac.server('SSL').renew(...args)
   }
   #connections = {}
   #allowed = new Set()
@@ -79,7 +76,7 @@ class Api {
       Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
     }
 
-    // Pre-load all existing website tokens for O(1) lookup
+    // Pre-load all existing domain tokens for O(1) lookup
     this.reloadTokens()
 
     const handleConnection = (socket, skipIpCheck = false) => {
@@ -236,8 +233,8 @@ class Api {
 
   reloadTokens() {
     this.#clientTokens.clear()
-    const websites = Odac.core('Config').config.websites || {}
-    for (const domain in websites) {
+    const domains = Odac.core('Config').config.domains || {}
+    for (const domain in domains) {
       this.addToken(domain)
     }
   }

@@ -29,8 +29,7 @@ class Config {
     mail: ['mail'],
     server: ['server'],
     service: ['services'],
-    ssl: ['ssl'],
-    web: ['websites', 'web']
+    ssl: ['ssl']
   }
 
   // Initialize default configuration for module keys
@@ -44,8 +43,6 @@ class Config {
             started: null,
             watchdog: null
           }
-        } else if (key === 'websites') {
-          config[key] = {}
         } else if (key === 'apps') {
           config[key] = []
         } else if (key === 'domains') {

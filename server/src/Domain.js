@@ -119,6 +119,13 @@ class Domain {
             error('Failed to trigger SSL renew for %s: %s', parentDomain, e.message)
           }
 
+          // Sync proxy config (if subdomain added)
+          try {
+            Odac.server('Proxy').syncConfig()
+          } catch (err) {
+            error('Proxy sync failed: %s', err.message)
+          }
+
           return Odac.server('Api').result(true, __('Added %s as a subdomain of %s.', domain, parentDomain))
         }
 
@@ -196,6 +203,14 @@ class Domain {
     }
 
     log('Domain %s added to app %s', domain, targetApp.name)
+
+    // Sync proxy config to apply changes immediately
+    try {
+      Odac.server('Proxy').syncConfig()
+    } catch (e) {
+      error('Failed to sync proxy config: %s', e.message)
+    }
+
     return Odac.server('Api').result(true, __('Domain %s added to app %s.', domain, targetApp.name))
   }
 
@@ -252,6 +267,14 @@ class Domain {
       Odac.core('Config').config.domains = domains
 
       log('Domain %s deleted (was assigned to app %s)', domain, domainRecord.appId)
+
+      // Sync proxy config
+      try {
+        Odac.server('Proxy').syncConfig()
+      } catch (e) {
+        error('Failed to sync proxy config: %s', e.message)
+      }
+
       return Odac.server('Api').result(true, __('Domain %s deleted successfully.', domain))
     }
 
@@ -283,6 +306,13 @@ class Domain {
             Odac.server('SSL').renew(parentDomain)
           } catch (e) {
             error('Failed to trigger SSL renew for %s: %s', parentDomain, e.message)
+          }
+
+          // Sync proxy config (if subdomain removed)
+          try {
+            Odac.server('Proxy').syncConfig()
+          } catch (err) {
+            error('Proxy sync failed: %s', err.message)
           }
 
           return Odac.server('Api').result(true, __('Subdomain %s removed from %s.', sub, parentDomain))
