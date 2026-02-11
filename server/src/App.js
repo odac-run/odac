@@ -624,6 +624,11 @@ class App {
       }
 
       this.#set(id, {status: 'running', started: Date.now()})
+
+      // Trigger Proxy Sync after every successful start/restart.
+      // Container IP changes on restart; without this, Proxy routes to the old (dead) IP -> 502
+      Odac.server('Proxy').syncConfig()
+
       return true
     } catch (err) {
       error('Failed to start app %s: %s', app.name, err.message)
