@@ -351,7 +351,6 @@ class App {
       log('Legacy App Fix: Assigning default port 3000 to app %s', app.name)
       app.ports = [{container: 3000}]
       this.#saveApps()
-      port = 3000
     }
 
     await Odac.server('Container').runApp(app.name, {
