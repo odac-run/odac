@@ -81,16 +81,6 @@ describe('Proxy', () => {
     delete global.__
   })
 
-  describe('initialization', () => {
-    test('should initialize and set default web path if missing', async () => {
-      mockConfig.config.web = {}
-      mockFs.existsSync.mockReturnValue(false) // Force default path logic
-
-      await ProxyService.init()
-      expect(mockConfig.config.web.path).toBe('/var/odac/')
-    })
-  })
-
   describe('proxy management', () => {
     test('should spawn proxy process if not running', () => {
       mockFs.readFileSync.mockImplementation(() => {
@@ -128,8 +118,8 @@ describe('Proxy', () => {
   })
 
   describe('lifecycle', () => {
-    test('should spawn proxy in check if loaded', async () => {
-      await ProxyService.init()
+    test('should spawn proxy in check if active', async () => {
+      ProxyService.start()
       mockFs.readFileSync.mockImplementation(() => {
         throw {code: 'ENOENT'}
       })
@@ -138,7 +128,7 @@ describe('Proxy', () => {
       expect(mockChildProcess.spawn).toHaveBeenCalled()
     })
 
-    test('should not spawn proxy in check if not loaded', () => {
+    test('should not spawn proxy in check if not active', () => {
       ProxyService.check()
       expect(mockChildProcess.spawn).not.toHaveBeenCalled()
     })

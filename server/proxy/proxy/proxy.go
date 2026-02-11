@@ -87,7 +87,7 @@ func (bufferPool) Put(buf []byte) {
 }
 
 type Proxy struct {
-	websites     map[string]config.Website
+	domains      map[string]config.Website
 	sslCache     map[string]*tls.Certificate
 	ocspCache    map[string]*ocspCacheEntry // OCSP response cache
 	globalSSL    *config.SSL
@@ -104,7 +104,7 @@ type ocspCacheEntry struct {
 
 func NewProxy() *Proxy {
 	p := &Proxy{
-		websites:  make(map[string]config.Website),
+		domains:   make(map[string]config.Website),
 		sslCache:  make(map[string]*tls.Certificate),
 		ocspCache: make(map[string]*ocspCacheEntry),
 		httpClient: &http.Client{
@@ -165,10 +165,10 @@ func NewProxy() *Proxy {
 	return p
 }
 
-func (p *Proxy) UpdateConfig(websites map[string]config.Website, globalSSL *config.SSL) {
+func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.websites = websites
+	p.domains = domains
 	p.globalSSL = globalSSL
 	p.sslCache = make(map[string]*tls.Certificate)
 	p.ocspCache = make(map[string]*ocspCacheEntry) // Clear OCSP cache on config update
@@ -198,23 +198,30 @@ func (p *Proxy) director(req *http.Request) {
 	}
 
 	p.mu.RLock()
-	website, exists := p.resolveWebsite(host)
+	website, exists := p.resolveDomain(host)
 	p.mu.RUnlock()
 
 	if !exists {
 		return
 	}
 
-	targetIP := "127.0.0.1"
+	targetHost := "127.0.0.1"
 	targetPort := strconv.Itoa(website.Port)
 
+	// If we have an explicit container name (sent by Node.js only when internal networking is required)
+	// we use it as the hostname.
+	if website.Container != "" {
+		targetHost = website.Container
+	}
+
+	// Legacy / Direct IP Mode
 	if website.ContainerIP != "" {
-		targetIP = website.ContainerIP
+		targetHost = website.ContainerIP
 		targetPort = internalContainerPort
 	}
 
 	req.URL.Scheme = "http"
-	req.URL.Host = net.JoinHostPort(targetIP, targetPort)
+	req.URL.Host = net.JoinHostPort(targetHost, targetPort)
 
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
@@ -239,15 +246,15 @@ func (p *Proxy) director(req *http.Request) {
 	}
 }
 
-func (p *Proxy) resolveWebsite(host string) (config.Website, bool) {
-	if site, ok := p.websites[host]; ok {
+func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
+	if site, ok := p.domains[host]; ok {
 		return site, true
 	}
 
 	parts := strings.Split(host, ".")
 	for i := 1; i < len(parts); i++ {
 		parent := strings.Join(parts[i:], ".")
-		if site, ok := p.websites[parent]; ok {
+		if site, ok := p.domains[parent]; ok {
 			return site, true
 		}
 	}
@@ -296,7 +303,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.mu.RLock()
-	website, exists := p.resolveWebsite(host)
+	website, exists := p.resolveDomain(host)
 	// Check SSL availability (Site-specific or Global)
 	hasSSL := (website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "") ||
 		(p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "")
@@ -569,7 +576,7 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	}
 
 	p.mu.RLock()
-	website, exists := p.resolveWebsite(host)
+	website, exists := p.resolveDomain(host)
 
 	// Security: Reject unknown SNI to prevent domain enumeration
 	// Only serve certificates for explicitly configured domains

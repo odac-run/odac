@@ -8,33 +8,14 @@ const path = require('path')
 const axios = require('axios')
 
 class OdacProxy {
-  #loaded = false
+  #active = false
   #proxyProcess = null
   #proxySocketPath = null
   #proxyApiPort = null
 
   check() {
-    if (!this.#loaded) return
+    if (!this.#active) return
     this.spawnProxy()
-  }
-
-  async init() {
-    this.#loaded = true
-
-    if (!Odac.core('Config').config.web?.path || !fs.existsSync(Odac.core('Config').config.web.path)) {
-      if (!Odac.core('Config').config.web) Odac.core('Config').config.web = {}
-      // Check environment variable first (Docker support)
-      if (process.env.ODAC_WEB_PATH) {
-        Odac.core('Config').config.web.path = process.env.ODAC_WEB_PATH
-      } else if (os.platform() === 'win32' || os.platform() === 'darwin') {
-        Odac.core('Config').config.web.path = os.homedir() + '/Odac/'
-      } else {
-        Odac.core('Config').config.web.path = '/var/odac/'
-      }
-    }
-
-    // Start Go Proxy with a slight delay to ensure config loads or immediate
-    // this.spawnProxy() -> Moved to start()
   }
 
   spawnProxy() {
@@ -235,8 +216,56 @@ class OdacProxy {
       return
     }
 
+    const domains = Odac.core('Config').config.domains || {}
+    const apps = Odac.core('Config').config.apps || []
+    const proxyDomains = {}
+
+    for (const [domainName, record] of Object.entries(domains)) {
+      const app = apps.find(a => a.name === record.appId || a.id === record.appId)
+
+      // If app is not running or not found, we can't proxy to it.
+      // However, we should arguably still register it so we can show a "Bad Gateway" or "Not Running" page
+      // instead of "Not Found" / Security rejection.
+      // For now, consistent with enterprise "fail secure", we only proxy valid, running-capable targets.
+      if (!app) continue
+
+      let port = 0
+      let containerIP = ''
+      let useInternal = false
+
+      // Determine Port
+      if (app.ports && app.ports.length > 0) {
+        if (app.ports[0].host) {
+          // Priority 1: Use host port if exposed (works for both Local loopback and Docker)
+          port = parseInt(app.ports[0].host)
+        } else if (app.ports[0].container) {
+          // Priority 2: Use internal container port if no host port is exposed
+          port = parseInt(app.ports[0].container)
+          useInternal = true
+        }
+      }
+      // Priority 3: 'port' property (Legacy or Script apps)
+      else if (app.port) {
+        port = parseInt(app.port)
+      }
+
+      // If no port found, we skip this domain as we don't know where to route it.
+      if (!port) continue
+
+      proxyDomains[domainName] = {
+        domain: domainName,
+        port: port,
+        subdomain: record.subdomain || [],
+        cert: record.cert || {}, // Pass full cert object (contains ssl: {key, cert})
+        // Only send container name if we MUST use internal networking (no host port).
+        // If we have a host port, we rely on 127.0.0.1 (default in Go) which is safer for dev environments on host.
+        container: useInternal ? app.name : undefined,
+        containerIP: containerIP // reserved for future use
+      }
+    }
+
     const config = {
-      websites: Odac.core('Config').config.websites || {},
+      domains: proxyDomains,
       firewall: Odac.core('Config').config.firewall || {enabled: true},
       ssl: Odac.core('Config').config.ssl || null
     }
@@ -265,10 +294,12 @@ class OdacProxy {
   // Removed #handleUpgrade as it is handled by Go Proxy
 
   start() {
+    this.#active = true
     this.spawnProxy()
   }
 
   stop() {
+    this.#active = false
     if (this.#proxyProcess) {
       this.#proxyProcess.kill() // SIGTERM
       this.#proxyProcess = null

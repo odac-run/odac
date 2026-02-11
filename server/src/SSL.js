@@ -182,6 +182,13 @@ class SSL {
         // Ignore error
       }
 
+      // Sync proxy config to reload SSL certificates
+      try {
+        if (Odac.server('Proxy')) Odac.server('Proxy').syncConfig()
+      } catch (e) {
+        error('Failed to sync proxy config after SSL update: %s', e.message)
+      }
+
       log('SSL certificate successfully generated and saved for domain %s', domain)
     } catch (err) {
       error('Failed to save SSL certificate for domain %s: %s', domain, err.message)
