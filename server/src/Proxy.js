@@ -260,18 +260,33 @@ class OdacProxy {
         continue
       }
 
+      // If using internal networking, resolve the container IP
+      // Host-mode containers cannot use Docker DNS (container names),
+      // but CAN reach bridge network IPs directly
+      if (useInternal) {
+        try {
+          containerIP = await Odac.server('Container').getIP(app.name)
+          if (!containerIP) {
+            if (typeof log !== 'undefined') log('Proxy: Could not resolve IP for %s (domain: %s)', app.name, domainName)
+            continue
+          }
+        } catch (e) {
+          if (typeof log !== 'undefined') log('Proxy: Failed to get IP for %s: %s', app.name, e.message)
+          continue
+        }
+      }
+
       if (typeof log !== 'undefined')
-        log('Proxy: Adding domain %s -> %s:%d (Container: %s)', domainName, app.name, port, useInternal ? 'Yes' : 'No')
+        log('Proxy: Adding domain %s -> %s:%d (IP: %s)', domainName, app.name, port, containerIP || '127.0.0.1')
 
       proxyDomains[domainName] = {
         domain: domainName,
         port: port,
         subdomain: record.subdomain || [],
-        cert: record.cert || {}, // Pass full cert object (contains ssl: {key, cert})
-        // Only send container name if we MUST use internal networking (no host port).
-        // If we have a host port, we rely on 127.0.0.1 (default in Go) which is safer for dev environments on host.
-        container: useInternal ? app.name : undefined,
-        containerIP: containerIP // reserved for future use
+        cert: record.cert || {},
+        // Send resolved IP for internal containers, or fallback to localhost for host-port apps
+        container: useInternal ? containerIP : undefined,
+        containerIP: containerIP
       }
     }
 

@@ -28,10 +28,6 @@ import (
 )
 
 const (
-	// internalContainerPort is the port used for inter-container communication
-	// when routing requests to Docker containers via their network IP
-	internalContainerPort = "1071"
-
 	// proxyBufferSize is the buffer size for proxying request/response bodies.
 	// 32KB is the Go default for io.Copy, but we pool these to achieve zero-allocation.
 	proxyBufferSize = 32 * 1024
@@ -208,16 +204,15 @@ func (p *Proxy) director(req *http.Request) {
 	targetHost := "127.0.0.1"
 	targetPort := strconv.Itoa(website.Port)
 
-	// If we have an explicit container name (sent by Node.js only when internal networking is required)
-	// we use it as the hostname.
+	// If we have an explicit container reference (IP address sent by Node.js for internal networking)
+	// we use it as the hostname. Port comes from website.Port (auto-detected).
 	if website.Container != "" {
 		targetHost = website.Container
 	}
 
-	// Legacy / Direct IP Mode
-	if website.ContainerIP != "" {
+	// ContainerIP is an alternative/redundant field. Use it if Container is empty.
+	if website.ContainerIP != "" && website.Container == "" {
 		targetHost = website.ContainerIP
-		targetPort = internalContainerPort
 	}
 
 	req.URL.Scheme = "http"
