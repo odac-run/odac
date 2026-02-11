@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "acme-client": "^5.1.0",
-    "axios": "^1.7.9",
+    "axios": "^1.13.5",
     "bcrypt": "^5.1.1",
     "dkim-signer": "^0.2.2",
     "dockerode": "^4.0.9",
