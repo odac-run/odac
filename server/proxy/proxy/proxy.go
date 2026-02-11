@@ -206,13 +206,10 @@ func (p *Proxy) director(req *http.Request) {
 
 	// If we have an explicit container reference (IP address sent by Node.js for internal networking)
 	// we use it as the hostname. Port comes from website.Port (auto-detected).
-	if website.Container != "" {
-		targetHost = website.Container
-	}
-
-	// ContainerIP is an alternative/redundant field. Use it if Container is empty.
-	if website.ContainerIP != "" && website.Container == "" {
+	if website.ContainerIP != "" {
 		targetHost = website.ContainerIP
+	} else if website.Container != "" {
+		targetHost = website.Container
 	}
 
 	req.URL.Scheme = "http"
