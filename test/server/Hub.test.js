@@ -23,7 +23,7 @@ const os = require('os')
 jest.mock('fs')
 const fs = require('fs')
 
-const {setupGlobalMocks, waitFor} = require('./__mocks__/testHelpers')
+const {setupGlobalMocks, cleanupGlobalMocks} = require('./__mocks__/testHelpers')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
 
 jest.setTimeout(15000)
