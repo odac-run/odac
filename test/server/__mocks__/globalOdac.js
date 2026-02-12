@@ -82,7 +82,13 @@ class MockOdac {
         addToken: jest.fn(),
         removeToken: jest.fn(),
         generateToken: jest.fn(() => 'mock-token'),
-        result: jest.fn((success, data) => ({success, data}))
+        result: jest.fn((result, message, data) => {
+          if (typeof message === 'object') {
+            data = message
+            message = undefined
+          }
+          return {result, success: result, message, data}
+        })
       },
       Client: {
         auth: jest.fn(),

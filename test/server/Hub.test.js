@@ -20,11 +20,13 @@ const WebSocketLib = require('ws')
 
 jest.mock('os')
 const os = require('os')
-
 jest.mock('fs')
 const fs = require('fs')
 
-jest.useFakeTimers()
+const {setupGlobalMocks, cleanupGlobalMocks, waitFor} = require('./__mocks__/testHelpers')
+const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
+
+jest.setTimeout(15000)
 
 describe('Hub', () => {
   let Hub
@@ -62,6 +64,7 @@ describe('Hub', () => {
     jest.isolateModules(() => {
       Hub = require('../../server/src/Hub')
       Hub.start()
+      for (const task of Hub.tasks) task.lastRun = Date.now()
       System = require('../../server/src/Hub/System')
       const WS = require('../../server/src/Hub/WebSocket')
       MessageSigner = WS.MessageSigner
@@ -79,44 +82,12 @@ describe('Hub', () => {
     it('should initialize with default values', () => {
       expect(Hub.ws).toBeDefined()
       expect(Hub.ws.connected).toBe(false)
-      expect(Hub.checkCounter).toBe(0)
+      expect(Hub.tasks).toBeInstanceOf(Array)
     })
   })
 
-  describe('check counter', () => {
-    it('should increment counter on each check', () => {
-      expect(Hub.checkCounter).toBe(0)
-      Hub.check()
-      expect(Hub.checkCounter).toBe(1)
-      Hub.check()
-      expect(Hub.checkCounter).toBe(2)
-    })
-
-    it('should reset counter after reaching 3600', () => {
-      Hub.checkCounter = 3600
-      Hub.check()
-      expect(Hub.checkCounter).toBe(1)
-    })
-
-    it('should skip API call when counter is not 0', async () => {
-      mockOdac.setMock('core', 'Config', {
-        config: {
-          hub: {token: 'test-token', secret: 'test-secret'},
-          server: {started: Date.now()}
-        }
-      })
-
-      Hub.checkCounter = 1
-      const sendSpy = jest.spyOn(Hub.ws, 'send')
-
-      // Force connected state
-      Object.defineProperty(Hub.ws, 'connected', {get: () => true})
-
-      await Hub.check()
-      expect(sendSpy).not.toHaveBeenCalled()
-    })
-
-    it('should skip API call when websocket is connected', async () => {
+  describe('tasks interval', () => {
+    it('should skip task if interval not reached', async () => {
       mockOdac.setMock('core', 'Config', {
         config: {
           hub: {token: 'test-token', secret: 'test-secret'},
@@ -125,20 +96,45 @@ describe('Hub', () => {
       })
 
       Object.defineProperty(Hub.ws, 'connected', {get: () => true})
-      const sendSpy = jest.spyOn(Hub.ws, 'send')
+      const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
 
-      Hub.checkCounter = 0
+      for (const t of Hub.tasks) t.lastRun = Date.now()
+      const task = Hub.tasks.find(t => t.name === 'app.stats')
+      task.lastRun = Date.now()
+
+      sendSpy.mockClear()
       await Hub.check()
-      // Interval is 60, checkCounter becomes 1, so 1 % 60 != 0
       expect(sendSpy).not.toHaveBeenCalled()
+    })
+
+    it('should execute task if interval reached', async () => {
+      mockOdac.setMock('core', 'Config', {
+        config: {
+          hub: {token: 'test-token', secret: 'test-secret'},
+          server: {started: Date.now()}
+        }
+      })
+
+      Object.defineProperty(Hub.ws, 'connected', {get: () => true})
+      const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
+
+      mockOdac.setMock('server', 'App', {
+        list: jest.fn().mockResolvedValue({result: true, data: []})
+      })
+
+      for (const t of Hub.tasks) t.lastRun = Date.now()
+      const task = Hub.tasks.find(t => t.name === 'app.stats')
+      task.lastRun = Date.now() - task.interval - 1
+
+      sendSpy.mockClear()
+      await Hub.check()
+      // task fn is async, check might return before send
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(sendSpy).toHaveBeenCalled()
     })
   })
 
   describe('check', () => {
-    beforeEach(() => {
-      Hub.checkCounter = 0
-    })
-
     it('should return early if no hub config', async () => {
       mockOdac.setMock('core', 'Config', {
         config: {hub: null}
@@ -159,7 +155,7 @@ describe('Hub', () => {
       expect(connectSpy).not.toHaveBeenCalled()
     })
 
-    it('should send status to hub when interval matches', async () => {
+    it('should send status to hub when task triggers', async () => {
       jest.useRealTimers()
 
       mockOdac.setMock('core', 'Config', {
@@ -178,15 +174,20 @@ describe('Hub', () => {
       })
 
       mockOdac.setMock('server', 'App', {
-        status: jest.fn().mockResolvedValue([{name: 'test-container', status: 'running'}])
+        list: jest.fn().mockResolvedValue({
+          result: true,
+          data: [{name: 'test-container', status: 'running'}]
+        })
       })
 
       // Mock connected state and send
       Object.defineProperty(Hub.ws, 'connected', {get: () => true})
       const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
 
-      // statsInterval is 60
-      Hub.checkCounter = 59
+      // Find app.stats task and force execution
+      const task = Hub.tasks.find(t => t.name === 'app.stats')
+      task.lastRun = 0
+
       await Hub.check()
 
       // Wait for async operations to complete
@@ -196,7 +197,6 @@ describe('Hub', () => {
 
       const sendCalls = sendSpy.mock.calls
       const hasStats = sendCalls.some(call => {
-        // data is passed as object or string, check args
         const data = typeof call[0] === 'string' ? JSON.parse(call[0]) : call[0]
         return data.type === 'app.stats'
       })

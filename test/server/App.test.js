@@ -1,4 +1,4 @@
-const App = require('../../server/src/App')
+let App
 
 describe('App', () => {
   let mockConfig
@@ -31,8 +31,6 @@ describe('App', () => {
         return {}
       }),
       server: jest.fn(module => {
-        // Return a combined object that satisfies both Container and Api calls if needed
-        // But better to check the module name to return specific mocks
         if (module === 'Container') {
           return {
             available: true,
@@ -48,18 +46,33 @@ describe('App', () => {
         }
         if (module === 'Api') {
           return {
-            result: jest.fn((success, message) => ({success, message})),
+            result: jest.fn((result, message, data) => {
+              if (typeof message === 'object') {
+                data = message
+                message = undefined
+              }
+              return {result, success: result, message, data}
+            }),
             generateAppToken: jest.fn(() => 'mock-app-token'),
             hostSocketDir: '/tmp/odac-socket'
           }
         }
-        // Legacy fallback or other modules
         return {
-          result: jest.fn((success, message) => ({success, message})),
+          result: jest.fn((result, message, data) => {
+            if (typeof message === 'object') {
+              data = message
+              message = undefined
+            }
+            return {result, success: result, message, data}
+          }),
           isRunning: jest.fn(() => false)
         }
       })
     }
+
+    jest.isolateModules(() => {
+      App = require('../../server/src/App')
+    })
   })
 
   afterEach(() => {
@@ -77,7 +90,7 @@ describe('App', () => {
       await expect(App.check()).resolves.not.toThrow()
 
       // Should treat as empty array
-      const apps = await App.status()
+      const {data: apps} = await App.list(true)
       expect(apps).toEqual([])
     })
 
@@ -87,7 +100,7 @@ describe('App', () => {
       await expect(App.init()).resolves.not.toThrow()
       await expect(App.check()).resolves.not.toThrow()
 
-      const apps = await App.status()
+      const {data: apps} = await App.list(true)
       expect(apps).toEqual([])
     })
 
@@ -98,7 +111,7 @@ describe('App', () => {
       await expect(App.init()).resolves.not.toThrow()
       await expect(App.check()).resolves.not.toThrow()
 
-      const apps = await App.status()
+      const {data: apps} = await App.list(true)
       expect(apps).toEqual([])
     })
 
@@ -107,7 +120,7 @@ describe('App', () => {
 
       await expect(App.init()).resolves.not.toThrow()
 
-      const apps = await App.status()
+      const {data: apps} = await App.list(true)
       expect(apps).toHaveLength(1)
       expect(apps[0].name).toBe('test-app')
     })

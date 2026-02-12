@@ -346,7 +346,7 @@ class Domain {
     const domainKeys = Object.keys(domains)
 
     if (domainKeys.length === 0) {
-      return Odac.server('Api').result(false, __('No domains found.'))
+      return Odac.server('Api').result(true, [])
     }
 
     const filteredRecords = []

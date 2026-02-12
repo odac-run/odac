@@ -39,7 +39,13 @@ describe('Domain', () => {
 
     // Setup API mock
     mockOdac.setMock('server', 'Api', {
-      result: jest.fn((result, message) => ({result, message}))
+      result: jest.fn((result, message, data) => {
+        if (typeof message === 'object') {
+          data = message
+          message = undefined
+        }
+        return {result, success: result, message, data}
+      })
     })
 
     // Setup DNS mock
@@ -231,24 +237,24 @@ describe('Domain', () => {
       const result = await Domain.list()
 
       expect(result.result).toBe(true)
-      expect(result.message).toContain('app1.com')
-      expect(result.message).toContain('app2.com')
+      expect(result.data.some(d => d.domain === 'app1.com')).toBe(true)
+      expect(result.data.some(d => d.domain === 'app2.com')).toBe(true)
     })
 
     test('should filter domains by app', async () => {
       const result = await Domain.list('myapp')
 
       expect(result.result).toBe(true)
-      expect(result.message).toContain('app1.com')
-      expect(result.message).not.toContain('app2.com')
+      expect(result.data.some(d => d.domain === 'app1.com')).toBe(true)
+      expect(result.data.some(d => d.domain === 'app2.com')).toBe(false)
     })
 
-    test('should return error if no domains found', async () => {
+    test('should return empty list if no domains found', async () => {
       mockConfig.config.domains = {}
       const result = await Domain.list()
 
-      expect(result.result).toBe(false)
-      expect(result.message).toContain('No domains found')
+      expect(result.result).toBe(true)
+      expect(result.data).toEqual([])
     })
   })
 })

@@ -642,7 +642,7 @@ class App {
     }
 
     if (apps.length === 0) {
-      return Odac.server('Api').result(false, __('No apps found.'))
+      return Odac.server('Api').result(true, [])
     }
 
     if (detailed !== true) {

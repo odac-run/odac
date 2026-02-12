@@ -932,7 +932,7 @@ nameserver 8.8.4.4
       // We look for strict name match.
       // NOTE: We assume record names are stored in a consistent case (or we should match case-insensitively).
       // Based on questionName being lowercased, we compare with lowercased record names.
-      const nameExists = records.some(r => r.name.toLowerCase() === questionName)
+      const nameExists = questionName === domain || records.some(r => r?.name?.toLowerCase() === questionName)
 
       if (!nameExists) {
         // Name does not exist in this zone -> Return NXDOMAIN
@@ -969,7 +969,7 @@ nameserver 8.8.4.4
 
       // RFC 1034: If a CNAME exists for a name, that is the only record allowed.
       // We should return the CNAME record for ANY query type (except explicitly prohibited ones, but broad support is safer).
-      const cnameRecord = records.find(r => r.type === 'CNAME' && r.name === questionName)
+      const cnameRecord = records.find(r => r?.type === 'CNAME' && r?.name === questionName)
 
       if (cnameRecord) {
         // If we found a CNAME, we must return it regardless of the query type
