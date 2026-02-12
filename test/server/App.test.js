@@ -65,7 +65,9 @@ describe('App', () => {
             }
             return {result, success: result, message, data}
           }),
-          isRunning: jest.fn(() => false)
+          isRunning: jest.fn(() => false),
+          stop: jest.fn(),
+          trigger: jest.fn()
         }
       })
     }
@@ -224,6 +226,27 @@ describe('App', () => {
       const socketMount = args.volumes.find(v => v.container === '/odac:ro')
       expect(socketMount).toBeDefined()
       expect(socketMount.host).toBe('/tmp/odac-socket')
+    })
+  })
+
+  describe('delete()', () => {
+    test('should call Domain.deleteByApp when an app is deleted', async () => {
+      const mockDeleteByApp = jest.fn()
+      // Setup Odac.server mock for Domain
+      const originalServer = global.Odac.server
+      global.Odac.server = jest.fn(module => {
+        if (module === 'Domain') {
+          return {deleteByApp: mockDeleteByApp}
+        }
+        return originalServer(module)
+      })
+
+      mockConfig.apps = [{id: 1, name: 'delete-me', active: true, type: 'container'}]
+      await App.init()
+
+      const result = await App.delete(1)
+      expect(result.success).toBe(true)
+      expect(mockDeleteByApp).toHaveBeenCalledWith('delete-me')
     })
   })
 })

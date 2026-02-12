@@ -257,4 +257,33 @@ describe('Domain', () => {
       expect(result.data).toEqual([])
     })
   })
+
+  describe('deleteByApp()', () => {
+    beforeEach(() => {
+      mockConfig.config.domains = {
+        'site1.com': {appId: 'myapp', created: 1000},
+        'site2.com': {appId: 'myapp', created: 1100},
+        'other.com': {appId: 'otherapp', created: 2000}
+      }
+    })
+
+    test('should delete all domains for a specific app', async () => {
+      await Domain.deleteByApp('myapp')
+
+      expect(mockConfig.config.domains['site1.com']).toBeUndefined()
+      expect(mockConfig.config.domains['site2.com']).toBeUndefined()
+      expect(mockConfig.config.domains['other.com']).toBeDefined()
+
+      // Verify DNS cleanup called for each main domain
+      // 7 records * 2 domains = 14 calls
+      const dnsMock = Odac.server('DNS')
+      expect(dnsMock.delete).toHaveBeenCalledTimes(14)
+    })
+
+    test('should handle apps with no domains gracefully', async () => {
+      const initialCount = Object.keys(mockConfig.config.domains).length
+      await Domain.deleteByApp('nonexistent-app')
+      expect(Object.keys(mockConfig.config.domains).length).toBe(initialCount)
+    })
+  })
 })

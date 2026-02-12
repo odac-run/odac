@@ -485,6 +485,13 @@ class App {
 
     await Odac.server('Container').remove(app.name)
 
+    // Cascading delete: Remove associated domains
+    try {
+      await Odac.server('Domain').deleteByApp(app.name)
+    } catch (e) {
+      error('Failed to delete domains for app %s: %s', app.name, e.message)
+    }
+
     // Notify Hub
     Odac.server('Hub').trigger('app.list')
 

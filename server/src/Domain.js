@@ -219,9 +219,10 @@ class Domain {
    * Deletes a domain and removes its DNS records.
    *
    * @param {string} domain - The domain name to delete
+   * @param {boolean} [skipSync=false] - Whether to skip proxy synchronization
    * @returns {Promise<{result: boolean, message: string}>} API result object
    */
-  async delete(domain) {
+  async delete(domain, skipSync = false) {
     // Phase 1: Input Validation
     const validation = this.#validate(domain)
     if (!validation.valid) {
@@ -271,10 +272,12 @@ class Domain {
       log('Domain %s deleted (was assigned to app %s)', domain, domainRecord.appId)
 
       // Sync proxy config
-      try {
-        Odac.server('Proxy').syncConfig()
-      } catch (e) {
-        error('Failed to sync proxy config: %s', e.message)
+      if (!skipSync) {
+        try {
+          Odac.server('Proxy').syncConfig()
+        } catch (e) {
+          error('Failed to sync proxy config: %s', e.message)
+        }
       }
 
       return Odac.server('Api').result(true, __('Domain %s deleted successfully.', domain))
@@ -311,10 +314,12 @@ class Domain {
           }
 
           // Sync proxy config (if subdomain removed)
-          try {
-            Odac.server('Proxy').syncConfig()
-          } catch (err) {
-            error('Proxy sync failed: %s', err.message)
+          if (!skipSync) {
+            try {
+              Odac.server('Proxy').syncConfig()
+            } catch (err) {
+              error('Proxy sync failed: %s', err.message)
+            }
           }
 
           return Odac.server('Api').result(true, __('Subdomain %s removed from %s.', sub, parentDomain))
@@ -323,6 +328,42 @@ class Domain {
     }
 
     return Odac.server('Api').result(false, __('Domain %s not found.', domain))
+  }
+
+  /**
+   * Deletes all domains associated with a specific App.
+   *
+   * @param {string} appId - The App name/ID to clean up
+   * @returns {Promise<void>}
+   */
+  async deleteByApp(appId) {
+    if (!appId) return
+
+    const domains = this.#getDomains()
+    const domainsToDelete = []
+
+    for (const [domain, record] of Object.entries(domains)) {
+      if (record.appId === appId) {
+        domainsToDelete.push(domain)
+      }
+    }
+
+    if (domainsToDelete.length === 0) return
+
+    log('Deleting %d domains for app %s', domainsToDelete.length, appId)
+
+    for (const domain of domainsToDelete) {
+      // Use existing delete logic to handle DNS and cleanup
+      // Skip proxy sync for each individual deletion to avoid overhead
+      await this.delete(domain, true)
+    }
+
+    // Single sync after all domains are removed
+    try {
+      Odac.server('Proxy').syncConfig()
+    } catch (e) {
+      error('Failed to sync proxy config after batch delete: %s', e.message)
+    }
   }
 
   /**
