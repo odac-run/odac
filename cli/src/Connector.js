@@ -30,7 +30,7 @@ class Connector {
         } catch {
           continue
         }
-        if (payload.message) {
+        if (payload.message !== undefined || payload.data !== undefined) {
           if (payload.status) {
             if (this.lastProcess == payload.process) {
               process.stdout.clearLine(0)

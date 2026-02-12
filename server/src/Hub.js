@@ -45,6 +45,36 @@ class Hub {
       }
     ]
 
+    // Command Handlers
+    this.commands = {
+      configure: {
+        fn: payload => this.#handleConfigure(payload)
+      },
+      'app.create': {
+        fn: payload => Odac.server('App').create(payload),
+        triggers: ['app.list']
+      },
+      'app.restart': {
+        fn: payload => Odac.server('App').restart(payload.container),
+        triggers: ['app.list', 'app.stats']
+      },
+      'app.delete': {
+        fn: payload => Odac.server('App').delete(payload.id),
+        triggers: ['app.list']
+      },
+      'domain.add': {
+        fn: payload => Odac.server('Domain').add(payload.domain, payload.app),
+        triggers: ['domain.list', 'system.info']
+      },
+      'domain.delete': {
+        fn: payload => Odac.server('Domain').delete(payload.domain),
+        triggers: ['domain.list', 'system.info']
+      },
+      'updater.start': {
+        fn: () => Odac.server('Updater').start()
+      }
+    }
+
     this.agent = new https.Agent({
       rejectUnauthorized: true,
       keepAlive: true,
@@ -223,119 +253,34 @@ class Hub {
   }
 
   // Command Processing
-  processCommand(command) {
-    if (!command?.action) {
-      log('Invalid command structure received')
+  async processCommand(command) {
+    if (!command?.action || !this.commands[command.action]) {
+      log('Invalid or unknown command received: %s', command?.action)
       return
     }
 
+    const {fn, triggers} = this.commands[command.action]
     log('Processing command: %s', command.action)
 
-    switch (command.action) {
-      case 'configure':
-        this.#handleConfigure(command.payload)
-        break
-      case 'app.create':
-        this.#handleAppCreate(command)
-        break
-      case 'app.restart':
-        this.#handleAppRestart(command)
-        break
-      case 'domain.add':
-        this.#handleDomainAdd(command)
-        break
-      case 'updater.start':
-        Odac.server('Updater').start()
-        break
-      default:
-        log('Unknown command action: %s', command.action)
-    }
-  }
-
-  async #handleAppCreate(command) {
-    const payload = command.payload
-
-    if (!payload) {
-      log('app.create: Missing payload')
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: 'Missing payload'
-      })
-      return
-    }
-
     try {
-      log('Creating app: %j', payload)
-      const result = await Odac.server('App').create(payload)
-      this.#sendCommandResponse(command.requestId, result)
+      const result = await fn(command.payload)
 
-      // Immediately trigger update
-      await this.trigger('app.list')
+      // Send response if requested
+      if (command.requestId) {
+        this.#sendCommandResponse(command.requestId, result || {result: true})
+      }
+
+      // Trigger related tasks
+      if (triggers && Array.isArray(triggers)) {
+        for (const task of triggers) {
+          await this.trigger(task)
+        }
+      }
     } catch (e) {
-      log('app.create failed: %s', e.message)
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: e.message
-      })
-    }
-  }
-
-  async #handleAppRestart(command) {
-    const payload = command.payload
-
-    if (!payload?.container) {
-      log('app.restart: Missing payload (container)')
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: 'Missing payload (container)'
-      })
-      return
-    }
-
-    const target = payload.container
-    try {
-      log('Restarting app: %s', target)
-      const result = await Odac.server('App').restart(target)
-      this.#sendCommandResponse(command.requestId, result)
-
-      // Update Hub stats & info
-      await this.trigger('app.stats')
-      await this.trigger('app.list')
-    } catch (e) {
-      log('app.restart failed: %s', e.message)
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: e.message
-      })
-    }
-  }
-
-  async #handleDomainAdd(command) {
-    const payload = command.payload
-
-    if (!payload?.domain || !payload?.appId) {
-      log('domain.add: Missing payload (domain or appId)')
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: 'Missing payload (domain or appId)'
-      })
-      return
-    }
-
-    try {
-      log('Adding domain: %s for app: %s', payload.domain, payload.appId)
-      const result = await Odac.server('Domain').add(payload.domain, payload.appId)
-      this.#sendCommandResponse(command.requestId, result)
-
-      // Immediately trigger update
-      await this.trigger('domain.list')
-      await this.trigger('system.info')
-    } catch (e) {
-      log('domain.add failed: %s', e.message)
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: e.message
-      })
+      log('Command execution failed: %s', e.message)
+      if (command.requestId) {
+        this.#sendCommandResponse(command.requestId, {result: false, message: e.message})
+      }
     }
   }
 
