@@ -516,6 +516,93 @@ class App {
     return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
   }
 
+  async redeploy(payload) {
+    const {container: appName, url, token, branch, commitSha} = payload
+
+    if (!appName) {
+      return Odac.server('Api').result(false, __('Missing container name'))
+    }
+
+    const app = this.#get(appName)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', appName))
+    }
+
+    if (app.type !== 'git') {
+      return Odac.server('Api').result(false, __('Redeploy is only supported for git apps.'))
+    }
+
+    // Validate commitSha format (hex-only, 6-40 chars)
+    if (commitSha && !/^[a-f0-9]{6,40}$/i.test(commitSha)) {
+      return Odac.server('Api').result(false, __('Invalid commit SHA format.'))
+    }
+
+    const targetBranch = branch || app.branch || 'main'
+
+    // Concurrency guard: prevent parallel operations on the same app
+    if (this.#processing.has(app.id)) {
+      return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
+    }
+
+    this.#processing.add(app.id)
+    log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
+
+    try {
+      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+      const targetUrl = url || app.url
+      const imageName = app.image || `odac-app-${app.name}`
+
+      // Step 1: Fetch latest code (app still running → zero-downtime during fetch)
+      this.#set(app.id, {status: 'updating'})
+      const container = Odac.server('Container')
+      const hasGit = await fs.promises
+        .access(path.join(appDir, '.git'))
+        .then(() => true)
+        .catch(() => false)
+
+      if (hasGit) {
+        // Fast path: incremental fetch (delta download only)
+        await container.fetchRepo(targetUrl, targetBranch, appDir, token, commitSha)
+      } else {
+        // Fallback: fresh clone for legacy apps where .git was removed by Builder
+        log('No .git found in %s, performing fresh clone', app.name)
+        await fs.promises.rm(appDir, {recursive: true, force: true})
+        await fs.promises.mkdir(appDir, {recursive: true})
+        await container.cloneRepo(targetUrl, targetBranch, appDir, token)
+      }
+
+      // Step 2: Rebuild image (app still running on old image)
+      this.#set(app.id, {status: 'building'})
+      await Odac.server('Container').build(appDir, imageName)
+
+      // Step 3: Stop running container (minimal downtime starts here)
+      await this.stop(app.id)
+
+      // Step 4: Release processing lock so #run can acquire it, then restart
+      this.#processing.delete(app.id)
+      this.#set(app.id, {active: true})
+
+      if (await this.#run(app.id)) {
+        // Persist updated metadata
+        const updates = {}
+        if (commitSha) updates.commitSha = commitSha
+        if (branch) updates.branch = targetBranch
+        if (Object.keys(updates).length) this.#set(app.id, updates)
+
+        Odac.server('Hub').trigger('app.list')
+        return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
+      }
+
+      return Odac.server('Api').result(false, __('Failed to restart app %s after redeploy.', app.name))
+    } catch (err) {
+      error('Redeploy failed for %s: %s', app.name, err.message)
+      this.#set(app.id, {status: 'errored'})
+      return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
+    } finally {
+      this.#processing.delete(app.id)
+    }
+  }
+
   // Status & Listing
   async list(detailed = false) {
     const apps = this.#loadAppsFromConfig()

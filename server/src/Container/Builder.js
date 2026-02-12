@@ -17,7 +17,7 @@ const BUILD_STRATEGIES = {
     image: 'python:3.11-slim',
     installCmd: '[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps',
     buildCmd: 'rm -rf __pycache__',
-    cleanupCmd: 'rm -rf .git',
+    cleanupCmd: null,
     package: {
       baseImage: 'python:3.11-slim',
       user: 'nobody',
@@ -31,7 +31,7 @@ const BUILD_STRATEGIES = {
     image: 'golang:1.22-alpine',
     installCmd: 'go mod download',
     buildCmd: 'go build -o app .',
-    cleanupCmd: 'rm -rf .git',
+    cleanupCmd: null,
     package: {
       baseImage: 'alpine:latest',
       user: 'nobody',
@@ -45,7 +45,7 @@ const BUILD_STRATEGIES = {
     installCmd:
       'if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; else npm install --omit=dev --no-audit --no-fund; fi',
     buildCmd: 'if [ -f "tsconfig.json" ] || grep -q "build" package.json; then npm run build --if-present; fi',
-    cleanupCmd: 'rm -rf .git .github test tests',
+    cleanupCmd: 'rm -rf test tests',
     package: {
       baseImage: 'node:lts-alpine',
       user: 'node',
@@ -58,7 +58,7 @@ const BUILD_STRATEGIES = {
     image: 'composer:lts',
     installCmd: 'if [ -f composer.json ]; then composer install --no-dev --ignore-platform-reqs; fi',
     buildCmd: 'true',
-    cleanupCmd: 'rm -rf .git',
+    cleanupCmd: null,
     package: {
       baseImage: 'php:8.2-apache',
       user: 'www-data',
@@ -71,7 +71,7 @@ const BUILD_STRATEGIES = {
     image: 'alpine:latest',
     installCmd: 'true',
     buildCmd: 'true',
-    cleanupCmd: 'rm -rf .git',
+    cleanupCmd: null,
     package: {
       baseImage: 'nginx:alpine',
       user: 'nginx',
@@ -305,9 +305,9 @@ USER ${strategy.package.user}
     dockerfileContent += `CMD ${JSON.stringify(strategy.package.cmd)}\n`
 
     const dockerfilePath = path.join(context.internalPath, 'Dockerfile.odac')
+    const dockerignorePath = path.join(context.internalPath, '.dockerignore')
 
-    // Async file write
-    await fs.writeFile(dockerfilePath, dockerfileContent)
+    await Promise.all([fs.writeFile(dockerfilePath, dockerfileContent), fs.writeFile(dockerignorePath, '.git\n.github\nDockerfile.odac\n')])
 
     // 2. Use a specialized "Docker Client" container to perform the build on HOST
     // using the socket. This avoids DinD (we just talk to the socket).
@@ -349,12 +349,8 @@ USER ${strategy.package.user}
       error(`Packaging failed: ${err.message}`)
       throw err
     } finally {
-      // Cleanup ephemeral Dockerfile
-      try {
-        await fs.unlink(dockerfilePath)
-      } catch {
-        // Ignore unlink errors (already deleted or access denied)
-      }
+      // Cleanup ephemeral build files
+      await Promise.all([fs.unlink(dockerfilePath).catch(() => {}), fs.unlink(dockerignorePath).catch(() => {})])
     }
   }
 
