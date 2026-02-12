@@ -178,19 +178,18 @@ class Container {
 
     const hostPath = this.#resolveHostPath(targetDir)
 
-    try {
-      // Run ephemeral git container
-      const container = await this.#docker.createContainer({
-        Image: gitImage,
-        Cmd: ['clone', '--depth', '1', ...(branch ? ['--branch', branch] : []), secureUrl, '.'],
-        WorkingDir: '/git',
-        HostConfig: {
-          Binds: [`${hostPath}:/git`],
-          AutoRemove: true,
-          Privileged: false // SECURITY: Rootless git
-        }
-      })
+    // Run ephemeral git container
+    const container = await this.#docker.createContainer({
+      Image: gitImage,
+      Cmd: ['clone', '--depth', '1', ...(branch ? ['--branch', branch] : []), secureUrl, '.'],
+      WorkingDir: '/git',
+      HostConfig: {
+        Binds: [`${hostPath}:/git`],
+        Privileged: false // SECURITY: Rootless git
+      }
+    })
 
+    try {
       await container.start()
       const result = await container.wait()
 
@@ -212,6 +211,8 @@ class Container {
     } catch (err) {
       error(`[Git] Clone failed: ${err.message}`)
       throw err
+    } finally {
+      container.remove({force: true}).catch(() => {})
     }
   }
 

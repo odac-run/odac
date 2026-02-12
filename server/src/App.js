@@ -532,6 +532,16 @@ class App {
       return Odac.server('Api').result(false, __('Redeploy is only supported for git apps.'))
     }
 
+    // Validate URL if overridden (same rules as #createFromGit)
+    if (url) {
+      if (/[;&|`$(){}<>]/.test(url)) {
+        return Odac.server('Api').result(false, __('Invalid Git URL: Contains illegal characters.'))
+      }
+      if (!url.match(/^(https?|git|ssh|ftps?|rsync):\/\//) && !url.match(/^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/)) {
+        return Odac.server('Api').result(false, __('Invalid Git URL: Unsupported protocol.'))
+      }
+    }
+
     // Validate commitSha format (hex-only, 6-40 chars)
     if (commitSha && !/^[a-f0-9]{6,40}$/i.test(commitSha)) {
       return Odac.server('Api').result(false, __('Invalid commit SHA format.'))
