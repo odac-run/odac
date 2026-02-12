@@ -288,7 +288,7 @@ class Hub {
     // Normalize: Api.result() returns {result, message}, but we need {success, message}
     const success = result.success !== undefined ? result.success : result.result
     this.#sendSignedMessage('command.response', {
-      requestId,
+      id: requestId,
       success,
       message: result.message,
       data: result.data
@@ -335,7 +335,10 @@ class Hub {
       }
 
       if (message.type === 'command') {
-        this.processCommand(message.data)
+        this.processCommand({
+          ...message.data,
+          requestId: message.id || message.requestId
+        })
       }
     } catch (error) {
       log('Failed to handle WebSocket message: %s', error.message)

@@ -142,7 +142,8 @@ class Domain {
           {name: domain, type: 'A'},
           {name: domain, type: 'AAAA'},
           {name: 'www.' + domain, type: 'CNAME', value: domain},
-          {name: domain, type: 'MX', value: domain},
+          {name: 'mail.' + domain, type: 'A'},
+          {name: domain, type: 'MX', value: 'mail.' + domain},
           {
             name: '_dmarc.' + domain,
             type: 'TXT',
@@ -178,7 +179,7 @@ class Domain {
     const domainRecord = {
       appId: targetApp.name,
       created: Date.now(),
-      subdomain: ['www']
+      subdomain: ['www', 'mail']
     }
 
     // Initialize SSL cert tracking if SSL is enabled
@@ -243,6 +244,7 @@ class Domain {
             {name: domain, type: 'A'},
             {name: domain, type: 'AAAA'},
             {name: 'www.' + domain, type: 'CNAME'},
+            {name: 'mail.' + domain, type: 'A'},
             {name: domain, type: 'MX'},
             {name: domain, type: 'TXT'},
             {name: '_dmarc.' + domain, type: 'TXT'}
