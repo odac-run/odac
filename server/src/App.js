@@ -548,7 +548,14 @@ class App {
     log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
 
     try {
-      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+      const appsPath = Odac.core('Config').config.app.path
+      const appDir = path.join(appsPath, app.name)
+
+      // Defense-in-depth: prevent path traversal before any destructive fs ops
+      if (!path.resolve(appDir).startsWith(path.resolve(appsPath) + path.sep)) {
+        return Odac.server('Api').result(false, __('Invalid application directory.'))
+      }
+
       const targetUrl = url || app.url
       const imageName = app.image || `odac-app-${app.name}`
 
