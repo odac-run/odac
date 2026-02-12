@@ -537,6 +537,11 @@ class App {
       return Odac.server('Api').result(false, __('Invalid commit SHA format.'))
     }
 
+    // Validate branch name: block git argument injection (--upload-pack) and shell metacharacters
+    if (branch && (branch.startsWith('-') || /[;&|`$(){}<>]/.test(branch))) {
+      return Odac.server('Api').result(false, __('Invalid branch name format.'))
+    }
+
     const targetBranch = branch || app.branch || 'main'
 
     // Concurrency guard: prevent parallel operations on the same app
