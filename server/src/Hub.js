@@ -63,7 +63,7 @@ class Hub {
         lastRun: 0
       },
       'system.info': {
-        fn: () => System.getSystemInfo(),
+        fn: () => Odac.server('Api').result(true, System.getSystemInfo()),
         interval: 60 * 60 * 1000,
         lastRun: 0
       },
@@ -174,7 +174,7 @@ class Hub {
       }
     }
 
-    return statsData
+    return Odac.server('Api').result(true, statsData)
   }
 
   // HTTP API
