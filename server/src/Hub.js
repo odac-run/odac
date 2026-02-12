@@ -4,6 +4,7 @@ const axios = require('axios')
 const nodeCrypto = require('crypto')
 const os = require('os')
 const https = require('https')
+const packageJson = require('../../package.json')
 
 const System = require('./Hub/System')
 const {WebSocketClient, MessageSigner} = require('./Hub/WebSocket')
@@ -17,35 +18,7 @@ class Hub {
   constructor() {
     this.ws = new WebSocketClient()
 
-    // Task Definitions
-    this.tasks = [
-      {
-        name: 'system.info',
-        fn: () => System.getSystemInfo(),
-        interval: 60 * 60 * 1000,
-        lastRun: 0
-      },
-      {
-        name: 'app.list',
-        fn: () => Odac.server('App').list(true),
-        interval: 30 * 60 * 1000,
-        lastRun: 0
-      },
-      {
-        name: 'domain.list',
-        fn: () => Odac.server('Domain').list(),
-        interval: 30 * 60 * 1000,
-        lastRun: 0
-      },
-      {
-        name: 'app.stats',
-        fn: () => this.getAppStats(),
-        interval: 60 * 1000,
-        lastRun: 0
-      }
-    ]
-
-    // Command Handlers
+    // Commands and Tasks
     this.commands = {
       configure: {
         fn: payload => this.#handleConfigure(payload)
@@ -54,17 +27,27 @@ class Hub {
         fn: payload => Odac.server('App').create(payload),
         triggers: ['app.list']
       },
-      'app.restart': {
-        fn: payload => Odac.server('App').restart(payload.container),
-        triggers: ['app.list', 'app.stats']
-      },
       'app.delete': {
         fn: payload => Odac.server('App').delete(payload.id),
         triggers: ['app.list']
       },
+      'app.list': {
+        fn: () => Odac.server('App').list(true),
+        interval: 30 * 60 * 1000,
+        lastRun: 0
+      },
       'app.redeploy': {
         fn: payload => Odac.server('App').redeploy(payload),
         triggers: ['app.list', 'app.stats']
+      },
+      'app.restart': {
+        fn: payload => Odac.server('App').restart(payload.container),
+        triggers: ['app.list', 'app.stats']
+      },
+      'app.stats': {
+        fn: () => this.getAppStats(),
+        interval: 60 * 1000,
+        lastRun: 0
       },
       'domain.add': {
         fn: payload => Odac.server('Domain').add(payload.domain, payload.app),
@@ -73,6 +56,16 @@ class Hub {
       'domain.delete': {
         fn: payload => Odac.server('Domain').delete(payload.domain),
         triggers: ['domain.list', 'system.info']
+      },
+      'domain.list': {
+        fn: () => Odac.server('Domain').list(),
+        interval: 30 * 60 * 1000,
+        lastRun: 0
+      },
+      'system.info': {
+        fn: () => System.getSystemInfo(),
+        interval: 60 * 60 * 1000,
+        lastRun: 0
       },
       'updater.start': {
         fn: () => Odac.server('Updater').start()
@@ -126,36 +119,36 @@ class Hub {
     }
 
     const now = Date.now()
-    for (const task of this.tasks) {
+    for (const [name, command] of Object.entries(this.commands)) {
       // Skip disabled tasks (interval is 0, false, null, undefined)
-      if (!task.interval || task.interval <= 0) continue
+      if (!command.interval || command.interval <= 0) continue
 
-      if (now - task.lastRun >= task.interval) {
-        task.lastRun = now
+      if (now - command.lastRun >= command.interval) {
+        command.lastRun = now
         // Execute task without blocking the loop
-        this.#executeTask(task)
+        this.#executeTask(name, command)
       }
     }
   }
 
   // Trigger a specific task manually (e.g. after an event)
   async trigger(name) {
-    const task = this.tasks.find(t => t.name === name)
-    if (task) {
-      task.lastRun = Date.now() // Reset timer
-      await this.#executeTask(task)
+    const command = this.commands[name]
+    if (command) {
+      if (command.interval) command.lastRun = Date.now() // Reset timer if it's a task
+      await this.#executeTask(name, command)
     }
   }
 
-  async #executeTask(task) {
+  async #executeTask(name, command) {
     if (!this.ws.connected) return
     try {
-      const data = await task.fn()
+      const data = await command.fn()
       if (data !== undefined) {
-        this.#sendSignedMessage(task.name, data)
+        this.#sendSignedMessage(name, data)
       }
     } catch (e) {
-      log(`Task ${task.name} error: ${e.message}`)
+      log('Task %s error: %s', name, e.message)
     }
   }
 
@@ -189,7 +182,6 @@ class Hub {
     log('Odac authenticating...')
     log('Auth code received: %s', code ? code.substring(0, 8) + '...' : 'none')
 
-    const packageJson = require('../../package.json')
     const distro = this.getLinuxDistro()
 
     const data = {
@@ -258,15 +250,18 @@ class Hub {
 
   // Command Processing
   async processCommand(command) {
-    if (!command?.action || !this.commands[command.action]) {
+    const cmd = this.commands[command.action]
+    if (!command?.action || !cmd) {
       log('Invalid or unknown command received: %s', command?.action)
       return
     }
 
-    const {fn, triggers} = this.commands[command.action]
+    const {fn, interval, triggers} = cmd
     log('Processing command: %s', command.action)
 
     try {
+      if (interval) cmd.lastRun = Date.now() // Reset timer if it's a task
+
       const result = await fn(command.payload)
 
       // Send response if requested
@@ -361,12 +356,12 @@ class Hub {
     for (const [key, value] of Object.entries(intervals)) {
       if (value === undefined) continue
 
-      const task = this.tasks.find(t => t.name === key)
-      if (task) {
+      const command = this.commands[key]
+      if (command && command.interval !== undefined) {
         // If 0, false or null is sent, it will disable the task (interval = 0)
         const newInterval = value ? value * 1000 : 0
-        if (task.interval !== newInterval) {
-          task.interval = newInterval
+        if (command.interval !== newInterval) {
+          command.interval = newInterval
           updated = true
           log('Task interval updated: %s = %sms', key, newInterval)
         }

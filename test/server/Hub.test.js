@@ -61,7 +61,7 @@ describe('Hub', () => {
     jest.isolateModules(() => {
       Hub = require('../../server/src/Hub')
       Hub.start()
-      for (const task of Hub.tasks) task.lastRun = Date.now()
+      for (const cmd of Object.values(Hub.commands)) if (cmd.interval) cmd.lastRun = Date.now()
       System = require('../../server/src/Hub/System')
       const WS = require('../../server/src/Hub/WebSocket')
       MessageSigner = WS.MessageSigner
@@ -79,7 +79,7 @@ describe('Hub', () => {
     it('should initialize with default values', () => {
       expect(Hub.ws).toBeDefined()
       expect(Hub.ws.connected).toBe(false)
-      expect(Hub.tasks).toBeInstanceOf(Array)
+      expect(Hub.commands).toBeDefined()
     })
   })
 
@@ -95,8 +95,8 @@ describe('Hub', () => {
       Object.defineProperty(Hub.ws, 'connected', {get: () => true})
       const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
 
-      for (const t of Hub.tasks) t.lastRun = Date.now()
-      const task = Hub.tasks.find(t => t.name === 'app.stats')
+      for (const cmd of Object.values(Hub.commands)) if (cmd.interval) cmd.lastRun = Date.now()
+      const task = Hub.commands['app.stats']
       task.lastRun = Date.now()
 
       sendSpy.mockClear()
@@ -119,8 +119,8 @@ describe('Hub', () => {
         list: jest.fn().mockResolvedValue({result: true, data: []})
       })
 
-      for (const t of Hub.tasks) t.lastRun = Date.now()
-      const task = Hub.tasks.find(t => t.name === 'app.stats')
+      for (const cmd of Object.values(Hub.commands)) if (cmd.interval) cmd.lastRun = Date.now()
+      const task = Hub.commands['app.stats']
       task.lastRun = Date.now() - task.interval - 1
 
       sendSpy.mockClear()
@@ -182,7 +182,7 @@ describe('Hub', () => {
       const sendSpy = jest.spyOn(Hub.ws, 'send').mockReturnValue(true)
 
       // Find app.stats task and force execution
-      const task = Hub.tasks.find(t => t.name === 'app.stats')
+      const task = Hub.commands['app.stats']
       task.lastRun = 0
 
       await Hub.check()

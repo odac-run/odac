@@ -22,6 +22,8 @@ trigger: always_on
 - **Service Locators:** Always use the ODAC service locator patterns (`Odac.server('Name')`, `Odac.core('Name')`) to access cross-module singletons instead of using local `require` paths. This ensures access to initialized instances and prevents relative path errors.
 - **Zero-Config Philosophy:** The system must infer as much configuration as possible (e.g., auto-detecting ports from Docker images). Do not ask the user for configuration unless absolutely necessary. Defaults should be intelligent and production-ready.
 - **Native Builder:** Use the internal `Container/Builder` class for building Docker images. DO NOT use Nixpacks or external builders. The project has its own optimized build pipeline.
+- **Unified Hub Commands:** In `Hub.js`, periodic background tasks and on-demand commands are unified into the `this.commands` object. Tasks are identified by having an `interval` property. Use `trigger(name)` to manually execute a command as a task (broadcasting result) or `processCommand(command)` for individual request-response.
+- **Strict Alphabetical Sorting:** Members within objects (like `this.commands`), arrays, and function blocks must be kept in strict alphabetical order.
 
 
 ## Project Context
