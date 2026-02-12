@@ -428,9 +428,18 @@ class App {
 
           log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, expectedPort)
           app.ports = [{container: preferred}]
+
+          // Also try to capture and save the current IP to "warm up" the cache
+          try {
+            const currentIP = await container.getIP(app.name)
+            if (currentIP) app.ip = currentIP
+          } catch {
+            /* ignore */
+          }
+
           this.#saveApps()
 
-          // Trigger Proxy Sync to apply new port
+          // Trigger Proxy Sync to apply new port/IP
           Odac.server('Proxy').syncConfig()
           return
         }

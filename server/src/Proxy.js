@@ -9,13 +9,20 @@ const axios = require('axios')
 
 class OdacProxy {
   #active = false
+  #proxyApiPort = null
   #proxyProcess = null
   #proxySocketPath = null
-  #proxyApiPort = null
 
   check() {
     if (!this.#active) return
     this.spawnProxy()
+  }
+
+  // Test helper
+  reset() {
+    this.#proxyProcess = null
+    this.#proxySocketPath = null
+    this.#proxyApiPort = null
   }
 
   spawnProxy() {
@@ -103,8 +110,8 @@ class OdacProxy {
           }
         }
 
-        // Sync config immediately
-        this.syncConfig()
+        // Give a moment for other services to initialize (Container, etc)
+        setTimeout(() => this.syncConfig(), 1000)
         return
       } catch (err) {
         // Logic for when we fail to adopt the process
@@ -205,6 +212,27 @@ class OdacProxy {
     }
   }
 
+  start() {
+    this.#active = true
+    this.spawnProxy()
+  }
+
+  stop() {
+    this.#active = false
+    if (this.#proxyProcess) {
+      this.#proxyProcess.kill() // SIGTERM
+      this.#proxyProcess = null
+      this.#proxyApiPort = null
+      if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+        try {
+          fs.unlinkSync(this.#proxySocketPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   async syncConfig(retryCount = 0) {
     if (typeof log !== 'undefined') log('Proxy: syncConfig called (Retry: %d)', retryCount)
 
@@ -220,80 +248,91 @@ class OdacProxy {
 
     const domains = Odac.core('Config').config.domains || {}
     const apps = Odac.core('Config').config.apps || []
-    const proxyDomains = {}
 
-    for (const [domainName, record] of Object.entries(domains)) {
-      const app = apps.find(a => a.name === record.appId || a.id === record.appId)
-
-      // If app is not running or not found, we can't proxy to it.
-      // However, we should arguably still register it so we can show a "Bad Gateway" or "Not Running" page
-      // instead of "Not Found" / Security rejection.
-      // For now, consistent with enterprise "fail secure", we only proxy valid, running-capable targets.
-      if (!app) {
-        if (typeof log !== 'undefined') log('Proxy: App %s not found for domain %s', record.appId, domainName)
-        continue
-      }
-
-      let port = 0
-      let containerIP = ''
-      let useInternal = false
-
-      // Determine Port
-      if (app.ports && app.ports.length > 0) {
-        if (app.ports[0].host) {
-          // Priority 1: Use host port if exposed (works for both Local loopback and Docker)
-          port = parseInt(app.ports[0].host)
-        } else if (app.ports[0].container) {
-          // Priority 2: Use internal container port if no host port is exposed
-          port = parseInt(app.ports[0].container)
-          useInternal = true
-        }
-      }
-      // Priority 3: 'port' property (Legacy or Script apps)
-      else if (app.port) {
-        port = parseInt(app.port)
-      }
-
-      // If no port found, we skip this domain as we don't know where to route it.
-      if (!port) {
-        if (typeof log !== 'undefined') log('Proxy: No port found for app %s (domain: %s)', app.name, domainName)
-        continue
-      }
-
-      // If using internal networking, resolve the container IP
-      // Host-mode containers cannot use Docker DNS (container names),
-      // but CAN reach bridge network IPs directly
-      if (useInternal) {
-        try {
-          containerIP = await Odac.server('Container').getIP(app.name)
-          if (!containerIP) {
-            if (typeof log !== 'undefined') {
-              log('Proxy: Could not resolve IP for %s (domain: %s). App might be down. Using loopback.', app.name, domainName)
-            }
-            // Fallback to loopback to ensure Domain exists in Proxy Config -> SSL Handshake works -> 502 Bad Gateway
-            containerIP = '127.0.0.1'
-          }
-        } catch (e) {
-          if (typeof log !== 'undefined') {
-            log('Proxy: Failed to get IP for %s: %s. Using loopback.', app.name, e.message)
-          }
-          containerIP = '127.0.0.1'
-        }
-      }
-
-      if (typeof log !== 'undefined')
-        log('Proxy: Adding domain %s -> %s:%d (IP: %s)', domainName, app.name, port, containerIP || '127.0.0.1')
-
-      proxyDomains[domainName] = {
-        domain: domainName,
-        port: port,
-        subdomain: record.subdomain || [],
-        cert: record.cert || {},
-        // Send resolved IP for internal containers, or fallback to localhost for host-port apps
-        container: useInternal ? containerIP : undefined,
-        containerIP: containerIP
+    // Safety: If we have container apps, wait for Docker to be available
+    // to prevent falling back to 127.0.0.1 during startup.
+    const hasContainerApps = apps.some(a => a.ports?.some(p => p.container && !p.host))
+    if (hasContainerApps && retryCount === 0) {
+      const container = Odac.server('Container')
+      let waits = 0
+      // Wait up to 3 seconds for Docker to become available
+      while (!container.available && waits < 30) {
+        await new Promise(r => setTimeout(r, 100))
+        waits++
       }
     }
+
+    const proxyDomains = {}
+
+    // Process all domains in parallel for maximum throughput (Enterprise Scale)
+    await Promise.all(
+      Object.entries(domains).map(async ([domainName, record]) => {
+        const app = apps.find(a => a.name === record.appId || a.id === record.appId)
+
+        if (!app) {
+          if (typeof log !== 'undefined') log('Proxy: App %s not found for domain %s', record.appId, domainName)
+          return
+        }
+
+        let port = 0
+        let containerIP = ''
+        let useInternal = false
+
+        // Determine Port
+        if (app.ports && app.ports.length > 0) {
+          if (app.ports[0].host) {
+            port = parseInt(app.ports[0].host)
+          } else if (app.ports[0].container) {
+            port = parseInt(app.ports[0].container)
+            useInternal = true
+          }
+        } else if (app.port) {
+          port = parseInt(app.port)
+        }
+
+        if (!port) {
+          if (typeof log !== 'undefined') log('Proxy: No port found for app %s (domain: %s)', app.name, domainName)
+          return
+        }
+
+        // IP Resolution & Caching
+        if (useInternal) {
+          try {
+            // Priority 1: Runtime discovery
+            containerIP = await Odac.server('Container').getIP(app.name)
+
+            if (containerIP) {
+              // Update cache if changed
+              if (app.ip !== containerIP) {
+                app.ip = containerIP
+              }
+            } else if (app.ip) {
+              // Priority 2: Cache (for zero-downtime restarts)
+              containerIP = app.ip
+              if (typeof log !== 'undefined') log('Proxy: Using cached IP for %s: %s', app.name, containerIP)
+            } else {
+              // Priority 3: Fallback (Bad Gateway)
+              containerIP = '127.0.0.1'
+            }
+          } catch {
+            // Fallback to cache on error
+            containerIP = app.ip || '127.0.0.1'
+          }
+        }
+
+        if (typeof log !== 'undefined')
+          log('Proxy: Adding domain %s -> %s:%d (IP: %s)', domainName, app.name, port, containerIP || '127.0.0.1')
+
+        proxyDomains[domainName] = {
+          domain: domainName,
+          port: port,
+          subdomain: record.subdomain || [],
+          cert: record.cert || {},
+          container: useInternal ? containerIP : undefined,
+          containerIP: containerIP
+        }
+      })
+    )
 
     if (typeof log !== 'undefined') log('Proxy: Syncing %d domains', Object.keys(proxyDomains).length)
 
@@ -325,34 +364,6 @@ class OdacProxy {
   }
 
   // Removed #handleUpgrade as it is handled by Go Proxy
-
-  start() {
-    this.#active = true
-    this.spawnProxy()
-  }
-
-  stop() {
-    this.#active = false
-    if (this.#proxyProcess) {
-      this.#proxyProcess.kill() // SIGTERM
-      this.#proxyProcess = null
-      this.#proxyApiPort = null
-      if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
-        try {
-          fs.unlinkSync(this.#proxySocketPath)
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }
-
-  // Test helper
-  reset() {
-    this.#proxyProcess = null
-    this.#proxySocketPath = null
-    this.#proxyApiPort = null
-  }
 }
 
 module.exports = new OdacProxy()
