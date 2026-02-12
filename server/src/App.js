@@ -296,10 +296,16 @@ class App {
         }
 
         // Step 3: Create app record
+        const gitMetadata = this.#getGitMetadata(url)
         const app = {
           id: this.#getNextId(),
           name,
           type: 'git',
+          git: {
+            repo: gitMetadata.repo,
+            branch: branch || 'main',
+            provider: gitMetadata.provider
+          },
           url,
           branch,
           image: imageName,
@@ -626,7 +632,22 @@ class App {
       // Persist updated metadata
       const updates = {}
       if (commitSha) updates.commitSha = commitSha
-      if (branch) updates.branch = targetBranch
+      if (branch || url) {
+        if (branch) updates.branch = targetBranch
+        if (url) updates.url = url // Save updated URL if provided
+
+        // Sync with the git object structure
+        if (app.git) {
+          const gitMetadata = this.#getGitMetadata(targetUrl)
+          updates.git = {
+            ...app.git,
+            repo: gitMetadata.repo,
+            branch: targetBranch,
+            provider: gitMetadata.provider
+          }
+        }
+      }
+
       if (Object.keys(updates).length) this.#set(app.id, updates)
 
       Odac.server('Hub').trigger('app.list')
@@ -935,6 +956,42 @@ class App {
     }
 
     return name
+  }
+
+  /**
+   * Parses git URL to extract provider and repo in user/repo format.
+   * @param {string} url - Git URL
+   * @returns {object} - {repo, provider}
+   */
+  #getGitMetadata(url) {
+    if (!url) return {repo: '', provider: 'git'}
+    const lower = url.toLowerCase()
+    let provider = 'git'
+    if (lower.includes('github.com')) provider = 'github'
+    else if (lower.includes('gitlab.com')) provider = 'gitlab'
+    else if (lower.includes('bitbucket.org')) provider = 'bitbucket'
+
+    let repo = ''
+    try {
+      if (url.includes('@') && url.includes(':')) {
+        // SSH: git@github.com:user/repo.git
+        repo = url.split(':').pop()
+      } else {
+        // HTTPS: https://github.com/user/repo.git
+        const parts = url.replace(/\/$/, '').split('/')
+        if (parts.length >= 2) {
+          const repoPart = parts.pop()
+          const userPart = parts.pop()
+          repo = `${userPart}/${repoPart}`
+        }
+      }
+
+      if (repo.endsWith('.git')) repo = repo.slice(0, -4)
+    } catch {
+      repo = url
+    }
+
+    return {repo, provider}
   }
 
   #generatePassword(length = 16) {

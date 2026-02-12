@@ -1,3 +1,20 @@
+const fs = require('fs')
+jest.mock('fs', () => ({
+  existsSync: jest.fn(() => true),
+  mkdirSync: jest.fn(),
+  rmSync: jest.fn(),
+  promises: {
+    mkdir: jest.fn().mockResolvedValue(true),
+    rm: jest.fn().mockResolvedValue(true),
+    access: jest.fn().mockResolvedValue(true)
+  },
+  createWriteStream: jest.fn(() => ({
+    write: jest.fn(),
+    end: jest.fn(),
+    on: jest.fn()
+  }))
+}))
+
 let App
 
 describe('App', () => {
@@ -41,7 +58,9 @@ describe('App', () => {
             stop: jest.fn(),
             list: jest.fn(() => []),
             getStats: jest.fn(),
-            remove: jest.fn()
+            remove: jest.fn(),
+            fetchRepo: jest.fn(),
+            getImageExposedPorts: jest.fn(() => [])
           }
         }
         if (module === 'Api') {
@@ -67,7 +86,8 @@ describe('App', () => {
           }),
           isRunning: jest.fn(() => false),
           stop: jest.fn(),
-          trigger: jest.fn()
+          trigger: jest.fn(),
+          syncConfig: jest.fn()
         }
       })
     }
@@ -247,6 +267,63 @@ describe('App', () => {
       const result = await App.delete(1)
       expect(result.success).toBe(true)
       expect(mockDeleteByApp).toHaveBeenCalledWith('delete-me')
+    })
+  })
+
+  describe('git configuration', () => {
+    test('should create the git object with repo, branch, and provider', async () => {
+      mockConfig.apps = []
+      mockConfig.app = {path: '/tmp/odac-test'}
+
+      const config = {
+        type: 'git',
+        url: 'https://github.com/user/my-repo.git',
+        name: 'my-git-app',
+        branch: 'develop'
+      }
+
+      await App.create(config)
+
+      const {data: apps} = await App.list(true)
+      const app = apps.find(a => a.name === 'my-git-app')
+
+      expect(app.git).toBeDefined()
+      expect(app.git.repo).toBe('user/my-repo')
+      expect(app.git.branch).toBe('develop')
+      expect(app.git.provider).toBe('github')
+    })
+
+    test('should update the git object during redeploy', async () => {
+      const appRecord = {
+        id: 1,
+        name: 'redeploy-app',
+        type: 'git',
+        url: 'https://gitlab.com/user/repo.git',
+        branch: 'main',
+        git: {
+          repo: 'user/repo',
+          branch: 'main',
+          provider: 'gitlab'
+        }
+      }
+      mockConfig.apps = [appRecord]
+      mockConfig.app = {path: '/tmp/odac-test'}
+
+      await App.init()
+
+      // Redeploy with new branch
+      await App.redeploy({
+        container: 'redeploy-app',
+        branch: 'feature-abc'
+      })
+
+      const {data: apps} = await App.list(true)
+      const app = apps.find(a => a.name === 'redeploy-app')
+
+      expect(app.branch).toBe('feature-abc')
+      expect(app.git.branch).toBe('feature-abc')
+      expect(app.git.repo).toBe('user/repo')
+      expect(app.git.provider).toBe('gitlab')
     })
   })
 })
