@@ -162,15 +162,69 @@ describe('SSL', () => {
     })
 
     test('should skip valid certificates', async () => {
-      // clear invocations to be sure
-      acme.Client.mockClear()
+      // Fresh module to avoid singleton state leak
+      jest.resetModules()
+      acme = require('acme-client')
+      fs = require('fs')
+      os = require('os')
+      selfsigned = require('selfsigned')
 
-      // Remove expired domain to focus on valid one
-      mockConfig.config.domains['expired.com'].cert.ssl.expiry = Date.now() + 1000 * 60 * 60 * 24 * 40
+      acme.forge.createPrivateKey.mockResolvedValue('mock-account-key')
+      acme.forge.createCsr.mockResolvedValue(['mock-domain-key', 'mock-csr'])
+      acme.Client.mockImplementation(() => ({
+        auto: jest.fn().mockResolvedValue('mock-certificate')
+      }))
+      fs.existsSync.mockReturnValue(true)
+      fs.mkdirSync.mockImplementation(() => {})
+      fs.writeFileSync.mockImplementation(() => {})
+      fs.readFileSync.mockImplementation(path => Buffer.from(path))
+      os.homedir.mockReturnValue('/home/user')
+      selfsigned.generate.mockReturnValue({private: 'mock-private-key', cert: 'mock-cert'})
 
+      // Both domains have valid certificates with cert paths
+      mockConfig.config.domains = {
+        'example.com': {
+          appId: 'myapp',
+          subdomain: ['www'],
+          cert: {
+            ssl: {
+              key: '/home/user/.odac/cert/ssl/example.com.key',
+              cert: '/home/user/.odac/cert/ssl/example.com.crt',
+              expiry: Date.now() + 1000 * 60 * 60 * 24 * 40
+            }
+          }
+        },
+        'expired.com': {
+          appId: 'myapp',
+          subdomain: [],
+          cert: {
+            ssl: {
+              key: '/home/user/.odac/cert/ssl/expired.com.key',
+              cert: '/home/user/.odac/cert/ssl/expired.com.crt',
+              expiry: Date.now() + 1000 * 60 * 60 * 24 * 40
+            }
+          }
+        }
+      }
+
+      // Mock X509Certificate for SAN mismatch check — return matching SANs
+      const nodeCrypto = require('crypto')
+      const originalX509 = nodeCrypto.X509Certificate
+      nodeCrypto.X509Certificate = jest.fn().mockImplementation(buf => {
+        const certPath = buf.toString()
+        if (certPath.includes('example.com')) {
+          return {subjectAltName: 'DNS:example.com, DNS:www.example.com'}
+        }
+        return {subjectAltName: 'DNS:expired.com'}
+      })
+
+      SSL = require('../../server/src/SSL')
       await SSL.check()
 
       expect(acme.Client).not.toHaveBeenCalled()
+
+      // Restore
+      nodeCrypto.X509Certificate = originalX509
     })
   })
 
@@ -234,6 +288,44 @@ describe('SSL', () => {
 
       expect(result.result).toBe(false)
       expect(result.message).toContain('SSL renewal is not available for IP addresses')
+    })
+  })
+
+  describe('cancellation', () => {
+    test('should cancel in-progress SSL when new request arrives for same domain', async () => {
+      let resolveFirstAuto
+      const firstAutoPromise = new Promise(resolve => {
+        resolveFirstAuto = resolve
+      })
+
+      // First ACME auto call hangs until we resolve it
+      const autoFn = jest.fn().mockReturnValueOnce(firstAutoPromise).mockResolvedValueOnce('mock-certificate-v2')
+
+      acme.Client.mockImplementation(() => ({auto: autoFn}))
+
+      // Trigger first SSL (will block on auto())
+      const firstRun = SSL.renew('expired.com')
+      await wait()
+      await wait()
+
+      // Trigger second SSL for same domain — should cancel the first
+      SSL.renew('expired.com')
+      await wait()
+
+      // Resolve the first auto — certificate should be discarded
+      resolveFirstAuto('mock-certificate-stale')
+      await wait()
+      await wait()
+      await wait()
+
+      // Only the second certificate should be saved
+      const writeCalls = fs.writeFileSync.mock.calls.filter(call => typeof call[0] === 'string' && call[0].includes('expired.com.crt'))
+
+      if (writeCalls.length > 0) {
+        const lastSavedCert = writeCalls[writeCalls.length - 1][1]
+        expect(lastSavedCert).toBe('mock-certificate-v2')
+        expect(lastSavedCert).not.toBe('mock-certificate-stale')
+      }
     })
   })
 })

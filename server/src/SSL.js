@@ -9,7 +9,7 @@ const nodeCrypto = require('crypto')
 class SSL {
   #checking = false
   #checked = {}
-  #processing = new Set()
+  #processing = new Map()
   #queued = new Set()
 
   async check() {
@@ -111,27 +111,20 @@ class SSL {
 
   async #ssl(domain) {
     if (this.#processing.has(domain)) {
-      log('SSL generation for %s is already in progress. Queuing next run.', domain)
+      this.#processing.get(domain).cancelled = true
+      log('SSL generation for %s is outdated due to config change. Cancelling current run and queuing fresh generation.', domain)
       this.#queued.add(domain)
       return
     }
 
-    // If queued, we want to run immediately, so we ignore the interval check
-    // But if it's a standard check, we respect it.
-    // We can check if it was queued to bypass, but implicit is fine:
-    // If it was queued, it's called from finally block where we might want to reset interval?
-    // Actually, simply: if in queue, we assume "force update".
-    // But here we are entering the function. #queued was deleted before calling this recursively?
-    // Let's handle logic inside finally block carefully.
-
     if (this.#checked[domain]?.interval > Date.now()) return
 
-    this.#processing.add(domain)
+    const context = {cancelled: false}
+    this.#processing.set(domain, context)
 
     try {
       const accountPrivateKey = await acme.forge.createPrivateKey()
 
-      // Create ACME client with proper error handling configuration
       const client = new acme.Client({
         directoryUrl: acme.directory.letsencrypt.production,
         accountKey: accountPrivateKey
@@ -145,12 +138,22 @@ class SSL {
         }
       }
 
+      if (context.cancelled) {
+        log('SSL generation for %s cancelled before CSR creation.', domain)
+        return
+      }
+
       const [key, csr] = await acme.forge.createCsr({
         commonName: domain,
         altNames: subdomains
       })
 
       log('Requesting SSL certificate for domain %s...', domain)
+
+      if (context.cancelled) {
+        log('SSL generation for %s cancelled before ACME request.', domain)
+        return
+      }
 
       const cert = await client.auto({
         csr,
@@ -180,20 +183,27 @@ class SSL {
         }
       })
 
+      if (context.cancelled) {
+        log('SSL generation for %s cancelled after ACME response. Discarding stale certificate.', domain)
+        return
+      }
+
       if (!cert) {
         error('SSL certificate generation failed for domain %s: No certificate returned', domain)
         return
       }
 
-      // Save certificate files
       this.#saveCertificate(domain, key, cert)
     } catch (err) {
-      this.#handleSSLError(domain, err)
+      if (!context.cancelled) {
+        this.#handleSSLError(domain, err)
+      } else {
+        log('SSL generation for %s cancelled during execution. Suppressing error backoff.', domain)
+      }
     } finally {
       this.#processing.delete(domain)
       if (this.#queued.has(domain)) {
         this.#queued.delete(domain)
-        // Clear collision/error interval to force retry because configuration changed (presumed, since it was queued)
         delete this.#checked[domain]
         log('Processing queued SSL generation for %s', domain)
         this.#ssl(domain)
