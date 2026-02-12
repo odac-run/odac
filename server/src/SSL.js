@@ -13,7 +13,7 @@ class SSL {
   #queued = new Set()
 
   async check() {
-    if (this.#checking || !Odac.core('Config').config.domains) return
+    if (this.#checking || this.#processing.size > 0 || this.#queued.size > 0 || !Odac.core('Config').config.domains) return
     this.#checking = true
     this.#self()
     for (const domain of Object.keys(Odac.core('Config').config.domains)) {
