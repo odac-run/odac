@@ -578,22 +578,21 @@ class App {
       // Step 3: Stop running container (minimal downtime starts here)
       await this.stop(app.id)
 
-      // Step 4: Release processing lock so #run can acquire it, then restart
-      this.#processing.delete(app.id)
-      this.#set(app.id, {active: true})
+      // Step 4: Restart with new image (inline instead of delegating to #run
+      // to keep #processing lock held for the entire operation lifecycle)
+      this.#set(app.id, {active: true, status: 'starting'})
+      await this.#runGitApp(app)
+      this.#set(app.id, {status: 'running', started: Date.now()})
+      Odac.server('Proxy').syncConfig()
 
-      if (await this.#run(app.id)) {
-        // Persist updated metadata
-        const updates = {}
-        if (commitSha) updates.commitSha = commitSha
-        if (branch) updates.branch = targetBranch
-        if (Object.keys(updates).length) this.#set(app.id, updates)
+      // Persist updated metadata
+      const updates = {}
+      if (commitSha) updates.commitSha = commitSha
+      if (branch) updates.branch = targetBranch
+      if (Object.keys(updates).length) this.#set(app.id, updates)
 
-        Odac.server('Hub').trigger('app.list')
-        return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
-      }
-
-      return Odac.server('Api').result(false, __('Failed to restart app %s after redeploy.', app.name))
+      Odac.server('Hub').trigger('app.list')
+      return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
     } catch (err) {
       error('Redeploy failed for %s: %s', app.name, err.message)
       this.#set(app.id, {status: 'errored'})
