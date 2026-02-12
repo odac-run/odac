@@ -516,6 +516,114 @@ class App {
     return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
   }
 
+  async redeploy(payload) {
+    const {container: appName, url, token, branch, commitSha} = payload
+
+    if (!appName) {
+      return Odac.server('Api').result(false, __('Missing container name'))
+    }
+
+    const app = this.#get(appName)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', appName))
+    }
+
+    if (app.type !== 'git') {
+      return Odac.server('Api').result(false, __('Redeploy is only supported for git apps.'))
+    }
+
+    // Validate URL if overridden (same rules as #createFromGit)
+    if (url) {
+      if (/[;&|`$(){}<>]/.test(url)) {
+        return Odac.server('Api').result(false, __('Invalid Git URL: Contains illegal characters.'))
+      }
+      if (!url.match(/^(https?|git|ssh|ftps?|rsync):\/\//) && !url.match(/^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/)) {
+        return Odac.server('Api').result(false, __('Invalid Git URL: Unsupported protocol.'))
+      }
+    }
+
+    // Validate commitSha format (hex-only, 6-40 chars)
+    if (commitSha && !/^[a-f0-9]{6,40}$/i.test(commitSha)) {
+      return Odac.server('Api').result(false, __('Invalid commit SHA format.'))
+    }
+
+    // Validate branch name: block git argument injection (--upload-pack) and shell metacharacters
+    if (branch && (branch.startsWith('-') || /[;&|`$(){}<>]/.test(branch))) {
+      return Odac.server('Api').result(false, __('Invalid branch name format.'))
+    }
+
+    const targetBranch = branch || app.branch || 'main'
+
+    // Concurrency guard: prevent parallel operations on the same app
+    if (this.#processing.has(app.id)) {
+      return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
+    }
+
+    this.#processing.add(app.id)
+    log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
+
+    try {
+      const appsPath = Odac.core('Config').config.app.path
+      const appDir = path.join(appsPath, app.name)
+
+      // Defense-in-depth: prevent path traversal before any destructive fs ops
+      if (!path.resolve(appDir).startsWith(path.resolve(appsPath) + path.sep)) {
+        return Odac.server('Api').result(false, __('Invalid application directory.'))
+      }
+
+      const targetUrl = url || app.url
+      const imageName = app.image || `odac-app-${app.name}`
+
+      // Step 1: Fetch latest code (app still running → zero-downtime during fetch)
+      this.#set(app.id, {status: 'updating'})
+      const container = Odac.server('Container')
+      const hasGit = await fs.promises
+        .access(path.join(appDir, '.git'))
+        .then(() => true)
+        .catch(() => false)
+
+      if (hasGit) {
+        // Fast path: incremental fetch (delta download only)
+        await container.fetchRepo(targetUrl, targetBranch, appDir, token, commitSha)
+      } else {
+        // Fallback: fresh clone for legacy apps where .git was removed by Builder
+        log('No .git found in %s, performing fresh clone', app.name)
+        await fs.promises.rm(appDir, {recursive: true, force: true})
+        await fs.promises.mkdir(appDir, {recursive: true})
+        await container.cloneRepo(targetUrl, targetBranch, appDir, token)
+      }
+
+      // Step 2: Rebuild image (app still running on old image)
+      this.#set(app.id, {status: 'building'})
+      await Odac.server('Container').build(appDir, imageName)
+
+      // Step 3: Stop running container (minimal downtime starts here)
+      await this.stop(app.id)
+
+      // Step 4: Restart with new image (inline instead of delegating to #run
+      // to keep #processing lock held for the entire operation lifecycle)
+      this.#set(app.id, {active: true, status: 'starting'})
+      await this.#runGitApp(app)
+      this.#set(app.id, {status: 'running', started: Date.now()})
+      Odac.server('Proxy').syncConfig()
+
+      // Persist updated metadata
+      const updates = {}
+      if (commitSha) updates.commitSha = commitSha
+      if (branch) updates.branch = targetBranch
+      if (Object.keys(updates).length) this.#set(app.id, updates)
+
+      Odac.server('Hub').trigger('app.list')
+      return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
+    } catch (err) {
+      error('Redeploy failed for %s: %s', app.name, err.message)
+      this.#set(app.id, {status: 'errored'})
+      return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
+    } finally {
+      this.#processing.delete(app.id)
+    }
+  }
+
   // Status & Listing
   async list(detailed = false) {
     const apps = this.#loadAppsFromConfig()
@@ -534,7 +642,7 @@ class App {
     }
 
     if (apps.length === 0) {
-      return Odac.server('Api').result(false, __('No apps found.'))
+      return Odac.server('Api').result(true, [])
     }
 
     if (detailed !== true) {

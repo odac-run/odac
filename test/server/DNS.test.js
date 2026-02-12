@@ -49,6 +49,7 @@ describe('DNS Module', () => {
           TXT: 16,
           NS: 2,
           SOA: 6,
+          CAA: 257,
           ANY: 255
         }
       },

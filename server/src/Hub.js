@@ -62,6 +62,10 @@ class Hub {
         fn: payload => Odac.server('App').delete(payload.id),
         triggers: ['app.list']
       },
+      'app.redeploy': {
+        fn: payload => Odac.server('App').redeploy(payload),
+        triggers: ['app.list', 'app.stats']
+      },
       'domain.add': {
         fn: payload => Odac.server('Domain').add(payload.domain, payload.app),
         triggers: ['domain.list', 'system.info']

@@ -178,19 +178,18 @@ class Container {
 
     const hostPath = this.#resolveHostPath(targetDir)
 
-    try {
-      // Run ephemeral git container
-      const container = await this.#docker.createContainer({
-        Image: gitImage,
-        Cmd: ['clone', '--depth', '1', ...(branch ? ['--branch', branch] : []), secureUrl, '.'],
-        WorkingDir: '/git',
-        HostConfig: {
-          Binds: [`${hostPath}:/git`],
-          AutoRemove: true,
-          Privileged: false // SECURITY: Rootless git
-        }
-      })
+    // Run ephemeral git container
+    const container = await this.#docker.createContainer({
+      Image: gitImage,
+      Cmd: ['clone', '--depth', '1', ...(branch ? ['--branch', branch] : []), secureUrl, '.'],
+      WorkingDir: '/git',
+      HostConfig: {
+        Binds: [`${hostPath}:/git`],
+        Privileged: false // SECURITY: Rootless git
+      }
+    })
 
+    try {
       await container.start()
       const result = await container.wait()
 
@@ -212,6 +211,84 @@ class Container {
     } catch (err) {
       error(`[Git] Clone failed: ${err.message}`)
       throw err
+    } finally {
+      container.remove({force: true}).catch(() => {})
+    }
+  }
+
+  /**
+   * Fetches latest changes from a git repository into an existing clone
+   * Uses ephemeral container to avoid requiring git in app containers
+   * @param {string} url - Git remote URL
+   * @param {string} branch - Branch to fetch
+   * @param {string} targetDir - Host directory containing the existing clone
+   * @param {string} [token] - Optional auth token for private repos
+   * @param {string} [commitSha] - Optional specific commit to reset to
+   */
+  async fetchRepo(url, branch, targetDir, token, commitSha) {
+    if (!this.available) throw new Error('Docker is not available')
+
+    const gitImage = 'alpine/git'
+    await this.#ensureImage(gitImage)
+
+    let secureUrl = url
+    if (token && url.startsWith('https://')) {
+      const noProto = url.substring(8)
+      secureUrl = `https://oauth2:${token}@${noProto}`
+    }
+
+    log('[Git] Fetching updates (branch: %s, commit: %s)...', branch || 'default', commitSha || 'HEAD')
+
+    const hostPath = this.#resolveHostPath(targetDir)
+
+    // Pass all dynamic values via env vars to prevent shell injection
+    const envVars = [`GIT_BRANCH=${branch}`]
+    if (commitSha) envVars.push(`GIT_COMMIT_SHA=${commitSha}`)
+    if (token) {
+      envVars.push(`GIT_REMOTE_URL=${secureUrl}`)
+      envVars.push(`GIT_ORIGINAL_URL=${url}`)
+    }
+
+    // Build git command: fetch specific commit or branch head
+    let gitCmd = commitSha
+      ? 'git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"'
+      : 'git fetch --depth 1 origin "$GIT_BRANCH" && git reset --hard "origin/$GIT_BRANCH"'
+
+    // Temporarily inject authenticated URL for private repos, restore original after fetch
+    if (token) {
+      gitCmd = 'git remote set-url origin "$GIT_REMOTE_URL" && ' + gitCmd + ' && git remote set-url origin "$GIT_ORIGINAL_URL"'
+    }
+
+    const container = await this.#docker.createContainer({
+      Image: gitImage,
+      Entrypoint: ['sh', '-c'],
+      Cmd: [gitCmd],
+      WorkingDir: '/git',
+      Env: envVars,
+      HostConfig: {
+        Binds: [`${hostPath}:/git`],
+        Privileged: false
+      }
+    })
+
+    try {
+      await container.start()
+      const result = await container.wait()
+
+      if (result.StatusCode !== 0) {
+        const logs = await container.logs({stdout: true, stderr: true})
+        let logStr = logs ? logs.toString('utf8') : 'No logs available'
+        if (token) logStr = logStr.replaceAll(token, '*****')
+        log('[Git] Container Logs: %s', logStr)
+        throw new Error(`Git fetch failed with exit code ${result.StatusCode}. Logs: ${logStr}`)
+      }
+
+      log('[Git] Fetch and reset successful.')
+    } catch (err) {
+      error('[Git] Fetch failed: %s', err.message)
+      throw err
+    } finally {
+      container.remove({force: true}).catch(() => {})
     }
   }
 

@@ -49,6 +49,11 @@ describe('Builder', () => {
       }
     }
 
+    // Ensure fs methods return promises for catch() to work
+    fsPromises.writeFile.mockResolvedValue()
+    fsPromises.unlink.mockResolvedValue()
+    fsPromises.access.mockResolvedValue()
+
     builder = new Builder(mockDocker)
   })
 
