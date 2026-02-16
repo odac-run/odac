@@ -1,0 +1,198 @@
+const fs = require('fs')
+const path = require('path')
+const {Transform} = require('stream')
+
+// Standard Logger initialization
+const {error} = Odac.core('Log').init('Container', 'Logger')
+
+class Logger {
+  #appPath
+  #logsDir
+  #buildsDir
+  #runtimeDir
+
+  constructor(appPath) {
+    this.#appPath = appPath
+    this.#logsDir = path.join(appPath, '.odac', 'logs')
+    this.#buildsDir = path.join(this.#logsDir, 'builds')
+    this.#runtimeDir = path.join(this.#logsDir, 'runtime')
+  }
+
+  /**
+   * Initializes the logger directories properly
+   */
+  async init() {
+    try {
+      await fs.promises.mkdir(this.#buildsDir, {recursive: true})
+      await fs.promises.mkdir(this.#runtimeDir, {recursive: true})
+    } catch (e) {
+      error('Failed to initialize logger directories for %s: %s', this.#appPath, e.message)
+    }
+  }
+
+  /**
+   * Creates a write stream for a new build and analyzes it on the fly
+   * @param {string} buildId - Unique build identifier
+   * @param {Object} metadata - Initial metadata (e.g. { trigger: 'git', branch: 'main' })
+   * @returns {Object} { stream, analyzer } - Stream to pipe logs into, and the analyzer object
+   */
+  createBuildStream(buildId, metadata = {}) {
+    const logFile = path.join(this.#buildsDir, `${buildId}.log`)
+    const summaryFile = path.join(this.#buildsDir, `${buildId}.json`)
+
+    const startTime = Date.now()
+    const stats = {
+      id: buildId,
+      timestamp: startTime,
+      duration: 0,
+      status: 'pending', // pending, success, failed
+      errors: 0,
+      warnings: 0,
+      phases: {}, // { compile: { start: 123, end: 124, duration: 1 } }
+      metadata
+    }
+
+    // Real-time analysis stream
+    const analyzer = new Transform({
+      transform(chunk, encoding, callback) {
+        const line = chunk.toString()
+
+        // Simple heuristics for analysis
+        if (/error/i.test(line) && !/node_modules/i.test(line)) stats.errors++
+        if (/warning/i.test(line) && !/npm warn/i.test(line)) stats.warnings++ // Ignore common npm warnings
+
+        this.push(chunk) // Pass through
+        callback()
+      }
+    })
+
+    const fileStream = fs.createWriteStream(logFile, {flags: 'a'})
+    analyzer.pipe(fileStream)
+
+    // Return control object
+    return {
+      stream: analyzer, // Pipe source to this
+      path: logFile,
+
+      // Call this when a specific phase starts
+      startPhase: phaseName => {
+        stats.phases[phaseName] = {start: Date.now()}
+      },
+
+      // Call this when a phase ends
+      endPhase: (phaseName, success = true) => {
+        if (stats.phases[phaseName]) {
+          stats.phases[phaseName].end = Date.now()
+          stats.phases[phaseName].duration = (stats.phases[phaseName].end - stats.phases[phaseName].start) / 1000
+          stats.phases[phaseName].status = success ? 'success' : 'failed'
+        }
+      },
+
+      // Call this to finalize the log
+      finalize: async (success = true) => {
+        stats.status = success ? 'success' : 'failed'
+        stats.duration = (Date.now() - startTime) / 1000
+
+        // Write summary
+        try {
+          await fs.promises.writeFile(summaryFile, JSON.stringify(stats, null, 2))
+        } catch (e) {
+          error('Failed to write build summary: %s', e.message)
+        }
+
+        this.#rotateLogs() // Trigger cleanup in background
+      }
+    }
+  }
+
+  /**
+   * Returns summary stats for the last 24 hours
+   */
+  async getDailySummary() {
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
+    const summary = {
+      total: 0,
+      success: 0,
+      failed: 0,
+      totalDuration: 0,
+      avgDuration: 0,
+      builds: []
+    }
+
+    try {
+      const files = await fs.promises.readdir(this.#buildsDir)
+      const jsonFiles = files.filter(f => f.endsWith('.json'))
+
+      for (const file of jsonFiles) {
+        try {
+          const content = await fs.promises.readFile(path.join(this.#buildsDir, file), 'utf8')
+          const data = JSON.parse(content)
+
+          if (data.timestamp > oneDayAgo) {
+            summary.total++
+            if (data.status === 'success') summary.success++
+            else summary.failed++
+
+            summary.totalDuration += data.duration || 0
+            summary.builds.push({
+              id: data.id,
+              status: data.status,
+              time: data.timestamp,
+              duration: data.duration,
+              errors: data.errors
+            })
+          }
+        } catch {
+          // Ignore corrupted files
+        }
+      }
+
+      if (summary.total > 0) {
+        summary.avgDuration = parseFloat((summary.totalDuration / summary.total).toFixed(2))
+      }
+
+      // Sort by newest first
+      summary.builds.sort((a, b) => b.time - a.time)
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        error('Failed to get daily summary: %s', e.message)
+      }
+    }
+
+    return summary
+  }
+
+  /**
+   * Private: Rotates logs (Retention Policy)
+   * Keeps last 10 builds to save space
+   */
+  async #rotateLogs() {
+    try {
+      const files = await fs.promises.readdir(this.#buildsDir)
+      const jsonFiles = files.filter(f => f.endsWith('.json'))
+
+      if (jsonFiles.length <= 10) return
+
+      const fileStats = await Promise.all(
+        jsonFiles.map(async f => {
+          const stat = await fs.promises.stat(path.join(this.#buildsDir, f))
+          return {name: f, time: stat.mtimeMs}
+        })
+      )
+
+      fileStats.sort((a, b) => b.time - a.time) // Newest first
+
+      const toDelete = fileStats.slice(10) // Keep top 10
+
+      for (const item of toDelete) {
+        const id = item.name.replace('.json', '')
+        await fs.promises.unlink(path.join(this.#buildsDir, item.name)).catch(() => {}) // JSON
+        await fs.promises.unlink(path.join(this.#buildsDir, `${id}.log`)).catch(() => {}) // LOG
+      }
+    } catch (e) {
+      error('Log rotation failed: %s', e.message)
+    }
+  }
+}
+
+module.exports = Logger

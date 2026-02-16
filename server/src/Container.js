@@ -140,7 +140,8 @@ class Container {
       await this.#builder.build(
         {
           internalPath: sourceDir,
-          hostPath: hostPath
+          hostPath: hostPath,
+          appName: path.basename(sourceDir) // Pass appName for logging
         },
         imageName
       )

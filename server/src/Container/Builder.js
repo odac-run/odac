@@ -5,6 +5,7 @@ const {PassThrough} = require('stream')
 
 // Using Odac.core('Log') is standard practice in this codebase
 const {log, error} = Odac.core('Log').init('Container', 'Builder')
+const Logger = require('./Logger')
 
 /**
  * Configuration for Build Strategies.
@@ -108,37 +109,71 @@ class Builder {
    * @returns {Promise<boolean>}
    */
   async build(context, imageName) {
-    const {hostPath, internalPath} = context
-    log(`Starting build for ${imageName}`)
-    log(`DEBUG: ODAC_HOST_ROOT=${process.env.ODAC_HOST_ROOT}`)
-    log(`DEBUG: CWD=${process.cwd()}`)
-    log(`Paths - Host: ${hostPath}, Internal: ${internalPath}`)
+    const {internalPath} = context
+    // log(`Starting build for ${imageName}`) // Removed log call
+    // log(`DEBUG: ODAC_HOST_ROOT=${process.env.ODAC_HOST_ROOT}`) // Removed log call
+    // log(`DEBUG: CWD=${process.cwd()}`) // Removed log call
+    // log(`Paths - Host: ${hostPath}, Internal: ${internalPath}`) // Removed log call
 
     // 1. Detect Strategy (Use internal path to read files)
     const strategy = await this.#detect(internalPath)
     if (!strategy) {
       throw new Error('Could not detect project type (no package.json, requirements.txt, etc. found)')
     }
-    log(`Detected project type: ${strategy.name}`)
+    // log(`Detected project type: ${strategy.name}`) // Removed log call
+
+    // Initialize Logger if appName is provided
+    let buildLogger = null
+
+    if (context.appName) {
+      try {
+        const appPath = path.join(Odac.core('Config').config.app.path, context.appName)
+        buildLogger = new Logger(appPath)
+        await buildLogger.init()
+
+        const buildId = `build_${Date.now()}`
+        const logCtrl = buildLogger.createBuildStream(buildId, {
+          image: imageName,
+          strategy: strategy.name
+        })
+
+        // Wrap logger control to be passed to phases
+        context.logger = {
+          stream: logCtrl.stream,
+          start: logCtrl.startPhase,
+          end: logCtrl.endPhase,
+          finalize: logCtrl.finalize
+        }
+      } catch (e) {
+        error('Failed to initialize build logger: %s', e.message)
+      }
+    }
 
     try {
       if (strategy.type === 'custom') {
         // FAST TRACK: Custom Dockerfile
-        // Skip compile phase, go straight to package mechanism but using existing Dockerfile
+        if (context.logger) context.logger.start('custom')
         await this.#packageCustom(context, imageName)
+        if (context.logger) context.logger.end('custom', true)
       } else {
         // STANDARD TRACK: Auto-Build
         // 2. Compile (Artifact Builder)
+        if (context.logger) context.logger.start('compile')
         await this.#compile(strategy, context)
+        if (context.logger) context.logger.end('compile', true)
 
         // 3. Package (Image Packager)
+        if (context.logger) context.logger.start('package')
         await this.#package(strategy, context, imageName)
+        if (context.logger) context.logger.end('package', true)
       }
 
       log(`Build completed successfully: ${imageName}`)
+      if (context.logger) await context.logger.finalize(true)
       return true
     } catch (err) {
       error(`Build failed: ${err.message}`)
+      if (context.logger) await context.logger.finalize(false)
       // Preserve stack trace by re-throwing the original error object
       throw err
     }
@@ -160,7 +195,11 @@ class Builder {
 
       const logStream = new PassThrough()
       const chunks = []
-      logStream.on('data', chunk => chunks.push(chunk.toString()))
+      logStream.on('data', chunk => {
+        const str = chunk.toString()
+        chunks.push(str)
+        if (context.logger) context.logger.stream.write(str)
+      })
 
       const [data] = await this.#docker.run(packagerImage, ['sh', '-c', buildCmd], logStream, {
         Binds: ['/var/run/docker.sock:/var/run/docker.sock', `${context.hostPath}:/app`],
@@ -261,7 +300,11 @@ class Builder {
 
       const logStream = new PassThrough()
       const chunks = []
-      logStream.on('data', chunk => chunks.push(chunk.toString()))
+      logStream.on('data', chunk => {
+        const str = chunk.toString()
+        chunks.push(str)
+        if (context.logger) context.logger.stream.write(str)
+      })
 
       const [data] = await this.#docker.run(strategy.image, ['sh', '-c', commands], logStream, {
         WorkingDir: '/app',
@@ -334,7 +377,11 @@ USER ${strategy.package.user}
 
       const logStream = new PassThrough()
       const chunks = []
-      logStream.on('data', chunk => chunks.push(chunk.toString()))
+      logStream.on('data', chunk => {
+        const str = chunk.toString()
+        chunks.push(str)
+        if (context.logger) context.logger.stream.write(str)
+      })
 
       const [data] = await this.#docker.run(packagerImage, ['sh', '-c', buildCmd], logStream, {
         HostConfig: packagerConfig.HostConfig

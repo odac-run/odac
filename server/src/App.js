@@ -662,6 +662,25 @@ class App {
   }
 
   // Status & Listing
+  async getBuildStats(id) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    try {
+      const Logger = require('./Container/Logger')
+      const appPath = path.join(Odac.core('Config').config.app.path, app.name)
+      const logger = new Logger(appPath)
+      const stats = await logger.getDailySummary()
+
+      return Odac.server('Api').result(true, stats)
+    } catch (e) {
+      error('Failed to get build stats for %s: %s', app.name, e.message)
+      return Odac.server('Api').result(false, e.message)
+    }
+  }
+
   async list(detailed = false) {
     const apps = this.#loadAppsFromConfig()
     const container = Odac.server('Container')
