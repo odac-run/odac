@@ -718,7 +718,10 @@ class App {
       return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
     } catch (err) {
       error('Redeploy failed for %s: %s', app.name, err.message)
-      if (logCtrl) await logCtrl.finalize(false)
+      if (logCtrl) {
+        logCtrl.stream.write(`[Error] ${err.message}\n`)
+        await logCtrl.finalize(false)
+      }
       this.#set(app.id, {status: 'errored'})
       return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
     } finally {
@@ -735,8 +738,7 @@ class App {
 
     try {
       const Logger = require('./Container/Logger')
-      const appPath = path.join(Odac.core('Config').config.app.path, app.name)
-      const logger = new Logger(appPath)
+      const logger = new Logger(app.name)
       const stats = await logger.getDailySummary()
 
       return Odac.server('Api').result(true, stats)
@@ -752,6 +754,30 @@ class App {
 
     for (const app of apps) {
       const isRunning = await container.isRunning(app.name)
+
+      // Add minimal build summary
+      try {
+        const logger = new Logger(app.name)
+        const lastBuild = await logger.getLastBuild()
+        if (lastBuild) {
+          app.build = {
+            id: lastBuild.id,
+            status: lastBuild.status,
+            duration: lastBuild.duration,
+            errors: lastBuild.errors,
+            warnings: lastBuild.warnings,
+            phases: (lastBuild.phases || []).map(p => {
+              if (p.status === 'failed' || p.errors > 0) return 2
+              if (p.warnings > 0) return 1
+              return 0
+            })
+          }
+        } else {
+          app.build = null
+        }
+      } catch {
+        app.build = null
+      }
 
       if (isRunning) {
         app.status = 'running'

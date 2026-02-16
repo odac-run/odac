@@ -59,8 +59,24 @@ class Logger {
         const line = chunk.toString()
 
         // Simple heuristics for analysis
-        if (/error/i.test(line) && !/node_modules/i.test(line)) stats.errors++
-        if (/warning/i.test(line) && !/npm warn/i.test(line)) stats.warnings++ // Ignore common npm warnings
+        const isError = /error/i.test(line) && !/node_modules/i.test(line)
+        const isWarning = /warning/i.test(line) && !/npm warn/i.test(line)
+
+        if (isError) {
+          stats.errors++
+          // Increment for active phases
+          for (const p of stats.phases) {
+            if (!p.end) p.errors = (p.errors || 0) + 1
+          }
+        }
+
+        if (isWarning) {
+          stats.warnings++
+          // Increment for active phases
+          for (const p of stats.phases) {
+            if (!p.end) p.warnings = (p.warnings || 0) + 1
+          }
+        }
 
         this.push(chunk) // Pass through
         callback()
@@ -80,7 +96,9 @@ class Logger {
         stats.phases.push({
           name: phaseName,
           start: Date.now(),
-          status: 'running'
+          status: 'running',
+          errors: 0,
+          warnings: 0
         })
       },
 
@@ -100,8 +118,18 @@ class Logger {
 
       // Call this to finalize the log
       finalize: async (success = true) => {
+        // Auto-close any pending phases
+        const now = Date.now()
+        for (const phase of stats.phases) {
+          if (!phase.end) {
+            phase.end = now
+            phase.duration = (phase.end - phase.start) / 1000
+            phase.status = success ? 'success' : 'failed'
+          }
+        }
+
         stats.status = success ? 'success' : 'failed'
-        stats.duration = (Date.now() - startTime) / 1000
+        stats.duration = (now - startTime) / 1000
 
         // Write summary
         try {
@@ -132,6 +160,45 @@ class Logger {
     return {
       stream: fileStream,
       path: logFile
+    }
+  }
+
+  /**
+   * Returns the most recent build summary
+   */
+  async getLastBuild() {
+    try {
+      const files = await fs.promises.readdir(this.#buildsDir)
+      const jsonFiles = files.filter(f => f.endsWith('.json'))
+      if (jsonFiles.length === 0) return null
+
+      // Sort by filename (timestamp based) desc
+      jsonFiles.sort().reverse()
+
+      const content = await fs.promises.readFile(path.join(this.#buildsDir, jsonFiles[0]), 'utf8')
+      const data = JSON.parse(content)
+      const phases = data.phases || []
+
+      // Sort phases to show linear progression (completed first)
+      phases.sort((a, b) => {
+        if (a.end && b.end) return a.end - b.end
+        if (a.end) return -1
+        if (b.end) return 1
+        return a.start - b.start
+      })
+
+      return {
+        id: data.id,
+        status: data.status,
+        time: data.timestamp,
+        duration: data.duration,
+        errors: data.errors || 0,
+        warnings: data.warnings || 0,
+        phases,
+        metadata: data.metadata || {}
+      }
+    } catch {
+      return null
     }
   }
 
@@ -169,7 +236,9 @@ class Logger {
               status: data.status,
               time: data.timestamp,
               duration: data.duration,
-              errors: data.errors
+              errors: data.errors,
+              phases: data.phases || [],
+              metadata: data.metadata || {}
             })
           }
         } catch {
