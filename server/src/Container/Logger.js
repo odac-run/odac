@@ -1,19 +1,20 @@
 const fs = require('fs')
 const path = require('path')
+const os = require('os')
 const {Transform} = require('stream')
 
 // Standard Logger initialization
 const {error} = Odac.core('Log').init('Container', 'Logger')
 
 class Logger {
-  #appPath
+  #appName
   #logsDir
   #buildsDir
   #runtimeDir
 
-  constructor(appPath) {
-    this.#appPath = appPath
-    this.#logsDir = path.join(appPath, '.odac', 'logs')
+  constructor(appName) {
+    this.#appName = appName
+    this.#logsDir = path.join(os.homedir(), '.odac', 'logs', appName)
     this.#buildsDir = path.join(this.#logsDir, 'builds')
     this.#runtimeDir = path.join(this.#logsDir, 'runtime')
   }
@@ -26,7 +27,7 @@ class Logger {
       await fs.promises.mkdir(this.#buildsDir, {recursive: true})
       await fs.promises.mkdir(this.#runtimeDir, {recursive: true})
     } catch (e) {
-      error('Failed to initialize logger directories for %s: %s', this.#appPath, e.message)
+      error('Failed to initialize logger directories for %s: %s', this.#appName, e.message)
     }
   }
 
@@ -48,7 +49,7 @@ class Logger {
       status: 'pending', // pending, success, failed
       errors: 0,
       warnings: 0,
-      phases: {}, // { compile: { start: 123, end: 124, duration: 1 } }
+      phases: [], // Array of { name, start, end, duration, status }
       metadata
     }
 
@@ -76,15 +77,24 @@ class Logger {
 
       // Call this when a specific phase starts
       startPhase: phaseName => {
-        stats.phases[phaseName] = {start: Date.now()}
+        stats.phases.push({
+          name: phaseName,
+          start: Date.now(),
+          status: 'running'
+        })
       },
 
       // Call this when a phase ends
       endPhase: (phaseName, success = true) => {
-        if (stats.phases[phaseName]) {
-          stats.phases[phaseName].end = Date.now()
-          stats.phases[phaseName].duration = (stats.phases[phaseName].end - stats.phases[phaseName].start) / 1000
-          stats.phases[phaseName].status = success ? 'success' : 'failed'
+        // Find last matching phase that is still running (no end time)
+        for (let i = stats.phases.length - 1; i >= 0; i--) {
+          const phase = stats.phases[i]
+          if (phase.name === phaseName && !phase.end) {
+            phase.end = Date.now()
+            phase.duration = (phase.end - phase.start) / 1000
+            phase.status = success ? 'success' : 'failed'
+            break
+          }
         }
       },
 

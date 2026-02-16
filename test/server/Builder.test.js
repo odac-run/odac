@@ -216,4 +216,44 @@ describe('Builder', () => {
       expect(fsPromises.unlink).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'Dockerfile.odac'))
     })
   })
+
+  describe('logging', () => {
+    test('should use external logger phases if provided', async () => {
+      const mockLogger = {
+        stream: {write: jest.fn()},
+        start: jest.fn(),
+        end: jest.fn(),
+        finalize: jest.fn()
+      }
+
+      const contextWithLogger = {...mockContext, appName: 'test-app', logger: mockLogger}
+
+      // Setup detection (Node)
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('package.json')) return
+        throw new Error('ENOENT')
+      })
+
+      await builder.build(contextWithLogger, 'test-image')
+
+      // Verify logger phases are tracked
+      // Analysis Phase
+      expect(mockLogger.start).toHaveBeenCalledWith('analysis')
+      expect(mockLogger.end).toHaveBeenCalledWith('analysis', true)
+
+      // Compile Phase
+      expect(mockLogger.start).toHaveBeenCalledWith('pull_compiler')
+      expect(mockLogger.end).toHaveBeenCalledWith('pull_compiler', true)
+      expect(mockLogger.start).toHaveBeenCalledWith('run_compile')
+      expect(mockLogger.end).toHaveBeenCalledWith('run_compile', true)
+
+      // Package Phase
+      expect(mockLogger.start).toHaveBeenCalledWith('prepare_context')
+      expect(mockLogger.end).toHaveBeenCalledWith('prepare_context', true)
+      expect(mockLogger.start).toHaveBeenCalledWith('pull_packager')
+      expect(mockLogger.end).toHaveBeenCalledWith('pull_packager', true)
+      expect(mockLogger.start).toHaveBeenCalledWith('run_package')
+      expect(mockLogger.end).toHaveBeenCalledWith('run_package', true)
+    })
+  })
 })

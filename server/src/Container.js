@@ -119,8 +119,10 @@ class Container {
    * Builds a Docker image from source code using Native Builder
    * @param {string} sourceDir - Internal source directory
    * @param {string} imageName - Name for the built image
+   * @param {string} [appName] - Optional app name for logging context
+   * @param {Object} [activeLogger] - Optional active logger instance
    */
-  async build(sourceDir, imageName) {
+  async build(sourceDir, imageName, appName = null, activeLogger = null) {
     if (!this.available) {
       throw new Error('Docker is not available')
     }
@@ -133,6 +135,7 @@ class Container {
 
     try {
       const hostPath = this.#resolveHostPath(sourceDir)
+      const name = appName || path.basename(sourceDir)
 
       // We pass both paths to the builder:
       // internalPath: for reading package.json and writing temp Dockerfiles (FS ops)
@@ -141,7 +144,8 @@ class Container {
         {
           internalPath: sourceDir,
           hostPath: hostPath,
-          appName: path.basename(sourceDir) // Pass appName for logging
+          appName: name, // Pass explicit or derived appName
+          logger: activeLogger // Pass active logger if available
         },
         imageName
       )
@@ -158,12 +162,15 @@ class Container {
    * @param {string} [branch] - Branch to clone (uses remote default if omitted)
    * @param {string} targetDir - Host directory to clone into
    * @param {string} [token] - Optional auth token
+   * @param {Object} [activeLogger] - Optional logger instance
    */
-  async cloneRepo(url, branch, targetDir, token) {
+  async cloneRepo(url, branch, targetDir, token, activeLogger = null) {
     if (!this.available) throw new Error('Docker is not available')
 
     const gitImage = 'alpine/git'
+    if (activeLogger) activeLogger.startPhase('pull_git_image')
     await this.#ensureImage(gitImage)
+    if (activeLogger) activeLogger.endPhase('pull_git_image', true)
 
     // Securely construct URL with token inside the container env if needed
     // But better: use git credentials helper or header.
@@ -225,12 +232,15 @@ class Container {
    * @param {string} targetDir - Host directory containing the existing clone
    * @param {string} [token] - Optional auth token for private repos
    * @param {string} [commitSha] - Optional specific commit to reset to
+   * @param {Object} [activeLogger] - Optional logger instance
    */
-  async fetchRepo(url, branch, targetDir, token, commitSha) {
+  async fetchRepo(url, branch, targetDir, token, commitSha, activeLogger = null) {
     if (!this.available) throw new Error('Docker is not available')
 
     const gitImage = 'alpine/git'
+    if (activeLogger) activeLogger.startPhase('pull_git_image')
     await this.#ensureImage(gitImage)
+    if (activeLogger) activeLogger.endPhase('pull_git_image', true)
 
     let secureUrl = url
     if (token && url.startsWith('https://')) {

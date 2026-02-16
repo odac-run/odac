@@ -5,6 +5,7 @@ const net = require('net')
 const nodeCrypto = require('crypto')
 const childProcess = require('child_process')
 const os = require('os')
+const Logger = require('./Container/Logger')
 
 const SCRIPT_EXTENSIONS = ['.js', '.py', '.php', '.sh', '.rb']
 const SCRIPT_RUNNERS = {
@@ -14,8 +15,6 @@ const SCRIPT_RUNNERS = {
   '.rb': {image: 'ruby:alpine', cmd: 'ruby', local: 'ruby'},
   '.sh': {image: 'alpine:latest', cmd: 'sh', local: 'sh'}
 }
-
-const Logger = require('./Container/Logger')
 
 class App {
   #apps = []
@@ -271,16 +270,32 @@ class App {
       // Security update: We now pass the token separately via env var to prevent exposure in process/docker history
 
       const imageName = `odac-app-${name}`
+      let logCtrl = null
 
       try {
+        const logger = new Logger(name)
+        await logger.init()
+        const buildId = `build_${Date.now()}`
+        logCtrl = logger.createBuildStream(buildId, {
+          image: imageName,
+          strategy: 'git-app'
+        })
+
         // Step 1: Clone repository
         log('createFromGit: Cloning repository...')
-        await Odac.server('Container').cloneRepo(url, branch, appDir, token)
+        if (logCtrl) logCtrl.startPhase('git_clone')
+        await Odac.server('Container').cloneRepo(url, branch, appDir, token, logCtrl)
+        if (logCtrl) logCtrl.endPhase('git_clone', true)
         log('createFromGit: Clone successful')
 
         // Step 2: Build with Native Builder
         log('createFromGit: Building image...')
-        await Odac.server('Container').build(appDir, imageName)
+        await Odac.server('Container').build(appDir, imageName, name, {
+          stream: logCtrl.stream,
+          start: logCtrl.startPhase,
+          end: logCtrl.endPhase,
+          finalize: () => {} // Delay finalization until deployment is complete
+        })
         log('createFromGit: Build successful')
 
         // Auto-detect port from Image EXPOSE if not manually specified
@@ -325,7 +340,9 @@ class App {
 
         // Step 4: Run the container
         log('createFromGit: Starting container...')
+        if (logCtrl) logCtrl.startPhase('start_new_container')
         await this.#runGitApp(app)
+        if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
         this.#set(app.id, {status: 'running', started: Date.now()})
         log('createFromGit: App started successfully')
@@ -333,9 +350,11 @@ class App {
         // Notify Hub
         Odac.server('Hub').trigger('app.list')
 
+        if (logCtrl) await logCtrl.finalize(true)
         return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
       } catch (e) {
         error('createFromGit: Failed: %s', e.message)
+        if (logCtrl) await logCtrl.finalize(false)
         if (fs.existsSync(appDir)) {
           fs.rmSync(appDir, {recursive: true, force: true})
         }
@@ -600,6 +619,7 @@ class App {
 
     this.#processing.add(app.id)
     log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
+    let logCtrl = null
 
     try {
       const appsPath = Odac.core('Config').config.app.path
@@ -621,30 +641,56 @@ class App {
         .then(() => true)
         .catch(() => false)
 
+      const logger = new Logger(app.name)
+      await logger.init()
+      const buildId = `build_${Date.now()}`
+      logCtrl = logger.createBuildStream(buildId, {
+        image: imageName,
+        strategy: 'git-app'
+      })
+
+      const gitPhase = hasGit ? 'git_pull' : 'git_clone'
+      if (logCtrl) logCtrl.startPhase(gitPhase)
+
       if (hasGit) {
         // Fast path: incremental fetch (delta download only)
-        await container.fetchRepo(targetUrl, targetBranch, appDir, token, commitSha)
+        await container.fetchRepo(targetUrl, targetBranch, appDir, token, commitSha, logCtrl)
       } else {
         // Fallback: fresh clone for legacy apps where .git was removed by Builder
         log('No .git found in %s, performing fresh clone', app.name)
         await fs.promises.rm(appDir, {recursive: true, force: true})
         await fs.promises.mkdir(appDir, {recursive: true})
-        await container.cloneRepo(targetUrl, targetBranch, appDir, token)
+        await container.cloneRepo(targetUrl, targetBranch, appDir, token, logCtrl)
       }
+      if (logCtrl) logCtrl.endPhase(gitPhase, true)
 
       // Step 2: Rebuild image (app still running on old image)
       this.#set(app.id, {status: 'building'})
-      await Odac.server('Container').build(appDir, imageName)
+      await Odac.server('Container').build(appDir, imageName, app.name, {
+        stream: logCtrl.stream,
+        start: logCtrl.startPhase,
+        end: logCtrl.endPhase,
+        finalize: () => {} // Delay finalization until deployment is complete
+      })
 
       // Step 3: Stop running container (minimal downtime starts here)
+      if (logCtrl) logCtrl.startPhase('stop_old_container')
       await this.stop(app.id)
+      if (logCtrl) logCtrl.endPhase('stop_old_container', true)
 
       // Step 4: Restart with new image (inline instead of delegating to #run
       // to keep #processing lock held for the entire operation lifecycle)
       this.#set(app.id, {active: true, status: 'starting'})
+
+      if (logCtrl) logCtrl.startPhase('start_new_container')
       await this.#runGitApp(app)
+      if (logCtrl) logCtrl.endPhase('start_new_container', true)
+
       this.#set(app.id, {status: 'running', started: Date.now()})
+
+      if (logCtrl) logCtrl.startPhase('proxy_propagation')
       Odac.server('Proxy').syncConfig()
+      if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
 
       // Persist updated metadata
       const updates = {}
@@ -668,9 +714,11 @@ class App {
       if (Object.keys(updates).length) this.#set(app.id, updates)
 
       Odac.server('Hub').trigger('app.list')
+      if (logCtrl) await logCtrl.finalize(true)
       return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
     } catch (err) {
       error('Redeploy failed for %s: %s', app.name, err.message)
+      if (logCtrl) await logCtrl.finalize(false)
       this.#set(app.id, {status: 'errored'})
       return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
     } finally {
@@ -843,8 +891,7 @@ class App {
     const cmd = runner.local
     const args = [...(runner.args || []), filename]
 
-    const appDir = path.dirname(app.file)
-    const logger = new Logger(appDir)
+    const logger = new Logger(app.name)
     await logger.init()
 
     // Create daily rotating log stream
@@ -940,8 +987,7 @@ class App {
 
     // Start Runtime Logging
     try {
-      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
-      const logger = new Logger(appDir)
+      const logger = new Logger(app.name)
       await logger.init()
       const logCtrl = logger.createRuntimeStream()
 

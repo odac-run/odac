@@ -110,31 +110,19 @@ class Builder {
    */
   async build(context, imageName) {
     const {internalPath} = context
-    // log(`Starting build for ${imageName}`) // Removed log call
-    // log(`DEBUG: ODAC_HOST_ROOT=${process.env.ODAC_HOST_ROOT}`) // Removed log call
-    // log(`DEBUG: CWD=${process.cwd()}`) // Removed log call
-    // log(`Paths - Host: ${hostPath}, Internal: ${internalPath}`) // Removed log call
 
-    // 1. Detect Strategy (Use internal path to read files)
-    const strategy = await this.#detect(internalPath)
-    if (!strategy) {
-      throw new Error('Could not detect project type (no package.json, requirements.txt, etc. found)')
-    }
-    // log(`Detected project type: ${strategy.name}`) // Removed log call
-
-    // Initialize Logger if appName is provided
+    // Initialize Logger if appName is provided AND no external logger passed
     let buildLogger = null
 
-    if (context.appName) {
+    if (context.appName && !context.logger) {
       try {
-        const appPath = path.join(Odac.core('Config').config.app.path, context.appName)
-        buildLogger = new Logger(appPath)
+        buildLogger = new Logger(context.appName)
         await buildLogger.init()
 
         const buildId = `build_${Date.now()}`
         const logCtrl = buildLogger.createBuildStream(buildId, {
           image: imageName,
-          strategy: strategy.name
+          strategy: 'detecting...'
         })
 
         // Wrap logger control to be passed to phases
@@ -147,6 +135,20 @@ class Builder {
       } catch (e) {
         error('Failed to initialize build logger: %s', e.message)
       }
+    }
+
+    // 1. Detect Strategy (Use internal path to read files)
+    if (context.logger) context.logger.start('analysis')
+    const strategy = await this.#detect(internalPath)
+    if (context.logger) {
+      context.logger.end('analysis', true)
+      if (strategy) {
+        context.logger.stream.write(`[Builder] Detected project type: ${strategy.name}\n`)
+      }
+    }
+
+    if (!strategy) {
+      throw new Error('Could not detect project type (no package.json, requirements.txt, etc. found)')
     }
 
     try {
@@ -191,7 +193,9 @@ class Builder {
     const buildCmd = `docker build --progress=plain -t ${imageName} /app`
 
     try {
+      if (context.logger) context.logger.start('pull_builder')
       await this.#ensureImage(packagerImage)
+      if (context.logger) context.logger.end('pull_builder', true)
 
       const logStream = new PassThrough()
       const chunks = []
@@ -201,11 +205,13 @@ class Builder {
         if (context.logger) context.logger.stream.write(str)
       })
 
+      if (context.logger) context.logger.start('run_custom_build')
       const [data] = await this.#docker.run(packagerImage, ['sh', '-c', buildCmd], logStream, {
         Binds: ['/var/run/docker.sock:/var/run/docker.sock', `${context.hostPath}:/app`],
         AutoRemove: true,
         Privileged: false
       })
+      if (context.logger) context.logger.end('run_custom_build', true)
 
       if (data && data.StatusCode !== 0) {
         error(`Custom build logs:\n${chunks.join('')}`)
@@ -296,7 +302,9 @@ class Builder {
     }
 
     try {
+      if (context.logger) context.logger.start('pull_compiler')
       await this.#ensureImage(strategy.image)
+      if (context.logger) context.logger.end('pull_compiler', true)
 
       const logStream = new PassThrough()
       const chunks = []
@@ -306,10 +314,12 @@ class Builder {
         if (context.logger) context.logger.stream.write(str)
       })
 
+      if (context.logger) context.logger.start('run_compile')
       const [data] = await this.#docker.run(strategy.image, ['sh', '-c', commands], logStream, {
         WorkingDir: '/app',
         HostConfig: containerConfig.HostConfig
       })
+      if (context.logger) context.logger.end('run_compile', true)
 
       if (data && data.StatusCode !== 0) {
         error(`Compilation logs:\n${chunks.join('')}`)
@@ -350,7 +360,9 @@ USER ${strategy.package.user}
     const dockerfilePath = path.join(context.internalPath, 'Dockerfile.odac')
     const dockerignorePath = path.join(context.internalPath, '.dockerignore')
 
+    if (context.logger) context.logger.start('prepare_context')
     await Promise.all([fs.writeFile(dockerfilePath, dockerfileContent), fs.writeFile(dockerignorePath, '.git\n.github\nDockerfile.odac\n')])
+    if (context.logger) context.logger.end('prepare_context', true)
 
     // 2. Use a specialized "Docker Client" container to perform the build on HOST
     // using the socket. This avoids DinD (we just talk to the socket).
@@ -360,7 +372,9 @@ USER ${strategy.package.user}
     const buildCmd = `docker build --progress=plain -f /app/Dockerfile.odac -t ${imageName} /app`
 
     try {
+      if (context.logger) context.logger.start('pull_packager')
       await this.#ensureImage(packagerImage)
+      if (context.logger) context.logger.end('pull_packager', true)
 
       const packagerConfig = {
         Image: packagerImage,
@@ -383,9 +397,11 @@ USER ${strategy.package.user}
         if (context.logger) context.logger.stream.write(str)
       })
 
+      if (context.logger) context.logger.start('run_package')
       const [data] = await this.#docker.run(packagerImage, ['sh', '-c', buildCmd], logStream, {
         HostConfig: packagerConfig.HostConfig
       })
+      if (context.logger) context.logger.end('run_package', true)
 
       if (data && data.StatusCode !== 0) {
         error(`Packaging logs:\n${chunks.join('')}`)

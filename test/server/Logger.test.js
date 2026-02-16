@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const os = require('os')
 
 // Mocks MUST be defined before requiring the module that uses them
 global.Odac = {
@@ -12,51 +13,50 @@ global.Odac = {
         })
       }
     }
-    if (service === 'Config') {
-      return {
-        config: {
-          app: {
-            path: '/tmp/odac/apps'
-          }
-        }
-      }
-    }
     return {}
   },
   server: () => ({})
 }
 
-const Logger = require('../../server/src/Container/Logger')
-
 // Temporary test directory
-const TEST_DIR = path.join(__dirname, '__logger_test_env__')
+const mockTestDir = path.join(__dirname, '__logger_test_env__')
+
+// Mock os.homedir to return mockTestDir
+jest.mock('os', () => ({
+  ...jest.requireActual('os'),
+  homedir: () => mockTestDir
+}))
+
+const Logger = require('../../server/src/Container/Logger')
 
 describe('Logger', () => {
   let logger
+  const appName = 'test-app'
 
   beforeAll(async () => {
     // Ensuring clean env
-    if (fs.existsSync(TEST_DIR)) {
-      await fs.promises.rm(TEST_DIR, {recursive: true, force: true})
+    if (fs.existsSync(mockTestDir)) {
+      await fs.promises.rm(mockTestDir, {recursive: true, force: true})
     }
-    await fs.promises.mkdir(TEST_DIR, {recursive: true})
+    await fs.promises.mkdir(mockTestDir, {recursive: true})
   })
 
   afterAll(async () => {
     // Cleanup
-    if (fs.existsSync(TEST_DIR)) {
-      await fs.promises.rm(TEST_DIR, {recursive: true, force: true})
+    if (fs.existsSync(mockTestDir)) {
+      await fs.promises.rm(mockTestDir, {recursive: true, force: true})
     }
   })
 
   beforeEach(async () => {
-    // Clean builds dir for each test
-    const buildsDir = path.join(TEST_DIR, '.odac', 'logs', 'builds')
-    if (fs.existsSync(buildsDir)) {
-      await fs.promises.rm(buildsDir, {recursive: true, force: true})
+    // Clean app logs dir for each test
+    // Path: mockTestDir/.odac/logs/test-app
+    const appLogsDir = path.join(mockTestDir, '.odac', 'logs', appName)
+    if (fs.existsSync(appLogsDir)) {
+      await fs.promises.rm(appLogsDir, {recursive: true, force: true})
     }
 
-    logger = new Logger(TEST_DIR)
+    logger = new Logger(appName)
     await logger.init()
   })
 
@@ -75,15 +75,16 @@ describe('Logger', () => {
     await ctrl.finalize(true)
 
     // Check files
-    const logPath = path.join(TEST_DIR, '.odac', 'logs', 'builds', `${buildId}.log`)
-    const summaryPath = path.join(TEST_DIR, '.odac', 'logs', 'builds', `${buildId}.json`)
+    // New Path: logs/appName/builds/...
+    const logPath = path.join(mockTestDir, '.odac', 'logs', appName, 'builds', `${buildId}.log`)
+    const summaryPath = path.join(mockTestDir, '.odac', 'logs', appName, 'builds', `${buildId}.json`)
 
     expect(fs.existsSync(logPath)).toBe(true)
     expect(fs.existsSync(summaryPath)).toBe(true)
 
     const summary = JSON.parse(await fs.promises.readFile(summaryPath, 'utf8'))
     expect(summary.status).toBe('success')
-    expect(summary.phases.compile.status).toBe('success')
+    expect(summary.phases.find(p => p.name === 'compile').status).toBe('success')
     expect(summary.duration).toBeGreaterThan(0)
   })
 
@@ -96,7 +97,7 @@ describe('Logger', () => {
 
     await ctrl.finalize(false)
 
-    const summaryPath = path.join(TEST_DIR, '.odac', 'logs', 'builds', `${buildId}.json`)
+    const summaryPath = path.join(mockTestDir, '.odac', 'logs', appName, 'builds', `${buildId}.json`)
     const summary = JSON.parse(await fs.promises.readFile(summaryPath, 'utf8'))
 
     expect(summary.status).toBe('failed')
@@ -104,37 +105,18 @@ describe('Logger', () => {
   })
 
   test('should rotate logs (keep last 10)', async () => {
-    // Create 12 fake build logs
-    const buildsDir = path.join(TEST_DIR, '.odac', 'logs', 'builds')
-
-    // We need to ensure mtime is different for sorting
-    // But since fs.writeFile is fast, we might need manual mtime update or robust creation
-    // However, the test uses fileStats.sort((a,b) => b.time - a.time)
+    const buildsDir = path.join(mockTestDir, '.odac', 'logs', appName, 'builds')
 
     for (let i = 0; i < 12; i++) {
       const id = `build_old_${i}`
       const jsonPath = path.join(buildsDir, `${id}.json`)
       const logPath = path.join(buildsDir, `${id}.log`)
 
-      // Decreasing timestamp for JSON data (not used for rotation, rotation uses mtime)
       await fs.promises.writeFile(jsonPath, JSON.stringify({id, timestamp: Date.now() - 1000 * i}))
       await fs.promises.writeFile(logPath, 'dummy log')
-
-      // Force update access and modification time to ensure sorting works based on creation order logic
-      // We make the first created (i=0) the newest, and subsequent ones older?
-      // Wait: The loop runs i=0 to 11.
-      // If we want i=0 to be the newest (kept) and i=11 to be oldest (deleted).
-      // Default fs behavior: last written is newest.
-      // So i=11 will be newest.
-      // Wait, loop: i=0 writes, then i=1 writes. i=1 is newer.
-      // So i=11 is the newest file. i=0 is the oldest.
-      // We create 12 files. 10 should be kept.
-      // The ones deleted should be i=0 and i=1.
-
       await new Promise(r => setTimeout(r, 50))
     }
 
-    // Trigger rotation by creating a new one (13th file)
     const ctrl = logger.createBuildStream('build_trigger_rotation')
     await ctrl.finalize(true)
 
@@ -144,50 +126,40 @@ describe('Logger', () => {
     const files = await fs.promises.readdir(buildsDir)
     const jsonFiles = files.filter(f => f.endsWith('.json'))
 
-    // Should keep 10 files.
-    // console.log('Files kept:', jsonFiles)
     expect(jsonFiles.length).toBe(10)
-  }, 10000) // Increase timeout
+  }, 10000)
 
   test('should create runtime stream', () => {
     const ctrl = logger.createRuntimeStream()
     expect(ctrl.stream).toBeDefined()
-    expect(ctrl.path).toContain('.odac/logs/runtime')
+    // Path should contain appName
+    expect(ctrl.path).toContain(`.odac/logs/${appName}/runtime`)
     ctrl.stream.end()
   })
 
   test('should generate daily summary', async () => {
-    // Prepare fake data
-    const buildsDir = path.join(TEST_DIR, '.odac', 'logs', 'builds')
+    const buildsDir = path.join(mockTestDir, '.odac', 'logs', appName, 'builds')
     const now = Date.now()
 
-    // 1 success 2 hours ago
     const build1 = {
       id: 'b1',
       status: 'success',
-      timestamp: now - 2 * 60 * 60 * 1000, // 2 hours ago
+      timestamp: now - 2 * 60 * 60 * 1000,
       duration: 10,
       errors: 0
     }
     await fs.promises.writeFile(path.join(buildsDir, 'b1.json'), JSON.stringify(build1))
 
-    // 1 fail 25 hours ago (should be ignored)
     const build2 = {
       id: 'b2',
       status: 'failed',
-      timestamp: now - 25 * 60 * 60 * 1000, // 25 hours ago
+      timestamp: now - 25 * 60 * 60 * 1000,
       duration: 5,
       errors: 1
     }
     await fs.promises.writeFile(path.join(buildsDir, 'b2.json'), JSON.stringify(build2))
 
-    // Debug
-    // const files = await fs.promises.readdir(buildsDir)
-    // console.log('Files in summary test:', files)
-
     const summary = await logger.getDailySummary()
-
-    // console.log('Summary:', summary)
 
     expect(summary.total).toBe(1)
     expect(summary.success).toBe(1)
