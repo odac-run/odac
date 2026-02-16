@@ -15,6 +15,8 @@ const SCRIPT_RUNNERS = {
   '.sh': {image: 'alpine:latest', cmd: 'sh', local: 'sh'}
 }
 
+const Logger = require('./Container/Logger')
+
 class App {
   #apps = []
   #loaded = false
@@ -401,6 +403,21 @@ class App {
     }
 
     await Odac.server('Container').runApp(app.name, runOptions)
+
+    // Start Runtime Logging
+    try {
+      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+      const logger = new Logger(appDir)
+      await logger.init()
+      const logCtrl = logger.createRuntimeStream()
+
+      const stream = await Odac.server('Container').logs(app.name)
+      // Dockerode logs stream includes headers, simpler strictly to pipe raw output
+      // or we can use container.logs({stdout:true, stderr:true}) which we updated in Container.js
+      if (stream) stream.pipe(logCtrl.stream)
+    } catch (e) {
+      error('Failed to attach logger to git app %s: %s', app.name, e.message)
+    }
 
     // Runtime Port Discovery:
     // If we relied on a default (3000) but didn't actually detect it from image,
@@ -817,7 +834,7 @@ class App {
     return this.#runScriptContainer(app)
   }
 
-  #runScriptLocal(app) {
+  async #runScriptLocal(app) {
     const dir = path.dirname(app.file)
     const filename = path.basename(app.file)
     const ext = path.extname(filename)
@@ -826,7 +843,13 @@ class App {
     const cmd = runner.local
     const args = [...(runner.args || []), filename]
 
-    const logStream = this.#createLogStream(app.name)
+    const appDir = path.dirname(app.file)
+    const logger = new Logger(appDir)
+    await logger.init()
+
+    // Create daily rotating log stream
+    const logCtrl = logger.createRuntimeStream()
+    const logStream = logCtrl.stream
 
     log(`Spawning local process for ${app.name}: ${cmd} ${args.join(' ')}`)
 
@@ -914,6 +937,19 @@ class App {
       volumes,
       env
     })
+
+    // Start Runtime Logging
+    try {
+      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+      const logger = new Logger(appDir)
+      await logger.init()
+      const logCtrl = logger.createRuntimeStream()
+
+      const stream = await Odac.server('Container').logs(app.name)
+      if (stream) stream.pipe(logCtrl.stream)
+    } catch (e) {
+      error('Failed to attach logger to app %s: %s', app.name, e.message)
+    }
   }
 
   // Private: Helpers
@@ -932,14 +968,6 @@ class App {
     }
 
     return false
-  }
-
-  #createLogStream(appName) {
-    const logDir = path.join(os.homedir(), '.odac', 'logs')
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
-
-    const logFile = path.join(logDir, `${appName}.log`)
-    return fs.createWriteStream(logFile, {flags: 'a'})
   }
 
   #formatUptime(ms) {

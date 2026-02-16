@@ -106,6 +106,26 @@ class Logger {
   }
 
   /**
+   * Creates a write stream for runtime logs with daily rotation
+   * @returns {Object} { stream, path }
+   */
+  createRuntimeStream() {
+    const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD
+    const logFile = path.join(this.#runtimeDir, `${today}.log`)
+
+    // For now, simple append stream
+    const fileStream = fs.createWriteStream(logFile, {flags: 'a'})
+
+    // Auto-rotate check (simple approach: check on creation)
+    this.#rotateRuntimeLogs()
+
+    return {
+      stream: fileStream,
+      path: logFile
+    }
+  }
+
+  /**
    * Returns summary stats for the last 24 hours
    */
   async getDailySummary() {
@@ -191,6 +211,33 @@ class Logger {
       }
     } catch (e) {
       error('Log rotation failed: %s', e.message)
+    }
+  }
+
+  async #rotateRuntimeLogs() {
+    try {
+      const files = await fs.promises.readdir(this.#runtimeDir)
+      // Delete logs older than 7 days
+      const daysToKeep = 7
+      const now = Date.now()
+
+      for (const file of files) {
+        if (!file.endsWith('.log')) continue
+
+        try {
+          const filePath = path.join(this.#runtimeDir, file)
+          const stats = await fs.promises.stat(filePath)
+          const diffDays = (now - stats.mtimeMs) / (1000 * 60 * 60 * 24)
+
+          if (diffDays > daysToKeep) {
+            await fs.promises.unlink(filePath).catch(() => {})
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    } catch (e) {
+      error('Runtime log rotation failed: %s', e.message)
     }
   }
 }
