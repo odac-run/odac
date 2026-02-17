@@ -520,7 +520,11 @@ class App {
 
     try {
       if (app.pid) {
-        process.kill(app.pid)
+        try {
+          process.kill(app.pid)
+        } catch (e) {
+          if (e.code !== 'ESRCH') throw e
+        }
       }
 
       if (Odac.server('Container').available) {
