@@ -774,7 +774,6 @@ class App {
     }
 
     try {
-      const Logger = require('./Container/Logger')
       const logger = new Logger(app.name)
       const stats = await logger.getDailySummary()
 
