@@ -144,7 +144,9 @@ class Logger {
         }
 
         this.#rotateLogs() // Trigger cleanup in background
-      }
+      },
+
+      subscribe: cb => self.subscribe(cb)
     }
   }
 

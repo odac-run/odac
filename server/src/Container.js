@@ -152,16 +152,7 @@ class Container {
     this.#activeBuilds.add(imageName)
 
     // Setup Logger for Streaming
-    let logger = activeLogger
-    if (!logger && appName) {
-      try {
-        logger = new Logger(appName)
-        await logger.init()
-        this.#buildLoggers.set(appName, logger)
-      } catch (e) {
-        error('Failed to init build logger for %s: %s', appName, e.message)
-      }
-    }
+    const logger = activeLogger
 
     try {
       const hostPath = this.#resolveHostPath(sourceDir)
