@@ -1,4 +1,4 @@
-const {log} = Odac.core('Log', false).init('Hub')
+const {log, error} = Odac.core('Log', false).init('Hub')
 
 const axios = require('axios')
 const nodeCrypto = require('crypto')
@@ -422,7 +422,7 @@ class Hub {
       try {
         unsub() // Clears timer and buffer
       } catch (e) {
-        log('[Hub] Error unsubscribing from %s: %s', app, e.message)
+        error('[Hub] Error unsubscribing from %s: %s', app, e.message)
       }
     }
     this.#logSubs.clear()
