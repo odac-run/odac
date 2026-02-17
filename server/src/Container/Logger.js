@@ -151,15 +151,117 @@ class Logger {
     const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD
     const logFile = path.join(this.#runtimeDir, `${today}.log`)
 
-    // For now, simple append stream
+    const statsFile = path.join(this.#runtimeDir, 'stats.json')
+
+    // Load existing stats
+    let stats = {
+      date: today,
+      today: new Array(24).fill(0),
+      yesterday: new Array(24).fill(0)
+    }
+
+    try {
+      const existing = fs.readFileSync(statsFile, 'utf8')
+      const parsed = JSON.parse(existing)
+
+      if (parsed.date === today) {
+        stats = parsed
+      } else if (parsed.date) {
+        // Day changed: Rotate explicitly
+        stats.yesterday = parsed.today || new Array(24).fill(0)
+        stats.today = new Array(24).fill(0)
+        stats.date = today
+        // Async save rotation
+        fs.promises.writeFile(statsFile, JSON.stringify(stats)).catch(() => {})
+      }
+    } catch {
+      // Start fresh
+    }
+
     const fileStream = fs.createWriteStream(logFile, {flags: 'a'})
 
     // Auto-rotate check (simple approach: check on creation)
     this.#rotateRuntimeLogs()
 
     return {
-      stream: fileStream,
-      path: logFile
+      stream: fileStream, // Keep for backward compat if needed
+      path: logFile,
+
+      // Standard log writer
+      write: chunk => {
+        fileStream.write(chunk)
+      },
+
+      // Error log writer (tracks stats)
+      error: chunk => {
+        // Check date rotation on write
+        const currentToday = new Date().toISOString().split('T')[0]
+        if (stats.date !== currentToday) {
+          stats.yesterday = stats.today
+          stats.today = new Array(24).fill(0)
+          stats.date = currentToday
+        }
+
+        const currentHour = new Date().getHours()
+        if (stats.today[currentHour] === 0) {
+          stats.today[currentHour] = 1
+
+          // Force save on error (throttled)
+          const now = Date.now()
+          if (now - this.#lastStatsWrite > 2000) {
+            this.#lastStatsWrite = now
+            fs.promises.writeFile(statsFile, JSON.stringify(stats)).catch(() => {})
+          }
+        }
+        fileStream.write(chunk)
+      },
+
+      end: () => fileStream.end()
+    }
+  }
+
+  #lastStatsWrite = 0
+
+  /**
+   * Returns current health stats (sliding 24h error window)
+   */
+  async getHealth() {
+    try {
+      const statsFile = path.join(this.#runtimeDir, 'stats.json')
+      const content = await fs.promises.readFile(statsFile, 'utf8')
+      let stats = JSON.parse(content)
+
+      // Check for rotation on read too
+      const today = new Date().toISOString().split('T')[0]
+      if (stats.date !== today) {
+        // Return yesterday as last known good logic if date mismatch (or empty if too old)
+        // But better to just return clean slate if file is stale
+        if (stats.date) {
+          // If meaningful old data exists, rotate virtually
+          // In real-time this is handled by writer, but reader might be faster
+          stats.yesterday = stats.today
+          stats.today = new Array(24).fill(0)
+        } else {
+          return {logs: new Array(24).fill(0)}
+        }
+      }
+
+      const currentHour = new Date().getHours()
+
+      // Construct sliding window: [Yesterday 15..23] + [Today 00..14]
+      // Result size: 24
+      const yesterdayPart = (stats.yesterday || []).slice(currentHour + 1)
+      const todayPart = (stats.today || []).slice(0, currentHour + 1)
+
+      // Ensure 24 elements total (pad if needed)
+      const combined = [...yesterdayPart, ...todayPart]
+
+      // Fill missing if array lengths are weird
+      while (combined.length < 24) combined.unshift(0)
+
+      return {logs: combined}
+    } catch {
+      return {logs: new Array(24).fill(0)}
     }
   }
 

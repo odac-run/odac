@@ -753,7 +753,8 @@ class App {
     const container = Odac.server('Container')
 
     for (const app of apps) {
-      const isRunning = await container.isRunning(app.name)
+      const statusInfo = await container.getStatus(app.name)
+      const isRunning = statusInfo.running
 
       // Add minimal build summary
       try {
@@ -775,19 +776,24 @@ class App {
         } else {
           app.build = null
         }
+
+        // Add health summary (hourly error status)
+        const healthStats = await logger.getHealth()
+        app.health = healthStats.logs || []
       } catch {
         app.build = null
+        app.health = null
       }
 
       if (isRunning) {
         app.status = 'running'
-        app.uptime = app.started ? this.#formatUptime(Date.now() - app.started) : 'Running'
+        if (statusInfo.startTime) {
+          app.started = new Date(statusInfo.startTime).getTime()
+        }
       } else {
         app.status = 'stopped'
-        app.uptime = '-'
       }
     }
-
     if (apps.length === 0) {
       return Odac.server('Api').result(true, [])
     }
@@ -798,13 +804,21 @@ class App {
         apps.map(app => ({
           name: app.name,
           image: app.image,
-          status: app.status,
-          uptime: app.uptime
+          status: app.status
         }))
       )
     }
 
-    return Odac.server('Api').result(true, apps)
+    // Sanitize detailed list
+    const cleanApps = apps.map(app => {
+      const copy = {...app}
+      delete copy.pid
+      delete copy.ip
+      delete copy.uptime
+      return copy
+    })
+
+    return Odac.server('Api').result(true, cleanApps)
   }
 
   // Private: App Data Management
@@ -857,7 +871,19 @@ class App {
   }
 
   #saveApps() {
-    Odac.core('Config').config.apps = this.#apps
+    const cleanApps = this.#apps.map(app => {
+      const copy = {...app}
+      // Remove runtime/ephemeral properties
+      delete copy.status
+      delete copy.pid
+      delete copy.uptime
+      delete copy.build
+      delete copy.health
+      delete copy.ip
+      delete copy.started // Maybe keep started? No, restart resets it.
+      return copy
+    })
+    Odac.core('Config').config.apps = cleanApps
   }
 
   // Private: App Execution
@@ -922,7 +948,6 @@ class App {
 
     // Create daily rotating log stream
     const logCtrl = logger.createRuntimeStream()
-    const logStream = logCtrl.stream
 
     log(`Spawning local process for ${app.name}: ${cmd} ${args.join(' ')}`)
 
@@ -935,24 +960,24 @@ class App {
     this.#set(app.id, {pid: child.pid})
 
     child.stdout.on('data', data => {
-      logStream.write(`[LOG] [${Date.now()}] ${data}`)
+      logCtrl.write(`[LOG] [${Date.now()}] ${data}`)
     })
 
     child.stderr.on('data', data => {
-      logStream.write(`[ERR] [${Date.now()}] ${data}`)
+      logCtrl.error(`[ERR] [${Date.now()}] ${data}`)
     })
 
     child.on('exit', (code, signal) => {
       log(`App ${app.name} exited with code ${code} signal ${signal}`)
-      logStream.write(`[LOG] [${Date.now()}] App exited with code ${code} signal ${signal}\n`)
-      logStream.end()
+      logCtrl.write(`[LOG] [${Date.now()}] App exited with code ${code} signal ${signal}\n`)
+      logCtrl.end()
       this.#set(app.id, {status: 'stopped', pid: null, active: false})
     })
 
     child.on('error', err => {
       error(`Failed to start local app ${app.name}: ${err.message}`)
-      logStream.write(`[ERR] [${Date.now()}] Failed to start app: ${err.message}\n`)
-      logStream.end()
+      logCtrl.error(`[ERR] [${Date.now()}] Failed to start app: ${err.message}\n`)
+      logCtrl.end()
       this.#set(app.id, {status: 'errored', pid: null})
     })
   }
@@ -1012,13 +1037,25 @@ class App {
     })
 
     // Start Runtime Logging
+    // Start Runtime Logging
     try {
       const logger = new Logger(app.name)
       await logger.init()
       const logCtrl = logger.createRuntimeStream()
 
       const stream = await Odac.server('Container').logs(app.name)
-      if (stream) stream.pipe(logCtrl.stream)
+      if (stream) {
+        const container = Odac.server('Container').docker.getContainer(app.name)
+        container.modem.demuxStream(
+          stream,
+          {
+            write: chunk => logCtrl.write(chunk)
+          },
+          {
+            write: chunk => logCtrl.error(chunk)
+          }
+        )
+      }
     } catch (e) {
       error('Failed to attach logger to app %s: %s', app.name, e.message)
     }
@@ -1040,25 +1077,6 @@ class App {
     }
 
     return false
-  }
-
-  #formatUptime(ms) {
-    let seconds = Math.floor(ms / 1000)
-    let minutes = Math.floor(seconds / 60)
-    let hours = Math.floor(minutes / 60)
-    const days = Math.floor(hours / 24)
-
-    seconds %= 60
-    minutes %= 60
-    hours %= 24
-
-    const parts = []
-    if (days) parts.push(`${days}d`)
-    if (hours) parts.push(`${hours}h`)
-    if (minutes) parts.push(`${minutes}m`)
-    if (seconds) parts.push(`${seconds}s`)
-
-    return parts.join(' ') || '0s'
   }
 
   #getNextId() {

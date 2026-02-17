@@ -798,6 +798,29 @@ class Container {
   get docker() {
     return this.#docker
   }
+
+  /**
+   * Gets detailed status of a container
+   * @param {string} name
+   * @returns {Promise<Object>} { running: boolean, restarts: number, startTime: string }
+   */
+  async getStatus(name) {
+    if (!this.available) return {running: false, restarts: 0}
+    try {
+      const container = this.#docker.getContainer(name)
+      const data = await container.inspect()
+      return {
+        running: data.State.Running,
+        restarts: data.RestartCount || 0,
+        startTime: data.State.StartedAt
+      }
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get status for ${name}: ${err.message}`)
+      }
+      return {running: false, restarts: 0}
+    }
+  }
 }
 
 module.exports = new Container()
