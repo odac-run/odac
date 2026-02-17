@@ -6,12 +6,17 @@ jest.mock('fs', () => ({
   promises: {
     mkdir: jest.fn().mockResolvedValue(true),
     rm: jest.fn().mockResolvedValue(true),
-    access: jest.fn().mockResolvedValue(true)
+    access: jest.fn().mockResolvedValue(true),
+    readdir: jest.fn().mockResolvedValue([]),
+    stat: jest.fn().mockResolvedValue({mtimeMs: 0})
   },
   createWriteStream: jest.fn(() => ({
     write: jest.fn(),
     end: jest.fn(),
-    on: jest.fn()
+    on: jest.fn(),
+    once: jest.fn(),
+    emit: jest.fn(),
+    removeListener: jest.fn()
   }))
 }))
 
@@ -58,9 +63,18 @@ describe('App', () => {
             stop: jest.fn(),
             list: jest.fn(() => []),
             getStats: jest.fn(),
+            getStatus: jest.fn(() => Promise.resolve({running: false, restarts: 0})),
             remove: jest.fn(),
             fetchRepo: jest.fn(),
-            getImageExposedPorts: jest.fn(() => [])
+            getImageExposedPorts: jest.fn(() => []),
+            logs: jest.fn().mockResolvedValue({}),
+            docker: {
+              getContainer: jest.fn(() => ({
+                modem: {
+                  demuxStream: jest.fn()
+                }
+              }))
+            }
           }
         }
         if (module === 'Api') {
@@ -282,7 +296,11 @@ describe('App', () => {
         branch: 'develop'
       }
 
-      await App.create(config)
+      const result = await App.create(config)
+      if (!result.success) {
+        throw new Error(`App.create failed: ${result.message}`)
+      }
+      expect(result.success).toBe(true)
 
       const {data: apps} = await App.list(true)
       const app = apps.find(a => a.name === 'my-git-app')

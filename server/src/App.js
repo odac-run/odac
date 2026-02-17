@@ -5,6 +5,7 @@ const net = require('net')
 const nodeCrypto = require('crypto')
 const childProcess = require('child_process')
 const os = require('os')
+const Logger = require('./Container/Logger')
 
 const SCRIPT_EXTENSIONS = ['.js', '.py', '.php', '.sh', '.rb']
 const SCRIPT_RUNNERS = {
@@ -63,6 +64,11 @@ class App {
       if (this.#processing.has(app.id)) continue
 
       const isRunning = await this.#isAppRunning(app)
+
+      // Re-attach logger for running apps (if missing)
+      if (isRunning && !this.#logStreams.has(app.name)) {
+        this.#attachLogger(app).catch(e => error('[Watchdog] Failed to reattach logger for %s: %s', app.name, e.message))
+      }
 
       if (!isRunning && app.status === 'running') {
         log('App %s is not running. Restarting...', app.name)
@@ -269,16 +275,32 @@ class App {
       // Security update: We now pass the token separately via env var to prevent exposure in process/docker history
 
       const imageName = `odac-app-${name}`
+      let logCtrl = null
 
       try {
+        const logger = new Logger(name)
+        await logger.init()
+        const buildId = `build_${Date.now()}`
+        logCtrl = logger.createBuildStream(buildId, {
+          image: imageName,
+          strategy: 'git-app'
+        })
+
         // Step 1: Clone repository
         log('createFromGit: Cloning repository...')
-        await Odac.server('Container').cloneRepo(url, branch, appDir, token)
+        if (logCtrl) logCtrl.startPhase('git_clone')
+        await Odac.server('Container').cloneRepo(url, branch, appDir, token, logCtrl)
+        if (logCtrl) logCtrl.endPhase('git_clone', true)
         log('createFromGit: Clone successful')
 
         // Step 2: Build with Native Builder
         log('createFromGit: Building image...')
-        await Odac.server('Container').build(appDir, imageName)
+        await Odac.server('Container').build(appDir, imageName, name, {
+          stream: logCtrl.stream,
+          start: logCtrl.startPhase,
+          end: logCtrl.endPhase,
+          finalize: () => {} // Delay finalization until deployment is complete
+        })
         log('createFromGit: Build successful')
 
         // Auto-detect port from Image EXPOSE if not manually specified
@@ -323,7 +345,9 @@ class App {
 
         // Step 4: Run the container
         log('createFromGit: Starting container...')
+        if (logCtrl) logCtrl.startPhase('start_new_container')
         await this.#runGitApp(app)
+        if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
         this.#set(app.id, {status: 'running', started: Date.now()})
         log('createFromGit: App started successfully')
@@ -331,9 +355,11 @@ class App {
         // Notify Hub
         Odac.server('Hub').trigger('app.list')
 
+        if (logCtrl) await logCtrl.finalize(true)
         return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
       } catch (e) {
         error('createFromGit: Failed: %s', e.message)
+        if (logCtrl) await logCtrl.finalize(false)
         if (fs.existsSync(appDir)) {
           fs.rmSync(appDir, {recursive: true, force: true})
         }
@@ -402,6 +428,20 @@ class App {
 
     await Odac.server('Container').runApp(app.name, runOptions)
 
+    // Start Runtime Logging
+    try {
+      const logger = new Logger(app.name)
+      await logger.init()
+      const logCtrl = logger.createRuntimeStream()
+
+      const stream = await Odac.server('Container').logs(app.name)
+      // Dockerode logs stream includes headers, simpler strictly to pipe raw output
+      // or we can use container.logs({stdout:true, stderr:true}) which we updated in Container.js
+      if (stream) stream.pipe(logCtrl.stream)
+    } catch (e) {
+      error('Failed to attach logger to git app %s: %s', app.name, e.message)
+    }
+
     // Runtime Port Discovery:
     // If we relied on a default (3000) but didn't actually detect it from image,
     // let's verify if the app is actually listening there or somewhere else.
@@ -460,31 +500,63 @@ class App {
     setTimeout(() => this.#pollForPort(app, expectedPort, attempts + 1), 1000)
   }
 
-  async stop(id) {
-    const app = this.#get(id)
-    if (!app) {
-      log(__('App %s not found.', id))
-      return
-    }
-
-    if (['container', 'git'].includes(app.type) || (Odac.server('Container').available && !app.pid)) {
-      await Odac.server('Container').stop(app.name)
-    } else if (app.pid) {
-      try {
-        process.kill(app.pid)
-      } catch {
-        /* ignore if already dead */
-      }
-    }
-
-    this.#set(id, {status: 'stopped', active: false, pid: null})
-  }
-
   async stopAll() {
     log('Stopping all apps...')
     for (const app of [...this.#apps]) {
       await this.stop(app.id)
     }
+  }
+
+  #logStreams = new Map() // app.name -> logCtrl
+
+  async stop(id) {
+    const app = this.#get(id)
+    if (!app) return Odac.server('Api').result(false, __('App ID %s not found.', id))
+
+    if (app.status === 'stopped') {
+      return Odac.server('Api').result(true, __('App %s is already stopped.', app.name))
+    }
+
+    try {
+      if (app.pid) {
+        try {
+          process.kill(app.pid)
+        } catch (e) {
+          if (e.code !== 'ESRCH') throw e
+        }
+      }
+
+      if (Odac.server('Container').available) {
+        await Odac.server('Container').stop(app.name)
+      }
+
+      this.#set(app.id, {status: 'stopped', pid: null, active: false})
+
+      // Cleanup log stream
+      this.#logStreams.delete(app.name)
+
+      return Odac.server('Api').result(true, __('App %s stopped.', app.name))
+    } catch (e) {
+      return Odac.server('Api').result(false, e.message)
+    }
+  }
+
+  /**
+   * Subscribes to realtime logs of an application
+   * @param {string} appName
+   * @param {function} callback ({t, d, ts}) => void
+   * @returns {function} unsubscribe
+   */
+  subscribeToLogs(appName, callback) {
+    const logCtrl = this.#logStreams.get(appName)
+
+    if (!logCtrl) {
+      log('No log stream found for %s. Active: %s', appName, [...this.#logStreams.keys()].join(','))
+      return null
+    }
+
+    // Subscribe using Logger's mechanism
+    return logCtrl.subscribe(callback)
   }
 
   async delete(id) {
@@ -583,6 +655,7 @@ class App {
 
     this.#processing.add(app.id)
     log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
+    let logCtrl = null
 
     try {
       const appsPath = Odac.core('Config').config.app.path
@@ -604,30 +677,56 @@ class App {
         .then(() => true)
         .catch(() => false)
 
+      const logger = new Logger(app.name)
+      await logger.init()
+      const buildId = `build_${Date.now()}`
+      logCtrl = logger.createBuildStream(buildId, {
+        image: imageName,
+        strategy: 'git-app'
+      })
+
+      const gitPhase = hasGit ? 'git_pull' : 'git_clone'
+      if (logCtrl) logCtrl.startPhase(gitPhase)
+
       if (hasGit) {
         // Fast path: incremental fetch (delta download only)
-        await container.fetchRepo(targetUrl, targetBranch, appDir, token, commitSha)
+        await container.fetchRepo(targetUrl, targetBranch, appDir, token, commitSha, logCtrl)
       } else {
         // Fallback: fresh clone for legacy apps where .git was removed by Builder
         log('No .git found in %s, performing fresh clone', app.name)
         await fs.promises.rm(appDir, {recursive: true, force: true})
         await fs.promises.mkdir(appDir, {recursive: true})
-        await container.cloneRepo(targetUrl, targetBranch, appDir, token)
+        await container.cloneRepo(targetUrl, targetBranch, appDir, token, logCtrl)
       }
+      if (logCtrl) logCtrl.endPhase(gitPhase, true)
 
       // Step 2: Rebuild image (app still running on old image)
       this.#set(app.id, {status: 'building'})
-      await Odac.server('Container').build(appDir, imageName)
+      await Odac.server('Container').build(appDir, imageName, app.name, {
+        stream: logCtrl.stream,
+        start: logCtrl.startPhase,
+        end: logCtrl.endPhase,
+        finalize: () => {} // Delay finalization until deployment is complete
+      })
 
       // Step 3: Stop running container (minimal downtime starts here)
+      if (logCtrl) logCtrl.startPhase('stop_old_container')
       await this.stop(app.id)
+      if (logCtrl) logCtrl.endPhase('stop_old_container', true)
 
       // Step 4: Restart with new image (inline instead of delegating to #run
       // to keep #processing lock held for the entire operation lifecycle)
       this.#set(app.id, {active: true, status: 'starting'})
+
+      if (logCtrl) logCtrl.startPhase('start_new_container')
       await this.#runGitApp(app)
+      if (logCtrl) logCtrl.endPhase('start_new_container', true)
+
       this.#set(app.id, {status: 'running', started: Date.now()})
+
+      if (logCtrl) logCtrl.startPhase('proxy_propagation')
       Odac.server('Proxy').syncConfig()
+      if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
 
       // Persist updated metadata
       const updates = {}
@@ -651,9 +750,14 @@ class App {
       if (Object.keys(updates).length) this.#set(app.id, updates)
 
       Odac.server('Hub').trigger('app.list')
+      if (logCtrl) await logCtrl.finalize(true)
       return Odac.server('Api').result(true, __('App %s redeployed successfully.', app.name))
     } catch (err) {
       error('Redeploy failed for %s: %s', app.name, err.message)
+      if (logCtrl) {
+        logCtrl.stream.write(`[Error] ${err.message}\n`)
+        await logCtrl.finalize(false)
+      }
       this.#set(app.id, {status: 'errored'})
       return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
     } finally {
@@ -662,39 +766,79 @@ class App {
   }
 
   // Status & Listing
+  async getBuildStats(id) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    try {
+      const logger = new Logger(app.name)
+      const stats = await logger.getDailySummary()
+
+      return Odac.server('Api').result(true, stats)
+    } catch (e) {
+      error('Failed to get build stats for %s: %s', app.name, e.message)
+      return Odac.server('Api').result(false, e.message)
+    }
+  }
+
   async list(detailed = false) {
-    const apps = this.#loadAppsFromConfig()
+    if (this.#apps.length === 0) {
+      this.#apps = this.#loadAppsFromConfig()
+    }
     const container = Odac.server('Container')
+    const cleanApps = []
 
-    for (const app of apps) {
-      const isRunning = await container.isRunning(app.name)
+    for (const app of this.#apps) {
+      const copy = {...app}
+      const statusInfo = await container.getStatus(app.name)
+      const isRunning = statusInfo.running
 
-      if (isRunning) {
-        app.status = 'running'
-        app.uptime = app.started ? this.#formatUptime(Date.now() - app.started) : 'Running'
+      try {
+        const logger = new Logger(app.name)
+        const lastBuild = await logger.getLastBuild()
+        if (lastBuild) {
+          copy.build = {
+            id: lastBuild.id,
+            status: lastBuild.status,
+            duration: lastBuild.duration,
+            errors: lastBuild.errors,
+            warnings: lastBuild.warnings,
+            phases: (lastBuild.phases || []).map(p => {
+              if (p.status === 'failed' || p.errors > 0) return 2
+              if (p.warnings > 0) return 1
+              return 0
+            })
+          }
+        }
+
+        const healthStats = await logger.getHealth()
+        copy.health = healthStats.logs || []
+      } catch {
+        /* ignore logger errors in list */
+      }
+
+      copy.status = isRunning ? 'running' : 'stopped'
+      if (isRunning && statusInfo.startTime) {
+        copy.started = new Date(statusInfo.startTime).getTime()
+      }
+
+      if (detailed === true) {
+        delete copy.pid
+        delete copy.ip
+        delete copy.uptime
+        cleanApps.push(copy)
       } else {
-        app.status = 'stopped'
-        app.uptime = '-'
+        cleanApps.push({
+          name: copy.name,
+          image: copy.image,
+          status: copy.status
+        })
       }
     }
 
-    if (apps.length === 0) {
-      return Odac.server('Api').result(true, [])
-    }
-
-    if (detailed !== true) {
-      return Odac.server('Api').result(
-        true,
-        apps.map(app => ({
-          name: app.name,
-          image: app.image,
-          status: app.status,
-          uptime: app.uptime
-        }))
-      )
-    }
-
-    return Odac.server('Api').result(true, apps)
+    return Odac.server('Api').result(true, cleanApps)
   }
 
   // Private: App Data Management
@@ -704,7 +848,7 @@ class App {
   }
 
   #get(id) {
-    if (!this.#loaded && this.#apps.length === 0) {
+    if (!this.#loaded) {
       this.#apps = this.#loadAppsFromConfig()
       this.#loaded = true
     }
@@ -747,7 +891,19 @@ class App {
   }
 
   #saveApps() {
-    Odac.core('Config').config.apps = this.#apps
+    const cleanApps = this.#apps.map(app => {
+      const copy = {...app}
+      // Remove runtime/ephemeral properties
+      delete copy.status
+      delete copy.pid
+      delete copy.uptime
+      delete copy.build
+      delete copy.health
+      delete copy.ip
+      delete copy.started // Maybe keep started? No, restart resets it.
+      return copy
+    })
+    Odac.core('Config').config.apps = cleanApps
   }
 
   // Private: App Execution
@@ -798,7 +954,7 @@ class App {
     return this.#runScriptContainer(app)
   }
 
-  #runScriptLocal(app) {
+  async #runScriptLocal(app) {
     const dir = path.dirname(app.file)
     const filename = path.basename(app.file)
     const ext = path.extname(filename)
@@ -807,7 +963,12 @@ class App {
     const cmd = runner.local
     const args = [...(runner.args || []), filename]
 
-    const logStream = this.#createLogStream(app.name)
+    const logger = new Logger(app.name)
+    await logger.init()
+
+    // Create daily rotating log stream
+    const logCtrl = logger.createRuntimeStream()
+    this.#logStreams.set(app.name, logCtrl)
 
     log(`Spawning local process for ${app.name}: ${cmd} ${args.join(' ')}`)
 
@@ -820,24 +981,24 @@ class App {
     this.#set(app.id, {pid: child.pid})
 
     child.stdout.on('data', data => {
-      logStream.write(`[LOG] [${Date.now()}] ${data}`)
+      logCtrl.write(`[LOG] [${Date.now()}] ${data}`)
     })
 
     child.stderr.on('data', data => {
-      logStream.write(`[ERR] [${Date.now()}] ${data}`)
+      logCtrl.error(`[ERR] [${Date.now()}] ${data}`)
     })
 
     child.on('exit', (code, signal) => {
       log(`App ${app.name} exited with code ${code} signal ${signal}`)
-      logStream.write(`[LOG] [${Date.now()}] App exited with code ${code} signal ${signal}\n`)
-      logStream.end()
+      logCtrl.write(`[LOG] [${Date.now()}] App exited with code ${code} signal ${signal}\n`)
+      logCtrl.end()
       this.#set(app.id, {status: 'stopped', pid: null, active: false})
     })
 
     child.on('error', err => {
       error(`Failed to start local app ${app.name}: ${err.message}`)
-      logStream.write(`[ERR] [${Date.now()}] Failed to start app: ${err.message}\n`)
-      logStream.end()
+      logCtrl.error(`[ERR] [${Date.now()}] Failed to start app: ${err.message}\n`)
+      logCtrl.end()
       this.#set(app.id, {status: 'errored', pid: null})
     })
   }
@@ -895,8 +1056,33 @@ class App {
       volumes,
       env
     })
+
+    // Start Runtime Logging
+    // Start Runtime Logging
+    // Start Runtime Logging
+    await this.#attachLogger(app)
   }
 
+  async #attachLogger(app) {
+    if (this.#logStreams.has(app.name)) return
+
+    try {
+      const logger = new Logger(app.name)
+      await logger.init()
+      const logCtrl = logger.createRuntimeStream()
+      this.#logStreams.set(app.name, logCtrl)
+
+      const stream = await Odac.server('Container').logs(app.name)
+      if (stream) {
+        const container = Odac.server('Container').docker.getContainer(app.name)
+        container.modem.demuxStream(stream, {write: chunk => logCtrl.write(chunk)}, {write: chunk => logCtrl.error(chunk)})
+      }
+
+      log('Attached log stream to active app: %s', app.name)
+    } catch (e) {
+      error('Failed to attach logger to app %s: %s', app.name, e.message)
+    }
+  }
   // Private: Helpers
   async #isAppRunning(app) {
     if (app.type === 'container' || Odac.server('Container').available) {
@@ -913,33 +1099,6 @@ class App {
     }
 
     return false
-  }
-
-  #createLogStream(appName) {
-    const logDir = path.join(os.homedir(), '.odac', 'logs')
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
-
-    const logFile = path.join(logDir, `${appName}.log`)
-    return fs.createWriteStream(logFile, {flags: 'a'})
-  }
-
-  #formatUptime(ms) {
-    let seconds = Math.floor(ms / 1000)
-    let minutes = Math.floor(seconds / 60)
-    let hours = Math.floor(minutes / 60)
-    const days = Math.floor(hours / 24)
-
-    seconds %= 60
-    minutes %= 60
-    hours %= 24
-
-    const parts = []
-    if (days) parts.push(`${days}d`)
-    if (hours) parts.push(`${hours}h`)
-    if (minutes) parts.push(`${minutes}m`)
-    if (seconds) parts.push(`${seconds}s`)
-
-    return parts.join(' ') || '0s'
   }
 
   #getNextId() {

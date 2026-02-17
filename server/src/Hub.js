@@ -1,4 +1,4 @@
-const {log} = Odac.core('Log', false).init('Hub')
+const {log, error} = Odac.core('Log', false).init('Hub')
 
 const axios = require('axios')
 const nodeCrypto = require('crypto')
@@ -14,6 +14,7 @@ const HUB_WS_URL = HUB_URL.replace(/^http/, 'ws') + '/ws'
 
 class Hub {
   #active = false
+  #logSubs = new Map()
 
   constructor() {
     this.ws = new WebSocketClient()
@@ -26,6 +27,9 @@ class Hub {
       'app.create': {
         fn: payload => Odac.server('App').create(payload),
         triggers: ['app.list']
+      },
+      'app.build_stats': {
+        fn: payload => Odac.server('App').getBuildStats(payload.name || payload.container || payload.id)
       },
       'app.delete': {
         fn: payload => Odac.server('App').delete(payload.id),
@@ -67,6 +71,119 @@ class Hub {
         interval: 60 * 60 * 1000,
         lastRun: 0
       },
+      'app.logs.on': {
+        fn: payload => {
+          log('[Hub] Subscription request for app: %s', payload.app)
+
+          if (this.#logSubs.has(payload.app)) {
+            return {success: true, message: 'Already subscribed'}
+          }
+
+          let buffer = []
+          let timer = null
+
+          const flush = () => {
+            if (buffer.length === 0) return
+            // Send as batch to reduce overhead
+            this.#sendSignedMessage('log.stream', {
+              app: payload.app,
+              batch: buffer
+            })
+            buffer = []
+            timer = null
+          }
+
+          const unsubscribe = Odac.server('App').subscribeToLogs(payload.app, logData => {
+            buffer.push(logData)
+            if (buffer.length >= 50) {
+              // Max 50 logs per packet
+              if (timer) clearTimeout(timer)
+              flush()
+            } else if (!timer) {
+              timer = setTimeout(flush, 500) // Max 500ms delay
+            }
+          })
+
+          if (unsubscribe) {
+            log('[Hub] Successfully subscribed to %s', payload.app)
+            // Wrap unsubscribe to clear timer
+            const safeUnsubscribe = () => {
+              if (timer) clearTimeout(timer)
+              flush() // Send remaining
+              unsubscribe()
+            }
+            this.#logSubs.set(payload.app, safeUnsubscribe)
+            return {success: true, message: 'Subscribed to logs'}
+          }
+
+          return {success: false, message: 'App not running or logs unavailable'}
+        }
+      },
+      'app.logs.off': {
+        fn: payload => {
+          const unsub = this.#logSubs.get(payload.app)
+          if (unsub) {
+            unsub()
+            this.#logSubs.delete(payload.app)
+          }
+        }
+      },
+      'app.build_logs.on': {
+        fn: async payload => {
+          const key = payload.app + ':build'
+          if (this.#logSubs.has(key)) return {success: true, message: 'Already subscribed'}
+
+          let buffer = []
+          let timer = null
+          const flush = () => {
+            if (buffer.length === 0) return
+            this.#sendSignedMessage('build.log', {app: payload.app, batch: buffer})
+            buffer = []
+            timer = null
+          }
+
+          const unsubscribe = Odac.server('Container').subscribeToBuildLogs(payload.app, logData => {
+            buffer.push(logData)
+            if (buffer.length >= 50) {
+              if (timer) clearTimeout(timer)
+              flush()
+            } else if (!timer) {
+              timer = setTimeout(flush, 500)
+            }
+          })
+
+          if (unsubscribe) {
+            const safeUnsubscribe = () => {
+              if (timer) clearTimeout(timer)
+              flush()
+              unsubscribe()
+            }
+            this.#logSubs.set(key, safeUnsubscribe)
+            return {success: true, message: 'Subscribed to active build logs'}
+          }
+
+          // No active build -> Send last log
+          const content = await Odac.server('Container').getLastBuildLog(payload.app)
+          this.#sendSignedMessage('build.log', {
+            app: payload.app,
+            content: content,
+            finished: true
+          })
+
+          return {success: true, message: 'Sent last build log'}
+        }
+      },
+      'app.build_logs.off': {
+        fn: payload => {
+          const key = payload.app + ':build'
+          const unsub = this.#logSubs.get(key)
+          if (unsub) {
+            unsub()
+            this.#logSubs.delete(key)
+          }
+          return {success: true, message: 'Unsubscribed from build logs'}
+        }
+      },
       'updater.start': {
         fn: () => Odac.server('Updater').start()
       }
@@ -87,7 +204,10 @@ class Hub {
         this.trigger('domain.list')
       },
       onMessage: data => this.#handleMessage(data),
-      onDisconnect: () => {}
+      onDisconnect: () => {
+        log('[Hub] Disconnected from Cloud. Cleaning up active log streams...')
+        this.#unsubscribeAllLogs()
+      }
     })
   }
 
@@ -295,6 +415,19 @@ class Hub {
   }
 
   // Private Helpers
+  #unsubscribeAllLogs() {
+    if (this.#logSubs.size === 0) return
+    log('[Hub] Clearing %d active log subscriptions', this.#logSubs.size)
+    for (const [app, unsub] of this.#logSubs.entries()) {
+      try {
+        unsub() // Clears timer and buffer
+      } catch (e) {
+        error('[Hub] Error unsubscribing from %s: %s', app, e.message)
+      }
+    }
+    this.#logSubs.clear()
+  }
+
   #getHubConfig() {
     return Odac.core('Config').config.hub
   }

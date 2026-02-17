@@ -5,11 +5,29 @@ const path = require('path')
 const NODE_IMAGE = 'node:lts-alpine'
 
 const Builder = require('./Container/Builder')
+const Logger = require('./Container/Logger')
 
 class Container {
   #docker
   #builder
   #activeBuilds = new Set() // Track active builds to prevent parallel builds for same app
+  #buildLoggers = new Map() // appName -> Logger instance
+
+  async getLastBuildLog(appName) {
+    try {
+      const logger = new Logger(appName)
+      await logger.init() // Ensure dirs exist
+      return logger.readLastBuildLog()
+    } catch {
+      return ''
+    }
+  }
+
+  subscribeToBuildLogs(appName, cb) {
+    const logger = this.#buildLoggers.get(appName)
+    if (!logger) return null
+    return logger.subscribe(cb)
+  }
 
   constructor() {
     if (!Odac.core('Config').config.container) Odac.core('Config').config.container = {}
@@ -119,8 +137,10 @@ class Container {
    * Builds a Docker image from source code using Native Builder
    * @param {string} sourceDir - Internal source directory
    * @param {string} imageName - Name for the built image
+   * @param {string} [appName] - Optional app name for logging context
+   * @param {Object} [activeLogger] - Optional active logger instance
    */
-  async build(sourceDir, imageName) {
+  async build(sourceDir, imageName, appName = null, activeLogger = null) {
     if (!this.available) {
       throw new Error('Docker is not available')
     }
@@ -131,8 +151,12 @@ class Container {
     }
     this.#activeBuilds.add(imageName)
 
+    // Setup Logger for Streaming
+    const logger = activeLogger
+
     try {
       const hostPath = this.#resolveHostPath(sourceDir)
+      const name = appName || path.basename(sourceDir)
 
       // We pass both paths to the builder:
       // internalPath: for reading package.json and writing temp Dockerfiles (FS ops)
@@ -140,7 +164,9 @@ class Container {
       await this.#builder.build(
         {
           internalPath: sourceDir,
-          hostPath: hostPath
+          hostPath: hostPath,
+          appName: name, // Pass explicit or derived appName
+          logger: logger // Use the prepared logger
         },
         imageName
       )
@@ -148,6 +174,7 @@ class Container {
       return true
     } finally {
       this.#activeBuilds.delete(imageName)
+      if (appName) this.#buildLoggers.delete(appName)
     }
   }
 
@@ -157,12 +184,15 @@ class Container {
    * @param {string} [branch] - Branch to clone (uses remote default if omitted)
    * @param {string} targetDir - Host directory to clone into
    * @param {string} [token] - Optional auth token
+   * @param {Object} [activeLogger] - Optional logger instance
    */
-  async cloneRepo(url, branch, targetDir, token) {
+  async cloneRepo(url, branch, targetDir, token, activeLogger = null) {
     if (!this.available) throw new Error('Docker is not available')
 
     const gitImage = 'alpine/git'
+    if (activeLogger) activeLogger.startPhase('pull_git_image')
     await this.#ensureImage(gitImage)
+    if (activeLogger) activeLogger.endPhase('pull_git_image', true)
 
     // Securely construct URL with token inside the container env if needed
     // But better: use git credentials helper or header.
@@ -224,12 +254,15 @@ class Container {
    * @param {string} targetDir - Host directory containing the existing clone
    * @param {string} [token] - Optional auth token for private repos
    * @param {string} [commitSha] - Optional specific commit to reset to
+   * @param {Object} [activeLogger] - Optional logger instance
    */
-  async fetchRepo(url, branch, targetDir, token, commitSha) {
+  async fetchRepo(url, branch, targetDir, token, commitSha, activeLogger = null) {
     if (!this.available) throw new Error('Docker is not available')
 
     const gitImage = 'alpine/git'
+    if (activeLogger) activeLogger.startPhase('pull_git_image')
     await this.#ensureImage(gitImage)
+    if (activeLogger) activeLogger.endPhase('pull_git_image', true)
 
     let secureUrl = url
     if (token && url.startsWith('https://')) {
@@ -786,6 +819,29 @@ class Container {
    */
   get docker() {
     return this.#docker
+  }
+
+  /**
+   * Gets detailed status of a container
+   * @param {string} name
+   * @returns {Promise<Object>} { running: boolean, restarts: number, startTime: string }
+   */
+  async getStatus(name) {
+    if (!this.available) return {running: false, restarts: 0}
+    try {
+      const container = this.#docker.getContainer(name)
+      const data = await container.inspect()
+      return {
+        running: data.State.Running,
+        restarts: data.RestartCount || 0,
+        startTime: data.State.StartedAt
+      }
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        error(`Failed to get status for ${name}: ${err.message}`)
+      }
+      return {running: false, restarts: 0}
+    }
   }
 }
 
