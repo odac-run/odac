@@ -430,8 +430,7 @@ class App {
 
     // Start Runtime Logging
     try {
-      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
-      const logger = new Logger(appDir)
+      const logger = new Logger(app.name)
       await logger.init()
       const logCtrl = logger.createRuntimeStream()
 
