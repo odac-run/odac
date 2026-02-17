@@ -126,7 +126,62 @@ class Hub {
             unsub()
             this.#logSubs.delete(payload.app)
           }
-          return {success: true, message: 'Unsubscribed from logs'}
+        }
+      },
+      'app.build_logs.on': {
+        fn: async payload => {
+          const key = payload.app + ':build'
+          if (this.#logSubs.has(key)) return {success: true, message: 'Already subscribed'}
+
+          let buffer = []
+          let timer = null
+          const flush = () => {
+            if (buffer.length === 0) return
+            this.#sendSignedMessage('build.log', {app: payload.app, batch: buffer})
+            buffer = []
+            timer = null
+          }
+
+          const unsubscribe = Odac.server('Container').subscribeToBuildLogs(payload.app, logData => {
+            buffer.push(logData)
+            if (buffer.length >= 50) {
+              if (timer) clearTimeout(timer)
+              flush()
+            } else if (!timer) {
+              timer = setTimeout(flush, 500)
+            }
+          })
+
+          if (unsubscribe) {
+            const safeUnsubscribe = () => {
+              if (timer) clearTimeout(timer)
+              flush()
+              unsubscribe()
+            }
+            this.#logSubs.set(key, safeUnsubscribe)
+            return {success: true, message: 'Subscribed to active build logs'}
+          }
+
+          // No active build -> Send last log
+          const content = await Odac.server('Container').getLastBuildLog(payload.app)
+          this.#sendSignedMessage('build.log', {
+            app: payload.app,
+            content: content,
+            finished: true
+          })
+
+          return {success: true, message: 'Sent last build log'}
+        }
+      },
+      'app.build_logs.off': {
+        fn: payload => {
+          const key = payload.app + ':build'
+          const unsub = this.#logSubs.get(key)
+          if (unsub) {
+            unsub()
+            this.#logSubs.delete(key)
+          }
+          return {success: true, message: 'Unsubscribed from build logs'}
         }
       },
       'updater.start': {

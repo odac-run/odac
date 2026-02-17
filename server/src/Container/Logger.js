@@ -78,6 +78,10 @@ class Logger {
           }
         }
 
+        // Broadcast to subscribers (build.log)
+        // Use 'out' or 'err' based on simple heuristic
+        this.#notifySubscribers(isError ? 'err' : 'out', line, Date.now())
+
         this.push(chunk) // Pass through
         callback()
       }
@@ -234,18 +238,7 @@ class Logger {
       },
 
       // Subscription interface
-      subscribe: cb => {
-        const id = Math.random().toString(36).substr(2, 9)
-
-        // 1. Send history from buffer immediately
-        if (this.#buffer.length > 0) {
-          this.#buffer.forEach(log => cb(log))
-        }
-
-        // 2. Register for live updates
-        this.#subscribers.set(id, cb)
-        return () => this.#subscribers.delete(id) // Unsubscribe function
-      }
+      subscribe: cb => this.subscribe(cb)
     }
   }
 
@@ -442,6 +435,36 @@ class Logger {
     }
   }
 
+  /**
+   * Reads the content of the most recent build log
+   * @returns {Promise<string>} Log content or empty string
+   */
+  async readLastBuildLog() {
+    try {
+      const files = await fs.promises.readdir(this.#buildsDir)
+      const logFiles = files.filter(f => f.endsWith('.log'))
+
+      if (logFiles.length === 0) return ''
+
+      // Find newest
+      let newestFile = ''
+      let newestTime = 0
+
+      for (const file of logFiles) {
+        const stat = await fs.promises.stat(path.join(this.#buildsDir, file))
+        if (stat.mtimeMs > newestTime) {
+          newestTime = stat.mtimeMs
+          newestFile = file
+        }
+      }
+
+      if (!newestFile) return ''
+      return await fs.promises.readFile(path.join(this.#buildsDir, newestFile), 'utf8')
+    } catch (e) {
+      return `Failed to read build log: ${e.message}`
+    }
+  }
+
   async #rotateRuntimeLogs() {
     try {
       const files = await fs.promises.readdir(this.#runtimeDir)
@@ -467,6 +490,23 @@ class Logger {
     } catch (e) {
       error('Runtime log rotation failed: %s', e.message)
     }
+  }
+  /**
+   * Subscribes to realtime logs (Runtime or Build)
+   * @param {function} cb Callabck function
+   * @returns {function} Unsubscribe function
+   */
+  subscribe(cb) {
+    const id = Math.random().toString(36).substr(2, 9)
+
+    // 1. Send history from buffer immediately
+    if (this.#buffer.length > 0) {
+      this.#buffer.forEach(log => cb(log))
+    }
+
+    // 2. Register for live updates
+    this.#subscribers.set(id, cb)
+    return () => this.#subscribers.delete(id)
   }
 }
 

@@ -5,11 +5,29 @@ const path = require('path')
 const NODE_IMAGE = 'node:lts-alpine'
 
 const Builder = require('./Container/Builder')
+const Logger = require('./Container/Logger')
 
 class Container {
   #docker
   #builder
   #activeBuilds = new Set() // Track active builds to prevent parallel builds for same app
+  #buildLoggers = new Map() // appName -> Logger instance
+
+  async getLastBuildLog(appName) {
+    try {
+      const logger = new Logger(appName)
+      await logger.init() // Ensure dirs exist
+      return logger.readLastBuildLog()
+    } catch {
+      return ''
+    }
+  }
+
+  subscribeToBuildLogs(appName, cb) {
+    const logger = this.#buildLoggers.get(appName)
+    if (!logger) return null
+    return logger.subscribe(cb)
+  }
 
   constructor() {
     if (!Odac.core('Config').config.container) Odac.core('Config').config.container = {}
@@ -133,6 +151,18 @@ class Container {
     }
     this.#activeBuilds.add(imageName)
 
+    // Setup Logger for Streaming
+    let logger = activeLogger
+    if (!logger && appName) {
+      try {
+        logger = new Logger(appName)
+        await logger.init()
+        this.#buildLoggers.set(appName, logger)
+      } catch (e) {
+        error('Failed to init build logger for %s: %s', appName, e.message)
+      }
+    }
+
     try {
       const hostPath = this.#resolveHostPath(sourceDir)
       const name = appName || path.basename(sourceDir)
@@ -145,7 +175,7 @@ class Container {
           internalPath: sourceDir,
           hostPath: hostPath,
           appName: name, // Pass explicit or derived appName
-          logger: activeLogger // Pass active logger if available
+          logger: logger // Use the prepared logger
         },
         imageName
       )
@@ -153,6 +183,7 @@ class Container {
       return true
     } finally {
       this.#activeBuilds.delete(imageName)
+      if (appName) this.#buildLoggers.delete(appName)
     }
   }
 
