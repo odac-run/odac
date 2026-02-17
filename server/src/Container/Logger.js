@@ -54,6 +54,7 @@ class Logger {
     }
 
     // Real-time analysis stream
+    const self = this
     const analyzer = new Transform({
       transform(chunk, encoding, callback) {
         const line = chunk.toString()
@@ -80,7 +81,7 @@ class Logger {
 
         // Broadcast to subscribers (build.log)
         // Use 'out' or 'err' based on simple heuristic
-        this.#notifySubscribers(isError ? 'err' : 'out', line, Date.now())
+        self.#notifySubscribers(isError ? 'err' : 'out', line, Date.now())
 
         this.push(chunk) // Pass through
         callback()

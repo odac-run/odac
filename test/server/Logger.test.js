@@ -1,6 +1,5 @@
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 
 // Mocks MUST be defined before requiring the module that uses them
 global.Odac = {

@@ -524,7 +524,7 @@ class App {
       }
 
       if (Odac.server('Container').available) {
-        await Odac.server('Container').stopApp(app.name)
+        await Odac.server('Container').stop(app.name)
       }
 
       this.#set(app.id, {status: 'stopped', pid: null, active: false})
@@ -782,19 +782,22 @@ class App {
   }
 
   async list(detailed = false) {
-    const apps = this.#loadAppsFromConfig()
+    if (this.#apps.length === 0) {
+      this.#apps = this.#loadAppsFromConfig()
+    }
     const container = Odac.server('Container')
+    const cleanApps = []
 
-    for (const app of apps) {
+    for (const app of this.#apps) {
+      const copy = {...app}
       const statusInfo = await container.getStatus(app.name)
       const isRunning = statusInfo.running
 
-      // Add minimal build summary
       try {
         const logger = new Logger(app.name)
         const lastBuild = await logger.getLastBuild()
         if (lastBuild) {
-          app.build = {
+          copy.build = {
             id: lastBuild.id,
             status: lastBuild.status,
             duration: lastBuild.duration,
@@ -806,50 +809,32 @@ class App {
               return 0
             })
           }
-        } else {
-          app.build = null
         }
 
-        // Add health summary (hourly error status)
         const healthStats = await logger.getHealth()
-        app.health = healthStats.logs || []
+        copy.health = healthStats.logs || []
       } catch {
-        app.build = null
-        app.health = null
+        /* ignore logger errors in list */
       }
 
-      if (isRunning) {
-        app.status = 'running'
-        if (statusInfo.startTime) {
-          app.started = new Date(statusInfo.startTime).getTime()
-        }
+      copy.status = isRunning ? 'running' : 'stopped'
+      if (isRunning && statusInfo.startTime) {
+        copy.started = new Date(statusInfo.startTime).getTime()
+      }
+
+      if (detailed === true) {
+        delete copy.pid
+        delete copy.ip
+        delete copy.uptime
+        cleanApps.push(copy)
       } else {
-        app.status = 'stopped'
+        cleanApps.push({
+          name: copy.name,
+          image: copy.image,
+          status: copy.status
+        })
       }
     }
-    if (apps.length === 0) {
-      return Odac.server('Api').result(true, [])
-    }
-
-    if (detailed !== true) {
-      return Odac.server('Api').result(
-        true,
-        apps.map(app => ({
-          name: app.name,
-          image: app.image,
-          status: app.status
-        }))
-      )
-    }
-
-    // Sanitize detailed list
-    const cleanApps = apps.map(app => {
-      const copy = {...app}
-      delete copy.pid
-      delete copy.ip
-      delete copy.uptime
-      return copy
-    })
 
     return Odac.server('Api').result(true, cleanApps)
   }
@@ -861,7 +846,7 @@ class App {
   }
 
   #get(id) {
-    if (!this.#loaded && this.#apps.length === 0) {
+    if (!this.#loaded) {
       this.#apps = this.#loadAppsFromConfig()
       this.#loaded = true
     }
