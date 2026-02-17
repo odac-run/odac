@@ -189,11 +189,23 @@ class Logger {
 
       // Standard log writer
       write: chunk => {
+        const data = chunk.toString()
+        const ts = Date.now()
+
+        // Broadcast to subscribers (stdout)
+        this.#notifySubscribers('out', data, ts)
+
         fileStream.write(chunk)
       },
 
       // Error log writer (tracks stats)
       error: chunk => {
+        const data = chunk.toString()
+        const ts = Date.now()
+
+        // Broadcast to subscribers (stderr)
+        this.#notifySubscribers('err', data, ts)
+
         // Check date rotation on write
         const currentToday = new Date().toISOString().split('T')[0]
         if (stats.date !== currentToday) {
@@ -216,11 +228,46 @@ class Logger {
         fileStream.write(chunk)
       },
 
-      end: () => fileStream.end()
+      end: () => {
+        this.#subscribers.clear() // Cleanup listeners
+        fileStream.end()
+      },
+
+      // Subscription interface
+      subscribe: cb => {
+        const id = Math.random().toString(36).substr(2, 9)
+
+        // 1. Send history from buffer immediately
+        if (this.#buffer.length > 0) {
+          this.#buffer.forEach(log => cb(log))
+        }
+
+        // 2. Register for live updates
+        this.#subscribers.set(id, cb)
+        return () => this.#subscribers.delete(id) // Unsubscribe function
+      }
     }
   }
 
   #lastStatsWrite = 0
+  #subscribers = new Map()
+  #buffer = [] // Ring buffer for last 100 logs
+  #BUFFER_SIZE = 100
+
+  #notifySubscribers(type, data, ts) {
+    const payload = {t: type, d: data, ts}
+
+    // Add to buffer
+    this.#buffer.push(payload)
+    if (this.#buffer.length > this.#BUFFER_SIZE) {
+      this.#buffer.shift()
+    }
+
+    if (this.#subscribers.size === 0) return
+    for (const cb of this.#subscribers.values()) {
+      cb(payload)
+    }
+  }
 
   /**
    * Returns current health stats (sliding 24h error window)

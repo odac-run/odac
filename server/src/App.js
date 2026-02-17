@@ -65,6 +65,11 @@ class App {
 
       const isRunning = await this.#isAppRunning(app)
 
+      // Re-attach logger for running apps (if missing)
+      if (isRunning && !this.#logStreams.has(app.name)) {
+        this.#attachLogger(app).catch(e => error('[Watchdog] Failed to reattach logger for %s: %s', app.name, e.message))
+      }
+
       if (!isRunning && app.status === 'running') {
         log('App %s is not running. Restarting...', app.name)
         this.#run(app.id)
@@ -496,31 +501,59 @@ class App {
     setTimeout(() => this.#pollForPort(app, expectedPort, attempts + 1), 1000)
   }
 
-  async stop(id) {
-    const app = this.#get(id)
-    if (!app) {
-      log(__('App %s not found.', id))
-      return
-    }
-
-    if (['container', 'git'].includes(app.type) || (Odac.server('Container').available && !app.pid)) {
-      await Odac.server('Container').stop(app.name)
-    } else if (app.pid) {
-      try {
-        process.kill(app.pid)
-      } catch {
-        /* ignore if already dead */
-      }
-    }
-
-    this.#set(id, {status: 'stopped', active: false, pid: null})
-  }
-
   async stopAll() {
     log('Stopping all apps...')
     for (const app of [...this.#apps]) {
       await this.stop(app.id)
     }
+  }
+
+  #logStreams = new Map() // app.name -> logCtrl
+
+  async stop(id) {
+    const app = this.#get(id)
+    if (!app) return Odac.server('Api').result(false, __('App ID %s not found.', id))
+
+    if (app.status === 'stopped') {
+      return Odac.server('Api').result(true, __('App %s is already stopped.', app.name))
+    }
+
+    try {
+      if (app.pid) {
+        process.kill(app.pid)
+      }
+
+      if (Odac.server('Container').available) {
+        await Odac.server('Container').stopApp(app.name)
+      }
+
+      this.#set(app.id, {status: 'stopped', pid: null, active: false})
+
+      // Cleanup log stream
+      this.#logStreams.delete(app.name)
+
+      return Odac.server('Api').result(true, __('App %s stopped.', app.name))
+    } catch (e) {
+      return Odac.server('Api').result(false, e.message)
+    }
+  }
+
+  /**
+   * Subscribes to realtime logs of an application
+   * @param {string} appName
+   * @param {function} callback ({t, d, ts}) => void
+   * @returns {function} unsubscribe
+   */
+  subscribeToLogs(appName, callback) {
+    const logCtrl = this.#logStreams.get(appName)
+
+    if (!logCtrl) {
+      log('No log stream found for %s. Active: %s', appName, [...this.#logStreams.keys()].join(','))
+      return null
+    }
+
+    // Subscribe using Logger's mechanism
+    return logCtrl.subscribe(callback)
   }
 
   async delete(id) {
@@ -948,6 +981,7 @@ class App {
 
     // Create daily rotating log stream
     const logCtrl = logger.createRuntimeStream()
+    this.#logStreams.set(app.name, logCtrl)
 
     log(`Spawning local process for ${app.name}: ${cmd} ${args.join(' ')}`)
 
@@ -1038,29 +1072,30 @@ class App {
 
     // Start Runtime Logging
     // Start Runtime Logging
+    // Start Runtime Logging
+    await this.#attachLogger(app)
+  }
+
+  async #attachLogger(app) {
+    if (this.#logStreams.has(app.name)) return
+
     try {
       const logger = new Logger(app.name)
       await logger.init()
       const logCtrl = logger.createRuntimeStream()
+      this.#logStreams.set(app.name, logCtrl)
 
       const stream = await Odac.server('Container').logs(app.name)
       if (stream) {
         const container = Odac.server('Container').docker.getContainer(app.name)
-        container.modem.demuxStream(
-          stream,
-          {
-            write: chunk => logCtrl.write(chunk)
-          },
-          {
-            write: chunk => logCtrl.error(chunk)
-          }
-        )
+        container.modem.demuxStream(stream, {write: chunk => logCtrl.write(chunk)}, {write: chunk => logCtrl.error(chunk)})
       }
+
+      log('Attached log stream to active app: %s', app.name)
     } catch (e) {
       error('Failed to attach logger to app %s: %s', app.name, e.message)
     }
   }
-
   // Private: Helpers
   async #isAppRunning(app) {
     if (app.type === 'container' || Odac.server('Container').available) {
