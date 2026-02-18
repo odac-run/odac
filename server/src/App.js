@@ -278,8 +278,7 @@ class App {
       let logCtrl = null
 
       try {
-        const logger = new Logger(name)
-        await logger.init()
+        const logger = await this.#getLogger(name)
         const buildId = `build_${Date.now()}`
         logCtrl = logger.createBuildStream(buildId, {
           image: imageName,
@@ -429,18 +428,7 @@ class App {
     await Odac.server('Container').runApp(app.name, runOptions)
 
     // Start Runtime Logging
-    try {
-      const logger = new Logger(app.name)
-      await logger.init()
-      const logCtrl = logger.createRuntimeStream()
-
-      const stream = await Odac.server('Container').logs(app.name)
-      // Dockerode logs stream includes headers, simpler strictly to pipe raw output
-      // or we can use container.logs({stdout:true, stderr:true}) which we updated in Container.js
-      if (stream) stream.pipe(logCtrl.stream)
-    } catch (e) {
-      error('Failed to attach logger to git app %s: %s', app.name, e.message)
-    }
+    await this.#attachLogger(app)
 
     // Runtime Port Discovery:
     // If we relied on a default (3000) but didn't actually detect it from image,
@@ -508,6 +496,18 @@ class App {
   }
 
   #logStreams = new Map() // app.name -> logCtrl
+  #loggers = new Map() // app.name -> Logger instance
+
+  async #getLogger(appName) {
+    let logger = this.#loggers.get(appName)
+    if (!logger) {
+      logger = new Logger(appName)
+      this.#loggers.set(appName, logger)
+    }
+    // Ensure initialized (safe to call multiple times)
+    await logger.init()
+    return logger
+  }
 
   async stop(id) {
     const app = this.#get(id)
@@ -533,6 +533,10 @@ class App {
       this.#set(app.id, {status: 'stopped', pid: null, active: false})
 
       // Cleanup log stream
+      const logCtrl = this.#logStreams.get(app.name)
+      if (logCtrl && typeof logCtrl.end === 'function') {
+        logCtrl.end()
+      }
       this.#logStreams.delete(app.name)
 
       return Odac.server('Api').result(true, __('App %s stopped.', app.name))
@@ -548,15 +552,33 @@ class App {
    * @returns {function} unsubscribe
    */
   subscribeToLogs(appName, callback) {
-    const logCtrl = this.#logStreams.get(appName)
+    // Determine active stream presence (optional, but good for check)
+    // We allow subscription even if stream is momentarily down (restarting)
+    let logger = this.#loggers.get(appName)
 
-    if (!logCtrl) {
-      log('No log stream found for %s. Active: %s', appName, [...this.#logStreams.keys()].join(','))
-      return null
+    if (!logger) {
+      if (!this.#logStreams.has(appName)) {
+        // If no active stream and no logger, check if app exists at all
+        const app = this.#apps.find(a => a.name === appName)
+        if (!app) {
+          log('No log stream found for %s. Active: %s', appName, [...this.#logStreams.keys()].join(','))
+          return null
+        }
+        // Create logger for known app (even if stopped)
+        logger = new Logger(appName)
+        this.#loggers.set(appName, logger)
+        // Fire and forget init, not strictly needed for subscribe
+        logger.init().catch(() => {})
+      } else {
+        // Should not happen: stream exists but logger doesn't (legacy/race)
+        // Recover by creating one
+        logger = new Logger(appName)
+        this.#loggers.set(appName, logger)
+      }
     }
 
     // Subscribe using Logger's mechanism
-    return logCtrl.subscribe(callback)
+    return logger.subscribe(callback)
   }
 
   async delete(id) {
@@ -571,6 +593,7 @@ class App {
     this.#saveApps()
 
     await Odac.server('Container').remove(app.name)
+    this.#loggers.delete(app.name)
 
     // Cascading delete: Remove associated domains
     try {
@@ -677,8 +700,7 @@ class App {
         .then(() => true)
         .catch(() => false)
 
-      const logger = new Logger(app.name)
-      await logger.init()
+      const logger = await this.#getLogger(app.name)
       const buildId = `build_${Date.now()}`
       logCtrl = logger.createBuildStream(buildId, {
         image: imageName,
@@ -963,8 +985,7 @@ class App {
     const cmd = runner.local
     const args = [...(runner.args || []), filename]
 
-    const logger = new Logger(app.name)
-    await logger.init()
+    const logger = await this.#getLogger(app.name)
 
     // Create daily rotating log stream
     const logCtrl = logger.createRuntimeStream()
@@ -1067,8 +1088,7 @@ class App {
     if (this.#logStreams.has(app.name)) return
 
     try {
-      const logger = new Logger(app.name)
-      await logger.init()
+      const logger = await this.#getLogger(app.name)
       const logCtrl = logger.createRuntimeStream()
       this.#logStreams.set(app.name, logCtrl)
 

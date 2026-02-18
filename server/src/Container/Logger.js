@@ -190,12 +190,15 @@ class Logger {
     // Auto-rotate check (simple approach: check on creation)
     this.#rotateRuntimeLogs()
 
+    let isEnded = false
+
     return {
       stream: fileStream, // Keep for backward compat if needed
       path: logFile,
 
       // Standard log writer
       write: chunk => {
+        if (isEnded) return
         const data = chunk.toString()
         const ts = Date.now()
 
@@ -207,6 +210,7 @@ class Logger {
 
       // Error log writer (tracks stats)
       error: chunk => {
+        if (isEnded) return
         const data = chunk.toString()
         const ts = Date.now()
 
@@ -236,7 +240,11 @@ class Logger {
       },
 
       end: () => {
-        this.#subscribers.clear() // Cleanup listeners
+        if (isEnded) return
+        isEnded = true
+        // Do not clear subscribers here!
+        // We want subscriptions to persist across restarts (new streams)
+        // Hub handles unsubscription when client disconnects.
         fileStream.end()
       },
 
