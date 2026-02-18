@@ -185,7 +185,7 @@ class App {
         image: recipe.image,
         ports: await this.#preparePorts(recipe.ports),
         volumes: this.#prepareVolumes(recipe.volumes, appDir),
-        env: this.#prepareEnv(recipe.env),
+        env: this.#mergeRecipeEnv(recipe, config.env),
         active: true,
         created: Date.now(),
         status: 'installing'
@@ -330,7 +330,10 @@ class App {
           url,
           branch,
           image: imageName,
-          env,
+          env: {
+            manual: env.manual || Array.isArray(env.linked) ? env.manual || {} : env,
+            linked: env.manual || Array.isArray(env.linked) ? env.linked || [] : config.linked || []
+          },
           // Store internal port for Proxy routing (Metadata only, does not expose to host)
           ports: [{container: parseInt(detectedPort)}],
           dev,
@@ -389,10 +392,7 @@ class App {
       this.#saveApps()
     }
 
-    const env = {
-      ODAC_APP: 'true',
-      ...(app.env || {})
-    }
+    const env = this.#resolveEnv(app)
 
     // API Permission Injection
     if (app.api) {
@@ -850,6 +850,23 @@ class App {
         delete copy.pid
         delete copy.ip
         delete copy.uptime
+
+        // Security: Expose only env keys, not values
+        // Structure: { manual: [KEY1, KEY2], linked: [APP1, APP2] }
+        const rawEnv = copy.env || {}
+        if (rawEnv.manual || Array.isArray(rawEnv.linked)) {
+          copy.env = {
+            manual: Object.keys(rawEnv.manual || {}),
+            linked: rawEnv.linked || []
+          }
+        } else {
+          // Legacy support
+          copy.env = {
+            manual: Object.keys(rawEnv),
+            linked: []
+          }
+        }
+
         cleanApps.push(copy)
       } else {
         cleanApps.push({
@@ -1057,7 +1074,7 @@ class App {
       throw new Error('Docker is not available via Container service.')
     }
 
-    const env = {...(app.env || {})}
+    const env = this.#resolveEnv(app)
     const volumes = [...(app.volumes || [])]
 
     // API Permission Injection
@@ -1249,6 +1266,53 @@ class App {
 
       server.listen(port, '127.0.0.1')
     })
+  }
+
+  // Private: Env Resolution
+  #mergeRecipeEnv(recipe, userEnv = {}) {
+    const defaultEnv = this.#prepareEnv(recipe.env)
+    const defaultLinked = recipe.linked || []
+
+    const userIsStructured = userEnv.manual || Array.isArray(userEnv.linked)
+    const userManual = userIsStructured ? userEnv.manual || {} : userEnv
+    const userLinked = userIsStructured ? userEnv.linked || [] : []
+
+    // Merge: User overrides recipe defaults
+    const manual = {...defaultEnv, ...userManual}
+
+    // Linked: Recipe + User (Merge Arrays, Unique)
+    const linkedSet = new Set([...defaultLinked, ...userLinked])
+    const linked = [...linkedSet]
+
+    return {manual, linked}
+  }
+
+  #resolveEnv(app) {
+    const finalEnv = {ODAC_APP: 'true'}
+    const envConfig = app.env || {}
+
+    // Check if new structure (has manual or linked prop)
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    // 1. Resolve Linked Apps (New Structure only)
+    if (isNewStructure && Array.isArray(envConfig.linked)) {
+      for (const linkName of envConfig.linked) {
+        const linkedApp = this.#get(linkName)
+        if (linkedApp) {
+          // Pull manual envs from linked app (recursive linking not supported yet to avoid loops)
+          const linkedEnvConfig = linkedApp.env || {}
+          const linkedManual = linkedEnvConfig.manual || (linkedEnvConfig.linked ? {} : linkedEnvConfig)
+          Object.assign(finalEnv, linkedManual)
+        }
+      }
+    }
+
+    // 2. Apply Manual Envs (Overrides linked)
+    // If legacy, treat whole object as manual. If new, use .manual
+    const manual = isNewStructure ? envConfig.manual || {} : envConfig
+    Object.assign(finalEnv, manual)
+
+    return finalEnv
   }
 }
 
