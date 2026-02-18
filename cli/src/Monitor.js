@@ -18,6 +18,7 @@ class Monitor {
   #watch = []
   #width
   #stats = {}
+  #statuses = {}
   #lineToAppIndex = []
 
   constructor() {
@@ -358,9 +359,13 @@ class Monitor {
     setInterval(() => this.#monitor(), 250)
 
     // Update stats every 2 seconds
-    setInterval(() => this.#fetchStats(), 2000)
+    setInterval(() => {
+      this.#fetchStats()
+      this.#fetchStatuses()
+    }, 2000)
     // Initial fetch
     this.#fetchStats()
+    this.#fetchStatuses()
 
     // Mouse event handler
     process.stdout.write('\x1b[?25l')
@@ -459,6 +464,30 @@ class Monitor {
         }
       }
       this.#maxStatsLen = {cpu: maxCpuLen, mem: maxMemLen}
+    })
+  }
+
+  #fetchStatuses() {
+    execFile('docker', ['ps', '-a', '--format', '{{.Names}}|{{.State}}'], (error, stdout) => {
+      if (error) return
+      const lines = stdout.trim().split('\n')
+      for (const line of lines) {
+        const parts = line.split('|')
+        if (parts.length >= 2) {
+          const name = parts[0].trim()
+          const state = parts[1].trim() // running, exited, dead, restarting, paused
+
+          let status = 'stopped'
+          if (state === 'running') status = 'running'
+          else if (state === 'restarting')
+            status = 'progress' // or 'restarting'
+          else if (state === 'dead') status = 'errored'
+          else if (state === 'paused') status = 'stopped'
+          else if (state === 'exited') status = 'stopped' // with exit code? Monitor doesn't care much for now
+
+          this.#statuses[name] = status
+        }
+      }
     })
   }
   #getLogLine(index) {
@@ -656,7 +685,8 @@ class Monitor {
       }
 
       result += Odac.cli('Cli').color('│', 'gray')
-      result += Odac.cli('Cli').icon(app.status ?? null, ctx.globalIndex == this.#selected)
+      const status = this.#statuses[app.name] ?? app.status ?? null
+      result += Odac.cli('Cli').icon(status, ctx.globalIndex == this.#selected)
 
       const maxLen = Math.max(0, Math.floor(c1 - 5 - stats.length))
       let display = appName.length > maxLen ? appName.substr(0, maxLen) : appName
