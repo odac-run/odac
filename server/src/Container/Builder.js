@@ -76,7 +76,16 @@ const BUILD_STRATEGIES = {
     package: {
       baseImage: 'nginx:alpine',
       user: 'nginx',
-      cmd: ['nginx', '-g', 'daemon off;']
+      cmd: ['nginx', '-g', 'daemon off;'],
+      setup: [
+        // Fix permissions for non-root execution
+        'chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d',
+        'touch /var/run/nginx.pid && chown nginx:nginx /var/run/nginx.pid',
+        // Remove "user" directive from default config as we are already running as that user
+        'sed -i "/user  nginx;/d" /etc/nginx/nginx.conf',
+        // Configure Nginx to serve from /app (avoid copying files)
+        'sed -i "s|root   /usr/share/nginx/html;|root   /app;|g" /etc/nginx/conf.d/default.conf'
+      ]
     }
   }
 }
@@ -346,8 +355,16 @@ WORKDIR /app
 COPY . .
 USER root
 RUN chown -R ${strategy.package.user}:${strategy.package.user} /app
-USER ${strategy.package.user}
 `
+
+    // Apply Strategy-specific Setup Commands (if any)
+    if (strategy.package.setup && Array.isArray(strategy.package.setup)) {
+      for (const cmd of strategy.package.setup) {
+        dockerfileContent += `RUN ${cmd}\n`
+      }
+    }
+
+    dockerfileContent += `USER ${strategy.package.user}\n`
     // Add Environment Variables if defined
     if (strategy.package.env) {
       for (const [key, val] of Object.entries(strategy.package.env)) {

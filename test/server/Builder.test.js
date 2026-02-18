@@ -215,6 +215,40 @@ describe('Builder', () => {
       // Verify cleanup
       expect(fsPromises.unlink).toHaveBeenCalledWith(path.join(mockContext.internalPath, 'Dockerfile.odac'))
     })
+
+    test('should inject custom setup commands for Static Web project', async () => {
+      // Simulate Static project (only index.html exists)
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('index.html')) return
+        throw new Error('ENOENT')
+      })
+
+      // Static project skips compilation, so first run call will be package
+      await builder.build(mockContext, 'static-image')
+
+      // Verify Dockerfile generation contains setup commands
+      const writeCalls = fsPromises.writeFile.mock.calls
+      const dockerfileCall = writeCalls.find(call => call[0].endsWith('Dockerfile.odac'))
+
+      expect(dockerfileCall).toBeDefined()
+      const content = dockerfileCall[1]
+
+      // Verify Base Image and User logic
+      expect(content).toContain('FROM nginx:alpine')
+      expect(content).toContain('USER root')
+
+      // Verify Injected Setup Commands
+      expect(content).toContain('RUN chown -R nginx:nginx /var/cache/nginx')
+      expect(content).toContain('RUN touch /var/run/nginx.pid && chown nginx:nginx')
+      expect(content).toContain('RUN sed -i "/user  nginx;/d" /etc/nginx/nginx.conf')
+
+      // Verify Nginx Config Update (Serve from /app)
+      expect(content).toContain('RUN sed -i "s|root   /usr/share/nginx/html;|root   /app;|g" /etc/nginx/conf.d/default.conf')
+
+      // Verify Final User Switch
+
+      expect(content).toContain('USER nginx')
+    })
   })
 
   describe('logging', () => {
