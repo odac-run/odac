@@ -823,8 +823,8 @@ class App {
     const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
 
     // Sanitize manual envs
-    const rawManual = isNewStructure ? envConfig.manual || {} : envConfig
-    const manual = this.#sanitizeEnv(rawManual)
+    // Sanitize manual envs
+    const manual = this.#sanitizeEnv(this.#getManualEnv(envConfig))
 
     // Resolve linked apps and sanitize each
     const linked = []
@@ -835,7 +835,7 @@ class App {
       if (!linkedApp) continue
 
       const linkedEnvConfig = linkedApp.env || {}
-      const linkedManual = linkedEnvConfig.manual || (linkedEnvConfig.linked ? {} : linkedEnvConfig)
+      const linkedManual = this.#getManualEnv(linkedEnvConfig)
       linked.push({app: name, env: this.#sanitizeEnv(linkedManual)})
     }
 
@@ -861,7 +861,7 @@ class App {
 
     const envConfig = app.env || {}
     const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
-    const manual = isNewStructure ? envConfig.manual || {} : envConfig
+    const manual = this.#getManualEnv(envConfig)
 
     let removedCount = 0
     for (const key of keys) {
@@ -1456,7 +1456,7 @@ class App {
     const defaultLinked = recipe.linked || []
 
     const userIsStructured = userEnv.manual || Array.isArray(userEnv.linked)
-    const userManual = userIsStructured ? userEnv.manual || {} : userEnv
+    const userManual = this.#getManualEnv(userEnv)
     const userLinked = userIsStructured ? userEnv.linked || [] : []
 
     // Merge: User overrides recipe defaults
@@ -1482,6 +1482,20 @@ class App {
     return sanitized
   }
 
+  /**
+   * Helper to extract manual envs handling both legacy and new structures.
+   * @param {object} envConfig - The app.env object
+   * @returns {object} The manual env key-value pairs
+   */
+  #getManualEnv(envConfig) {
+    if (!envConfig) return {}
+    // If it has .manual or .linked, it's the new structure.
+    // Otherwise it's legacy flat structure.
+    // Note: checking .linked presence is important because an app might have linked apps but empty manual envs.
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+    return isNewStructure ? envConfig.manual || {} : envConfig
+  }
+
   #resolveEnv(app, includeSystem = true) {
     const finalEnv = includeSystem ? {ODAC_APP: 'true'} : {}
     const envConfig = app.env || {}
@@ -1496,16 +1510,13 @@ class App {
         if (linkedApp) {
           // Pull manual envs from linked app (recursive linking not supported yet to avoid loops)
           const linkedEnvConfig = linkedApp.env || {}
-          const linkedManual = linkedEnvConfig.manual || (linkedEnvConfig.linked ? {} : linkedEnvConfig)
-          Object.assign(finalEnv, linkedManual)
+          Object.assign(finalEnv, this.#getManualEnv(linkedEnvConfig))
         }
       }
     }
 
     // 2. Apply Manual Envs (Overrides linked)
-    // If legacy, treat whole object as manual. If new, use .manual
-    const manual = isNewStructure ? envConfig.manual || {} : envConfig
-    Object.assign(finalEnv, manual)
+    Object.assign(finalEnv, this.#getManualEnv(envConfig))
 
     return finalEnv
   }
