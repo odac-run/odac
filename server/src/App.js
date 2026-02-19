@@ -223,7 +223,7 @@ class App {
   }
 
   async #createFromGit(config) {
-    const {url, token, branch, name, dev = false, env = {}, port = 3000} = config
+    const {url, token, branch, name, linked, dev = false, env = {}, port = 3000} = config
 
     log('createFromGit: Starting git deployment')
     log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
@@ -333,7 +333,7 @@ class App {
           image: imageName,
           env: {
             manual: env.manual || Array.isArray(env.linked) ? env.manual || {} : env,
-            linked: env.manual || Array.isArray(env.linked) ? env.linked || [] : config.linked || []
+            linked: env.manual || Array.isArray(env.linked) ? env.linked || [] : linked || []
           },
           // Store internal port for Proxy routing (Metadata only, does not expose to host)
           ports: [{container: parseInt(detectedPort)}],
