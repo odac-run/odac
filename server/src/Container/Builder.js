@@ -63,7 +63,14 @@ const BUILD_STRATEGIES = {
     package: {
       baseImage: 'php:8.2-apache',
       user: 'www-data',
-      cmd: ['apache2-foreground']
+      cmd: ['apache2-foreground'],
+      setup: [
+        // Change DocumentRoot to /app
+        'sed -ri -e "s!/var/www/html!/app!g" /etc/apache2/sites-available/*.conf',
+        'sed -ri -e "s!/var/www/!/app!g" /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf',
+        // Fix permissions for non-root execution
+        'chown -R www-data:www-data /var/run/apache2 /var/log/apache2 /var/lock/apache2 /var/lib/apache2'
+      ]
     }
   },
   STATIC: {
