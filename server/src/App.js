@@ -819,7 +819,7 @@ class App {
       return Odac.server('Api').result(false, __('App %s not found.', id))
     }
 
-    const env = this.#resolveEnv(app)
+    const env = this.#resolveEnv(app, false)
     const sanitized = {}
 
     for (const [key, value] of Object.entries(env)) {
@@ -1452,8 +1452,8 @@ class App {
     return {manual, linked}
   }
 
-  #resolveEnv(app) {
-    const finalEnv = {ODAC_APP: 'true'}
+  #resolveEnv(app, includeSystem = true) {
+    const finalEnv = includeSystem ? {ODAC_APP: 'true'} : {}
     const envConfig = app.env || {}
 
     // Check if new structure (has manual or linked prop)
