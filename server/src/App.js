@@ -15,6 +15,7 @@ const SCRIPT_RUNNERS = {
   '.rb': {image: 'ruby:alpine', cmd: 'ruby', local: 'ruby'},
   '.sh': {image: 'alpine:latest', cmd: 'sh', local: 'sh'}
 }
+const SENSITIVE_KEY_PATTERN = /cert|key|pass|salt|secret|token/i
 
 class App {
   #apps = []
@@ -185,7 +186,7 @@ class App {
         image: recipe.image,
         ports: await this.#preparePorts(recipe.ports),
         volumes: this.#prepareVolumes(recipe.volumes, appDir),
-        env: this.#prepareEnv(recipe.env),
+        env: this.#mergeRecipeEnv(recipe, config.env),
         active: true,
         created: Date.now(),
         status: 'installing'
@@ -222,7 +223,7 @@ class App {
   }
 
   async #createFromGit(config) {
-    const {url, token, branch, name, dev = false, env = {}, port = 3000} = config
+    const {url, token, branch, name, linked, dev = false, env = {}, port = 3000} = config
 
     log('createFromGit: Starting git deployment')
     log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
@@ -330,7 +331,10 @@ class App {
           url,
           branch,
           image: imageName,
-          env,
+          env: {
+            manual: env.manual || Array.isArray(env.linked) ? env.manual || {} : env,
+            linked: env.manual || Array.isArray(env.linked) ? env.linked || [] : linked || []
+          },
           // Store internal port for Proxy routing (Metadata only, does not expose to host)
           ports: [{container: parseInt(detectedPort)}],
           dev,
@@ -389,10 +393,7 @@ class App {
       this.#saveApps()
     }
 
-    const env = {
-      ODAC_APP: 'true',
-      ...(app.env || {})
-    }
+    const env = this.#resolveEnv(app)
 
     // API Permission Injection
     if (app.api) {
@@ -805,6 +806,187 @@ class App {
     }
   }
 
+  /**
+   * Returns the environment variables for a specific app in structured format.
+   * Manual envs and linked app envs are returned separately for frontend display.
+   * Sensitive values (pass, key, secret, token, cert, salt) are masked.
+   * @param {string|number} id - App id, name, or file
+   * @returns {object} Api.result with { manual: {}, linked: [{app, env}] }
+   */
+  getEnv(id) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    // Sanitize manual envs
+    // Sanitize manual envs
+    const manual = this.#sanitizeEnv(this.#getManualEnv(envConfig))
+
+    // Resolve linked apps and sanitize each
+    const linked = []
+    const linkedNames = isNewStructure ? envConfig.linked || [] : []
+
+    for (const name of linkedNames) {
+      const linkedApp = this.#get(name)
+      if (!linkedApp) continue
+
+      const linkedEnvConfig = linkedApp.env || {}
+      const linkedManual = this.#getManualEnv(linkedEnvConfig)
+      linked.push({app: name, env: this.#sanitizeEnv(linkedManual)})
+    }
+
+    return Odac.server('Api').result(true, {manual, linked})
+  }
+
+  /**
+   * Removes specified keys from the app's manual environment variables.
+   * Accepts an array of key names for batch deletion.
+   * @param {string|number} id - App id, name, or file
+   * @param {string[]} keys - Array of env key names to remove
+   * @returns {object} Api.result
+   */
+  deleteEnv(id, keys) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return Odac.server('Api').result(false, __('Invalid keys payload. Expected a non-empty array.'))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+    const manual = this.#getManualEnv(envConfig)
+
+    let removedCount = 0
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(manual, key)) {
+        delete manual[key]
+        removedCount++
+      }
+    }
+
+    if (isNewStructure) {
+      app.env.manual = manual
+    } else {
+      app.env = {manual, linked: []}
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Removed %d key(s) from %s. Restart required to apply.', removedCount, app.name))
+  }
+
+  /**
+   * Links another app's manual env vars to this app.
+   * Linked envs are resolved at runtime via #resolveEnv.
+   * @param {string|number} id - App id, name, or file
+   * @param {string} target - Name of the app to link
+   * @returns {object} Api.result
+   */
+  linkEnv(id, target) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!target || typeof target !== 'string') {
+      return Odac.server('Api').result(false, __('Invalid target. Expected an app name.'))
+    }
+
+    if (app.name === target) {
+      return Odac.server('Api').result(false, __('Cannot link an app to itself.'))
+    }
+
+    const targetApp = this.#get(target)
+    if (!targetApp) {
+      return Odac.server('Api').result(false, __('Target app %s not found.', target))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    if (isNewStructure) {
+      const linked = new Set(envConfig.linked || [])
+      linked.add(target)
+      app.env.linked = [...linked]
+    } else {
+      app.env = {
+        manual: envConfig,
+        linked: [target]
+      }
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Linked %s to %s. Restart required to apply.', target, app.name))
+  }
+
+  /**
+   * Merges provided key-value pairs into the app's manual environment variables.
+   * Does not restart the container — caller must trigger restart separately.
+   * @param {string|number} id - App id, name, or file
+   * @param {object} env - Key-value pairs to merge into manual envs
+   * @returns {object} Api.result
+   */
+  setEnv(id, env) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!env || typeof env !== 'object' || Array.isArray(env)) {
+      return Odac.server('Api').result(false, __('Invalid env payload. Expected an object.'))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    if (isNewStructure) {
+      app.env.manual = {...(envConfig.manual || {}), ...env}
+    } else {
+      // Migrate legacy flat env to structured format
+      app.env = {
+        manual: {...envConfig, ...env},
+        linked: []
+      }
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Environment updated for %s. Restart required to apply.', app.name))
+  }
+
+  /**
+   * Removes an app link from this app's linked env list.
+   * @param {string|number} id - App id, name, or file
+   * @param {string} target - Name of the app to unlink
+   * @returns {object} Api.result
+   */
+  unlinkEnv(id, target) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!target || typeof target !== 'string') {
+      return Odac.server('Api').result(false, __('Invalid target. Expected an app name.'))
+    }
+
+    const envConfig = app.env || {}
+    const linked = envConfig.linked || []
+
+    if (!linked.includes(target)) {
+      return Odac.server('Api').result(false, __('App %s is not linked to %s.', target, app.name))
+    }
+
+    app.env.linked = linked.filter(name => name !== target)
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Unlinked %s from %s. Restart required to apply.', target, app.name))
+  }
+
   async list(detailed = false) {
     if (this.#apps.length === 0) {
       this.#apps = this.#loadAppsFromConfig()
@@ -850,6 +1032,23 @@ class App {
         delete copy.pid
         delete copy.ip
         delete copy.uptime
+
+        // Security: Expose only env keys, not values
+        // Structure: { manual: [KEY1, KEY2], linked: [APP1, APP2] }
+        const rawEnv = copy.env || {}
+        if (rawEnv.manual || Array.isArray(rawEnv.linked)) {
+          copy.env = {
+            manual: Object.keys(rawEnv.manual || {}),
+            linked: rawEnv.linked || []
+          }
+        } else {
+          // Legacy support
+          copy.env = {
+            manual: Object.keys(rawEnv),
+            linked: []
+          }
+        }
+
         cleanApps.push(copy)
       } else {
         cleanApps.push({
@@ -1057,7 +1256,7 @@ class App {
       throw new Error('Docker is not available via Container service.')
     }
 
-    const env = {...(app.env || {})}
+    const env = this.#resolveEnv(app)
     const volumes = [...(app.volumes || [])]
 
     // API Permission Injection
@@ -1249,6 +1448,77 @@ class App {
 
       server.listen(port, '127.0.0.1')
     })
+  }
+
+  // Private: Env Resolution
+  #mergeRecipeEnv(recipe, userEnv = {}) {
+    const defaultEnv = this.#prepareEnv(recipe.env)
+    const defaultLinked = recipe.linked || []
+
+    const userIsStructured = userEnv.manual || Array.isArray(userEnv.linked)
+    const userManual = this.#getManualEnv(userEnv)
+    const userLinked = userIsStructured ? userEnv.linked || [] : []
+
+    // Merge: User overrides recipe defaults
+    const manual = {...defaultEnv, ...userManual}
+
+    // Linked: Recipe + User (Merge Arrays, Unique)
+    const linkedSet = new Set([...defaultLinked, ...userLinked])
+    const linked = [...linkedSet]
+
+    return {manual, linked}
+  }
+
+  /**
+   * Masks sensitive values in an env object based on SENSITIVE_KEY_PATTERN.
+   * @param {object} env - Raw key-value env pairs
+   * @returns {object} Sanitized env with sensitive values replaced by '***'
+   */
+  #sanitizeEnv(env) {
+    const sanitized = {}
+    for (const [key, value] of Object.entries(env)) {
+      sanitized[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : value
+    }
+    return sanitized
+  }
+
+  /**
+   * Helper to extract manual envs handling both legacy and new structures.
+   * @param {object} envConfig - The app.env object
+   * @returns {object} The manual env key-value pairs
+   */
+  #getManualEnv(envConfig) {
+    if (!envConfig) return {}
+    // If it has .manual or .linked, it's the new structure.
+    // Otherwise it's legacy flat structure.
+    // Note: checking .linked presence is important because an app might have linked apps but empty manual envs.
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+    return isNewStructure ? envConfig.manual || {} : envConfig
+  }
+
+  #resolveEnv(app, includeSystem = true) {
+    const finalEnv = includeSystem ? {ODAC_APP: 'true'} : {}
+    const envConfig = app.env || {}
+
+    // Check if new structure (has manual or linked prop)
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    // 1. Resolve Linked Apps (New Structure only)
+    if (isNewStructure && Array.isArray(envConfig.linked)) {
+      for (const linkName of envConfig.linked) {
+        const linkedApp = this.#get(linkName)
+        if (linkedApp) {
+          // Pull manual envs from linked app (recursive linking not supported yet to avoid loops)
+          const linkedEnvConfig = linkedApp.env || {}
+          Object.assign(finalEnv, this.#getManualEnv(linkedEnvConfig))
+        }
+      }
+    }
+
+    // 2. Apply Manual Envs (Overrides linked)
+    Object.assign(finalEnv, this.#getManualEnv(envConfig))
+
+    return finalEnv
   }
 }
 

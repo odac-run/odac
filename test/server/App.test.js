@@ -344,4 +344,119 @@ describe('App', () => {
       expect(app.git.provider).toBe('gitlab')
     })
   })
+
+  describe('environment management', () => {
+    beforeEach(() => {
+      mockConfig.apps = [
+        {
+          id: 1,
+          name: 'app-main',
+          type: 'container',
+          env: {
+            manual: {
+              NODE_ENV: 'production',
+              API_KEY: 'secret-key-123',
+              DB_PASS: 'password123'
+            },
+            linked: []
+          }
+        },
+        {
+          id: 2,
+          name: 'app-db',
+          type: 'container',
+          env: {
+            manual: {
+              POSTGRES_USER: 'admin',
+              POSTGRES_PASSWORD: 'db-secret-password'
+            }
+          }
+        },
+        {
+          id: 3,
+          name: 'app-legacy',
+          type: 'container',
+          env: {
+            LEGACY_VAR: 'old-value'
+          }
+        }
+      ]
+      return App.init()
+    })
+
+    test('getEnv should return structured format with masked values', async () => {
+      const result = App.getEnv('app-main')
+      expect(result.success).toBe(true)
+
+      // Manual envs
+      expect(result.data.manual.NODE_ENV).toBe('production')
+      expect(result.data.manual.API_KEY).toBe('***')
+      expect(result.data.manual.DB_PASS).toBe('***')
+
+      // Linked section (empty initially)
+      expect(result.data.linked).toEqual([])
+    })
+
+    test('setEnv should merge new values and migrate legacy structure', async () => {
+      // Test Legacy Migration
+      const resLegacy = App.setEnv('app-legacy', {NEW_VAR: 'new-value'})
+      expect(resLegacy.success).toBe(true)
+
+      const appLegacy = mockConfig.apps.find(a => a.name === 'app-legacy')
+      expect(appLegacy.env.manual).toBeDefined() // Migrated
+      expect(appLegacy.env.manual.LEGACY_VAR).toBe('old-value')
+      expect(appLegacy.env.manual.NEW_VAR).toBe('new-value')
+
+      // Test Normal Merge
+      const resMain = App.setEnv('app-main', {NODE_ENV: 'development', EXTRA: 'foo'})
+      expect(resMain.success).toBe(true)
+
+      const appMain = mockConfig.apps.find(a => a.name === 'app-main')
+      expect(appMain.env.manual.NODE_ENV).toBe('development') // Updated
+      expect(appMain.env.manual.API_KEY).toBe('secret-key-123') // Preserved
+      expect(appMain.env.manual.EXTRA).toBe('foo') // Added
+    })
+
+    test('deleteEnv should remove specified keys', async () => {
+      const result = App.deleteEnv('app-main', ['API_KEY', 'NON_EXISTENT'])
+      expect(result.success).toBe(true)
+
+      const app = mockConfig.apps.find(a => a.name === 'app-main')
+      expect(app.env.manual.API_KEY).toBeUndefined()
+      expect(app.env.manual.NODE_ENV).toBe('production')
+    })
+
+    test('linkEnv should validate and link apps', async () => {
+      // Self-link fail
+      const selfRes = App.linkEnv('app-main', 'app-main')
+      expect(selfRes.success).toBe(false)
+      expect(selfRes.message).toMatch(/itself/)
+
+      // Convert legacy struct before linking? linkEnv handles it.
+      // Link app-db to app-main
+      const linkRes = App.linkEnv('app-main', 'app-db')
+      expect(linkRes.success).toBe(true)
+
+      const app = mockConfig.apps.find(a => a.name === 'app-main')
+      expect(app.env.linked).toContain('app-db')
+
+      // Resolve check: linked section should contain app-db's envs
+      const resolvedRes = App.getEnv('app-main')
+      expect(resolvedRes.data.linked).toHaveLength(1)
+      expect(resolvedRes.data.linked[0].app).toBe('app-db')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_USER).toBe('admin')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('***')
+    })
+
+    test('unlinkEnv should remove link', async () => {
+      // Setup: Link first
+      App.linkEnv('app-main', 'app-db')
+
+      const unlinkRes = App.unlinkEnv('app-main', 'app-db')
+      expect(unlinkRes.success).toBe(true)
+
+      const app = mockConfig.apps.find(a => a.name === 'app-main')
+      expect(app.env.linked).not.toContain('app-db')
+    })
+  })
 })

@@ -249,6 +249,29 @@ describe('Builder', () => {
 
       expect(content).toContain('USER nginx')
     })
+
+    test('should inject custom setup commands for PHP project', async () => {
+      // Simulate PHP project
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('composer.json')) return
+        throw new Error('ENOENT')
+      })
+
+      // PHP build
+      await builder.build(mockContext, 'php-image')
+
+      const writeCalls = fsPromises.writeFile.mock.calls
+      const dockerfileCall = writeCalls.find(call => call[0].endsWith('Dockerfile.odac'))
+      expect(dockerfileCall).toBeDefined()
+      const content = dockerfileCall[1]
+
+      // Verify Apache Config Update
+      expect(content).toContain('RUN sed -ri -e "s!/var/www/html!/app!g" /etc/apache2/sites-available/*.conf')
+      expect(content).toContain('RUN sed -ri -e "s!/var/www/!/app!g" /etc/apache2/apache2.conf')
+
+      // Verify Apache Permissions Fix
+      expect(content).toContain('RUN chown -R www-data:www-data /var/run/apache2')
+    })
   })
 
   describe('logging', () => {
