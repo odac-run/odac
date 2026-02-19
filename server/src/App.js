@@ -807,11 +807,11 @@ class App {
   }
 
   /**
-   * Returns the resolved environment variables for a specific app.
-   * Merges linked app envs with manual envs via #resolveEnv pipeline.
-   * Sensitive values (password, secret, token, key, auth, api) are masked.
+   * Returns the environment variables for a specific app in structured format.
+   * Manual envs and linked app envs are returned separately for frontend display.
+   * Sensitive values (pass, key, secret, token, cert, salt) are masked.
    * @param {string|number} id - App id, name, or file
-   * @returns {object} Api.result with env key-value pairs
+   * @returns {object} Api.result with { manual: {}, linked: [{app, env}] }
    */
   getEnv(id) {
     const app = this.#get(id)
@@ -819,14 +819,27 @@ class App {
       return Odac.server('Api').result(false, __('App %s not found.', id))
     }
 
-    const env = this.#resolveEnv(app, false)
-    const sanitized = {}
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
 
-    for (const [key, value] of Object.entries(env)) {
-      sanitized[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : value
+    // Sanitize manual envs
+    const rawManual = isNewStructure ? envConfig.manual || {} : envConfig
+    const manual = this.#sanitizeEnv(rawManual)
+
+    // Resolve linked apps and sanitize each
+    const linked = []
+    const linkedNames = isNewStructure ? envConfig.linked || [] : []
+
+    for (const name of linkedNames) {
+      const linkedApp = this.#get(name)
+      if (!linkedApp) continue
+
+      const linkedEnvConfig = linkedApp.env || {}
+      const linkedManual = linkedEnvConfig.manual || (linkedEnvConfig.linked ? {} : linkedEnvConfig)
+      linked.push({app: name, env: this.#sanitizeEnv(linkedManual)})
     }
 
-    return Odac.server('Api').result(true, sanitized)
+    return Odac.server('Api').result(true, {manual, linked})
   }
 
   /**
@@ -1450,6 +1463,19 @@ class App {
     const linked = [...linkedSet]
 
     return {manual, linked}
+  }
+
+  /**
+   * Masks sensitive values in an env object based on SENSITIVE_KEY_PATTERN.
+   * @param {object} env - Raw key-value env pairs
+   * @returns {object} Sanitized env with sensitive values replaced by '***'
+   */
+  #sanitizeEnv(env) {
+    const sanitized = {}
+    for (const [key, value] of Object.entries(env)) {
+      sanitized[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : value
+    }
+    return sanitized
   }
 
   #resolveEnv(app, includeSystem = true) {

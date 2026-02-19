@@ -384,12 +384,17 @@ describe('App', () => {
       return App.init()
     })
 
-    test('getEnv should mask sensitive values', async () => {
+    test('getEnv should return structured format with masked values', async () => {
       const result = App.getEnv('app-main')
       expect(result.success).toBe(true)
-      expect(result.data.NODE_ENV).toBe('production')
-      expect(result.data.API_KEY).toBe('***') // Masked
-      expect(result.data.DB_PASS).toBe('***') // Masked due to 'pass' in key
+
+      // Manual envs
+      expect(result.data.manual.NODE_ENV).toBe('production')
+      expect(result.data.manual.API_KEY).toBe('***')
+      expect(result.data.manual.DB_PASS).toBe('***')
+
+      // Linked section (empty initially)
+      expect(result.data.linked).toEqual([])
     })
 
     test('setEnv should merge new values and migrate legacy structure', async () => {
@@ -435,10 +440,12 @@ describe('App', () => {
       const app = mockConfig.apps.find(a => a.name === 'app-main')
       expect(app.env.linked).toContain('app-db')
 
-      // Resolve check
+      // Resolve check: linked section should contain app-db's envs
       const resolvedRes = App.getEnv('app-main')
-      expect(resolvedRes.data.POSTGRES_USER).toBe('admin') // From linked app-db
-      expect(resolvedRes.data.POSTGRES_PASSWORD).toBe('***') // Masked from linked
+      expect(resolvedRes.data.linked).toHaveLength(1)
+      expect(resolvedRes.data.linked[0].app).toBe('app-db')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_USER).toBe('admin')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('***')
     })
 
     test('unlinkEnv should remove link', async () => {
