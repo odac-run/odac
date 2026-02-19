@@ -35,6 +35,25 @@ class Hub {
         fn: payload => Odac.server('App').delete(payload.id),
         triggers: ['app.list']
       },
+      'app.env.get': {
+        fn: payload => Odac.server('App').getEnv(payload.name || payload.id)
+      },
+      'app.env.delete': {
+        fn: payload => Odac.server('App').deleteEnv(payload.name || payload.id, payload.keys),
+        triggers: ['app.list']
+      },
+      'app.env.link': {
+        fn: payload => Odac.server('App').linkEnv(payload.name || payload.id, payload.target),
+        triggers: ['app.list']
+      },
+      'app.env.set': {
+        fn: payload => Odac.server('App').setEnv(payload.name || payload.id, payload.env),
+        triggers: ['app.list']
+      },
+      'app.env.unlink': {
+        fn: payload => Odac.server('App').unlinkEnv(payload.name || payload.id, payload.target),
+        triggers: ['app.list']
+      },
       'app.list': {
         fn: () => Odac.server('App').list(true),
         interval: 30 * 60 * 1000,

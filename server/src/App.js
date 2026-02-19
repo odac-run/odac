@@ -15,6 +15,7 @@ const SCRIPT_RUNNERS = {
   '.rb': {image: 'ruby:alpine', cmd: 'ruby', local: 'ruby'},
   '.sh': {image: 'alpine:latest', cmd: 'sh', local: 'sh'}
 }
+const SENSITIVE_KEY_PATTERN = /cert|key|pass|salt|secret|token/i
 
 class App {
   #apps = []
@@ -803,6 +804,170 @@ class App {
       error('Failed to get build stats for %s: %s', app.name, e.message)
       return Odac.server('Api').result(false, e.message)
     }
+  }
+
+  /**
+   * Returns the resolved environment variables for a specific app.
+   * Merges linked app envs with manual envs via #resolveEnv pipeline.
+   * Sensitive values (password, secret, token, key, auth, api) are masked.
+   * @param {string|number} id - App id, name, or file
+   * @returns {object} Api.result with env key-value pairs
+   */
+  getEnv(id) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    const env = this.#resolveEnv(app)
+    const sanitized = {}
+
+    for (const [key, value] of Object.entries(env)) {
+      sanitized[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : value
+    }
+
+    return Odac.server('Api').result(true, sanitized)
+  }
+
+  /**
+   * Removes specified keys from the app's manual environment variables.
+   * Accepts an array of key names for batch deletion.
+   * @param {string|number} id - App id, name, or file
+   * @param {string[]} keys - Array of env key names to remove
+   * @returns {object} Api.result
+   */
+  deleteEnv(id, keys) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return Odac.server('Api').result(false, __('Invalid keys payload. Expected a non-empty array.'))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+    const manual = isNewStructure ? envConfig.manual || {} : envConfig
+
+    for (const key of keys) {
+      delete manual[key]
+    }
+
+    if (isNewStructure) {
+      app.env.manual = manual
+    } else {
+      app.env = {manual, linked: []}
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Removed %d key(s) from %s. Restart required to apply.', keys.length, app.name))
+  }
+
+  /**
+   * Links another app's manual env vars to this app.
+   * Linked envs are resolved at runtime via #resolveEnv.
+   * @param {string|number} id - App id, name, or file
+   * @param {string} target - Name of the app to link
+   * @returns {object} Api.result
+   */
+  linkEnv(id, target) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!target || typeof target !== 'string') {
+      return Odac.server('Api').result(false, __('Invalid target. Expected an app name.'))
+    }
+
+    if (app.name === target) {
+      return Odac.server('Api').result(false, __('Cannot link an app to itself.'))
+    }
+
+    const targetApp = this.#get(target)
+    if (!targetApp) {
+      return Odac.server('Api').result(false, __('Target app %s not found.', target))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    if (isNewStructure) {
+      const linked = new Set(envConfig.linked || [])
+      linked.add(target)
+      app.env.linked = [...linked]
+    } else {
+      app.env = {
+        manual: envConfig,
+        linked: [target]
+      }
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Linked %s to %s. Restart required to apply.', target, app.name))
+  }
+
+  /**
+   * Merges provided key-value pairs into the app's manual environment variables.
+   * Does not restart the container — caller must trigger restart separately.
+   * @param {string|number} id - App id, name, or file
+   * @param {object} env - Key-value pairs to merge into manual envs
+   * @returns {object} Api.result
+   */
+  setEnv(id, env) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!env || typeof env !== 'object' || Array.isArray(env)) {
+      return Odac.server('Api').result(false, __('Invalid env payload. Expected an object.'))
+    }
+
+    const envConfig = app.env || {}
+    const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
+
+    if (isNewStructure) {
+      app.env.manual = {...(envConfig.manual || {}), ...env}
+    } else {
+      // Migrate legacy flat env to structured format
+      app.env = {
+        manual: {...envConfig, ...env},
+        linked: []
+      }
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Environment updated for %s. Restart required to apply.', app.name))
+  }
+
+  /**
+   * Removes an app link from this app's linked env list.
+   * @param {string|number} id - App id, name, or file
+   * @param {string} target - Name of the app to unlink
+   * @returns {object} Api.result
+   */
+  unlinkEnv(id, target) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!target || typeof target !== 'string') {
+      return Odac.server('Api').result(false, __('Invalid target. Expected an app name.'))
+    }
+
+    const envConfig = app.env || {}
+    const linked = envConfig.linked || []
+
+    if (!linked.includes(target)) {
+      return Odac.server('Api').result(false, __('App %s is not linked to %s.', target, app.name))
+    }
+
+    app.env.linked = linked.filter(name => name !== target)
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Unlinked %s from %s. Restart required to apply.', target, app.name))
   }
 
   async list(detailed = false) {
