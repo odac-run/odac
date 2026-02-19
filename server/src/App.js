@@ -863,8 +863,12 @@ class App {
     const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
     const manual = isNewStructure ? envConfig.manual || {} : envConfig
 
+    let removedCount = 0
     for (const key of keys) {
-      delete manual[key]
+      if (Object.prototype.hasOwnProperty.call(manual, key)) {
+        delete manual[key]
+        removedCount++
+      }
     }
 
     if (isNewStructure) {
@@ -874,7 +878,7 @@ class App {
     }
 
     this.#saveApps()
-    return Odac.server('Api').result(true, __('Removed %d key(s) from %s. Restart required to apply.', keys.length, app.name))
+    return Odac.server('Api').result(true, __('Removed %d key(s) from %s. Restart required to apply.', removedCount, app.name))
   }
 
   /**
