@@ -652,7 +652,7 @@ class App {
 
     // Validate URL if overridden (same rules as #createFromGit)
     if (url) {
-      if (/[;&|`$(){}<>]/.test(url)) {
+      if (/[;&|`$(){}<>\n\r]/.test(url)) {
         return Odac.server('Api').result(false, __('Invalid Git URL: Contains illegal characters.'))
       }
       if (!url.match(/^(https?|git|ssh|ftps?|rsync):\/\//) && !url.match(/^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/)) {
@@ -666,7 +666,7 @@ class App {
     }
 
     // Validate branch name: block git argument injection (--upload-pack) and shell metacharacters
-    if (branch && (branch.startsWith('-') || /[;&|`$(){}<>]/.test(branch))) {
+    if (branch && (branch.startsWith('-') || /[;&|`$(){}<>\n\r]/.test(branch))) {
       return Odac.server('Api').result(false, __('Invalid branch name format.'))
     }
 
