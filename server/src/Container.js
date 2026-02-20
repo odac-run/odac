@@ -208,10 +208,24 @@ class Container {
 
     const hostPath = this.#resolveHostPath(targetDir)
 
+    const envVars = []
+    if (token) {
+      envVars.push(`GIT_REMOTE_URL=${secureUrl}`)
+    } else {
+      envVars.push(`GIT_REMOTE_URL=${url}`)
+    }
+    if (branch) {
+      envVars.push(`GIT_BRANCH=${branch}`)
+    }
+
+    const gitCmd = branch ? 'git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REMOTE_URL" .' : 'git clone --depth 1 "$GIT_REMOTE_URL" .'
+
     // Run ephemeral git container
     const container = await this.#docker.createContainer({
       Image: gitImage,
-      Cmd: ['clone', '--depth', '1', ...(branch ? ['--branch', branch] : []), secureUrl, '.'],
+      Entrypoint: ['sh', '-c'],
+      Cmd: [gitCmd],
+      Env: envVars,
       WorkingDir: '/git',
       HostConfig: {
         Binds: [`${hostPath}:/git`],
