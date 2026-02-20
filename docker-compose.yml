@@ -20,6 +20,9 @@ services:
       # Persistent data
       - odac-storage:/app/storage
       - odac-sites:/app/sites
+
+      # Kernel modules access (for BBR optimization)
+      - /lib/modules:/lib/modules:ro
     
     environment:
       - NODE_ENV=production

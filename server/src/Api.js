@@ -21,23 +21,21 @@ class Api {
   #commands = {
     auth: (...args) => Odac.server('Hub').auth(...args),
     update: (...args) => Odac.server('Updater').start(...args),
-    'app.start': (...args) => Odac.server('App').start(...args),
+    'app.create': (...args) => Odac.server('App').create(...args),
     'app.delete': (...args) => Odac.server('App').delete(...args),
     'app.list': (...args) => Odac.server('App').list(...args),
-    'app.create': (...args) => Odac.server('App').create(...args),
+    'app.restart': (...args) => Odac.server('App').restart(...args),
+    'app.start': (...args) => Odac.server('App').start(...args),
+    'domain.add': (...args) => Odac.server('Domain').add(...args),
+    'domain.delete': (...args) => Odac.server('Domain').delete(...args),
+    'domain.list': (...args) => Odac.server('Domain').list(...args),
     'mail.create': (...args) => Odac.server('Mail').create(...args),
     'mail.delete': (...args) => Odac.server('Mail').delete(...args),
     'mail.list': (...args) => Odac.server('Mail').list(...args),
     'mail.password': (...args) => Odac.server('Mail').password(...args),
     'mail.send': (...args) => Odac.server('Mail').send(...args),
     'server.stop': () => Odac.server('Server').stop(),
-    'ssl.renew': (...args) => Odac.server('SSL').renew(...args),
-    'subdomain.create': (...args) => Odac.server('Subdomain').create(...args),
-    'subdomain.delete': (...args) => Odac.server('Subdomain').delete(...args),
-    'subdomain.list': (...args) => Odac.server('Subdomain').list(...args),
-    'web.create': (...args) => Odac.server('Web').create(...args),
-    'web.delete': (...args) => Odac.server('Web').delete(...args),
-    'web.list': (...args) => Odac.server('Web').list(...args)
+    'ssl.renew': (...args) => Odac.server('SSL').renew(...args)
   }
   #connections = {}
   #allowed = new Set()
@@ -45,6 +43,50 @@ class Api {
   #unixServer = null
   #started = false
   #connectionHandler = null
+  #clientTokens = new Map() // Token -> Domain
+
+  addToken(domain) {
+    if (!domain) return
+    const token = this.generateToken(domain)
+    this.#clientTokens.set(token, domain)
+  }
+
+  removeToken(domain) {
+    if (!domain) return
+    const token = this.generateToken(domain)
+    this.#clientTokens.delete(token)
+  }
+
+  generateToken(domain) {
+    return nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(domain).digest('hex')
+  }
+
+  generateAppToken(appName, permissions) {
+    const payload = JSON.stringify({
+      n: appName,
+      p: permissions,
+      t: Date.now()
+    })
+    const signature = nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(payload).digest('hex')
+    return Buffer.from(payload).toString('base64') + '.' + signature
+  }
+
+  verifyAppToken(token) {
+    if (!token || !token.includes('.')) return null
+    const [b64, sig] = token.split('.')
+    if (!b64 || !sig) return null
+
+    const payloadStr = Buffer.from(b64, 'base64').toString()
+    const expectedSig = nodeCrypto.createHmac('sha256', Odac.core('Config').config.api.auth).update(payloadStr).digest('hex')
+
+    if (sig !== expectedSig) return null
+
+    try {
+      return JSON.parse(payloadStr)
+    } catch {
+      return null
+    }
+  }
 
   allow(ip) {
     this.#allowed.add(ip)
@@ -60,6 +102,9 @@ class Api {
     if (!Odac.core('Config').config.api.auth) {
       Odac.core('Config').config.api.auth = nodeCrypto.randomBytes(32).toString('hex')
     }
+
+    // Pre-load all existing domain tokens for O(1) lookup
+    this.reloadTokens()
 
     const handleConnection = (socket, skipIpCheck = false) => {
       // IP check for TCP connections only
@@ -86,11 +131,68 @@ class Api {
         }
 
         const {auth, action, data} = payload || {}
-        if (!auth || auth !== Odac.core('Config').config.api.auth) {
-          return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
+
+        // Auth Logic: Root vs Client
+        let isRoot = false
+        let clientDomain = null
+        let appPermissions = null
+
+        if (auth === Odac.core('Config').config.api.auth) {
+          isRoot = true
+        } else if (this.#clientTokens.has(auth)) {
+          clientDomain = this.#clientTokens.get(auth)
+        } else {
+          const appAuth = this.verifyAppToken(auth)
+          if (appAuth) {
+            const apps = Odac.core('Config').config.apps || []
+            const app = apps.find(a => a.name === appAuth.n)
+
+            // Validate that the app still exists and is active
+            if (!app || !app.active) {
+              Odac.core('Log').warn('Api', `Rejected app token: App '${appAuth.n}' not found or inactive`)
+              return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
+            }
+
+            // Validate token expiration (e.g., 24 hours = 86400000 ms)
+            if (Date.now() - appAuth.t > 86400000) {
+              Odac.core('Log').warn('Api', `Rejected token for '${appAuth.n}': expired`)
+              return socket.write(JSON.stringify({id, ...this.result(false, 'token_expired')}))
+            }
+
+            clientDomain = appAuth.n // App Name as identifier
+            appPermissions = appAuth.p || []
+          } else {
+            return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
+          }
         }
+
         if (!action || !this.#commands[action]) {
           return socket.write(JSON.stringify({id, ...this.result(false, 'unknown_action')}))
+        }
+
+        // RBAC: Client restrictions
+        if (!isRoot) {
+          // 1. Client Domain (legacy/web) - Only mail.send allowed for now
+          // 2. App - check appPermissions
+          let allowed = false
+
+          if (appPermissions) {
+            // If app has explicit permission '*' or specific action
+            if (appPermissions === true || appPermissions.includes('*') || appPermissions.includes(action)) {
+              allowed = true
+            }
+          } else {
+            // Fallback for Domain tokens
+            if (['mail.send'].includes(action)) allowed = true
+          }
+
+          if (!allowed) {
+            Odac.core('Log').warn('Api', `Blocked unauthorized action '${action}' from '${clientDomain}'`)
+            return socket.write(JSON.stringify({id, ...this.result(false, 'permission_denied')}))
+          }
+
+          // Security: Inject Domain Identity into Payload for audit/logic if needed
+          // For now, we trust the Action handler to be safe, but we log the context.
         }
         try {
           const result = await this.#commands[action](...(data ?? []), (process, status, message) => {
@@ -190,13 +292,25 @@ class Api {
     }
   }
 
+  reloadTokens() {
+    this.#clientTokens.clear()
+    const domains = Odac.core('Config').config.domains || {}
+    for (const domain in domains) {
+      this.addToken(domain)
+    }
+  }
+
   send(id, process, status, message) {
     if (!this.#connections[id]) return
     return this.#connections[id].write(JSON.stringify({process, status, message}) + '\r\n')
   }
 
-  result(result, message) {
-    return {result, message}
+  result(status, message, data) {
+    if (data === undefined && typeof message === 'object' && message !== null) {
+      data = message
+      message = null
+    }
+    return {result: status, message, data}
   }
 }
 

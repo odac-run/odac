@@ -35,6 +35,9 @@ jobs:
           GOOS: linux
         run: go build -v ./...
 
+      - name: Run Go Tests
+        run: go test -v ./...
+
   # Check 2: Full Docker Build (Dry Run)
   # This ensures the Dockerfile stages (including the Go build inside Alpine) work correctly
   docker-build:

@@ -192,13 +192,14 @@ class MessageSigner {
   static sign(message, secret) {
     if (!secret) return null
 
-    const payload = JSON.stringify({
-      type: message.type,
-      data: message.data,
-      timestamp: message.timestamp
-    })
+    const payloadObj = {}
+    if (message.id) payloadObj.id = message.id
 
-    return nodeCrypto.createHmac('sha256', secret).update(payload).digest('hex')
+    payloadObj.type = message.type
+    payloadObj.data = message.data
+    payloadObj.timestamp = message.timestamp
+
+    return nodeCrypto.createHmac('sha256', secret).update(JSON.stringify(payloadObj)).digest('hex')
   }
 
   /**
@@ -212,7 +213,7 @@ class MessageSigner {
    * @returns {boolean} True if signature is valid
    */
   static verify(message, secret) {
-    const {type, data, timestamp, signature} = message
+    const {timestamp, signature} = message
 
     if (!signature || !timestamp) {
       log('Missing signature or timestamp in WebSocket message')
@@ -227,7 +228,7 @@ class MessageSigner {
       return false
     }
 
-    const expectedSignature = this.sign({type, data, timestamp}, secret)
+    const expectedSignature = this.sign(message, secret)
 
     if (signature !== expectedSignature) {
       log('Invalid WebSocket message signature')

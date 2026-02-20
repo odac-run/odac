@@ -72,7 +72,7 @@ RUN mkdir -p /app/storage /app/sites
 RUN npm link
 
 # Expose ports (documentation only, will use host network)
-EXPOSE 80 443 25 587 993 143 53/udp 53/tcp
+EXPOSE 80 443/tcp 443/udp 25 587 993 143 53/udp 53/tcp
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

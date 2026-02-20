@@ -48,7 +48,9 @@ describe('DNS Module', () => {
           MX: 15,
           TXT: 16,
           NS: 2,
-          SOA: 6
+          SOA: 6,
+          CAA: 257,
+          ANY: 255
         }
       },
       A: jest.fn(data => ({type: 'A', ...data})),
@@ -70,14 +72,48 @@ describe('DNS Module', () => {
       get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
     }))
 
-    // Setup mock config with websites
+    // Setup mock config with domains
     mockConfig = {
       config: {
-        websites: {
+        dns: {
+          'example.com': {
+            soa: {
+              primary: 'ns1.example.com',
+              email: 'hostmaster.example.com',
+              serial: 2024010101,
+              refresh: 3600,
+              retry: 600,
+              expire: 604800,
+              minimum: 3600,
+              ttl: 3600
+            },
+            records: [
+              {id: '1', type: 'A', name: 'example.com', value: '127.0.0.1', ttl: 3600},
+              {id: '2', type: 'AAAA', name: 'example.com', value: '::1', ttl: 3600},
+              {id: '3', type: 'MX', name: 'example.com', value: 'mail.example.com', priority: 10, ttl: 3600},
+              {id: '4', type: 'TXT', name: 'example.com', value: 'v=spf1 mx ~all', ttl: 3600}
+            ]
+          },
+          'test.org': {
+            soa: {
+              primary: 'ns1.test.org',
+              email: 'hostmaster.test.org',
+              serial: 2024010101,
+              refresh: 3600,
+              retry: 600,
+              expire: 604800,
+              minimum: 3600,
+              ttl: 3600
+            },
+            records: []
+          }
+        },
+        domains: {
           'example.com': createMockWebsiteConfig('example.com'),
           'test.org': createMockWebsiteConfig('test.org')
         }
-      }
+      },
+      force: jest.fn()
     }
 
     global.Odac.setMock('core', 'Config', mockConfig)
@@ -117,7 +153,7 @@ describe('DNS Module', () => {
       })
     })
 
-    it('should start DNS servers on port 53 when websites exist', async () => {
+    it('should start DNS servers on port 53 when domains exist', async () => {
       const dns = require('native-dns')
 
       DNS.init()
@@ -253,7 +289,7 @@ describe('DNS Module', () => {
       expect(typeof requestHandler).toBe('function')
     })
 
-    it('should not start servers when no websites are configured', () => {
+    it('should not start servers when no domains are configured', () => {
       const dns = require('native-dns')
       const udpServer = {on: jest.fn(), serve: jest.fn()}
       const tcpServer = {on: jest.fn(), serve: jest.fn()}
@@ -261,8 +297,8 @@ describe('DNS Module', () => {
       dns.createServer.mockReturnValue(udpServer)
       dns.createTCPServer.mockReturnValue(tcpServer)
 
-      // Clear websites config
-      mockConfig.config.websites = {}
+      // Clear domains config
+      global.Odac.core('Config').config.domains = {}
 
       DNS.init()
       DNS.start()
@@ -278,10 +314,12 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      expect(mockConfig.config.websites['example.com'].DNS.A).toContainEqual({
-        name: 'example.com',
-        value: '192.168.1.1'
-      })
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'example.com',
+          value: '192.168.1.1'
+        })
+      )
     })
 
     it('should add multiple record types to website configuration', () => {
@@ -293,19 +331,25 @@ describe('DNS Module', () => {
 
       DNS.record(...records)
 
-      expect(mockConfig.config.websites['example.com'].DNS.A).toContainEqual({
-        name: 'example.com',
-        value: '192.168.1.1'
-      })
-      expect(mockConfig.config.websites['example.com'].DNS.MX).toContainEqual({
-        name: 'example.com',
-        value: 'mail.example.com',
-        priority: 10
-      })
-      expect(mockConfig.config.websites['example.com'].DNS.TXT).toContainEqual({
-        name: 'example.com',
-        value: 'v=spf1 mx ~all'
-      })
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'example.com',
+          value: '192.168.1.1'
+        })
+      )
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'MX').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'example.com',
+          value: 'mail.example.com',
+          priority: 10
+        })
+      )
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'TXT').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'example.com',
+          value: 'v=spf1 mx ~all'
+        })
+      )
     })
 
     it('should handle subdomain records by finding parent domain', () => {
@@ -313,10 +357,12 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      expect(mockConfig.config.websites['example.com'].DNS.A).toContainEqual({
-        name: 'www.example.com',
-        value: '192.168.1.1'
-      })
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'www.example.com',
+          value: '192.168.1.1'
+        })
+      )
     })
 
     it('should automatically generate SOA record with current date serial', () => {
@@ -324,10 +370,10 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      const soaRecords = mockConfig.config.websites['example.com'].DNS.SOA
-      expect(soaRecords).toHaveLength(1)
-      expect(soaRecords[0].name).toBe('example.com')
-      expect(soaRecords[0].value).toMatch(/^ns1\.example\.com hostmaster\.example\.com \d{10} 3600 600 604800 3600$/)
+      const soa = mockConfig.config.dns['example.com'].soa
+      expect(soa).toBeDefined()
+      expect(soa.primary).toBe('ns1.example.com')
+      expect(soa.email).toBe('hostmaster.example.com')
     })
 
     it('should delete DNS records by name and type', () => {
@@ -337,7 +383,7 @@ describe('DNS Module', () => {
       // Delete the record
       DNS.delete({name: 'example.com', type: 'A'})
 
-      const aRecords = mockConfig.config.websites['example.com'].DNS.A
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
       const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value === '192.168.1.1')
       expect(exampleRecords).toHaveLength(0)
     })
@@ -352,7 +398,7 @@ describe('DNS Module', () => {
       // Delete only one specific record
       DNS.delete({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
-      const aRecords = mockConfig.config.websites['example.com'].DNS.A
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
       const remainingRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
       expect(remainingRecords).toHaveLength(1)
       expect(remainingRecords[0].value).toBe('192.168.1.2')
@@ -363,7 +409,7 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      expect(mockConfig.config.websites).not.toHaveProperty('nonexistent.com')
+      expect(mockConfig.config.domains).not.toHaveProperty('nonexistent.com')
     })
 
     it('should replace existing unique records by default', () => {
@@ -373,7 +419,7 @@ describe('DNS Module', () => {
       // Add another record with same name (should replace)
       DNS.record({name: 'example.com', type: 'A', value: '192.168.1.2'})
 
-      const aRecords = mockConfig.config.websites['example.com'].DNS.A
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
       const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
       expect(exampleRecords).toHaveLength(1)
       expect(exampleRecords[0].value).toBe('192.168.1.2')
@@ -385,7 +431,7 @@ describe('DNS Module', () => {
         {name: 'example.com', type: 'A', value: '192.168.1.2', unique: false}
       )
 
-      const aRecords = mockConfig.config.websites['example.com'].DNS.A
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
       const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
       expect(exampleRecords).toHaveLength(2)
     })
@@ -402,13 +448,25 @@ describe('DNS Module', () => {
 
       DNS.record(...records)
 
-      const dnsConfig = mockConfig.config.websites['example.com'].DNS
-      expect(dnsConfig.A).toContainEqual({name: 'example.com', value: '192.168.1.1'})
-      expect(dnsConfig.AAAA).toContainEqual({name: 'example.com', value: '2001:db8::1'})
-      expect(dnsConfig.CNAME).toContainEqual({name: 'www.example.com', value: 'example.com'})
-      expect(dnsConfig.MX).toContainEqual({name: 'example.com', value: 'mail.example.com', priority: 10})
-      expect(dnsConfig.TXT).toContainEqual({name: 'example.com', value: 'v=spf1 mx ~all'})
-      expect(dnsConfig.NS).toContainEqual({name: 'example.com', value: 'ns1.example.com'})
+      const dnsConfig = mockConfig.config.dns['example.com']
+      expect(dnsConfig.records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: '192.168.1.1'})
+      )
+      expect(dnsConfig.records.filter(r => r.type === 'AAAA').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: '2001:db8::1'})
+      )
+      expect(dnsConfig.records.filter(r => r.type === 'CNAME').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'www.example.com', value: 'example.com'})
+      )
+      expect(dnsConfig.records.filter(r => r.type === 'MX').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: 'mail.example.com', priority: 10})
+      )
+      expect(dnsConfig.records.filter(r => r.type === 'TXT').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: 'v=spf1 mx ~all'})
+      )
+      expect(dnsConfig.records.filter(r => r.type === 'NS').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: 'ns1.example.com'})
+      )
     })
 
     it('should ignore unsupported DNS record types', () => {
@@ -416,8 +474,8 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      const dnsConfig = mockConfig.config.websites['example.com'].DNS
-      expect(dnsConfig.INVALID).toBeUndefined()
+      const dnsConfig = mockConfig.config.dns['example.com']
+      expect(dnsConfig.records.find(r => r.type === 'INVALID')).toBeUndefined()
     })
 
     it('should ignore records without type specified', () => {
@@ -426,37 +484,44 @@ describe('DNS Module', () => {
       DNS.record(record)
 
       // Should not add any new records beyond the existing ones
-      const dnsConfig = mockConfig.config.websites['example.com'].DNS
-      const aRecords = dnsConfig.A.filter(r => r.value === '192.168.1.1')
+      const dnsConfig = mockConfig.config.dns['example.com']
+      const aRecords = dnsConfig.records.filter(r => r.type === 'A' && r.value === '192.168.1.1')
       expect(aRecords).toHaveLength(0)
     })
 
     it('should initialize DNS object if it does not exist', () => {
       // Remove DNS config
-      delete mockConfig.config.websites['example.com'].DNS
+      delete mockConfig.config.dns['example.com']
 
       const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
       DNS.record(record)
 
-      expect(mockConfig.config.websites['example.com'].DNS).toBeDefined()
-      expect(mockConfig.config.websites['example.com'].DNS.A).toContainEqual({
-        name: 'example.com',
-        value: '192.168.1.1'
-      })
+      expect(mockConfig.config.domains['example.com']).toBeDefined()
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'example.com',
+          value: '192.168.1.1'
+        })
+      )
     })
 
     it('should initialize record type array if it does not exist', () => {
+      if (!mockConfig.config.dns['example.com']) {
+        mockConfig.config.dns['example.com'] = {soa: {serial: 2024010101}, records: []}
+      }
       // Remove A records
-      delete mockConfig.config.websites['example.com'].DNS.A
+      mockConfig.config.dns['example.com'].records = mockConfig.config.dns['example.com'].records.filter(r => r.type !== 'A')
 
       const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
       DNS.record(record)
 
-      expect(mockConfig.config.websites['example.com'].DNS.A).toBeDefined()
-      expect(mockConfig.config.websites['example.com'].DNS.A).toContainEqual({
-        name: 'example.com',
-        value: '192.168.1.1'
-      })
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toBeDefined()
+      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({
+          name: 'example.com',
+          value: '192.168.1.1'
+        })
+      )
     })
 
     it('should generate SOA record with correct date serial format', () => {
@@ -464,21 +529,17 @@ describe('DNS Module', () => {
 
       DNS.record(record)
 
-      const soaRecords = mockConfig.config.websites['example.com'].DNS.SOA
-      expect(soaRecords).toHaveLength(1)
-      expect(soaRecords[0].name).toBe('example.com')
-
-      // Check SOA record format: ns1.domain hostmaster.domain YYYYMMDDNN 3600 600 604800 3600
-      const soaValue = soaRecords[0].value
-      const parts = soaValue.split(' ')
-      expect(parts).toHaveLength(7)
-      expect(parts[0]).toBe('ns1.example.com')
-      expect(parts[1]).toBe('hostmaster.example.com')
-      expect(parts[2]).toMatch(/^\d{10}$/) // Date serial should be 10 digits
-      expect(parts[3]).toBe('3600')
-      expect(parts[4]).toBe('600')
-      expect(parts[5]).toBe('604800')
-      expect(parts[6]).toBe('3600')
+      const soa = mockConfig.config.dns['example.com'].soa
+      expect(soa).toBeDefined()
+      expect(soa.primary).toBe('ns1.example.com')
+      expect(soa.email).toBe('hostmaster.example.com')
+      expect(soa.serial).toBeDefined()
+      expect(String(soa.serial)).toMatch(/^\d{10}$/)
+      expect(soa.refresh).toBe(3600)
+      expect(soa.retry).toBe(600)
+      expect(soa.expire).toBe(604800)
+      expect(soa.minimum).toBe(3600)
+      expect(soa.ttl).toBe(3600)
     })
 
     it('should update SOA record for multiple domains', () => {
@@ -489,10 +550,10 @@ describe('DNS Module', () => {
 
       DNS.record(...records)
 
-      expect(mockConfig.config.websites['example.com'].DNS.SOA).toHaveLength(1)
-      expect(mockConfig.config.websites['test.org'].DNS.SOA).toHaveLength(1)
-      expect(mockConfig.config.websites['example.com'].DNS.SOA[0].name).toBe('example.com')
-      expect(mockConfig.config.websites['test.org'].DNS.SOA[0].name).toBe('test.org')
+      expect(mockConfig.config.dns['example.com'].soa).toBeDefined()
+      expect(mockConfig.config.dns['test.org'].soa).toBeDefined()
+      expect(mockConfig.config.dns['example.com'].soa.primary).toBe('ns1.example.com')
+      expect(mockConfig.config.dns['test.org'].soa.primary).toBe('ns1.test.org')
     })
 
     it('should delete records by type only', () => {
@@ -505,7 +566,7 @@ describe('DNS Module', () => {
       // Delete all A records for example.com
       DNS.delete({name: 'example.com', type: 'A'})
 
-      const aRecords = mockConfig.config.websites['example.com'].DNS.A
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
       const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
       expect(exampleRecords).toHaveLength(0)
 
@@ -519,26 +580,33 @@ describe('DNS Module', () => {
       DNS.delete({name: 'example.com', type: 'NONEXISTENT'})
 
       // Should not throw errors and existing records should remain
-      const aRecords = mockConfig.config.websites['example.com'].DNS.A
+      if (!mockConfig.config.dns['example.com']) {
+        mockConfig.config.dns['example.com'] = {soa: {}, records: []}
+      }
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
       expect(aRecords).toBeDefined()
     })
 
     it('should handle deletion when DNS config does not exist', () => {
-      delete mockConfig.config.websites['example.com'].DNS
+      delete mockConfig.config.dns['example.com']
 
       DNS.delete({name: 'example.com', type: 'A'})
 
       // Should not throw errors
-      expect(mockConfig.config.websites['example.com'].DNS).toBeUndefined()
+      expect(mockConfig.config.dns['example.com']).toBeUndefined()
     })
 
     it('should handle deletion when record type does not exist', () => {
-      delete mockConfig.config.websites['example.com'].DNS.A
+      if (!mockConfig.config.dns['example.com']) {
+        mockConfig.config.dns['example.com'] = {soa: {}, records: []}
+      }
+      mockConfig.config.dns['example.com'].records = mockConfig.config.dns['example.com'].records.filter(r => r.type !== 'A')
 
       DNS.delete({name: 'example.com', type: 'A'})
 
       // Should not throw errors
-      expect(mockConfig.config.websites['example.com'].DNS.A).toBeUndefined()
+      const records = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
+      expect(records).toHaveLength(0)
     })
   })
 
@@ -709,12 +777,16 @@ describe('DNS Module', () => {
       dns.consts.NAME_TO_QTYPE.SOA = 6
 
       // Add SOA record manually (normally auto-generated)
-      mockConfig.config.websites['example.com'].DNS.SOA = [
-        {
-          name: 'example.com',
-          value: 'ns1.example.com hostmaster.example.com 2023120101 3600 600 604800 3600'
-        }
-      ]
+      mockConfig.config.dns['example.com'].soa = {
+        primary: 'ns1.example.com',
+        email: 'hostmaster.example.com',
+        serial: 2023120101,
+        refresh: 3600,
+        retry: 600,
+        expire: 604800,
+        minimum: 3600,
+        ttl: 3600
+      }
 
       mockResponse.question[0] = {name: 'example.com', type: 6}
 
@@ -754,7 +826,7 @@ describe('DNS Module', () => {
     })
 
     it('should handle queries for domains without DNS config', () => {
-      delete mockConfig.config.websites['example.com'].DNS
+      delete mockConfig.config.dns['example.com']
 
       mockResponse.question[0] = {name: 'example.com', type: 1}
 
@@ -920,17 +992,19 @@ describe('DNS Module', () => {
 
       requestHandler(mockRequest, mockResponse)
 
-      expect(dns.A).toHaveBeenCalled()
-      expect(dns.MX).toHaveBeenCalled()
-      expect(dns.TXT).toHaveBeenCalled()
+      // SECURITY: ANY queries should only return SOA or minimal info, not all records
+      expect(dns.SOA).toHaveBeenCalled()
+      expect(dns.A).not.toHaveBeenCalled()
+      expect(dns.MX).not.toHaveBeenCalled()
+      expect(dns.TXT).not.toHaveBeenCalled()
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
-    it('should use default values when record values are missing', () => {
+    it('should skip A record when resolved IP is 127.0.0.1', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.A = 1
 
-      // Add A record without value (should use server IP)
+      // Add A record without value (would resolve to 127.0.0.1 since no public IP)
       DNS.record({name: 'example.com', type: 'A'})
 
       mockResponse.question[0] = {name: 'example.com', type: 1}
@@ -939,13 +1013,13 @@ describe('DNS Module', () => {
       const udpServer = dns.createServer.mock.results[0].value
       const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
 
+      // Reset dns.A mock to check calls
+      dns.A.mockClear()
+
       requestHandler(mockRequest, mockResponse)
 
-      expect(dns.A).toHaveBeenCalledWith({
-        name: 'example.com',
-        address: DNS.ip, // Should use server IP as default
-        ttl: 3600
-      })
+      // A record should NOT be created when IP is 127.0.0.1
+      expect(dns.A).not.toHaveBeenCalled()
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
@@ -1003,7 +1077,7 @@ describe('DNS Module', () => {
       dns.consts.NAME_TO_QTYPE.CAA = 257
 
       // Initialize CAA array but leave it empty
-      mockConfig.config.websites['example.com'].DNS.CAA = []
+      mockConfig.config.dns['example.com'].records = []
 
       mockResponse.question[0] = {name: 'example.com', type: 257}
 
@@ -1072,7 +1146,7 @@ describe('DNS Module', () => {
       dns.consts.NAME_TO_QTYPE.CAA = 257
 
       // Add malformed CAA record (missing parts)
-      mockConfig.config.websites['example.com'].DNS.CAA = [
+      mockConfig.config.dns['example.com'].records = [
         {name: 'example.com', value: '0 issue'} // Missing value part
       ]
 
@@ -1092,9 +1166,11 @@ describe('DNS Module', () => {
       dns.consts.NAME_TO_QTYPE.SOA = 6
 
       // Add malformed SOA record (not enough parts)
-      mockConfig.config.websites['example.com'].DNS.SOA = [
-        {name: 'example.com', value: 'ns1.example.com hostmaster.example.com'} // Missing serial and other fields
-      ]
+      mockConfig.config.dns['example.com'].soa = {
+        primary: 'ns1.example.com',
+        email: 'hostmaster.example.com'
+        // Missing other fields
+      }
 
       mockResponse.question[0] = {name: 'example.com', type: 6}
 
@@ -1112,7 +1188,7 @@ describe('DNS Module', () => {
       dns.consts.NAME_TO_QTYPE.TXT = 16
 
       // Add null record
-      mockConfig.config.websites['example.com'].DNS.TXT = [null, {name: 'example.com', value: 'valid-txt'}]
+      mockConfig.config.dns['example.com'].records = [null, {name: 'example.com', type: 'TXT', value: 'valid-txt', ttl: 3600}]
 
       mockResponse.question[0] = {name: 'example.com', type: 16}
 
@@ -1130,34 +1206,12 @@ describe('DNS Module', () => {
       expect(mockResponse.send).toHaveBeenCalled()
     })
 
-    it('should handle null records in SOA processing', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.SOA = 6
-
-      // Add null record
-      mockConfig.config.websites['example.com'].DNS.SOA = [
-        null,
-        {name: 'example.com', value: 'ns1.example.com hostmaster.example.com 2023120101 3600 600 604800 3600'}
-      ]
-
-      mockResponse.question[0] = {name: 'example.com', type: 6}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // Should process valid record and skip null
-      expect(dns.SOA).toHaveBeenCalled()
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
     it('should handle null records in CAA processing', () => {
       const dns = require('native-dns')
       dns.consts.NAME_TO_QTYPE.CAA = 257
 
       // Add null record
-      mockConfig.config.websites['example.com'].DNS.CAA = [null, {name: 'example.com', value: '0 issue letsencrypt.org'}]
+      mockConfig.config.dns['example.com'].records = [null, {name: 'example.com', type: 'CAA', value: '0 issue letsencrypt.org', ttl: 3600}]
 
       mockResponse.question[0] = {name: 'example.com', type: 257}
 
@@ -1282,7 +1336,7 @@ describe('DNS Module', () => {
 
       mockConfig = {
         config: {
-          websites: {
+          domains: {
             'example.com': createMockWebsiteConfig('example.com')
           }
         }
@@ -1464,7 +1518,7 @@ describe('port management and conflict resolution', () => {
 
     mockConfig = {
       config: {
-        websites: {
+        domains: {
           'example.com': createMockWebsiteConfig('example.com')
         }
       }
@@ -1808,7 +1862,7 @@ describe('alternative port and system DNS configuration', () => {
 
     mockConfig = {
       config: {
-        websites: {
+        domains: {
           'example.com': createMockWebsiteConfig('example.com')
         }
       }

@@ -69,24 +69,6 @@
       ]
     },
     {
-      "file": "05-subdomain",
-      "title": "Managing Subdomains",
-      "children": [
-        {
-          "file": "01-create-a-subdomain.md",
-          "title": "Create a Subdomain"
-        },
-        {
-          "file": "02-list-subdomains.md",
-          "title": "List Subdomains"
-        },
-        {
-          "file": "03-delete-a-subdomain.md",
-          "title": "Delete a Subdomain"
-        }
-      ]
-    },
-    {
       "file": "06-ssl",
       "title": "Managing SSL",
       "children": [
@@ -115,6 +97,24 @@
         {
           "file": "04-change-account-password.md",
           "title": "Change Account Password"
+        }
+      ]
+    },
+    {
+      "file": "08-domain",
+      "title": "Managing Domains",
+      "children": [
+        {
+          "file": "01-add-a-domain.md",
+          "title": "Add a Domain"
+        },
+        {
+          "file": "02-list-domains.md",
+          "title": "List Domains"
+        },
+        {
+          "file": "03-delete-a-domain.md",
+          "title": "Delete a Domain"
         }
       ]
     }

@@ -2,7 +2,7 @@ package config
 
 // Config represents the full configuration payload from Node.js
 type Config struct {
-	Websites map[string]Website `json:"websites"`
+	Domains  map[string]Website `json:"domains"`
 	Firewall Firewall           `json:"firewall"`
 	SSL      *SSL               `json:"ssl"`
 }
@@ -11,7 +11,6 @@ type Config struct {
 type Website struct {
 	Domain      string      `json:"domain"`
 	Port        int         `json:"port"`          // The backend port (e.g., 3000, 60001)
-	Pid         interface{} `json:"pid,omitempty"` // Process ID (string or int)
 	Container   string      `json:"container"`     // Container name (if running in Docker)
 	ContainerIP string      `json:"containerIP"`   // Direct IP if available
 	Subdomains  []string    `json:"subdomain"`

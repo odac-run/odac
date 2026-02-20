@@ -17,7 +17,6 @@ Most commands support prefix arguments that allow you to provide values directly
 - `-d`, `--domain`: Domain name
 - `-e`, `--email`: Email address  
 - `-p`, `--password`: Password
-- `-s`, `--subdomain`: Subdomain name
 - `-i`, `--id`: Service ID or name
 - `-k`, `--key`: Authentication key
 
@@ -116,49 +115,51 @@ List all configured websites.
 odac web list
 ```
 
-### Subdomain Management
+### Domain Management
 
-#### `odac subdomain create`
-Create a new subdomain.
+#### `odac domain add`
+Add a new domain and link it to an application. This automatically sets up DNS and SSL.
 
 **Interactive:**
 ```bash
-odac subdomain create
+odac domain add
 ```
 
 **Single-line:**
 ```bash
-odac subdomain create -s blog.example.com
-odac subdomain create --subdomain blog.example.com
+odac domain add -d example.com -i my-app
+odac domain add --domain example.com --id my-app
 ```
 
-#### `odac subdomain delete`
-Delete a subdomain.
+#### `odac domain delete`
+Delete a domain configuration and its DNS records.
 
 **Interactive:**
 ```bash
-odac subdomain delete
+odac domain delete
 ```
 
 **Single-line:**
 ```bash
-odac subdomain delete -s blog.example.com
-odac subdomain delete --subdomain blog.example.com
+odac domain delete -d example.com
+odac domain delete --domain example.com
 ```
 
-#### `odac subdomain list`
-List all subdomains for a domain.
+#### `odac domain list`
+List all domains or filter by application.
 
 **Interactive:**
 ```bash
-odac subdomain list
+odac domain list
 ```
 
 **Single-line:**
 ```bash
-odac subdomain list -d example.com
-odac subdomain list --domain example.com
+odac domain list -i my-app
+odac domain list --id my-app
 ```
+
+
 
 ### SSL Certificate Management
 
@@ -247,9 +248,9 @@ odac mail create -e support@example.com -p support123
 odac mail create -e sales@example.com -p sales123
 
 # Set up subdomains
-odac subdomain create -s blog.example.com
-odac subdomain create -s shop.example.com
-odac subdomain create -s api.example.com
+odac domain add -d blog.example.com -i my-app
+odac domain add -d shop.example.com -i my-app
+odac domain add -d api.example.com -i my-app
 ```
 
 #### Mixed Usage

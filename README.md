@@ -1,30 +1,23 @@
 <p align="center">
-  <img src="https://odac.run/assets/img/github/header.png?v=1" alt="Odac Header">
+  <img src="https://odac.run/assets/img/github/odac/header.png" alt="ODAC Header">
 </p>
 
-# ⚡ Odac
+# ⚡ ODAC
 
-**Odac** is a lightweight yet powerful server + framework toolkit for building and deploying modern web apps with ease — with built-in automation and a developer-first philosophy.
+
+
+**ODAC** is a high-performance, autonomous server deployment system designed to simplify DevOps. It provides a robust, self-managing infrastructure for hosting and managing modern web applications with enterprise-grade stability.
 
 ## ✨ Key Features
 
-### Core Server Features
+*   🛠️ **Zero-Bloat Architecture:** Engineered for maximum efficiency, leaving almost all system resources for your applications. No external dependencies like Redis, Postgres, Nginx, or Traefik required. Just download and run.
+*   ⚡ **Next-Gen Performance:** Built-in Go Proxy automatically upgrades legacy apps (Node.js, PHP, Python) to HTTP/3 (QUIC) and 0-RTT. Get instant page loads without changing a single line of code.
+*   🚀 **Zero-Config Deployment:** Push your code, and ODAC handles the build, ports, and reverse proxying automatically.
+*   🔄 **Atomic Updates & Self-Healing:** Updates are applied with Zero-Downtime. If a new version fails, ODAC automatically rolls back. Your infrastructure never sleeps or breaks.
+*   🐳 **Secure Isolation:** Applications run in isolated lightweight containers, preventing "noisy neighbor" issues.
+*   🔒 **Autopilot Security:** Zero-touch SSL generation, auto-renewal, and strict traffic analysis (Replay Attack protection).
+*   📬 **Built-in Mail Server:** A production-ready SMTP/IMAP server included. No need for external email services.
 
-*   ⚡ **Blazing Fast & Ultra Light:** Optimized for performance, Odac is significantly lighter and faster than traditional server solutions, ensuring maximum performance with minimal resource usage.
-*   🚀 **Zero-Config Hosting:** Leave the complex server configurations to Odac and focus solely on your code. Get your web applications up and running in minutes.
-*   🌐 **One Server, Many Domains:** Easily host and manage multiple websites on a single Odac instance, each with its own domain and resources.
-*   🔒 **SSL in Seconds:** Secure all your websites in seconds with free, auto-renewing SSL certificates.
-*   📬 **Native Mail Server:** A full-featured, built-in mail server (IMAP/SMTP) that allows you to create and manage email accounts for your domains without needing an external service.
-*   ⚙️ **Process & CLI Monitor:** Keep your applications running smoothly with the integrated process manager and monitor your server from anywhere with the powerful command-line tool.
-
-### Integrated Web Framework
-
-*   🔗 **Custom URLs & Infinite Pages:** Easily create clean, custom URLs and an unlimited number of pages thanks to the powerful routing and skeleton system.
-*   ✨ **No-Code AJAX:** Automatically enable AJAX for form submissions and page transitions without writing any custom JavaScript, providing your users with a seamless single-page application (SPA) experience.
-*   🛡️ **Safe Requests:** Automatically secure all your endpoints against common vulnerabilities like CSRF with built-in token verification for POST and GET requests.
-*   🔐 **Auth Made Easy:** Implement user authentication in minutes with built-in session management, password hashing, and ready-to-use login/register forms.
-*   🌍 **Global Ready:** Reach a worldwide audience with built-in, automatic multi-language support. The framework simplifies internationalization (i18n).
-*   ⏰ **Built-in Cron Jobs:** Schedule and automate recurring tasks with the integrated cron system, perfect for background jobs, data cleanup, and scheduled operations.
 
 ## 🚀 Quick Start
 
@@ -33,21 +26,45 @@
 #### Linux & macOS
 
 ```bash
-curl -sL https://odac.run/install | sudo bash
+curl -sL https://get.odac.run | sudo bash
 ```
 
 #### Windows (PowerShell)
 
 ```powershell
-irm https://odac.run/install | iex
+irm https://get.odac.run | iex
 ```
 
 This command:
 
-- Installs Node.js (v18+) if missing
-- Installs Odac globally via npm
-- Prepares your system for development or deployment
+- 🐳 **Installs Docker** automatically if it's missing from your system.
+- 📦 **Deploys ODAC** inside a secure, production-ready container.
+- 🚀 **Initializes the System** and prepares it for immediate use.
 
+
+## 💻 CLI & Usage
+
+After installation, simply run `odac` to view the **System Dashboard**, status, and available commands:
+
+```bash
+odac
+```
+
+To deploy a new application from a repository or template:
+
+```bash
+odac app create
+```
+
+## ☁️ ODAC Cloud (Beta)
+
+Connect your servers to **ODAC Cloud** for a unified dashboard experience. Manage multiple servers, view aggregated metrics, and deploy apps from a single interface.
+
+> 🚧 **Closed Beta:** ODAC Cloud is currently in closed beta. [Join the waitlist](https://odac.run) to get early access.
+
+*   **Remote Management:** Control your servers from anywhere.
+*   **Real-Time Metrics:** Visualize detailed performance data.
+*   **Multi-Server Aggregation:** Manage your entire fleet in one place.
 ## 📚 Documentation
 
 For more detailed information and API reference, please check out our [official documentation website](https://docs.odac.run).

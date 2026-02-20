@@ -1,6 +1,13 @@
 const Docker = require('dockerode')
 const {exec} = require('child_process')
 const util = require('util')
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const net = require('net')
+const {Writable} = require('stream')
+const {StringDecoder} = require('string_decoder')
+
 const execAsync = util.promisify(exec)
 const {log, error} = Odac.core('Log', false).init('Updater')
 
@@ -17,12 +24,27 @@ class Updater {
   #readyCallbacks = []
   #isReady = false
 
+  get #channel() {
+    return process.env.ODAC_CHANNEL || 'stable'
+  }
+
+  get #isBuildMode() {
+    return this.#channel !== 'stable' && this.#channel !== 'latest'
+  }
+
+  get #targetBranch() {
+    return this.#channel === 'beta' ? 'dev' : this.#channel
+  }
+
+  get #downloadPath() {
+    return '/app/storage/tmp/odac_source'
+  }
+
   /**
    * Initialize Updater.
    * Checks if an update socket exists, meaning we are the new instance in an update process.
    */
   async init() {
-    const fs = require('fs')
     const socketPath = '/app/storage/run/update.sock'
 
     if (fs.existsSync(socketPath)) {
@@ -113,6 +135,11 @@ class Updater {
   }
 
   async #checkForUpdates() {
+    if (this.#isBuildMode) {
+      log('Custom channel detected (%s). Forcing update check to true.', this.#channel)
+      return true
+    }
+
     log('Checking for updates...')
     const localId = await this.#getLocalImageId()
 
@@ -136,19 +163,111 @@ class Updater {
     return true
   }
 
+  /**
+   * Downloads the update (image or source) to the local machine.
+   * Ensures the artifact is available before execution.
+   */
   async download() {
+    if (this.#isBuildMode) {
+      return this.#buildFromSource()
+    }
     // Already downloaded in check() via docker pull
     return true
   }
 
+  async #buildFromSource() {
+    log('Starting Build from Source (Beta/Dev)...')
+
+    try {
+      // 1. Prepare Source Directory
+      const repo = 'https://github.com/odac-run/odac.git'
+      const branch = this.#targetBranch
+
+      if (fs.existsSync(this.#downloadPath)) {
+        log('Removing previous download...')
+        fs.rmSync(this.#downloadPath, {recursive: true, force: true})
+      }
+
+      // 2. Clone Repository via Sidecar
+      log('Cloning repository via Docker Sidecar...')
+      // Cloning into a subdirectory within the volume mount to ensure clean path mapping
+      // Sidecar mounts 'odac-storage' to '/git_target'
+      // It clones into '/git_target/tmp/odac_source'
+      // This corresponds to '/app/storage/tmp/odac_source' in OUR container (this.#downloadPath)
+      await this.#gitCloneWithDocker(repo, branch, this.#downloadPath)
+
+      // Verify clone
+      if (!fs.existsSync(path.join(this.#downloadPath, 'package.json'))) {
+        throw new Error('Clone failed: package.json not found')
+      }
+
+      // 3. Build Docker Image
+      log('Building Docker Image...')
+      // Run docker build from within our container using the mapped socket
+      // The context will be sent from our container to the daemon
+      await execAsync(`cd ${this.#downloadPath} && docker build -t ${this.#image} .`)
+
+      // 4. Cleanup
+      log('Cleaning up source files...')
+      fs.rmSync(this.#downloadPath, {recursive: true, force: true})
+
+      log('Build complete.')
+      return true
+    } catch (e) {
+      throw new Error(`Build failed: ${e.message}`)
+    }
+  }
+
+  async #gitCloneWithDocker(repo, branch, targetDir) {
+    log('Using Docker Sidecar for git operations using target: %s', targetDir)
+
+    // Sidecar mounts 'odac-storage' to '/git_target'
+    // It clones into '/git_target/tmp/odac_source'
+
+    const options = {
+      Image: 'alpine/git',
+      Cmd: ['clone', '-b', branch, '--depth', '1', repo, '/git_target/tmp/odac_source'],
+      HostConfig: {
+        Binds: ['odac-storage:/git_target'] // Assumes standard volume name 'odac-storage'
+      }
+    }
+
+    // Try to pull image first
+    try {
+      await new Promise(resolve => {
+        this.#docker.pull('alpine/git', (err, stream) => {
+          if (err) return resolve() // Ignore pull error (maybe offline/cached)
+          this.#docker.modem.followProgress(stream, resolve)
+        })
+      })
+    } catch {
+      /* ignore */
+    }
+
+    const container = await this.#docker.createContainer(options)
+    await container.start()
+    const streamLog = await container.logs({follow: true, stdout: true, stderr: true})
+    streamLog.pipe(process.stdout) // Pipe logs to our stdout
+
+    const data = await container.wait()
+    await container.remove()
+
+    if (data.StatusCode !== 0) {
+      throw new Error(`Git clone failed with exit code ${data.StatusCode}`)
+    }
+    log('Git clone via Docker Sidecar successful.')
+  }
+
+  /**
+   * Orchestrates the update execution process using Zero-Downtime strategy on Linux.
+   * Manages container lifecycle, socket handover, and rollback on failure.
+   */
   async execute() {
     log('Launching update process...')
 
     // Clean up previous update logs to avoid confusion
+    // Clean up previous update logs to avoid confusion
     try {
-      const fs = require('fs')
-      const path = require('path')
-      const os = require('os')
       const logDir = path.join(os.homedir(), '.odac', 'logs')
       const files = [`.${UPDATE_CONTAINER_NAME}.log`, `.${UPDATE_CONTAINER_NAME}_err.log`]
 
@@ -188,12 +307,14 @@ class Updater {
       const createOptions = {
         name: newName,
         Image: this.#image,
-        Env: env,
+        Env: env.filter(e => !e.startsWith('ODAC_UPDATE_MODE=') && !e.startsWith('ODAC_INSTANCE_ID=')),
         HostConfig: {
           Binds: binds,
           Privileged: true,
+          CapAdd: ['NET_ADMIN', 'NET_BIND_SERVICE'],
           RestartPolicy: {Name: 'unless-stopped'} // Default policy for production
-        }
+        },
+        Tty: true
       }
 
       // Platform Specific Configuration
@@ -202,6 +323,9 @@ class Updater {
         log('Platform: Linux. Using Zero Downtime Update Strategy.')
 
         createOptions.Env.push('ODAC_UPDATE_MODE=true')
+        createOptions.Env.push('ODAC_INSTANCE_ID=' + require('crypto').randomUUID())
+        const currentInstanceId = process.env.ODAC_INSTANCE_ID || 'default'
+        createOptions.Env.push(`ODAC_PREVIOUS_INSTANCE_ID=${currentInstanceId}`)
         createOptions.Env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
         // Use separate log file for update process
         createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
@@ -210,15 +334,24 @@ class Updater {
         createOptions.HostConfig.PidMode = 'host'
         createOptions.HostConfig.RestartPolicy = {Name: 'no'}
 
+        // Initialize Listener FIRST to avoid race condition with fast containers
+        // Destructure to get the pending promise without awaiting it (Deadlock fix)
+        const {completion: completionPromise} = await this.#createUpdateListener()
+
         log('Creating new container: %s', newName)
         const newContainer = await this.#docker.createContainer(createOptions)
 
         log('Starting new container...')
         await newContainer.start()
 
+        // Stream logs from the new container for better observability
+        this.#streamLogs(newContainer, newName).catch(e => {
+          log('Warning: Failed to attach logs for %s: %s', newName, e.message)
+        })
+
         log('Update container started successfully. Waiting for handover...')
         try {
-          await this.#createUpdateListener()
+          await completionPromise
         } catch (e) {
           log('Handover failed: %s. Rolling back...', e.message)
           await newContainer.stop().catch(() => {})
@@ -265,121 +398,161 @@ class Updater {
     }
   }
 
+  /**
+   * Creates the update listener socket for the handshake protocol.
+   * Returns a promise that resolves when the socket is listening, fulfilling the race condition fix.
+   * @returns {Promise<{completion: Promise<boolean>}>}
+   */
   async #createUpdateListener() {
-    const net = require('net')
-    const fs = require('fs')
     const socketPath = '/app/storage/run/update.sock'
     const socketDir = '/app/storage/run'
 
     if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, {recursive: true})
     if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
-    return new Promise((resolve, reject) => {
-      // Extended timeout for stability check (e.g. 5 minutes total)
-      const globalTimeout = setTimeout(() => {
-        server.close()
-        reject(new Error('Update process timed out globally'))
-      }, 300000)
+    let resolveCompletion, rejectCompletion
+    const completionPromise = new Promise((resolve, reject) => {
+      resolveCompletion = resolve
+      rejectCompletion = reject
+    })
 
-      let handoverCompleted = false
+    // Extended timeout for stability check (e.g. 5 minutes total)
+    const globalTimeout = setTimeout(() => {
+      if (server) server.close()
+      rejectCompletion(new Error('Update process timed out globally'))
+    }, 300000)
 
-      const server = net.createServer(socket => {
-        log('New container connected. Starting stability monitoring...')
+    let handoverCompleted = false
+    let servicesRestarted = false
 
-        // Monitoring: If socket closes before handover completion, Rollback!
-        socket.on('close', async () => {
-          if (!handoverCompleted) {
-            log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
+    const server = net.createServer(socket => {
+      log('New container connected. Starting handover...')
+
+      // Monitoring: If socket closes before handover completion, Rollback!
+      socket.on('close', async () => {
+        if (!handoverCompleted) {
+          log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
+          try {
+            await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
+
+            // Restart services immediately
+            if (!servicesRestarted) {
+              log('Restarting services for rollback...')
+              servicesRestarted = true
+              Odac.server('Server').init() // Restart all services
+              log('Services restarted successfully')
+            }
+
+            // Clean up failed containers
             try {
-              // Fetch logs from the failed container before removing it
-              await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
-
-              // 1. Remove the failed new container
-              // The new container might have failed before OR after taking the 'odac' name.
-              // We must try to clean it up using both potential names to be safe.
+              const newOne = this.#docker.getContainer(CONTAINER_NAME)
+              await newOne.remove({force: true})
+              log('Failed new container removed.')
+            } catch {
               try {
-                // Priority 1: Check if it already grabbed the main name
-                const newOne = this.#docker.getContainer(CONTAINER_NAME)
-                await newOne.remove({force: true})
-                log('Failed new container removed.')
+                const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
+                await updateOne.remove({force: true})
               } catch {
-                // Priority 2: If finding by main name failed, it likely still has the update name
-                try {
-                  const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
-                  await updateOne.remove({force: true})
-                } catch {
-                  /* Ignore */
-                }
+                /* Ignore */
               }
-
-              // 2. Restore my name from 'odac-backup' to 'odac'
-              const myName = BACKUP_CONTAINER_NAME
-              const me = this.#docker.getContainer(myName)
-              await me.rename({name: CONTAINER_NAME})
-              log('Rollback successful: Restored self to "odac". Continuing operations.')
-            } catch (err) {
-              error('Rollback failed: %s', err.message)
             }
+
+            // Restore name
+            const myName = BACKUP_CONTAINER_NAME
+            const me = this.#docker.getContainer(myName)
+            await me.rename({name: CONTAINER_NAME})
+            log('Rollback successful: Restored self to "odac". Continuing operations.')
+          } catch (err) {
+            error('Rollback failed: %s', err.message)
           }
-        })
-
-        socket.on('data', async data => {
-          const message = data.toString().trim()
-          log('Received: %s', message)
-
-          if (message === 'HANDSHAKE_READY') {
-            socket.write('HANDSHAKE_ACK')
-          } else if (message === 'TAKEOVER_COMPLETE') {
-            log('Stability check passed. New instance is stable.')
-            handoverCompleted = true
-
-            try {
-              // Now we stop our services
-              await this.#performHandover()
-              socket.write('HANDOVER_COMPLETE')
-              resolve(true)
-            } catch (e) {
-              socket.write(`HANDOVER_FAILED:${e.message}`)
-              reject(e)
-            } finally {
-              clearTimeout(globalTimeout)
-              setTimeout(() => {
-                socket.end()
-                server.close()
-                this.#selfDestruct()
-              }, 1000)
-            }
-          }
-        })
+        }
       })
 
+      socket.on('data', async data => {
+        const message = data.toString().trim()
+        log('Received: %s', message)
+
+        // --- ZERO-DOWNTIME HANDSHAKE PROTOCOL ---
+        // Phase 1 (HANDSHAKE_READY): Old instance releases non-critical ports (Mail, DNS, Api).
+        //                            Web stays UP to serve requests during overlap (SO_REUSEPORT).
+        // Phase 2 (HANDSHAKE_ACK):   Old instance signals New instance to bind ports.
+        // Phase 3 (WEB_READY):       New instance confirms Web is active. Old instance stops Web.
+        // Phase 4 (TAKEOVER_COMPLETE): Final stability confirmed. Old instance self-destructs.
+
+        if (message === 'HANDSHAKE_READY') {
+          log('New container ready. Stopping services (except Web) and releasing ports...')
+
+          // Stop all services EXCEPT Web (Mail, DNS, Api, Hub)
+          // Web continues running due to SO_REUSEPORT - new container's Web will overlap
+          try {
+            Odac.server('Server').stop(true) // exceptWeb = true
+            log('Non-Web services stopped. Ports released. Web still running.')
+          } catch (e) {
+            error('Failed to stop services: %s', e.message)
+          }
+
+          // Send ACK - NEW can now start ALL services (including Web)
+          socket.write('HANDSHAKE_ACK')
+          log('ACK sent. New container can now bind ports (Web will overlap via SO_REUSEPORT).')
+        } else if (message === 'WEB_READY') {
+          log("New container's Web is stable. Stopping old Web now...")
+
+          // Stop Web service immediately - NEW's Web is proven to work
+          try {
+            Odac.server('Proxy').stop()
+            log('Old Web stopped. Zero-downtime handover complete (overlap: ~3s).')
+          } catch (e) {
+            error('Failed to stop Web: %s', e.message)
+          }
+        } else if (message === 'TAKEOVER_COMPLETE') {
+          log('Stability check passed. New instance is stable.')
+          handoverCompleted = true
+
+          try {
+            // Services already stopped, just cleanup and exit
+            socket.write('HANDOVER_COMPLETE')
+            resolveCompletion(true)
+          } catch (e) {
+            socket.write(`HANDOVER_FAILED:${e.message}`)
+            rejectCompletion(e)
+          } finally {
+            clearTimeout(globalTimeout)
+            setTimeout(() => {
+              socket.end()
+              server.close()
+              this.#selfDestruct()
+            }, 1000)
+          }
+        }
+      })
+    })
+
+    server.on('error', e => {
+      clearTimeout(globalTimeout)
+      rejectCompletion(e)
+    })
+
+    return new Promise((resolveListening, rejectListening) => {
       server.listen(socketPath, () => {
         fs.chmodSync(socketPath, 0o666)
         log('Listening on update socket: %s', socketPath)
+        // Return object to prevent await from unwrapping the inner promise immediately (Deadlock fix)
+        resolveListening({completion: completionPromise})
       })
-
-      server.on('error', e => {
-        clearTimeout(globalTimeout)
-        reject(e)
-      })
+      server.on('error', err => rejectListening(err))
     })
   }
 
-  async #performHandover() {
-    log('Performing handover...')
-    // Rename current container (backup)
-    // Rename new container (primary)
-    // Since we are inside the container, we rely on the NEW container taking over
-    // while we handle the graceful shutdown of internal services.
-
-    log('Stopping internal services...')
-    Odac.server('Server').stop() // Stops App, Web, Mail, etc.
-
-    // Note: process.exit() will be called in #selfDestruct
-  }
-
   async #selfDestruct() {
-    log('Old container mission complete. Disabling restart policy and exiting.')
+    log('Old container mission complete. Stopping Web and exiting.')
+
+    // Stop Web service now (was kept running during handover for zero-downtime)
+    try {
+      Odac.server('Proxy').stop()
+      log('Web service stopped.')
+    } catch (e) {
+      error('Failed to stop Web: %s', e.message)
+    }
 
     // Disable restart policy to prevent Docker from restarting this container
     try {
@@ -439,8 +612,6 @@ class Updater {
   }
 
   async #performHandshake(socketPath) {
-    const net = require('net')
-
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath)
 
@@ -467,13 +638,19 @@ class Updater {
 
             // 2. Start Services (Trigger Ready)
             this.#triggerReady()
-            log('Services started. Waiting 15s for stability...')
+            log('Services started. Waiting 3s for Web stability...')
 
-            // 3. Wait 15 Seconds
+            // 3. Wait 3 Seconds - Web Stability Check
             setTimeout(() => {
-              log('Stability check passed (15s). Signaling completion...')
-              socket.write('TAKEOVER_COMPLETE')
-            }, 15000)
+              log('Web stability passed (3s). Signaling old container to stop Web...')
+              socket.write('WEB_READY')
+
+              // 4. Wait 12 Seconds more - General System Stability Check
+              setTimeout(() => {
+                log('General stability check passed (15s total). Signaling completion...')
+                socket.write('TAKEOVER_COMPLETE')
+              }, 12000)
+            }, 3000)
           } catch (e) {
             error('Startup failed: %s', e.message)
             socket.destroy()
@@ -486,7 +663,7 @@ class Updater {
           console.log('ODAC_CMD:SWITCH_LOGS')
           socket.end()
           try {
-            require('fs').unlinkSync(socketPath)
+            fs.unlinkSync(socketPath)
           } catch {
             /* Ignore */
           }
@@ -517,7 +694,6 @@ class Updater {
   }
 
   async #fetchContainerLogs(name) {
-    const fs = require('fs')
     const tempFile = `/tmp/${name}-crash.log`
 
     try {
@@ -567,6 +743,42 @@ class Updater {
     } catch (e) {
       log('Could not get remote image ID: %s', e.message)
       return null
+    }
+  }
+
+  async #streamLogs(container, name) {
+    try {
+      const stream = await container.logs({
+        follow: true,
+        stdout: true,
+        stderr: true
+      })
+
+      const createLogStream = (isError = false) => {
+        const decoder = new StringDecoder('utf8')
+        let buffer = ''
+
+        return new Writable({
+          write(chunk, encoding, next) {
+            buffer += decoder.write(chunk)
+            const lines = buffer.split('\n')
+            buffer = lines.pop() // Keep the last partial line in the buffer
+
+            for (const line of lines) {
+              if (line.trim()) {
+                const prefix = isError ? '[NEW_VERSION:ERR]' : '[NEW_VERSION]'
+                log(`${prefix} ${line}`)
+              }
+            }
+            next()
+          }
+        })
+      }
+
+      // Demultiplex stdout and stderr
+      container.modem.demuxStream(stream, createLogStream(false), createLogStream(true))
+    } catch (e) {
+      log('Failed to attach log stream for %s: %s', name, e.message)
     }
   }
 }

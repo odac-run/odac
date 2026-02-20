@@ -31,13 +31,13 @@ class System {
       const config = Odac.core('Config').config
 
       return {
-        websites: config.websites ? Object.keys(config.websites).length : 0,
+        domains: config.domains ? Object.keys(config.domains).length : 0,
         apps: config.apps ? config.apps.length : 0,
         mail: config.mail?.accounts ? Object.keys(config.mail.accounts).length : 0
       }
     } catch (e) {
       error('Failed to get services info: %s', e.message)
-      return {websites: 0, apps: 0, mail: 0}
+      return {domains: 0, apps: 0, mail: 0}
     }
   }
 

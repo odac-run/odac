@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "acme-client": "^5.1.0",
-    "axios": "^1.7.9",
+    "axios": "^1.13.5",
     "bcrypt": "^5.1.1",
     "dkim-signer": "^0.2.2",
     "dockerode": "^4.0.9",
@@ -69,7 +69,8 @@
     "lint:fix": "eslint . --fix",
     "lint:go": "cd server/proxy && go fmt ./... && go vet ./...",
     "prepare": "husky || true",
-    "test": "jest --coverage",
+    "test:go": "cd server/proxy && go test ./...",
+    "test": "npm run test:go && jest --coverage",
     "test:watch": "jest --watch",
     "release": "semantic-release",
     "build:proxy": "cd server/proxy && go build -o ../../bin/odac-proxy",

@@ -4,39 +4,90 @@ const acme = require('acme-client')
 const fs = require('fs')
 const os = require('os')
 const selfsigned = require('selfsigned')
+const nodeCrypto = require('crypto')
 
 class SSL {
   #checking = false
   #checked = {}
+  #processing = new Map()
+  #queued = new Set()
 
   async check() {
-    if (this.#checking || !Odac.core('Config').config.websites) return
+    if (this.#checking || this.#processing.size > 0 || this.#queued.size > 0 || !Odac.core('Config').config.domains) return
     this.#checking = true
     this.#self()
-    for (const domain of Object.keys(Odac.core('Config').config.websites)) {
-      if (Odac.core('Config').config.websites[domain].cert === false) continue
-      if (
-        !Odac.core('Config').config.websites[domain].cert?.ssl ||
-        Date.now() + 1000 * 60 * 60 * 24 * 30 > Odac.core('Config').config.websites[domain].cert.ssl.expiry
-      )
+    for (const domain of Object.keys(Odac.core('Config').config.domains)) {
+      const record = Odac.core('Config').config.domains[domain]
+      if (record.cert === false) continue
+
+      // Check Expiry
+      if (!record.cert?.ssl || Date.now() + 1000 * 60 * 60 * 24 * 30 > record.cert.ssl.expiry) {
         await this.#ssl(domain)
+        continue
+      }
+
+      // Check SAN Mismatch (Missing subdomains) - Run every 5 minutes
+      if (!this.#checked[domain]) this.#checked[domain] = {}
+      if ((this.#checked[domain].lastSanCheck || 0) + 1000 * 60 * 5 < Date.now()) {
+        this.#checked[domain].lastSanCheck = Date.now()
+        if (this.#checkSanMismatch(domain)) {
+          log('Detected missing subdomains in SSL certificate for %s. Queuing renewal.', domain)
+          await this.#ssl(domain)
+        }
+      }
     }
     this.#checking = false
+  }
+
+  // ... helper
+  #checkSanMismatch(domain) {
+    try {
+      const record = Odac.core('Config').config.domains[domain]
+      const certPath = record.cert?.ssl?.cert
+      if (!certPath || !fs.existsSync(certPath)) return true // Missing cert, needs generation
+
+      const certBuffer = fs.readFileSync(certPath)
+      const x509 = new nodeCrypto.X509Certificate(certBuffer)
+
+      // x509.subjectAltName returns string like "DNS:example.com, DNS:www.example.com"
+      const sanString = x509.subjectAltName || ''
+      const sans = sanString.split(',').map(s => s.trim().replace('DNS:', ''))
+
+      const expected = [domain]
+      if (record.subdomain) {
+        record.subdomain.forEach(sub => expected.push(sub + '.' + domain))
+      }
+
+      // Check if every expected domain is in SANs
+      const missing = expected.some(d => !sans.includes(d))
+      if (missing) {
+        log('SSL SAN Mismatch for %s. Expected: [%s], Found: [%s]', domain, expected.join(', '), sans.join(', '))
+        return true
+      }
+    } catch (e) {
+      error('Failed to parse certificate for SAN check for %s: %s', domain, e.message)
+    }
+    return false
   }
 
   renew(domain) {
     if (domain.match(/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/))
       return Odac.server('Api').result(false, __('SSL renewal is not available for IP addresses.'))
-    if (!Odac.core('Config').config.websites[domain]) {
-      for (const key of Object.keys(Odac.core('Config').config.websites)) {
-        for (const subdomain of Odac.core('Config').config.websites[key].subdomain)
-          if (subdomain + '.' + key == domain) {
-            domain = key
-            break
-          }
+
+    // Direct lookup in domains object
+    if (!Odac.core('Config').config.domains[domain]) {
+      // Check if it's a subdomain being requested
+      let found = false
+      for (const [key, record] of Object.entries(Odac.core('Config').config.domains)) {
+        if (record.subdomain && record.subdomain.some(sub => sub + '.' + key === domain)) {
+          domain = key
+          found = true
+          break
+        }
       }
-      if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, __('Domain %s not found.', domain))
+      if (!found) return Odac.server('Api').result(false, __('Domain %s not found.', domain))
     }
+
     this.#ssl(domain)
     return Odac.server('Api').result(true, __('SSL certificate for domain %s renewed successfully.', domain))
   }
@@ -59,20 +110,37 @@ class SSL {
   }
 
   async #ssl(domain) {
+    if (this.#processing.has(domain)) {
+      this.#processing.get(domain).cancelled = true
+      log('SSL generation for %s is outdated due to config change. Cancelling current run and queuing fresh generation.', domain)
+      this.#queued.add(domain)
+      return
+    }
+
     if (this.#checked[domain]?.interval > Date.now()) return
+
+    const context = {cancelled: false}
+    this.#processing.set(domain, context)
 
     try {
       const accountPrivateKey = await acme.forge.createPrivateKey()
 
-      // Create ACME client with proper error handling configuration
       const client = new acme.Client({
         directoryUrl: acme.directory.letsencrypt.production,
         accountKey: accountPrivateKey
       })
 
+      const domainRecord = Odac.core('Config').config.domains[domain]
       let subdomains = [domain]
-      for (const subdomain of Odac.core('Config').config.websites[domain].subdomain ?? []) {
-        subdomains.push(subdomain + '.' + domain)
+      if (domainRecord && domainRecord.subdomain) {
+        for (const subdomain of domainRecord.subdomain) {
+          subdomains.push(subdomain + '.' + domain)
+        }
+      }
+
+      if (context.cancelled) {
+        log('SSL generation for %s cancelled before CSR creation.', domain)
+        return
       }
 
       const [key, csr] = await acme.forge.createCsr({
@@ -81,6 +149,11 @@ class SSL {
       })
 
       log('Requesting SSL certificate for domain %s...', domain)
+
+      if (context.cancelled) {
+        log('SSL generation for %s cancelled before ACME request.', domain)
+        return
+      }
 
       const cert = await client.auto({
         csr,
@@ -110,35 +183,74 @@ class SSL {
         }
       })
 
+      if (context.cancelled) {
+        log('SSL generation for %s cancelled after ACME response. Discarding stale certificate.', domain)
+        return
+      }
+
       if (!cert) {
         error('SSL certificate generation failed for domain %s: No certificate returned', domain)
         return
       }
 
-      // Save certificate files
       this.#saveCertificate(domain, key, cert)
     } catch (err) {
-      this.#handleSSLError(domain, err)
+      if (!context.cancelled) {
+        this.#handleSSLError(domain, err)
+      } else {
+        log('SSL generation for %s cancelled during execution. Suppressing error backoff.', domain)
+      }
+    } finally {
+      this.#processing.delete(domain)
+      if (this.#queued.has(domain)) {
+        this.#queued.delete(domain)
+        delete this.#checked[domain]
+        log('Processing queued SSL generation for %s', domain)
+        this.#ssl(domain)
+      }
     }
   }
 
   #handleSSLError(domain, err) {
     if (!this.#checked[domain]) this.#checked[domain] = {error: 0}
-    if (this.#checked[domain].error < 5) {
-      this.#checked[domain].error = this.#checked[domain].error + 1
+    this.#checked[domain].error += 1
+
+    const errorCount = this.#checked[domain].error
+    let backoffMs = 1000 * 30 // Start with 30s
+    if (errorCount === 2) {
+      backoffMs = 1000 * 60 * 2 // 2m
+    } else if (errorCount === 3) {
+      backoffMs = 1000 * 60 * 10 // 10m
+    } else if (errorCount >= 4) {
+      backoffMs = 1000 * 60 * 30 // 30m
     }
-    this.#checked[domain].interval = this.#checked[domain].error * 1000 * 60 * 5 + Date.now()
+
+    this.#checked[domain].interval = Date.now() + backoffMs
 
     // More specific error handling
     if (err.message && err.message.includes('validateStatus')) {
       error(
-        'SSL certificate request failed due to HTTP validation error for domain %s. This may be due to network issues or ACME server problems.',
-        domain
+        'SSL certificate request failed for domain %s (Attempt %d). Next retry in %ds. Reason: HTTP validation error.',
+        domain,
+        errorCount,
+        backoffMs / 1000
       )
     } else if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      error('SSL certificate request failed due to network connectivity issues for domain %s: %s', domain, err.message)
+      error(
+        'SSL request failed for domain %s (Attempt %d). Next retry in %ds. Network issue: %s',
+        domain,
+        errorCount,
+        backoffMs / 1000,
+        err.message
+      )
     } else {
-      error('SSL certificate request failed for domain %s: %s', domain, err.message)
+      error(
+        'SSL request failed for domain %s (Attempt %d). Next retry in %ds. Error: %s',
+        domain,
+        errorCount,
+        backoffMs / 1000,
+        err.message
+      )
     }
   }
 
@@ -153,22 +265,32 @@ class SSL {
       fs.writeFileSync(os.homedir() + '/.odac/cert/ssl/' + domain + '.key', key)
       fs.writeFileSync(os.homedir() + '/.odac/cert/ssl/' + domain + '.crt', cert)
 
-      let websites = Odac.core('Config').config.websites ?? {}
-      let website = websites[domain]
-      if (!website) return
+      let domains = Odac.core('Config').config.domains ?? {}
+      let domainRecord = domains[domain]
+      if (!domainRecord) return
 
-      if (!website.cert) website.cert = {}
-      website.cert.ssl = {
+      if (!domainRecord.cert) domainRecord.cert = {}
+      domainRecord.cert.ssl = {
         key: os.homedir() + '/.odac/cert/ssl/' + domain + '.key',
         cert: os.homedir() + '/.odac/cert/ssl/' + domain + '.crt',
         expiry: Date.now() + 1000 * 60 * 60 * 24 * 30 * 3
       }
 
-      websites[domain] = website
-      Odac.core('Config').config.websites = websites
+      domains[domain] = domainRecord
+      Odac.core('Config').config.domains = domains
 
-      Odac.server('Web').clearSSLCache(domain)
-      Odac.server('Mail').clearSSLCache(domain)
+      try {
+        if (Odac.server('Mail')) Odac.server('Mail').clearSSLCache(domain)
+      } catch {
+        // Ignore error
+      }
+
+      // Sync proxy config to reload SSL certificates
+      try {
+        if (Odac.server('Proxy')) Odac.server('Proxy').syncConfig()
+      } catch (e) {
+        error('Failed to sync proxy config after SSL update: %s', e.message)
+      }
 
       log('SSL certificate successfully generated and saved for domain %s', domain)
     } catch (err) {

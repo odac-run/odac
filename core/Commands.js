@@ -26,7 +26,7 @@ module.exports = {
     action: async () => Odac.cli('Cli').help()
   },
   monit: {
-    description: 'Monitor Website or Service',
+    description: 'Monitor Applications and Services',
     action: async () => Odac.cli('Monitor').monit()
   },
   restart: {
@@ -59,19 +59,83 @@ module.exports = {
     sub: {
       create: {
         description: 'Create a new application',
-        args: ['-t', '--type'],
+        args: ['-t', '--type', '-n', '--name', '-u', '--url', '-b', '--branch', '--token', '-D', '--dev'],
         action: async args => {
           const cli = Odac.cli('Cli')
-          let type = cli.parseArg(args, ['-t', '--type']) || args[0]
+          let type = cli.parseArg(args, ['-t', '--type'])
+
+          if (!type) {
+            // Find first non-flag argument to be used as type/repo
+            type = args.find(arg => !arg.startsWith('-'))
+          }
+
+          const isDev = args.includes('-D') || args.includes('--dev')
+
+          // Interactive: Logic to handle git vs standard app
+          if (type === 'git' || type === 'github') {
+            const url = cli.parseArg(args, ['-u', '--url']) || (await cli.question(__('Enter Git URL: ')))
+            const branch = cli.parseArg(args, ['-b', '--branch'])
+            const token = cli.parseArg(args, ['--token'])
+
+            // Auto-derive name from URL if not provided
+            let name = cli.parseArg(args, ['-n', '--name'])
+            if (!name) {
+              const path = require('path')
+              name = path.basename(url, '.git').replace(/[^a-zA-Z0-9-]/g, '-')
+            }
+
+            const config = {
+              type: 'git',
+              url,
+              name,
+              branch,
+              token,
+              dev: isDev
+            }
+
+            await Odac.cli('Connector').call({
+              action: 'app.create',
+              data: [config]
+            })
+            return
+          }
 
           if (!type) {
             type = await cli.question(__('Enter the app type or repo: '))
           }
 
+          let config = type
+
+          // Auto-detect Git URL
+          if (typeof type === 'string' && (/^(https?|git|ssh):\/\//.test(type) || /^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/.test(type))) {
+            const path = require('path')
+            const name = path.basename(type, '.git').replace(/[^a-zA-Z0-9-]/g, '-')
+
+            config = {
+              type: 'git',
+              url: type,
+              name,
+              dev: isDev
+            }
+          } else if (isDev && typeof type === 'string') {
+            // Non-git app with dev flag
+            config = {type: 'app', app: type, dev: true}
+          }
+
           await Odac.cli('Connector').call({
             action: 'app.create',
-            data: [type]
+            data: [config]
           })
+        }
+      },
+      restart: {
+        description: 'Restart an App',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+          await Odac.cli('Connector').call({action: 'app.restart', data: [app]})
         }
       },
       delete: {
@@ -87,6 +151,56 @@ module.exports = {
       list: {
         description: 'List all apps',
         action: async () => Odac.cli('Connector').call({action: 'app.list'})
+      }
+    }
+  },
+  domain: {
+    title: 'DOMAIN',
+    sub: {
+      add: {
+        description: 'Add a domain to an application',
+        args: ['-d', '--domain', '-a', '--app'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let domain = cli.parseArg(args, ['-d', '--domain']) || args[0]
+          let app = cli.parseArg(args, ['-a', '--app']) || args[1]
+
+          if (!domain) domain = await cli.question(__('Enter the domain name: '))
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+
+          await Odac.cli('Connector').call({
+            action: 'domain.add',
+            data: [domain, app]
+          })
+        }
+      },
+      delete: {
+        description: 'Delete a domain',
+        args: ['-d', '--domain'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let domain = cli.parseArg(args, ['-d', '--domain']) || args[0]
+
+          if (!domain) domain = await cli.question(__('Enter the domain name: '))
+
+          await Odac.cli('Connector').call({
+            action: 'domain.delete',
+            data: [domain]
+          })
+        }
+      },
+      list: {
+        description: 'List all domains',
+        args: ['-a', '--app'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          const app = cli.parseArg(args, ['-a', '--app']) || (typeof args[0] === 'string' ? args[0] : undefined)
+
+          await Odac.cli('Connector').call({
+            action: 'domain.list',
+            data: app ? [app] : []
+          })
+        }
       }
     }
   },
@@ -177,92 +291,6 @@ module.exports = {
 
           await Odac.cli('Connector').call({action: 'ssl.renew', data: [domain]})
         }
-      }
-    }
-  },
-  subdomain: {
-    title: 'SUBDOMAIN',
-    sub: {
-      create: {
-        description: 'Create a new subdomain',
-        args: ['-s', '--subdomain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let subdomain = cli.parseArg(args, ['-s', '--subdomain'])
-          if (!subdomain) subdomain = await cli.question(__('Enter the subdomain name (subdomain.example.com): '))
-
-          await Odac.cli('Connector').call({
-            action: 'subdomain.create',
-            data: [subdomain]
-          })
-        }
-      },
-      delete: {
-        description: 'Delete a subdomain',
-        args: ['-s', '--subdomain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let subdomain = cli.parseArg(args, ['-s', '--subdomain'])
-          if (!subdomain) subdomain = await cli.question(__('Enter the subdomain name (subdomain.example.com): '))
-
-          await Odac.cli('Connector').call({
-            action: 'subdomain.delete',
-            data: [subdomain]
-          })
-        }
-      },
-      list: {
-        description: 'List all domain subdomains',
-        args: ['-d', '--domain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let domain = cli.parseArg(args, ['-d', '--domain'])
-          if (!domain) domain = await cli.question(__('Enter the domain name: '))
-
-          await Odac.cli('Connector').call({
-            action: 'subdomain.list',
-            data: [domain]
-          })
-        }
-      }
-    }
-  },
-  web: {
-    title: 'WEBSITE',
-    sub: {
-      create: {
-        description: 'Create a new website',
-        args: ['-d', '--domain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let domain = cli.parseArg(args, ['-d', '--domain'])
-          if (!domain) {
-            domain = await cli.question(__('Enter the domain name: '))
-          }
-          await Odac.cli('Connector').call({
-            action: 'web.create',
-            data: [domain]
-          })
-        }
-      },
-      delete: {
-        description: 'Delete a website',
-        args: ['-d', '--domain'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let domain = cli.parseArg(args, ['-d', '--domain'])
-          if (!domain) {
-            domain = await cli.question(__('Enter the domain name: '))
-          }
-          await Odac.cli('Connector').call({
-            action: 'web.delete',
-            data: [domain]
-          })
-        }
-      },
-      list: {
-        description: 'List all websites',
-        action: async () => await Odac.cli('Connector').call({action: 'web.list'})
       }
     }
   }

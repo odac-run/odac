@@ -129,7 +129,7 @@ describe('Config', () => {
 
       mockFs.readFileSync.mockImplementation(path => {
         if (path.endsWith('server.json')) return JSON.stringify({server: {pid: 123, os: 'linux', arch: 'x64'}})
-        if (path.endsWith('web.json')) return JSON.stringify({websites: {test: true}})
+        if (path.endsWith('domain.json')) return JSON.stringify({domains: {test: true}})
         return '{}'
       })
 
@@ -138,7 +138,7 @@ describe('Config', () => {
       config.init()
 
       expect(config.config.server.pid).toBe(123)
-      expect(config.config.websites.test).toBe(true)
+      expect(config.config.domains.test).toBe(true)
     })
 
     it('should handle missing modular files by using defaults', () => {
@@ -157,7 +157,7 @@ describe('Config', () => {
 
       expect(config.config.server).toBeDefined()
       expect(config.config.server.pid).toBeNull()
-      expect(config.config.websites).toEqual({})
+      expect(config.config.domains).toEqual({})
     })
 
     it('should set OS and architecture information if missing or different', () => {
@@ -251,8 +251,8 @@ describe('Config', () => {
       mockFs.writeFileSync.mockClear()
       mockFs.renameSync.mockClear()
 
-      // Modify only websites
-      config.config.websites = {example: {domain: 'example.com'}}
+      // Modify only domains
+      config.config.domains = {example: {domain: 'example.com'}}
 
       // Wait for auto-save (simulated by calling the interval callback or just force)
       // Here we test force() behavior which relies on changed flags or forces all?
@@ -263,9 +263,9 @@ describe('Config', () => {
       const intervalCallback = global.setInterval.mock.calls[0][0]
       intervalCallback()
 
-      const wroteWeb = mockFs.writeFileSync.mock.calls.some(c => c[0].includes('web.json.tmp'))
+      const wroteDomain = mockFs.writeFileSync.mock.calls.some(c => c[0].includes('domain.json.tmp'))
 
-      expect(wroteWeb).toBe(true)
+      expect(wroteDomain).toBe(true)
       // Server might be written if OS/arch update happened during init, let's reset mocks before change
     })
 

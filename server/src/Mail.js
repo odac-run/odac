@@ -84,9 +84,9 @@ class Mail {
     if (!this.#started) this.init()
     if (!this.#started) return
     this.#checking = true
-    for (const domain of Object.keys(Odac.core('Config').config.websites)) {
-      if (!Odac.core('Config').config.websites[domain].DNS || !Odac.core('Config').config.websites[domain].DNS.MX) continue
-      if (Odac.core('Config').config.websites[domain].cert !== false && !Odac.core('Config').config.websites[domain].cert?.dkim)
+    for (const domain of Object.keys(Odac.core('Config').config.domains ?? {})) {
+      if (!Odac.core('Config').config.domains[domain].DNS || !Odac.core('Config').config.domains[domain].DNS.MX) continue
+      if (Odac.core('Config').config.domains[domain].cert !== false && !Odac.core('Config').config.domains[domain].cert?.dkim)
         this.#dkim(domain)
     }
     this.#checking = false
@@ -104,15 +104,17 @@ class Mail {
     if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (await this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s already exists.', email))
     let domain = email.split('@')[1]
-    if (!Odac.core('Config').config.websites[domain]) {
-      for (let d in Odac.core('Config').config.websites) {
+    if (!Odac.core('Config').config.domains?.[domain]) {
+      for (let d in Odac.core('Config').config.domains ?? {}) {
         if (domain.substr(-d.length) != d) continue
-        if (Odac.core('Config').config.websites[d].subdomain.includes(domain.substr(-d.length))) {
+        if (Odac.core('Config').config.domains[d].subdomain?.includes(domain.substr(0, domain.length - d.length - 1))) {
           domain = d
           break
         }
       }
-      return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+      if (!Odac.core('Config').config.domains?.[domain]) {
+        return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+      }
     }
     this.#db.serialize(() => {
       let stmt = this.#db.prepare("INSERT INTO mail_account ('email', 'password', 'domain') VALUES (?, ?, ?)")
@@ -147,8 +149,8 @@ class Mail {
       .replace('-----END PUBLIC KEY-----', '')
       .replace(/\r\n/g, '')
       .replace(/\n/g, '')
-    if (!Odac.core('Config').config.websites[domain].cert) Odac.core('Config').config.websites[domain].cert = {}
-    Odac.core('Config').config.websites[domain].cert.dkim = {
+    if (!Odac.core('Config').config.domains[domain].cert) Odac.core('Config').config.domains[domain].cert = {}
+    Odac.core('Config').config.domains[domain].cert.dkim = {
       private: os.homedir() + '/.odac/cert/dkim/' + domain + '.key',
       public: os.homedir() + '/.odac/cert/dkim/' + domain + '.pub'
     }
@@ -159,9 +161,16 @@ class Mail {
     })
   }
 
-  exists(email) {
+  async exists(email) {
+    if (!this.#db) this.init()
+    if (!this.#db) return false // Still no DB after init attempt
+
     return new Promise(resolve => {
       this.#db.get('SELECT * FROM mail_account WHERE email = ?', [email], (err, row) => {
+        if (err) {
+          error('Database error in exists():', err.message)
+          return resolve(false)
+        }
         if (row) resolve(row)
         else resolve(false)
       })
@@ -169,17 +178,17 @@ class Mail {
   }
 
   init() {
-    let start = false
-    for (let domain in Odac.core('Config').config.websites) {
-      let web = Odac.core('Config').config.websites[domain]
-      if (web && web.DNS && web.DNS.MX) start = true
-    }
-    if (!start || this.#started) return
+    if (this.#db) return // Already initialized
+
+    // We should always initialize DB if we are starting mail services,
+    // even if no domains currently have MX records configured.
+    if (this.#started) return // Only initialize once if already started
     this.#started = true
     if (!fs.existsSync(os.homedir() + '/.odac/db')) fs.mkdirSync(os.homedir() + '/.odac/db', {recursive: true})
     this.#db = new sqlite3.Database(os.homedir() + '/.odac/db/mail', err => {
-      if (err) error(err.message)
+      if (err) error('Failed to open mail database:', err.message)
     })
+
     this.#db.serialize(() => {
       this.#db.run(`CREATE TABLE IF NOT EXISTS mail_received ('id'          INTEGER PRIMARY KEY AUTOINCREMENT,
                                                                     'uid'         INTEGER NOT NULL,
@@ -222,6 +231,7 @@ class Mail {
   }
 
   start() {
+    this.init() // Ensure DB is initialized before server starts
     if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
 
     const self = this
@@ -481,9 +491,32 @@ class Mail {
         error('Error:', err)
       }
     }
+    // Retry helper for EADDRINUSE errors during zero-downtime updates
+    const MAX_RETRIES = 15
+    const RETRY_DELAY_MS = 1000
+
+    const listenWithRetry = (serverInstance, port, name, retryCount = 0) => {
+      const serverObj = serverInstance.server || serverInstance
+      serverObj.once('error', err => {
+        if (err.code === 'EADDRINUSE' && retryCount < MAX_RETRIES) {
+          log(`${name} port ${port} in use. Retrying (${retryCount + 1}/${MAX_RETRIES})...`)
+          setTimeout(() => listenWithRetry(serverInstance, port, name, retryCount + 1), RETRY_DELAY_MS)
+        } else if (err.code === 'EADDRINUSE') {
+          error(`${name} failed to bind port ${port} after ${MAX_RETRIES} retries`)
+        } else {
+          error(`${name} error:`, err)
+        }
+      })
+      if (typeof serverInstance.listen === 'function') {
+        serverInstance.listen(port)
+      }
+    }
+
     this.#server_smtp_insecure = new SMTPServer(options)
-    this.#server_smtp_insecure.listen(25)
-    this.#server_smtp_insecure.on('error', err => log('SMTP Server Error: ', err))
+    listenWithRetry(this.#server_smtp_insecure, 25, 'SMTP Insecure')
+    this.#server_smtp_insecure.on('error', err => {
+      if (err.code !== 'EADDRINUSE') log('SMTP Server Error: ', err)
+    })
     // Handle socket errors to prevent crash
     if (this.#server_smtp_insecure.server) {
       this.#server_smtp_insecure.server.on('connection', socket => {
@@ -493,18 +526,18 @@ class Mail {
       })
     }
     this.#server_imap = new server(options)
-    this.#server_imap.listen(143)
+    this.#server_imap.listen(143, MAX_RETRIES, RETRY_DELAY_MS)
     options.SNICallback = (hostname, callback) => {
       const cached = this.#sslCache.get(hostname)
       if (cached) return callback(null, cached)
 
       let ssl = Odac.core('Config').config.ssl ?? {}
       let sslOptions = {}
-      while (!Odac.core('Config').config.websites[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
-      let website = Odac.core('Config').config.websites[hostname]
+      while (!Odac.core('Config').config.domains?.[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
+      let website = Odac.core('Config').config.domains?.[hostname]
       if (
         website &&
-        website.cert.ssl &&
+        website.cert?.ssl &&
         website.cert.ssl.key &&
         website.cert.ssl.cert &&
         fs.existsSync(website.cert.ssl.key) &&
@@ -527,8 +560,9 @@ class Mail {
     }
     options.secure = true
     this.#server_smtp = new SMTPServer(options)
-    this.#server_smtp.listen(465)
+    listenWithRetry(this.#server_smtp, 465, 'SMTP Secure')
     this.#server_smtp.on('error', err => {
+      if (err.code === 'EADDRINUSE') return // Handled by retry logic
       if (err.code === 'ERR_SSL_HTTP_REQUEST' && err.meta?.remoteAddress) {
         this.#block(err.meta.remoteAddress, 'HTTP request on SMTP port')
       }
@@ -542,7 +576,7 @@ class Mail {
       })
     }
     this.#server_imap_sec = new server(options)
-    this.#server_imap_sec.listen(993)
+    this.#server_imap_sec.listen(993, MAX_RETRIES, RETRY_DELAY_MS)
   }
 
   stop() {
@@ -556,13 +590,15 @@ class Mail {
         this.#server_smtp = null
       }
       if (this.#server_imap) {
-        this.#server_imap.close(() => {})
+        this.#server_imap.stop(() => {})
         this.#server_imap = null
       }
       if (this.#server_imap_sec) {
-        this.#server_imap_sec.close(() => {})
+        this.#server_imap_sec.stop(() => {})
         this.#server_imap_sec = null
       }
+      // Clean up SMTP client resources
+      smtp.stop()
     } catch (e) {
       error('Error stopping Mail services: %s', e.message)
     }
@@ -570,7 +606,7 @@ class Mail {
 
   async list(domain) {
     if (!domain) return Odac.server('Api').result(false, await __('Domain is required.'))
-    if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
     let accounts = []
     await new Promise((resolve, reject) => {
       this.#db.each(
@@ -613,9 +649,9 @@ class Mail {
     if (!this.#isValidEmail(data.from.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (!this.#isValidEmail(data.to.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     let domain = data.from.value[0].address.split('@')[1].split('.')
-    while (domain.length > 2 && !Odac.core('Config').config.websites[domain.join('.')]) domain.shift()
+    while (domain.length > 2 && !Odac.core('Config').config.domains?.[domain.join('.')]) domain.shift()
     domain = domain.join('.')
-    if (!Odac.core('Config').config.websites[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
     let mail = {
       atttachments: [],
       headerLines: [],

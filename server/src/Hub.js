@@ -1,25 +1,212 @@
-const {log} = Odac.core('Log', false).init('Hub')
+const {log, error} = Odac.core('Log', false).init('Hub')
 
 const axios = require('axios')
 const nodeCrypto = require('crypto')
 const os = require('os')
 const https = require('https')
+const packageJson = require('../../package.json')
 
 const System = require('./Hub/System')
 const {WebSocketClient, MessageSigner} = require('./Hub/WebSocket')
 
-const HUB_URL = 'https://hub.odac.run'
-const HUB_WS_URL = 'wss://hub.odac.run/ws'
-const CHECK_COUNTER_MAX = 3600
+const HUB_URL = process.env.ODAC_HUB_URL || 'https://hub.odac.run'
+const HUB_WS_URL = HUB_URL.replace(/^http/, 'ws') + '/ws'
 
 class Hub {
   #active = false
+  #logSubs = new Map()
 
   constructor() {
     this.ws = new WebSocketClient()
-    this.checkCounter = 0
-    this.statsInterval = 60
-    this.handshakeInterval = 60
+
+    // Commands and Tasks
+    this.commands = {
+      configure: {
+        fn: payload => this.#handleConfigure(payload)
+      },
+      'app.create': {
+        fn: payload => Odac.server('App').create(payload),
+        triggers: ['app.list']
+      },
+      'app.build_stats': {
+        fn: payload => Odac.server('App').getBuildStats(payload.name || payload.container || payload.id)
+      },
+      'app.delete': {
+        fn: payload => Odac.server('App').delete(payload.id),
+        triggers: ['app.list']
+      },
+      'app.env.get': {
+        fn: payload => Odac.server('App').getEnv(payload.name || payload.id)
+      },
+      'app.env.delete': {
+        fn: payload => Odac.server('App').deleteEnv(payload.name || payload.id, payload.keys),
+        triggers: ['app.list']
+      },
+      'app.env.link': {
+        fn: payload => Odac.server('App').linkEnv(payload.name || payload.id, payload.target),
+        triggers: ['app.list']
+      },
+      'app.env.set': {
+        fn: payload => Odac.server('App').setEnv(payload.name || payload.id, payload.env),
+        triggers: ['app.list']
+      },
+      'app.env.unlink': {
+        fn: payload => Odac.server('App').unlinkEnv(payload.name || payload.id, payload.target),
+        triggers: ['app.list']
+      },
+      'app.list': {
+        fn: () => Odac.server('App').list(true),
+        interval: 30 * 60 * 1000,
+        lastRun: 0
+      },
+      'app.redeploy': {
+        fn: payload => Odac.server('App').redeploy(payload),
+        triggers: ['app.list', 'app.stats']
+      },
+      'app.restart': {
+        fn: payload => Odac.server('App').restart(payload.container),
+        triggers: ['app.list', 'app.stats']
+      },
+      'app.stats': {
+        fn: () => this.getAppStats(),
+        interval: 60 * 1000,
+        lastRun: 0
+      },
+      'domain.add': {
+        fn: payload => Odac.server('Domain').add(payload.domain, payload.app),
+        triggers: ['domain.list', 'system.info']
+      },
+      'domain.delete': {
+        fn: payload => Odac.server('Domain').delete(payload.domain),
+        triggers: ['domain.list', 'system.info']
+      },
+      'domain.list': {
+        fn: () => Odac.server('Domain').list(),
+        interval: 30 * 60 * 1000,
+        lastRun: 0
+      },
+      'system.info': {
+        fn: () => Odac.server('Api').result(true, System.getSystemInfo()),
+        interval: 60 * 60 * 1000,
+        lastRun: 0
+      },
+      'app.logs.on': {
+        fn: payload => {
+          log('[Hub] Subscription request for app: %s', payload.app)
+
+          if (this.#logSubs.has(payload.app)) {
+            return {success: true, message: 'Already subscribed'}
+          }
+
+          let buffer = []
+          let timer = null
+
+          const flush = () => {
+            if (buffer.length === 0) return
+            // Send as batch to reduce overhead
+            this.#sendSignedMessage('log.stream', {
+              app: payload.app,
+              batch: buffer
+            })
+            buffer = []
+            timer = null
+          }
+
+          const unsubscribe = Odac.server('App').subscribeToLogs(payload.app, logData => {
+            buffer.push(logData)
+            if (buffer.length >= 50) {
+              // Max 50 logs per packet
+              if (timer) clearTimeout(timer)
+              flush()
+            } else if (!timer) {
+              timer = setTimeout(flush, 500) // Max 500ms delay
+            }
+          })
+
+          if (unsubscribe) {
+            log('[Hub] Successfully subscribed to %s', payload.app)
+            // Wrap unsubscribe to clear timer
+            const safeUnsubscribe = () => {
+              if (timer) clearTimeout(timer)
+              flush() // Send remaining
+              unsubscribe()
+            }
+            this.#logSubs.set(payload.app, safeUnsubscribe)
+            return {success: true, message: 'Subscribed to logs'}
+          }
+
+          return {success: false, message: 'App not running or logs unavailable'}
+        }
+      },
+      'app.logs.off': {
+        fn: payload => {
+          const unsub = this.#logSubs.get(payload.app)
+          if (unsub) {
+            unsub()
+            this.#logSubs.delete(payload.app)
+          }
+        }
+      },
+      'app.build_logs.on': {
+        fn: async payload => {
+          const key = payload.app + ':build'
+          if (this.#logSubs.has(key)) return {success: true, message: 'Already subscribed'}
+
+          let buffer = []
+          let timer = null
+          const flush = () => {
+            if (buffer.length === 0) return
+            this.#sendSignedMessage('build.log', {app: payload.app, batch: buffer})
+            buffer = []
+            timer = null
+          }
+
+          const unsubscribe = Odac.server('Container').subscribeToBuildLogs(payload.app, logData => {
+            buffer.push(logData)
+            if (buffer.length >= 50) {
+              if (timer) clearTimeout(timer)
+              flush()
+            } else if (!timer) {
+              timer = setTimeout(flush, 500)
+            }
+          })
+
+          if (unsubscribe) {
+            const safeUnsubscribe = () => {
+              if (timer) clearTimeout(timer)
+              flush()
+              unsubscribe()
+            }
+            this.#logSubs.set(key, safeUnsubscribe)
+            return {success: true, message: 'Subscribed to active build logs'}
+          }
+
+          // No active build -> Send last log
+          const content = await Odac.server('Container').getLastBuildLog(payload.app)
+          this.#sendSignedMessage('build.log', {
+            app: payload.app,
+            content: content,
+            finished: true
+          })
+
+          return {success: true, message: 'Sent last build log'}
+        }
+      },
+      'app.build_logs.off': {
+        fn: payload => {
+          const key = payload.app + ':build'
+          const unsub = this.#logSubs.get(key)
+          if (unsub) {
+            unsub()
+            this.#logSubs.delete(key)
+          }
+          return {success: true, message: 'Unsubscribed from build logs'}
+        }
+      },
+      'updater.start': {
+        fn: () => Odac.server('Updater').start()
+      }
+    }
 
     this.agent = new https.Agent({
       rejectUnauthorized: true,
@@ -30,9 +217,16 @@ class Hub {
     })
 
     this.ws.setHandlers({
-      onConnect: () => this.sendInitialHandshake(),
+      onConnect: () => {
+        this.trigger('system.info')
+        this.trigger('app.list')
+        this.trigger('domain.list')
+      },
       onMessage: data => this.#handleMessage(data),
-      onDisconnect: () => {}
+      onDisconnect: () => {
+        log('[Hub] Disconnected from Cloud. Cleaning up active log streams...')
+        this.#unsubscribeAllLogs()
+      }
     })
   }
 
@@ -55,9 +249,6 @@ class Hub {
   check() {
     if (!this.#active) return
 
-    this.checkCounter++
-    if (this.checkCounter > CHECK_COUNTER_MAX) this.checkCounter = 1
-
     const hub = this.#getHubConfig()
     if (!hub?.token) return
 
@@ -66,8 +257,38 @@ class Hub {
       return
     }
 
-    if (this.checkCounter % this.statsInterval === 0) this.sendContainerStats()
-    if (this.checkCounter % this.handshakeInterval === 0) this.sendInitialHandshake()
+    const now = Date.now()
+    for (const [name, command] of Object.entries(this.commands)) {
+      // Skip disabled tasks (interval is 0, false, null, undefined)
+      if (!command.interval || command.interval <= 0) continue
+
+      if (now - command.lastRun >= command.interval) {
+        command.lastRun = now
+        // Execute task without blocking the loop
+        this.#executeTask(name, command)
+      }
+    }
+  }
+
+  // Trigger a specific task manually (e.g. after an event)
+  async trigger(name) {
+    const command = this.commands[name]
+    if (command) {
+      if (command.interval) command.lastRun = Date.now() // Reset timer if it's a task
+      await this.#executeTask(name, command)
+    }
+  }
+
+  async #executeTask(name, command) {
+    if (!this.ws.connected) return
+    try {
+      const data = await command.fn()
+      if (data !== undefined) {
+        this.#sendSignedMessage(name, data)
+      }
+    } catch (e) {
+      log('Task %s error: %s', name, e.message)
+    }
   }
 
   getSystemStatus() {
@@ -78,40 +299,21 @@ class Hub {
     return System.getLinuxDistro()
   }
 
-  // WebSocket Messages
-  async sendInitialHandshake() {
-    if (!this.ws.connected) return
-
-    const containers = await this.#getFormattedContainers()
-    const system = System.getSystemInfo()
-
-    this.#sendSignedMessage('connect_info', {system, containers})
-  }
-
-  sendWebSocketStatus() {
-    if (!this.ws.connected) return
-
-    const status = this.getSystemStatus()
-    this.#sendSignedMessage('status', status)
-  }
-
-  async sendContainerStats() {
-    if (!this.ws.connected) return
-    if (!Odac.server('Container').available) return
-
-    const containers = await Odac.server('Container').list()
-    const relevantContainers = this.#filterRelevantContainers(containers)
-
-    if (relevantContainers.length === 0) return
-
+  async getAppStats() {
+    const res = await Odac.server('App').list(true)
+    const apps = res.result ? res.data : []
     const statsData = {}
-    for (const c of relevantContainers) {
-      const name = this.#getContainerName(c)
-      const stats = await Odac.server('Container').getStats(c.id)
-      if (stats) statsData[name] = stats
+
+    if (Array.isArray(apps)) {
+      for (const app of apps) {
+        if (app.status === 'running') {
+          const stats = await Odac.server('Container').getStats(app.name)
+          if (stats) statsData[app.name] = stats
+        }
+      }
     }
 
-    this.#sendSignedMessage('container_stats', statsData)
+    return Odac.server('Api').result(true, statsData)
   }
 
   // HTTP API
@@ -119,7 +321,6 @@ class Hub {
     log('Odac authenticating...')
     log('Auth code received: %s', code ? code.substring(0, 8) + '...' : 'none')
 
-    const packageJson = require('../../package.json')
     const distro = this.getLinuxDistro()
 
     const data = {
@@ -187,123 +388,67 @@ class Hub {
   }
 
   // Command Processing
-  processCommand(command) {
-    if (!command?.action) {
-      log('Invalid command structure received')
+  async processCommand(command) {
+    const cmd = this.commands[command.action]
+    if (!command?.action || !cmd) {
+      log('Invalid or unknown command received: %s', command?.action)
       return
     }
 
+    const {fn, interval, triggers} = cmd
     log('Processing command: %s', command.action)
 
-    switch (command.action) {
-      case 'configure':
-        this.#handleConfigure(command.payload)
-        break
-      case 'app.create':
-        this.#handleAppCreate(command)
-        break
-      case 'updater.start':
-        Odac.server('Updater').start()
-        break
-      default:
-        log('Unknown command action: %s', command.action)
-    }
-  }
-
-  async #handleAppCreate(command) {
-    const payload = command.payload
-
-    if (!payload) {
-      log('app.create: Missing payload')
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: 'Missing payload'
-      })
-      return
-    }
-
     try {
-      log('Creating app: %j', payload)
-      const result = await Odac.server('App').create(payload)
-      this.#sendCommandResponse(command.requestId, result)
+      if (interval) cmd.lastRun = Date.now() // Reset timer if it's a task
 
-      // Immediately update Hub with new container list
-      await this.sendInitialHandshake()
+      const result = await fn(command.payload)
+
+      // Send response if requested
+      if (command.requestId) {
+        this.#sendCommandResponse(command.requestId, result || {result: true})
+      }
+
+      // Trigger related tasks
+      if (triggers && Array.isArray(triggers)) {
+        for (const task of triggers) {
+          await this.trigger(task)
+        }
+      }
     } catch (e) {
-      log('app.create failed: %s', e.message)
-      this.#sendCommandResponse(command.requestId, {
-        success: false,
-        message: e.message
-      })
+      log('Command execution failed: %s', e.message)
+      if (command.requestId) {
+        this.#sendCommandResponse(command.requestId, {result: false, message: e.message})
+      }
     }
   }
 
   #sendCommandResponse(requestId, result) {
-    this.#sendSignedMessage('command_response', {
-      requestId,
-      success: result.success,
+    // Normalize: Api.result() returns {result, message}, but we need {success, message}
+    const success = result.success !== undefined ? result.success : result.result
+    this.#sendSignedMessage('command.response', {
+      id: requestId,
+      success,
       message: result.message,
       data: result.data
     })
   }
 
   // Private Helpers
+  #unsubscribeAllLogs() {
+    if (this.#logSubs.size === 0) return
+    log('[Hub] Clearing %d active log subscriptions', this.#logSubs.size)
+    for (const [app, unsub] of this.#logSubs.entries()) {
+      try {
+        unsub() // Clears timer and buffer
+      } catch (e) {
+        error('[Hub] Error unsubscribing from %s: %s', app, e.message)
+      }
+    }
+    this.#logSubs.clear()
+  }
+
   #getHubConfig() {
     return Odac.core('Config').config.hub
-  }
-
-  #getContainerName(container) {
-    return container.names?.[0]?.replace(/^\//, '') || 'unknown'
-  }
-
-  #filterRelevantContainers(containers) {
-    const websites = Odac.core('Config').config.websites || {}
-    const apps = Odac.core('Config').config.apps || []
-
-    return containers.filter(c => {
-      const name = this.#getContainerName(c)
-      return websites[name] || apps.find(s => s.name === name)
-    })
-  }
-
-  async #getFormattedContainers() {
-    if (!Odac.server('Container').available) return []
-
-    const containers = await Odac.server('Container').list()
-    const websites = Odac.core('Config').config.websites || {}
-    const apps = Odac.core('Config').config.apps || []
-
-    return containers
-      .filter(c => {
-        const name = this.#getContainerName(c)
-        return websites[name] || apps.find(s => s.name === name)
-      })
-      .map(c => this.#formatContainer(c, websites))
-  }
-
-  #formatContainer(c, websites) {
-    const name = this.#getContainerName(c)
-    const app = {
-      type: websites[name] ? 'website' : 'app',
-      framework: websites[name] ? 'odac' : c.image || 'unknown'
-    }
-
-    if (websites[name]) app.domain = name
-
-    return {
-      id: c.id,
-      name,
-      image: c.image,
-      state: c.state,
-      status: c.status,
-      created: c.created,
-      app,
-      ports: (c.ports || []).map(p => ({
-        private: p.PrivatePort,
-        public: p.PublicPort,
-        type: p.Type
-      }))
-    }
   }
 
   #sendSignedMessage(type, data) {
@@ -341,7 +486,10 @@ class Hub {
       }
 
       if (message.type === 'command') {
-        this.processCommand(message.data)
+        this.processCommand({
+          ...message.data,
+          requestId: message.id || message.requestId
+        })
       }
     } catch (error) {
       log('Failed to handle WebSocket message: %s', error.message)
@@ -355,10 +503,24 @@ class Hub {
     }
 
     const {intervals} = payload
-    if (intervals?.stats) this.statsInterval = intervals.stats
-    if (intervals?.handshake) this.handshakeInterval = intervals.handshake
+    let updated = false
 
-    log('Configuration updated: stats=%ds, handshake=%ds', this.statsInterval, this.handshakeInterval)
+    for (const [key, value] of Object.entries(intervals)) {
+      if (value === undefined) continue
+
+      const command = this.commands[key]
+      if (command && command.interval !== undefined) {
+        // If 0, false or null is sent, it will disable the task (interval = 0)
+        const newInterval = value ? value * 1000 : 0
+        if (command.interval !== newInterval) {
+          command.interval = newInterval
+          updated = true
+          log('Task interval updated: %s = %sms', key, newInterval)
+        }
+      }
+    }
+
+    if (updated) log('Configuration updated: intervals synced')
   }
 
   #validateSchema(data, schema) {

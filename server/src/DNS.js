@@ -4,17 +4,31 @@ const axios = require('axios')
 const dns = require('native-dns')
 const {execSync} = require('child_process')
 const fs = require('fs')
+const nodeDns = require('dns')
 const os = require('os')
+const {randomUUID} = require('crypto')
 
 class DNS {
-  ip = '127.0.0.1'
+  ips = {ipv4: [], ipv6: []} // Arrays of {address, ptr} objects
+  ip = '127.0.0.1' // Primary IPv4 for backward compatibility
   #loaded = false
+  #ptrCache = new Map() // PTR -> {address, type} for O(1) lookup
   #tcp
-  #types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SOA', 'CAA']
+
   #udp
   #requestCount = new Map() // Rate limiting
   #rateLimit = 2500 // requests per minute per IP
   #rateLimitWindow = 60000 // 1 minute
+
+  // Private IPv4 ranges (RFC 1918, RFC 6598, Link-local)
+  #privateIPv4Ranges = [
+    {start: 0x0a000000, end: 0x0affffff}, // 10.0.0.0/8
+    {start: 0xac100000, end: 0xac1fffff}, // 172.16.0.0/12
+    {start: 0xc0a80000, end: 0xc0a8ffff}, // 192.168.0.0/16
+    {start: 0xa9fe0000, end: 0xa9feffff}, // 169.254.0.0/16 (link-local)
+    {start: 0x64400000, end: 0x647fffff}, // 100.64.0.0/10 (CGNAT)
+    {start: 0x7f000000, end: 0x7fffffff} // 127.0.0.0/8 (loopback)
+  ]
 
   #execHost(cmd, options = {}) {
     // Check if running in Docker
@@ -32,18 +46,49 @@ class DNS {
     return execSync(cmd, options)
   }
 
+  #isSafe(key) {
+    const prohibited = ['__proto__', 'constructor', 'prototype']
+    return typeof key === 'string' && !prohibited.includes(key.toLowerCase())
+  }
+
   delete(...args) {
+    if (!Odac.core('Config').config.dns) return
+
+    let changedDomains = new Set()
+
     for (let obj of args) {
       let domain = obj.name
-      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
-      if (!Odac.core('Config').config.websites[domain]) continue
+      if (!this.#isSafe(domain)) continue
+
+      // Find the root domain
+      const config = Odac.core('Config').config
+      while (domain.includes('.') && (!Object.prototype.hasOwnProperty.call(config.dns, domain) || !this.#isSafe(domain))) {
+        domain = domain.split('.').slice(1).join('.')
+      }
+
+      if (!this.#isSafe(domain) || !Object.prototype.hasOwnProperty.call(config.dns, domain)) continue
       if (!obj.type) continue
-      let type = obj.type.toUpperCase()
-      if (!this.#types.includes(type)) continue
-      if (!Odac.core('Config').config.websites[domain].DNS || !Odac.core('Config').config.websites[domain].DNS[type]) continue
-      Odac.core('Config').config.websites[domain].DNS[type] = Odac.core('Config').config.websites[domain].DNS[type].filter(
-        record => !(record.name === obj.name && (!obj.value || record.value === obj.value))
+
+      const type = obj.type.toUpperCase()
+      const zone = config.dns[domain]
+
+      const initialLength = zone.records.length
+      zone.records = zone.records.filter(
+        record => !(record.type === type && record.name === obj.name && (!obj.value || record.value === obj.value))
       )
+
+      if (zone.records.length !== initialLength) {
+        changedDomains.add(domain)
+      }
+    }
+
+    // Update SOA serial for changed zones
+    for (const domain of changedDomains) {
+      this.#updateSOASerial(domain)
+    }
+
+    if (changedDomains.size > 0) {
+      if (Odac.core('Config').force) Odac.core('Config').force()
     }
   }
 
@@ -81,8 +126,11 @@ class DNS {
   }
 
   async #getExternalIP() {
-    // Multiple IP detection services as fallbacks
-    const ipServices = [
+    // Collect all IPs from local interfaces first
+    this.#collectLocalIPs()
+
+    // IPv4 detection services
+    const ipv4Services = [
       'https://curlmyip.org/',
       'https://ipv4.icanhazip.com/',
       'https://api.ipify.org/',
@@ -90,54 +138,247 @@ class DNS {
       'https://ipinfo.io/ip'
     ]
 
-    for (const service of ipServices) {
+    // IPv6 detection services
+    const ipv6Services = ['https://ipv6.icanhazip.com/', 'https://api64.ipify.org/', 'https://v6.ident.me/']
+
+    // Detect external IPv4
+    for (const service of ipv4Services) {
       try {
-        log(`Attempting to get external IP from ${service}`)
+        log(`Attempting to get external IPv4 from ${service}`)
         const response = await axios.get(service, {
           timeout: 5000,
-          headers: {
-            'User-Agent': 'Odac-DNS/1.0'
-          }
+          headers: {'User-Agent': 'Odac-DNS/1.0'}
         })
 
         const ip = response.data.trim()
         if (ip && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-          log('External IP detected:', ip)
-          this.ip = ip
-          return
+          log('External IPv4 detected:', ip)
+          // Add to IPv4 list if not already present - external IPs are always public
+          if (!this.ips.ipv4.find(i => i.address === ip)) {
+            this.ips.ipv4.unshift({address: ip, ptr: null, public: true}) // External IP first
+          }
+          this.ip = ip // Set primary IP
+          break
         } else {
-          log(`Invalid IP format from ${service}:`, ip)
+          log(`Invalid IPv4 format from ${service}:`, ip)
         }
       } catch (err) {
-        log(`Failed to get IP from ${service}:`, err.message)
+        log(`Failed to get IPv4 from ${service}:`, err.message)
         continue
       }
     }
 
-    // If all services fail, try to get local network IP
+    // Detect external IPv6
+    for (const service of ipv6Services) {
+      try {
+        log(`Attempting to get external IPv6 from ${service}`)
+        const response = await axios.get(service, {
+          timeout: 5000,
+          headers: {'User-Agent': 'Odac-DNS/1.0'},
+          family: 6 // Force IPv6
+        })
+
+        const ip = response.data.trim()
+        // Basic IPv6 validation
+        if (ip && /^[0-9a-fA-F:]+$/.test(ip) && ip.includes(':')) {
+          log('External IPv6 detected:', ip)
+          if (!this.ips.ipv6.find(i => i.address === ip)) {
+            this.ips.ipv6.unshift({address: ip, ptr: null, public: true}) // External IP first
+          }
+          break
+        } else {
+          log(`Invalid IPv6 format from ${service}:`, ip)
+        }
+      } catch (err) {
+        log(`Failed to get IPv6 from ${service}:`, err.message)
+        continue
+      }
+    }
+
+    // Use first local IPv4 as fallback if no external IP detected
+    if (this.ips.ipv4.length === 0) {
+      log('Could not determine external IPv4, using default 127.0.0.1')
+      error('DNS', 'All IPv4 detection methods failed, DNS A records will use 127.0.0.1')
+    } else {
+      // Use first public IPv4 as primary, fallback to first available
+      const publicIPv4 = this.ips.ipv4.find(i => i.public)
+      this.ip = publicIPv4 ? publicIPv4.address : this.ips.ipv4[0].address
+    }
+
+    // Perform PTR lookups for all detected IPs
+    await this.#lookupPTRRecords()
+
+    log(
+      `Detected IPs - IPv4: [${this.ips.ipv4.map(i => `${i.address}${i.public ? ' [public]' : ' [private]'}${i.ptr ? ` (${i.ptr})` : ''}`).join(', ')}]`
+    )
+    log(
+      `Detected IPs - IPv6: [${this.ips.ipv6.map(i => `${i.address}${i.public ? ' [public]' : ' [private]'}${i.ptr ? ` (${i.ptr})` : ''}`).join(', ')}]`
+    )
+  }
+
+  /**
+   * Performs PTR (reverse DNS) lookups for all detected IP addresses
+   * Updates ips.ipv4 and ips.ipv6 arrays with ptr field
+   */
+  async #lookupPTRRecords() {
+    const lookupPromises = []
+
+    // Lookup IPv4 PTR records
+    for (let i = 0; i < this.ips.ipv4.length; i++) {
+      const ipObj = this.ips.ipv4[i]
+      lookupPromises.push(
+        this.#reverseLookup(ipObj.address)
+          .then(ptr => {
+            this.ips.ipv4[i].ptr = ptr
+            if (ptr) log(`PTR record for ${ipObj.address}: ${ptr}`)
+          })
+          .catch(() => {
+            this.ips.ipv4[i].ptr = null
+          })
+      )
+    }
+
+    // Lookup IPv6 PTR records
+    for (let i = 0; i < this.ips.ipv6.length; i++) {
+      const ipObj = this.ips.ipv6[i]
+      lookupPromises.push(
+        this.#reverseLookup(ipObj.address)
+          .then(ptr => {
+            this.ips.ipv6[i].ptr = ptr
+            if (ptr) log(`PTR record for ${ipObj.address}: ${ptr}`)
+          })
+          .catch(() => {
+            this.ips.ipv6[i].ptr = null
+          })
+      )
+    }
+
+    // Wait for all lookups with timeout
+    await Promise.race([
+      Promise.allSettled(lookupPromises),
+      new Promise(resolve => setTimeout(resolve, 5000)) // 5 second timeout for all PTR lookups
+    ])
+
+    // Build PTR cache for O(1) lookup during DNS queries
+    this.#buildPTRCache()
+  }
+
+  /**
+   * Builds the PTR cache Map from collected IP addresses
+   * Called once after PTR lookups complete
+   */
+  #buildPTRCache() {
+    this.#ptrCache.clear()
+
+    // Cache IPv4 PTR records
+    for (const ipObj of this.ips.ipv4) {
+      if (ipObj.ptr) {
+        this.#ptrCache.set(ipObj.ptr, {address: ipObj.address, type: 'ipv4'})
+      }
+    }
+
+    // Cache IPv6 PTR records
+    for (const ipObj of this.ips.ipv6) {
+      if (ipObj.ptr) {
+        this.#ptrCache.set(ipObj.ptr, {address: ipObj.address, type: 'ipv6'})
+      }
+    }
+
+    log(`PTR cache built with ${this.#ptrCache.size} entries`)
+  }
+
+  /**
+   * Performs a reverse DNS lookup for an IP address
+   * @param {string} ip - IPv4 or IPv6 address
+   * @returns {Promise<string|null>} - Hostname or null if not found
+   */
+  async #reverseLookup(ip) {
+    try {
+      const hostnames = await nodeDns.promises.reverse(ip)
+      return hostnames && hostnames.length > 0 ? hostnames[0] : null
+    } catch {
+      // ENOTFOUND, ENODATA, or other DNS errors mean no PTR record
+      return null
+    }
+  }
+
+  /**
+   * Checks if an IPv4 address is in a private range
+   * @param {string} ip - IPv4 address
+   * @returns {boolean} - true if private, false if public
+   */
+  #isPrivateIPv4(ip) {
+    const parts = ip.split('.').map(Number)
+    if (parts.length !== 4) return false
+
+    // Convert to unsigned 32-bit integer for range comparison
+    // Using >>> 0 to prevent signed integer overflow for IPs like 192.168.x.x
+    const ipNum = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
+
+    for (const range of this.#privateIPv4Ranges) {
+      if (ipNum >= range.start && ipNum <= range.end) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Checks if an IPv6 address is private/link-local
+   * @param {string} ip - IPv6 address
+   * @returns {boolean} - true if private, false if public
+   */
+  #isPrivateIPv6(ip) {
+    const normalized = ip.toLowerCase()
+    // Link-local (fe80::)
+    if (normalized.startsWith('fe80:')) return true
+    // Unique local (fc00::/7 - fc00:: to fdff::)
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+    // Loopback (::1)
+    if (normalized === '::1') return true
+    return false
+  }
+
+  /**
+   * Collects all non-internal IP addresses from local network interfaces
+   * Populates this.ips.ipv4 and this.ips.ipv6 arrays
+   */
+  #collectLocalIPs() {
     try {
       const networkInterfaces = require('os').networkInterfaces()
       for (const interfaceName in networkInterfaces) {
         const interfaces = networkInterfaces[interfaceName]
         for (const iface of interfaces) {
-          // Skip loopback and non-IPv4 addresses
-          if (!iface.internal && iface.family === 'IPv4') {
-            log('Using local network IP as fallback:', iface.address)
-            this.ip = iface.address
-            return
+          // Skip loopback and internal addresses
+          if (iface.internal) continue
+
+          if (iface.family === 'IPv4') {
+            if (!this.ips.ipv4.find(i => i.address === iface.address)) {
+              const isPublic = !this.#isPrivateIPv4(iface.address)
+              this.ips.ipv4.push({address: iface.address, ptr: null, public: isPublic})
+              log(`Local IPv4 detected on ${interfaceName}: ${iface.address} [${isPublic ? 'public' : 'private'}]`)
+            }
+          } else if (iface.family === 'IPv6') {
+            // Skip link-local addresses (fe80::) - already handled in isPrivateIPv6
+            if (iface.address.startsWith('fe80:')) continue
+            if (!this.ips.ipv6.find(i => i.address === iface.address)) {
+              const isPublic = !this.#isPrivateIPv6(iface.address)
+              this.ips.ipv6.push({address: iface.address, ptr: null, public: isPublic})
+              log(`Local IPv6 detected on ${interfaceName}: ${iface.address} [${isPublic ? 'public' : 'private'}]`)
+            }
           }
         }
       }
     } catch (err) {
-      log('Failed to get local network IP:', err.message)
+      error('Failed to collect local network IPs:', err.message)
     }
-
-    log('Could not determine external IP, using default 127.0.0.1')
-    error('DNS', 'All IP detection methods failed, DNS A records will use 127.0.0.1')
   }
 
   #publish() {
-    if (this.#loaded || !Object.keys(Odac.core('Config').config.websites ?? {}).length) return
+    if (this.#loaded) return
+    // Ensure we have dns config
+    if (!Odac.core('Config').config.dns) Odac.core('Config').config.dns = {}
+
     this.#loaded = true
 
     // Set up request handlers
@@ -171,13 +412,13 @@ class DNS {
       // Check what's using port 53
       try {
         const port53Info = this.#execHost(
-          'lsof -i :53 2>/dev/null || netstat -tulpn 2>/dev/null | grep :53 || ss -tulpn 2>/dev/null | grep :53 || echo "Port 53 appears to be free"',
+          '(lsof -i :53 2>/dev/null || (netstat -tulpn 2>/dev/null | grep :53) || (ss -tulpn 2>/dev/null | grep :53)) || echo "Port 53 appears to be free"',
           {
             encoding: 'utf8',
             timeout: 5000
           }
         )
-        log('Port 53 status:', port53Info.trim() || 'No processes found on port 53')
+        log('Port 53 status:', port53Info.trim())
       } catch (err) {
         log('Could not check port 53 status:', err.message)
       }
@@ -667,59 +908,144 @@ nameserver 8.8.4.4
       const questionType = response.question[0].type
       response.question[0].name = questionName
 
+      // Resolve Zone
       let domain = questionName
-      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) {
+      // Try exact match first, then walk up the tree
+      while (!Odac.core('Config').config.dns[domain] && domain.includes('.')) {
         domain = domain.split('.').slice(1).join('.')
       }
 
-      if (!Odac.core('Config').config.websites[domain] || !Odac.core('Config').config.websites[domain].DNS) {
-        // For unknown domains, send proper NXDOMAIN response instead of empty response
+      const zone = Odac.core('Config').config.dns[domain]
+
+      if (!zone) {
+        // For unknown domains, send search on public DNS? No, we are authoritative only for our zones.
+        // Or if recursion is enabled (it's not), we would forward.
+        // Send NXDOMAIN
         response.header.rcode = dns.consts.NAME_TO_RCODE.NXDOMAIN
         return response.send()
       }
 
-      const dnsRecords = Odac.core('Config').config.websites[domain].DNS
+      const records = zone.records || []
+      const soa = zone.soa
+
+      // Check if the name exists in the zone at all (for any type)
+      // We look for strict name match.
+      // NOTE: We assume record names are stored in a consistent case (or we should match case-insensitively).
+      // Based on questionName being lowercased, we compare with lowercased record names.
+      const nameExists = questionName === domain || records.some(r => r?.name?.toLowerCase() === questionName)
+
+      if (!nameExists) {
+        // Name does not exist in this zone -> Return NXDOMAIN
+        response.header.rcode = dns.consts.NAME_TO_RCODE.NXDOMAIN
+
+        // RFC 2308: Include SOA in Authority section for negative caching
+        if (soa) {
+          response.authority.push(
+            dns.SOA({
+              name: domain,
+              primary: soa.primary,
+              admin: soa.email,
+              serial: soa.serial,
+              refresh: soa.refresh,
+              retry: soa.retry,
+              expiration: soa.expire,
+              minimum: soa.minimum || 3600,
+              ttl: soa.ttl || 3600
+            })
+          )
+        }
+        return response.send()
+      }
+
+      // SECURITY: Handle ANY queries strictly
+      // Refuse ANY queries to prevent amplification attacks (RFC 8482 approach or just minimal response)
+      if (questionType === dns.consts.NAME_TO_QTYPE.ANY) {
+        // Return only HINFO or just SOA to minimize response size
+        if (soa) {
+          this.#processSOARecordObj(soa, domain, response)
+        }
+        return response.send()
+      }
+
+      // RFC 1034: If a CNAME exists for a name, that is the only record allowed.
+      // We should return the CNAME record for ANY query type (except explicitly prohibited ones, but broad support is safer).
+      const cnameRecord = records.find(r => r?.type === 'CNAME' && r?.name === questionName)
+
+      if (cnameRecord) {
+        // If we found a CNAME, we must return it regardless of the query type
+        // (Unless the query type is CNAME, which is also fine to return here)
+        this.#processCNAMERecords([cnameRecord], questionName, response)
+
+        // Optional: If we want to be helpful and we are authoritative for the target of the CNAME,
+        // we could also include the A/AAAA records of the target in the Additional section (CNAME flattening/chaining).
+        // For now, returning the CNAME is sufficient for the client to follow.
+        return response.send()
+      }
 
       // Only process records relevant to the question type for better performance
       switch (questionType) {
         case dns.consts.NAME_TO_QTYPE.A:
-          this.#processARecords(dnsRecords.A, questionName, response)
+          this.#processARecords(
+            records.filter(r => r?.type === 'A'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.AAAA:
-          this.#processAAAARecords(dnsRecords.AAAA, questionName, response)
+          this.#processAAAARecords(
+            records.filter(r => r?.type === 'AAAA'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.CNAME:
-          this.#processCNAMERecords(dnsRecords.CNAME, questionName, response)
+          // Already handled above, but kept for switch completeness/fallback
+          this.#processCNAMERecords(
+            records.filter(r => r?.type === 'CNAME'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.MX:
-          this.#processMXRecords(dnsRecords.MX, questionName, response)
+          this.#processMXRecords(
+            records.filter(r => r?.type === 'MX'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.TXT:
-          this.#processTXTRecords(dnsRecords.TXT, questionName, response)
+          this.#processTXTRecords(
+            records.filter(r => r?.type === 'TXT'),
+            questionName,
+            response
+          )
           break
         case dns.consts.NAME_TO_QTYPE.NS:
-          this.#processNSRecords(dnsRecords.NS, questionName, response, domain)
+          this.#processNSRecords(
+            records.filter(r => r?.type === 'NS'),
+            questionName,
+            response,
+            domain
+          )
           break
         case dns.consts.NAME_TO_QTYPE.SOA:
-          this.#processSOARecords(dnsRecords.SOA, questionName, response)
+          if (soa) {
+            this.#processSOARecordObj(soa, domain, response)
+          }
           break
-        case dns.consts.NAME_TO_QTYPE.CAA:
-          this.#processCAARecords(dnsRecords.CAA, questionName, response)
+        case dns.consts.NAME_TO_QTYPE.CAA: {
+          const caaRecords = records.filter(r => r?.type === 'CAA')
+          this.#processCAARecords(caaRecords, questionName, response)
           // If no CAA records found, add default Let's Encrypt CAA records
-          if (!response.answer.length && dnsRecords.CAA?.length === 0) {
+          if (response.answer.length === 0 && caaRecords.length === 0) {
             this.#addDefaultCAARecords(questionName, response)
           }
           break
+        }
         default:
-          // For ANY queries or unknown types, process all relevant records
-          this.#processARecords(dnsRecords.A, questionName, response)
-          this.#processAAAARecords(dnsRecords.AAAA, questionName, response)
-          this.#processCNAMERecords(dnsRecords.CNAME, questionName, response)
-          this.#processMXRecords(dnsRecords.MX, questionName, response)
-          this.#processTXTRecords(dnsRecords.TXT, questionName, response)
-          this.#processNSRecords(dnsRecords.NS, questionName, response, domain)
-          this.#processSOARecords(dnsRecords.SOA, questionName, response)
-          this.#processCAARecords(dnsRecords.CAA, questionName, response)
+          // For unknown types, do nothing (NODATA)
+          // Do NOT dump all records
+          break
       }
 
       response.send()
@@ -740,14 +1066,39 @@ nameserver 8.8.4.4
     }
   }
 
+  // Helper to process SOA from object instead of record array
+  #processSOARecordObj(soa, domain, response) {
+    try {
+      response.header.aa = 1
+      response.answer.push(
+        dns.SOA({
+          name: domain,
+          primary: soa.primary,
+          admin: soa.email,
+          serial: soa.serial,
+          refresh: soa.refresh,
+          retry: soa.retry,
+          expiration: soa.expire,
+          minimum: soa.minimum || 3600,
+          ttl: soa.ttl || 3600
+        })
+      )
+    } catch (err) {
+      error('Error processing SOA object:', err.message)
+    }
+  }
+
   #processARecords(records, questionName, response) {
     try {
       for (const record of records ?? []) {
         if (record.name !== questionName) continue
+        const address = record.value ?? this.#resolveIPByPTR(questionName, 'ipv4')
+        // Skip A record if no valid public IPv4 available (prevents serving 127.0.0.1)
+        if (!address || address === '127.0.0.1') continue
         response.answer.push(
           dns.A({
             name: record.name,
-            address: record.value ?? this.ip,
+            address: address,
             ttl: record.ttl ?? 3600
           })
         )
@@ -757,14 +1108,80 @@ nameserver 8.8.4.4
     }
   }
 
+  /**
+   * Resolves an IP address by matching PTR record to the given domain
+   * Priority: 1. Exact match, 2. Subdomain match, 3. Root domain match
+   * @param {string} domain - Domain to match against PTR records
+   * @param {string} type - 'ipv4' or 'ipv6'
+   * @returns {string} - Matching IP address or default IP
+   */
+  #resolveIPByPTR(domain, type = 'ipv4') {
+    const ipList = type === 'ipv6' ? this.ips.ipv6 : this.ips.ipv4
+
+    // O(1) cache lookup FIRST - skip all processing if hit
+    const cached = this.#ptrCache.get(domain)
+    if (cached && cached.type === type) {
+      const cachedIPObj = ipList.find(i => i.address === cached.address)
+      if (cachedIPObj && cachedIPObj.public) return cached.address
+    }
+
+    // Default: first PUBLIC IPv4 or first PUBLIC IPv6
+    const publicIP = ipList.find(i => i.public)
+    const defaultIP = type === 'ipv6' ? (publicIP ? publicIP.address : null) : publicIP ? publicIP.address : this.ip
+
+    // Calculate root domain only when needed (cache miss)
+    const queryRoot = this.#getRootDomain(domain)
+
+    // O(n) scan for subdomain or root domain matching
+    for (const ipObj of ipList) {
+      if (!ipObj.ptr || !ipObj.public) continue
+
+      // 1. Subdomain matching: ptr "mail.example.com" matches query "example.com" or vice versa
+      if (ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+        this.#ptrCache.set(domain, {address: ipObj.address, type})
+        return ipObj.address
+      }
+
+      // 2. Root domain matching: ptr root "example.com" matches query root "example.com"
+      if (queryRoot && this.#getRootDomain(ipObj.ptr) === queryRoot) {
+        this.#ptrCache.set(domain, {address: ipObj.address, type})
+        return ipObj.address
+      }
+    }
+
+    return defaultIP
+  }
+
+  #getRootDomain(hostname) {
+    if (!hostname) return null
+    const dnsConfig = Odac.core('Config').config.dns
+    const domain = hostname.toLowerCase()
+
+    if (dnsConfig) {
+      // 1. Check if the domain (or its parent) is a managed zone in ODAC
+      let temp = domain
+      while (temp.includes('.')) {
+        if (this.#isSafe(temp) && Object.prototype.hasOwnProperty.call(dnsConfig, temp)) {
+          return temp
+        }
+        temp = temp.split('.').slice(1).join('.')
+      }
+    }
+
+    // 2. Fallback to the simple last two parts for unmanaged domains
+    return domain.split('.').slice(-2).join('.')
+  }
+
   #processAAAARecords(records, questionName, response) {
     try {
       for (const record of records ?? []) {
         if (record.name !== questionName) continue
+        const address = record.value ?? this.#resolveIPByPTR(questionName, 'ipv6')
+        if (!address) continue // Skip if no IPv6 address available
         response.answer.push(
           dns.AAAA({
             name: record.name,
-            address: record.value,
+            address: address,
             ttl: record.ttl ?? 3600
           })
         )
@@ -841,32 +1258,6 @@ nameserver 8.8.4.4
       }
     } catch (err) {
       error('Error processing TXT records:', err.message)
-    }
-  }
-
-  #processSOARecords(records, questionName, response) {
-    try {
-      for (const record of records ?? []) {
-        if (!record || !record.value) continue
-        const soaParts = record.value.split(' ')
-        if (soaParts.length < 7) continue
-        response.header.aa = 1
-        response.authority.push(
-          dns.SOA({
-            name: record.name,
-            primary: soaParts[0],
-            admin: soaParts[1],
-            serial: parseInt(soaParts[2]) || 1,
-            refresh: parseInt(soaParts[3]) || 3600,
-            retry: parseInt(soaParts[4]) || 600,
-            expiration: parseInt(soaParts[5]) || 604800,
-            minimum: parseInt(soaParts[6]) || 3600,
-            ttl: record.ttl ?? 3600
-          })
-        )
-      }
-    } catch (err) {
-      error('Error processing SOA records:', err.message)
     }
   }
 
@@ -952,54 +1343,133 @@ nameserver 8.8.4.4
   }
 
   record(...args) {
-    let domains = []
+    if (!Odac.core('Config').config.dns) Odac.core('Config').config.dns = {}
+
+    let changedDomains = new Set()
+
     for (let obj of args) {
       let domain = obj.name
-      while (!Odac.core('Config').config.websites[domain] && domain.includes('.')) domain = domain.split('.').slice(1).join('.')
-      if (!Odac.core('Config').config.websites[domain]) continue
-      if (!obj.type) continue
-      let type = obj.type.toUpperCase()
-      delete obj.type
-      if (!this.#types.includes(type)) continue
-      if (!Odac.core('Config').config.websites[domain].DNS) Odac.core('Config').config.websites[domain].DNS = {}
-      if (!Odac.core('Config').config.websites[domain].DNS[type]) Odac.core('Config').config.websites[domain].DNS[type] = []
-      if (obj.unique !== false) {
-        Odac.core('Config').config.websites[domain].DNS[type] = Odac.core('Config').config.websites[domain].DNS[type].filter(
-          record => record.name !== obj.name
-        )
-      }
-      Odac.core('Config').config.websites[domain].DNS[type].push(obj)
-      domains.push(domain)
-    }
-    let date = new Date()
-      .toISOString()
-      .replace(/[^0-9]/g, '')
-      .slice(0, 10)
-    for (let domain of domains) {
-      // Add SOA record
-      Odac.core('Config').config.websites[domain].DNS.SOA = [
-        {
-          name: domain,
-          value: 'ns1.' + domain + ' hostmaster.' + domain + ' ' + date + ' 3600 600 604800 3600'
-        }
-      ]
+      // Walk up to find the root domain zone
+      // Note: If domain doesn't exist yet, we stick to the provided name unless it's a subdomain we want to attach to parent
+      // But creating a new record usually implies creating context.
+      // Logic: If exact domain exists in DNS, use it. If not, try parents. If none, assume creating new zone.
 
-      // Add default CAA records for Let's Encrypt SSL certificates
-      if (!Odac.core('Config').config.websites[domain].DNS.CAA) {
-        Odac.core('Config').config.websites[domain].DNS.CAA = [
-          {
-            name: domain,
-            value: '0 issue letsencrypt.org',
+      let zoneDomain = domain
+      let found = false
+
+      const dnsConfig = Odac.core('Config').config.dns
+
+      // Try to find existing zone
+      let temp = domain
+      while (temp.includes('.')) {
+        if (this.#isSafe(temp) && Object.prototype.hasOwnProperty.call(dnsConfig, temp)) {
+          zoneDomain = temp
+          found = true
+          break
+        }
+        temp = temp.split('.').slice(1).join('.')
+      }
+
+      // If we didn't find a parent zone, and this is seemingly a new domain (e.g. from Domain.add), we initialize it
+      if (!found) {
+        zoneDomain = domain
+      }
+
+      if (!this.#isSafe(zoneDomain)) continue
+
+      // Initialize zone if missing
+      if (!Object.prototype.hasOwnProperty.call(dnsConfig, zoneDomain)) {
+        const dateStr = new Date()
+          .toISOString()
+          .replace(/[^0-9]/g, '')
+          .slice(0, 8)
+        dnsConfig[zoneDomain] = {
+          soa: {
+            primary: `ns1.${zoneDomain}`,
+            email: `hostmaster.${zoneDomain}`,
+            serial: parseInt(dateStr + '01'),
+            refresh: 3600,
+            retry: 600,
+            expire: 604800,
+            minimum: 3600,
             ttl: 3600
           },
-          {
-            name: domain,
-            value: '0 issuewild letsencrypt.org',
-            ttl: 3600
-          }
-        ]
-        log("Added default CAA records for Let's Encrypt to domain:", domain)
+          records: []
+        }
+        // Add default Let's Encrypt CAA
+        dnsConfig[zoneDomain].records.push({
+          id: randomUUID(),
+          type: 'CAA',
+          name: zoneDomain,
+          value: '0 issue letsencrypt.org',
+          ttl: 3600
+        })
+        dnsConfig[zoneDomain].records.push({
+          id: randomUUID(),
+          type: 'CAA',
+          name: zoneDomain,
+          value: '0 issuewild letsencrypt.org',
+          ttl: 3600
+        })
       }
+
+      const zone = dnsConfig[zoneDomain]
+      if (!obj.type) continue
+
+      let type = obj.type.toUpperCase()
+      const validTypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'CAA']
+      if (!validTypes.includes(type)) continue
+
+      // Filter functionality: If we are setting a record that must be unique (like CNAME for a specific subdomain?), remove old one?
+      // The original code had logic: if (obj.unique !== false) remove existing
+
+      // If updating a record, remove conflict
+      if (obj.unique !== false) {
+        zone.records = zone.records.filter(r => !(r.type === type && r.name === obj.name))
+      }
+
+      zone.records.push({
+        id: randomUUID(),
+        type: type,
+        name: obj.name,
+        value: obj.value,
+        priority: obj.priority,
+        ttl: obj.ttl || 3600
+      })
+
+      changedDomains.add(zoneDomain)
+    }
+
+    // Update SOA serials
+    for (const domain of changedDomains) {
+      this.#updateSOASerial(domain)
+    }
+
+    if (changedDomains.size > 0) {
+      if (Odac.core('Config').force) Odac.core('Config').force()
+    }
+  }
+
+  #updateSOASerial(domain) {
+    const zone = Odac.core('Config').config.dns[domain]
+    if (!zone || !zone.soa) return
+
+    const dateStr = new Date()
+      .toISOString()
+      .replace(/[^0-9]/g, '')
+      .slice(0, 8)
+
+    // Logic: If serial starts with today's date, increment. Else set to Today + 01
+    // SOA format: YYYYMMDDNN
+
+    let currentSerial = zone.soa.serial
+    let currentSerialStr = currentSerial.toString()
+    let currentDatePrefix = currentSerialStr.slice(0, 8)
+
+    if (currentDatePrefix === dateStr) {
+      zone.soa.serial++
+    } else {
+      zone.soa.serial = parseInt(dateStr + '01')
     }
   }
 }

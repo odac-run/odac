@@ -29,12 +29,14 @@ odac web delete [-d|--domain] <domain>   # Delete website
 odac web list                             # List websites
 ```
 
-### Subdomains
+### Domains
 ```bash
-odac subdomain create [-s|--subdomain] <subdomain>  # Create subdomain
-odac subdomain delete [-s|--subdomain] <subdomain>  # Delete subdomain
-odac subdomain list [-d|--domain] <domain>          # List subdomains
+odac domain add [-d|--domain] <domain> [-i|--id] <appId>  # Add domain
+odac domain delete [-d|--domain] <domain>                  # Delete domain
+odac domain list [-i|--id] <appId>                        # List domains
 ```
+
+
 
 ### SSL Certificates
 ```bash
@@ -55,7 +57,7 @@ odac mail password [-e|--email] <email> [-p|--password] <password> # Change pass
 | `-d` | `--domain` | Domain name |
 | `-e` | `--email` | Email address |
 | `-p` | `--password` | Password |
-| `-s` | `--subdomain` | Subdomain name |
+
 | `-i` | `--id` | Service ID/name |
 | `-k` | `--key` | Authentication key |
 
@@ -86,9 +88,9 @@ odac mail create -e admin@example.com -p admin123
 odac mail create -e support@example.com -p support456
 
 # Set up multiple subdomains
-odac subdomain create -s blog.example.com
-odac subdomain create -s api.example.com
-odac subdomain create -s shop.example.com
+odac domain add -d blog.example.com -i my-app
+odac domain add -d api.example.com -i my-app
+odac domain add -d shop.example.com -i my-app
 
 # Renew multiple SSL certificates
 odac ssl renew -d example.com

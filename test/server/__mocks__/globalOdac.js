@@ -79,7 +79,16 @@ class MockOdac {
         init: jest.fn(),
         start: jest.fn(),
         stop: jest.fn(),
-        result: jest.fn((success, data) => ({success, data}))
+        addToken: jest.fn(),
+        removeToken: jest.fn(),
+        generateToken: jest.fn(() => 'mock-token'),
+        result: jest.fn((result, message, data) => {
+          if (typeof message === 'object') {
+            data = message
+            message = undefined
+          }
+          return {result, success: result, message, data}
+        })
       },
       Client: {
         auth: jest.fn(),
@@ -130,7 +139,7 @@ class MockOdac {
         delete: jest.fn(),
         list: jest.fn()
       },
-      Web: {
+      Proxy: {
         init: jest.fn(),
         start: jest.fn(),
         stop: jest.fn(),
