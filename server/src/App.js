@@ -1320,8 +1320,11 @@ class App {
     return false
   }
 
-  #getNextId() {
-    return this.#apps.reduce((maxId, app) => Math.max(app.id, maxId), -1) + 1
+  #generatePassword(length = 16) {
+    return nodeCrypto
+      .randomBytes(Math.ceil(length / 2))
+      .toString('hex')
+      .slice(0, length)
   }
 
   #generateUniqueName(baseName) {
@@ -1338,45 +1341,75 @@ class App {
 
   /**
    * Parses git URL to extract provider and repo in user/repo format.
-   * @param {string} url - Git URL
-   * @returns {object} - {repo, provider}
+   * Securely identifies the provider by strictly verifying the hostname
+   * to prevent spoofing via subdomains or deceptive paths.
+   *
+   * @param {string} url - Git source URL (HTTPS or SSH format)
+   * @returns {{repo: string, provider: 'github'|'gitlab'|'bitbucket'|'git'}}
    */
   #getGitMetadata(url) {
-    if (!url) return {repo: '', provider: 'git'}
-    const lower = url.toLowerCase()
-    let provider = 'git'
-    if (lower.includes('github.com')) provider = 'github'
-    else if (lower.includes('gitlab.com')) provider = 'gitlab'
-    else if (lower.includes('bitbucket.org')) provider = 'bitbucket'
+    if (!url) {
+      return {repo: '', provider: 'git'}
+    }
 
+    let hostname = ''
     let repo = ''
+
     try {
-      if (url.includes('@') && url.includes(':')) {
-        // SSH: git@github.com:user/repo.git
-        repo = url.split(':').pop()
-      } else {
-        // HTTPS: https://github.com/user/repo.git
-        const parts = url.replace(/\/$/, '').split('/')
+      if (url.includes('://')) {
+        // HTTPS patterns: https://github.com/user/repo.git
+        const urlObj = new URL(url)
+        hostname = urlObj.hostname.toLowerCase()
+        const pathname = urlObj.pathname.replace(/\/$/, '')
+        const parts = pathname.split('/')
         if (parts.length >= 2) {
           const repoPart = parts.pop()
           const userPart = parts.pop()
           repo = `${userPart}/${repoPart}`
         }
+      } else if (url.includes('@')) {
+        // SSH patterns: git@github.com:user/repo.git
+        const parts = url.split('@')
+        if (parts.length > 1) {
+          const hostPart = parts[1].split(':')
+          hostname = hostPart[0].toLowerCase()
+          if (hostPart.length > 1) {
+            repo = hostPart[1]
+          }
+        }
       }
 
-      if (repo.endsWith('.git')) repo = repo.slice(0, -4)
+      // Cleanup: Remove .git suffix and handle fallback
+      if (repo.endsWith('.git')) {
+        repo = repo.slice(0, -4)
+      } else if (!repo && !hostname) {
+        repo = url // Fallback for local paths or malformed input
+      }
     } catch {
       repo = url
+    }
+
+    // Strict Provider Detection
+    let provider = 'git'
+    const providers = {
+      'bitbucket.org': 'bitbucket',
+      'github.com': 'github',
+      'gitlab.com': 'gitlab'
+    }
+
+    for (const [domain, name] of Object.entries(providers)) {
+      // Matches 'example.com' exactly or sub-domains like 'git.example.com'
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) {
+        provider = name
+        break
+      }
     }
 
     return {repo, provider}
   }
 
-  #generatePassword(length = 16) {
-    return nodeCrypto
-      .randomBytes(Math.ceil(length / 2))
-      .toString('hex')
-      .slice(0, length)
+  #getNextId() {
+    return this.#apps.reduce((maxId, app) => Math.max(app.id, maxId), -1) + 1
   }
 
   // Private: Recipe Preparation
