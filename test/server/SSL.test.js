@@ -304,7 +304,7 @@ describe('SSL', () => {
       acme.Client.mockImplementation(() => ({auto: autoFn}))
 
       // Trigger first SSL (will block on auto())
-      const firstRun = SSL.renew('expired.com')
+      SSL.renew('expired.com')
       await wait()
       await wait()
 
