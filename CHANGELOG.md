@@ -1,3 +1,86 @@
+### agent
+
+- Add code style rule for `require` statement placement.
+
+### doc
+
+- add header image to README
+- Update README with refined project features and architecture details.
+
+### security
+
+- augment shell metacharacter blacklist with newline chars in App.js
+- **core:** implement scoped container identity & RBAC to prevent key leakage
+- harden app token validation with expiration and existence checks in Api.js
+- harden git provider detection in App.js
+- hide git credentials from process list during clone in Container.js
+- supplement branch and URL shell metacharacter guards with newline blocking in App.js
+
+### ⚙️ Engine Tuning
+
+- Centralize Hub command handling with a declarative map and expand CLI payload content detection to include data.
+- centralize Node.js Docker image name using `NODE_IMAGE` constant
+- Consolidate task definitions into the Hub's command object for simplified management and execution.
+- Remove dedicated Subdomain module and integrate its functionality into the Domain module.
+- Replace custom container initialization and direct `node` execution with `npm start` command.
+- Standardize API responses in Hub.js to use `Odac.server('Api').result` for consistent formatting.
+
+### ⚡️ Performance Upgrades
+
+- **proxy:** implement warm-cache ip/port discovery and parallel config sync
+
+### ✨ What's New
+
+- Add Docker container status monitoring and display in the CLI monitor.
+- Add SSL Subject Alternative Name (SAN) mismatch detection with automated renewal and implement concurrency control for certificate generation with improved error backoff.
+- allow specifying a container user and default to root for dev mode to resolve volume permission issues.
+- Automatically detect Git URLs for app creation, allow optional branches for Git cloning and enhance Docker build error reporting with full logs.
+- enhance domain listing with robust appId sanitization, improved table output including subdomains, and refined "no domains found" messages.
+- Harden proxy security by implementing max header size limits, TLS cipher suite preference, and comprehensive response header management including HSTS.
+- Implement app-specific API token generation, verification, and permission-based access control for containerized applications.
+- implement app.redeploy with incremental git fetch and builder optimization
+- Implement application restart functionality via CLI and Cloud, including a new `App.restart` method and updated CLI communication.
+- Implement beta channel support for building updates directly from source and add real-time log streaming for new update containers.
+- Implement cached logger instances and dedicated helper methods for enhanced log stream lifecycle management and resource cleanup.
+- Implement cascading domain deletion upon app removal, optimizing proxy configuration synchronization for batch operations.
+- Implement domain management service and CLI command for adding domains to applications.
+- Implement Full Lifecycle Environment Management with Secure Masking & Dynamic Linking
+- Implement Git-based application creation with developer mode and enhanced lifecycle management for containerized apps.
+- Implement log sanitation in `Log.js` to redact sensitive information and update `memory.md` with new architectural and security logging principles.
+- implement non-privileged multi-language native builder with non-blocking I/O
+- Implement RFC 2308 compliant NXDOMAIN responses with SOA records and prioritize CNAME resolution as per RFC 1034.
+- implement smart dns resolution, ptr-based smtp binding & ipv6 dual-stack support
+- Implement SSL renewal cancellation for concurrent domain requests and enhance certificate validation tests with robust SAN checks.
+- Intelligent App Orchestration with Auto-Port Detection & Internal Proxy Routing
+- Introduce mail subdomain support and enhance WebSocket message signing with request IDs for command processing.
+- Introduce structured git metadata object for applications, including provider, repo, and branch parsing during creation and redeployment.
+- **logger:** Implement high-performance buffered realtime logging & live build streams for Cloud
+- **proxy:** Enable HTTP/3 (QUIC) Support with Secure 0-RTT & Kernel Auto-Tuning
+- **proxy:** Post-quantum TLS, OCSP stapling, BBR congestion control & zero-allocation buffers
+- standardize API result structure, refactor Hub task management, and return raw data from list commands for external formatting
+
+### 🛠️ Fixes & Improvements
+
+- Add concurrency control to prevent simultaneous app creation and runtime operations.
+- **cli:** ensure continuous log rendering in monitor app view
+- Delay server port configuration update to prevent premature assignment of ephemeral ports.
+- Enhance domain validation to prevent path traversal vulnerabilities.
+- Enhance Git URL validation to prevent command injection and enforce supported protocols.
+- Enhance Updater with Zero-Downtime
+- **hub:** add defensive check for apps iteration and update tests
+- Implement a log filter to suppress noisy TLS handshake errors from HTTP server logs, enhancing operational observability.
+- Prevent redundant SSL certificate checks by adding `processing` and `queued` state checks to the re-entry guard.
+- Proxy now defaults to loopback IP on container IP resolution failure to ensure proper SSL negotiation and 502 responses.
+- Revert Docker-in-Docker setup from rootless to privileged `docker:26-dind` to resolve compatibility issues with 'pack'.
+- Synchronize proxy configuration after app start/restart to prevent 502 errors caused by stale container IPs.
+- Transition to rootless Docker-in-Docker for improved security by disabling privileged mode.
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - **server:** implement zero downtime handover for TCP server and config sync retry logic
