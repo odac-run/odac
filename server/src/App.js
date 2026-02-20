@@ -235,7 +235,7 @@ class App {
 
     // Security: Validate Git URL to prevent Command Injection
     // Block dangerous shell characters that could be used to chain commands
-    if (/[;&|`$(){}<>]/.test(url)) {
+    if (/[;&|`$(){}<>\n\r]/.test(url)) {
       return Odac.server('Api').result(false, __('Invalid Git URL: Contains illegal characters.'))
     }
 
