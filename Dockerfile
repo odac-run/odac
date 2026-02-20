@@ -66,7 +66,7 @@ COPY . .
 RUN chmod +x ./bin/odac-proxy
 
 # Create necessary directories
-RUN mkdir -p /app/storage /app/sites
+RUN mkdir -p /app/.odac
 
 # Link odac CLI globally
 RUN npm link
@@ -80,11 +80,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Set environment
 ENV NODE_ENV=production
-ENV HOME=/app/storage
+ENV HOME=/app
 ENV ODAC_WEB_PATH=/app/sites
 
 # Volumes for persistence
-VOLUME ["/app/storage", "/app/sites"]
+VOLUME ["/app/.odac"]
 
 # Start Odac daemon
 CMD ["node", "watchdog/index.js"]
