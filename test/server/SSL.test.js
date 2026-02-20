@@ -212,7 +212,7 @@ describe('SSL', () => {
       const originalX509 = nodeCrypto.X509Certificate
       nodeCrypto.X509Certificate = jest.fn().mockImplementation(buf => {
         const certPath = buf.toString()
-        if (certPath.includes('example.com')) {
+        if (certPath.endsWith('example.com.crt')) {
           return {subjectAltName: 'DNS:example.com, DNS:www.example.com'}
         }
         return {subjectAltName: 'DNS:expired.com'}
