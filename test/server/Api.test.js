@@ -599,7 +599,6 @@ describe('Api', () => {
 
     beforeEach(() => {
       const net = require('net')
-      const crypto = require('crypto')
 
       // Use a consistent mock auth token for deterministic hashing tests
       const mockRootKey = 'mock-root-key-32-bytes-long-test-key'
