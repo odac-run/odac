@@ -1,4 +1,3 @@
-const fs = require('fs')
 jest.mock('fs', () => ({
   existsSync: jest.fn(() => true),
   mkdirSync: jest.fn(),
