@@ -29,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
       
       - name: Install dependencies
         run: npm install
@@ -44,15 +44,30 @@ jobs:
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
+      - name: Checkout Actions
+        if: steps.version.outputs.version != ''
+        uses: actions/checkout@v4
+        with:
+          repository: odac-run/actions
+          token: ${{ secrets.GH_PAT }}
+          path: .github/odac-actions
+          ref: main
+          persist-credentials: false
+
       - name: Generate Release Notes
         id: ai_notes
         if: steps.version.outputs.version != ''
-        uses: odac-run/actions/actions/release-notes@main
+        uses: ./.github/odac-actions/actions/release-notes
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           michelangelo: ${{ secrets.MICHELANGELO }}
         timeout-minutes: 15
         continue-on-error: true
+
+      - name: Cleanup Actions
+        if: always()
+        run: rm -rf .github/odac-actions
+
       - name: Update Release
         uses: softprops/action-gh-release@v1
         if: steps.ai_notes.outcome == 'success' && steps.version.outputs.version != ''
