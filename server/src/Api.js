@@ -144,6 +144,21 @@ class Api {
         } else {
           const appAuth = this.verifyAppToken(auth)
           if (appAuth) {
+            const apps = Odac.core('Config').config.apps || []
+            const app = apps.find(a => a.name === appAuth.n)
+
+            // Validate that the app still exists and is active
+            if (!app || !app.active) {
+              Odac.core('Log').warn('Api', `Rejected app token: App '${appAuth.n}' not found or inactive`)
+              return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
+            }
+
+            // Validate token expiration (e.g., 24 hours = 86400000 ms)
+            if (Date.now() - appAuth.t > 86400000) {
+              Odac.core('Log').warn('Api', `Rejected token for '${appAuth.n}': expired`)
+              return socket.write(JSON.stringify({id, ...this.result(false, 'token_expired')}))
+            }
+
             clientDomain = appAuth.n // App Name as identifier
             appPermissions = appAuth.p || []
           } else {

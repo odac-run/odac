@@ -697,6 +697,11 @@ describe('Api', () => {
       const net = require('net')
       const mockRootKey = 'mock-root-key-32-bytes-long-test-key'
       global.Odac.core('Config').config.api = {auth: mockRootKey}
+      global.Odac.core('Config').config.apps = [
+        {name: 'test-app', active: true},
+        {name: 'mailer-app', active: true},
+        {name: 'admin-app', active: true}
+      ]
 
       Api.init()
       Api.start()
