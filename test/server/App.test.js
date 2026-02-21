@@ -57,6 +57,8 @@ describe('App', () => {
             available: true,
             runApp: mockRunApp,
             cloneRepo: mockCloneRepo,
+            registerBuildLogger: jest.fn(),
+            unregisterBuildLogger: jest.fn(),
             build: jest.fn(),
             isRunning: jest.fn(() => false),
             stop: jest.fn(),
