@@ -305,7 +305,7 @@ class Logger {
 
     // Add to buffer
     buffer.push(payload)
-    const maxSize = typeof this.#BUFFER_SIZE === 'object' ? this.#BUFFER_SIZE[streamType] : this.#BUFFER_SIZE
+    const maxSize = this.#BUFFER_SIZE[streamType]
     if (buffer.length > maxSize) {
       buffer.shift()
     }
