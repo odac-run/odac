@@ -308,7 +308,15 @@ class Builder {
       Image: strategy.image,
       Cmd: ['sh', '-c', commands],
       WorkingDir: '/app',
-      Env: ['CI=true', 'NPM_CONFIG_SPIN=false', 'NPM_CONFIG_PROGRESS=false', 'HUSKY=0'],
+      Env: [
+        'CI=true',
+        'NPM_CONFIG_SPIN=false',
+        'NPM_CONFIG_PROGRESS=false',
+        'HUSKY=0',
+        'TERM=dumb',
+        'PIP_PROGRESS_BAR=off',
+        'COMPOSER_NO_INTERACTION=1'
+      ],
       HostConfig: {
         Binds: [`${context.hostPath}:/app`], // Mount HOST path
         AutoRemove: true,
