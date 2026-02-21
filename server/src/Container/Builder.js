@@ -43,10 +43,10 @@ const BUILD_STRATEGIES = {
     name: 'Node.js',
     triggers: ['package.json'],
     image: 'node:lts-alpine',
-    installCmd:
-      'if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; else npm install --omit=dev --no-audit --no-fund; fi',
+    // Industry Standard: Install ALL deps (so prepare & build tools are available)
+    installCmd: 'if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi',
     buildCmd: 'if [ -f "tsconfig.json" ] || grep -q "build" package.json; then npm run build --if-present; fi',
-    cleanupCmd: 'rm -rf test tests',
+    cleanupCmd: 'npm prune --production && rm -rf test tests',
     package: {
       baseImage: 'node:lts-alpine',
       user: 'node',
@@ -308,7 +308,7 @@ class Builder {
       Image: strategy.image,
       Cmd: ['sh', '-c', commands],
       WorkingDir: '/app',
-      Env: ['CI=true', 'NPM_CONFIG_SPIN=false', 'NPM_CONFIG_PROGRESS=false'],
+      Env: ['CI=true', 'NPM_CONFIG_SPIN=false', 'NPM_CONFIG_PROGRESS=false', 'HUSKY=0'],
       HostConfig: {
         Binds: [`${context.hostPath}:/app`], // Mount HOST path
         AutoRemove: true,
