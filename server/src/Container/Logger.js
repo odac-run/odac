@@ -65,10 +65,20 @@ class Logger {
 
     // Real-time analysis stream with line splitting
     const self = this
+    const MAX_LINE_LENGTH = 65536 // 64KB safety limit to prevent DoS via memory exhaustion
     let leftover = ''
     const analyzer = new Transform({
       transform(chunk, encoding, callback) {
-        const data = leftover + chunk.toString()
+        let data = leftover + chunk.toString()
+
+        // Safety Catch: If a single line exceeds MAX_LINE_LENGTH without a newline,
+        // force split it to prevent memory exhaustion (DoS risk).
+        if (data.length > MAX_LINE_LENGTH) {
+          const forceLine = data.substring(0, MAX_LINE_LENGTH)
+          self.#notifySubscribers('build', 'out', `[Warning] Long line truncated: ${forceLine.substring(0, 100)}...`, Date.now())
+          data = data.substring(MAX_LINE_LENGTH)
+        }
+
         const lines = data.split('\n')
         leftover = lines.pop() // Last one might be partial
 
