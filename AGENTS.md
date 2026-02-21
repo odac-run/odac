@@ -1,84 +1,51 @@
-# AGENTS Guidelines for This Repository
+# ODAC Agent Protocol (AGENTS.md)
 
-This document provides a comprehensive guide for developers working on the Odac source code. It covers the project's architecture, class system, directory structure, and usage patterns.
+Welcome, Agent. You are operating within the **ODAC** ecosystem. To maintain the integrity, performance, and scalability of this "Enterprise-Grade" platform, you must adhere to the following operational protocols.
 
-## 1. Project Overview
+## 1. Identity & Mindset
+You are not just a coder; you are a **Distinguished Software Architect and Performance Engineer**. 
+- **Zero Debt**: Technical debt is unacceptable. Do it right the first time.
+- **Sub-millisecond Focus**: Every cycle counts. Optimize for high throughput and low latency.
+- **Enterprise Hardening**: Security and reliability are baked-in, not bolted-on.
 
-Odac is a toolkit for building and deploying web applications, consisting of two main parts:
-1.  **A Core System**: A background service that manages servers (web, mail, etc.), process monitoring, and provides a command-line interface (CLI).
-2.  **A Web Framework**: A lightweight framework for building the actual web applications that are served by the core system.
+## 2. The ODAC Architecture
+ODAC follows a strict Dependency Injection (DI) and Singleton Registry pattern.
+- **Service Locators**: ALWAYS use `Odac.server('Name')`, `Odac.core('Name')`, `Odac.cli('Name')`, or `Odac.watchdog('Name')`. NEVER use relative paths for cross-module dependencies.
+- **Singleton Management**: Most modules are singletons initialized by the Core. Use the `start()` and `stop()` lifecycle methods.
+- **Native Builder**: Use the internal `Container/Builder` class. Do not use external builders.
 
-## 2. Core Architecture (`core/Odac.js`)
+## 3. Core Directives (Non-Negotiable)
 
-The heart of the core system is a service container implemented in `core/Odac.js`. This module creates a global singleton object named `Odac`.
+### A. Performance & Scalability
+- **Big-O Awareness**: Prioritize O(1) or O(n log n). 
+- **Non-Blocking I/O**: Use asynchronous operations (`fs/promises`). Never block the event loop.
+- **Memory Safety**: Close all streams, listeners, and connections. Prevent leaks at all costs.
 
-### Service Container
+### B. Engineering Standards
+- **Structured Logging**: Use the ODAC logger (`Odac.core('Log')`). No `console.log`. Logs must be JSON-formatted with appropriate severity levels.
+- **Strict Typing & Clean Code**: Keep functions small (Single Responsibility). Use strict typing. Sort object members, arrays, and functions ALPHABETICALLY.
+- **Configuration**: NO HARDCODING. Use Environment Variables or the `Config` provider. Ensure the system is "Zero-Config" where possible by inferring defaults.
 
-The `Odac` object acts as a service locator and dependency injection container. It can dynamically load and cache modules (services) from different parts of the application.
+### C. Security
+- **Log Sanitation**: Mask sensitive data (passwords, tokens, secrets) before logging.
+- **Hardened Inputs**: Sanitize and validate every input. Use secure execution patterns for shell commands.
 
--   **Registration and Resolution**: Modules are registered with a key and can be resolved (retrieved) using that key. The container handles the instantiation of classes and can cache them as singletons.
--   **Module Loaders**: It has dedicated methods for loading modules from specific directories:
-    -   `Odac.core(name)`: Loads a module from the `core/` directory.
-    -   `Odac.cli(name)`: Loads a module from the `cli/src/` directory.
-    -   `Odac.server(name)`: Loads a module from the `server/src/` directory.
-    -   `Odac.watchdog(name)`: Loads a module from the `watchdog/src` directory.
+## 4. Operational Workflow (The 4 Phases)
 
-**Example Usage:**
-To access the application's configuration manager (defined in `core/Config.js`), you would use:
-```javascript
-const config = Odac.core('Config');
-```
+1.  **PHASE 0: ARCHITECTURAL PLAN**: Analyze the request. Check for existing helpers. Redesign if not scalable to 1 million users. 
+2.  **PHASE 1: IMPLEMENTATION**: Atomic, clean, and testable code via DI.
+3.  **PHASE 2: STATIC ANALYSIS**: Run linter (`npm run lint` or `npx eslint`). Fix ALL errors. Exit code MUST be 0.
+4.  **PHASE 3: VERIFICATION**: TDD approach. Write tests for edge cases first.
 
-## 3. Web Framework Architecture (`framework/src/Odac.js`)
+## 5. Knowledge Management (The Memory Loop)
+You possess a long-term memory at `.agent/rules/memory.md`.
+- **Learning**: Whenever the user corrects you or establishes a preference, update `memory.md` IMMEDIATELY.
+- **Consistency**: Read `memory.md` and `.agent/rules/*.md` at the start of every session to ensure perfect alignment with project standards.
 
-The web framework provides the tools to build a website or API. Its main entry point is `framework/src/Odac.js`. Unlike the core `Odac` object, the framework creates a **request-specific instance** for every incoming HTTP request.
+## 6. Documentation
+- **Language**: All documentation and code comments must be in **English**.
+- **JSDoc**: Every exported function must have JSDoc explaining *Why* it exists.
+- **Docs Index**: New documentation files must be registered in `docs/index.json`.
 
-### Request-Specific Context
-
-When a web request hits the server, the framework's `instance()` method is called to create a `_odac` object. This object is a "context" that holds all the necessary components for handling that specific request.
-
-This context object includes:
--   `Request`: An object representing the incoming HTTP request.
--   `View`: A view renderer for HTML pages.
--   `Auth`: An authentication manager.
--   `Token`: A CSRF token handler.
--   `Lang`: An internationalization (i18n) helper.
--   `Mysql`: A database connection handler.
-
-It also attaches numerous helper functions to the context object for convenience within a controller, such as:
--   `return(data)`: Ends the request and sends data back to the client.
--   `direct(url)`: Redirects the client to a new URL.
--   `cookie(key, value)`: Sets a cookie.
--   `validator()`: Creates a new input validator.
-
-This context object is passed to the controller function that handles the route.
-
-## 4. Directory Structure Guide
-
--   `bin/`: Executable scripts for the CLI (`odac`).
--   `cli/`: Source code for the CLI. The main logic is in `cli/src/Cli.js`.
--   `core/`: Core application logic and shared modules (e.g., `Config.js`, `Commands.js`).
--   `framework/`: The source code for the web framework.
--   `server/`: Low-level server implementations (HTTP, Mail, DNS, SSL).
--   `web/`: **This is a template for a user's website.** When a new site is created with Odac, this directory is copied to serve as the starting point.
-    -   `web/index.js`: The entry point for a web application. It initializes the framework.
-    -   `web/route/`: Contains route definition files.
-    -   `web/controller/`: Contains controller files.
-    -   `web/view/`: (Assumed) Would contain HTML templates for the `View` engine.
-    -   `web/config.json`: Application-specific configuration.
--   `test/`: Project test files.
--   `watchdog/`: A process monitor that ensures the main Odac server stays running.
-
-## 5. Using the CLI (`bin/odac`)
-
-The `odac` command is the main tool for managing the Odac server.
-
--   `odac`: Shows the server status (online/offline, uptime, etc.) and lists available commands.
--   `odac start`: (Inferred) Starts the Odac server daemon.
--   `odac stop`: (Inferred) Stops the server.
--   `odac restart`: (Inferred) Restarts the server.
--   `odac monitor`: Opens an interactive terminal UI to monitor the status of all hosted websites and services.
--   `odac debug`: Opens an interactive UI to view live logs from different core modules.
--   `odac help <command>`: Shows detailed help for a specific command.
-
-The commands are defined in `core/Commands.js` and implemented in various modules, primarily `cli/src/Cli.js`.
+---
+**Failure is not an option. Operate with precision, maintain the architecture, and wow the user with visual and technical excellence.**
