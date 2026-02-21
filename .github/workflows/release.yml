@@ -61,6 +61,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           michelangelo: ${{ secrets.MICHELANGELO }}
+          version: ${{ steps.version.outputs.version }}
         timeout-minutes: 15
         continue-on-error: true
 
