@@ -12,6 +12,10 @@ class Logger {
   #buildsDir
   #runtimeDir
 
+  #subscribers = {build: new Map(), runtime: new Map()}
+  #buffers = {build: [], runtime: []}
+  #BUFFER_SIZE = {build: 500, runtime: 100}
+
   constructor(appName) {
     this.#appName = appName
     this.#logsDir = path.join(os.homedir(), '.odac', 'logs', appName)
@@ -41,6 +45,12 @@ class Logger {
     const logFile = path.join(this.#buildsDir, `${buildId}.log`)
     const summaryFile = path.join(this.#buildsDir, `${buildId}.json`)
 
+    // Clear history for the new build stream to avoid mixing with previous logs
+    this.#buffers.build = []
+
+    // Immediately push an initialization message so subscribers don't see an empty screen
+    this.#notifySubscribers('build', 'out', `[Builder] Build session ${buildId} initialized.`, Date.now())
+
     const startTime = Date.now()
     const stats = {
       id: buildId,
@@ -53,37 +63,68 @@ class Logger {
       metadata
     }
 
-    // Real-time analysis stream
+    // Real-time analysis stream with line splitting
     const self = this
+    const MAX_LINE_LENGTH = 65536 // 64KB safety limit to prevent DoS via memory exhaustion
+    let leftover = ''
     const analyzer = new Transform({
       transform(chunk, encoding, callback) {
-        const line = chunk.toString()
+        let data = leftover + chunk.toString()
 
-        // Simple heuristics for analysis
-        const isError = /error/i.test(line) && !/node_modules/i.test(line)
-        const isWarning = /warning/i.test(line) && !/npm warn/i.test(line)
-
-        if (isError) {
-          stats.errors++
-          // Increment for active phases
-          for (const p of stats.phases) {
-            if (!p.end) p.errors = (p.errors || 0) + 1
-          }
+        // Safety Catch: If a single line exceeds MAX_LINE_LENGTH without a newline,
+        // force split it to prevent memory exhaustion (DoS risk).
+        if (data.length > MAX_LINE_LENGTH) {
+          const forceLine = data.substring(0, MAX_LINE_LENGTH)
+          self.#notifySubscribers('build', 'out', `[Warning] Long line truncated: ${forceLine.substring(0, 100)}...`, Date.now())
+          data = data.substring(MAX_LINE_LENGTH)
         }
 
-        if (isWarning) {
-          stats.warnings++
-          // Increment for active phases
-          for (const p of stats.phases) {
-            if (!p.end) p.warnings = (p.warnings || 0) + 1
+        const lines = data.split('\n')
+        leftover = lines.pop() // Last one might be partial
+
+        for (const lineContent of lines) {
+          let line = lineContent
+
+          // Noise Filter: Strip carriage returns and common spinner/progress bar residues
+          line = line.replace(/\r/g, '')
+
+          // Skip empty or pure spinner lines
+          if (!line.trim() || /^[-|/\\]\s*$/.test(line.trim())) {
+            continue
           }
+
+          // Simple heuristics for analysis
+          const isError = /error/i.test(line) && !/node_modules/i.test(line)
+          const isWarning = /warning/i.test(line) && !/npm warn/i.test(line)
+
+          if (isError) {
+            stats.errors++
+            for (const p of stats.phases) {
+              if (!p.end) p.errors = (p.errors || 0) + 1
+            }
+          }
+
+          if (isWarning) {
+            stats.warnings++
+            for (const p of stats.phases) {
+              if (!p.end) p.warnings = (p.warnings || 0) + 1
+            }
+          }
+
+          // Broadcast to subscribers
+          self.#notifySubscribers('build', isError ? 'err' : 'out', line, Date.now())
         }
 
-        // Broadcast to subscribers (build.log)
-        // Use 'out' or 'err' based on simple heuristic
-        self.#notifySubscribers(isError ? 'err' : 'out', line, Date.now())
-
-        this.push(chunk) // Pass through
+        this.push(chunk) // Pass raw chunk through to fileStream
+        callback()
+      },
+      flush(callback) {
+        if (leftover) {
+          const line = leftover.replace(/\r/g, '').trim()
+          if (line && !/^[-|/\\]\s*$/.test(line)) {
+            self.#notifySubscribers('build', 'out', line, Date.now())
+          }
+        }
         callback()
       }
     })
@@ -146,7 +187,7 @@ class Logger {
         this.#rotateLogs() // Trigger cleanup in background
       },
 
-      subscribe: cb => self.subscribe(cb)
+      subscribe: cb => self.subscribe(cb, 'build')
     }
   }
 
@@ -203,7 +244,7 @@ class Logger {
         const ts = Date.now()
 
         // Broadcast to subscribers (stdout)
-        this.#notifySubscribers('out', data, ts)
+        this.#notifySubscribers('runtime', 'out', data, ts)
 
         fileStream.write(chunk)
       },
@@ -215,7 +256,7 @@ class Logger {
         const ts = Date.now()
 
         // Broadcast to subscribers (stderr)
-        this.#notifySubscribers('err', data, ts)
+        this.#notifySubscribers('runtime', 'err', data, ts)
 
         // Check date rotation on write
         const currentToday = new Date().toISOString().split('T')[0]
@@ -249,26 +290,28 @@ class Logger {
       },
 
       // Subscription interface
-      subscribe: cb => this.subscribe(cb)
+      subscribe: cb => this.subscribe(cb, 'runtime')
     }
   }
 
   #lastStatsWrite = 0
-  #subscribers = new Map()
-  #buffer = [] // Ring buffer for last 100 logs
-  #BUFFER_SIZE = 100
 
-  #notifySubscribers(type, data, ts) {
+  #notifySubscribers(streamType, type, data, ts) {
     const payload = {t: type, d: data, ts}
+    const buffer = this.#buffers[streamType]
+    const subscribers = this.#subscribers[streamType]
+
+    if (!buffer || !subscribers) return
 
     // Add to buffer
-    this.#buffer.push(payload)
-    if (this.#buffer.length > this.#BUFFER_SIZE) {
-      this.#buffer.shift()
+    buffer.push(payload)
+    const maxSize = this.#BUFFER_SIZE[streamType]
+    if (buffer.length > maxSize) {
+      buffer.shift()
     }
 
-    if (this.#subscribers.size === 0) return
-    for (const cb of this.#subscribers.values()) {
+    if (subscribers.size === 0) return
+    for (const cb of subscribers.values()) {
       cb(payload)
     }
   }
@@ -504,20 +547,25 @@ class Logger {
   }
   /**
    * Subscribes to realtime logs (Runtime or Build)
-   * @param {function} cb Callabck function
+   * @param {function} cb Callback function
+   * @param {string} streamType 'build' or 'runtime'
    * @returns {function} Unsubscribe function
    */
-  subscribe(cb) {
+  subscribe(cb, streamType = 'runtime') {
     const id = Math.random().toString(36).substr(2, 9)
+    const buffer = this.#buffers[streamType]
+    const subscribers = this.#subscribers[streamType]
+
+    if (!buffer || !subscribers) return () => {}
 
     // 1. Send history from buffer immediately
-    if (this.#buffer.length > 0) {
-      this.#buffer.forEach(log => cb(log))
+    if (buffer.length > 0) {
+      buffer.forEach(log => cb(log))
     }
 
     // 2. Register for live updates
-    this.#subscribers.set(id, cb)
-    return () => this.#subscribers.delete(id)
+    subscribers.set(id, cb)
+    return () => subscribers.delete(id)
   }
 }
 

@@ -18,8 +18,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       
       # Persistent data
-      - odac-storage:/app/storage
-      - odac-sites:/app/sites
+      - odac-storage:/app/.odac
 
       # Kernel modules access (for BBR optimization)
       - /lib/modules:/lib/modules:ro
@@ -41,6 +40,4 @@ services:
 
 volumes:
   odac-storage:
-    driver: local
-  odac-sites:
     driver: local

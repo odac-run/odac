@@ -255,6 +255,11 @@ class App {
     if (this.#creating.has(name)) {
       return Odac.server('Api').result(false, __('App %s is already being created', name))
     }
+
+    // Initialize Logger & Register SYNC to prevent race conditions with Hub requests
+    const logger = this.#getLoggerInstance(name)
+    Odac.server('Container').registerBuildLogger(name, logger)
+
     this.#creating.add(name)
 
     try {
@@ -272,14 +277,13 @@ class App {
       }
       fs.mkdirSync(appDir, {recursive: true})
 
-      // Build git URL with token if provided
-      // Security update: We now pass the token separately via env var to prevent exposure in process/docker history
+      // Now initialize directories safely
+      await logger.init()
 
       const imageName = `odac-app-${name}`
       let logCtrl = null
 
       try {
-        const logger = await this.#getLogger(name)
         const buildId = `build_${Date.now()}`
         logCtrl = logger.createBuildStream(buildId, {
           image: imageName,
@@ -299,7 +303,8 @@ class App {
           stream: logCtrl.stream,
           start: logCtrl.startPhase,
           end: logCtrl.endPhase,
-          finalize: () => {} // Delay finalization until deployment is complete
+          finalize: () => {}, // Delay finalization until deployment is complete
+          subscribe: logCtrl.subscribe
         })
         log('createFromGit: Build successful')
 
@@ -370,6 +375,7 @@ class App {
       }
     } finally {
       this.#creating.delete(name)
+      Odac.server('Container').unregisterBuildLogger(name)
     }
   }
 
@@ -499,12 +505,17 @@ class App {
   #logStreams = new Map() // app.name -> logCtrl
   #loggers = new Map() // app.name -> Logger instance
 
-  async #getLogger(appName) {
+  #getLoggerInstance(appName) {
     let logger = this.#loggers.get(appName)
     if (!logger) {
       logger = new Logger(appName)
       this.#loggers.set(appName, logger)
     }
+    return logger
+  }
+
+  async #getLogger(appName) {
+    const logger = this.#getLoggerInstance(appName)
     // Ensure initialized (safe to call multiple times)
     await logger.init()
     return logger
@@ -579,7 +590,7 @@ class App {
     }
 
     // Subscribe using Logger's mechanism
-    return logger.subscribe(callback)
+    return logger.subscribe(callback, 'runtime')
   }
 
   async delete(id) {
@@ -678,9 +689,13 @@ class App {
     }
 
     this.#processing.add(app.id)
-    log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
-    let logCtrl = null
 
+    // Register logger IMMEDIATELY to prevent race conditions with Hub requests
+    const logger = this.#getLoggerInstance(app.name)
+    Odac.server('Container').registerBuildLogger(app.name, logger)
+
+    log('Redeploying app %s (branch: %s, commit: %s)', app.name, targetBranch, commitSha || 'HEAD')
+    let logCtrl
     try {
       const appsPath = Odac.core('Config').config.app.path
       const appDir = path.join(appsPath, app.name)
@@ -701,7 +716,8 @@ class App {
         .then(() => true)
         .catch(() => false)
 
-      const logger = await this.#getLogger(app.name)
+      await logger.init()
+
       const buildId = `build_${Date.now()}`
       logCtrl = logger.createBuildStream(buildId, {
         image: imageName,
@@ -729,7 +745,8 @@ class App {
         stream: logCtrl.stream,
         start: logCtrl.startPhase,
         end: logCtrl.endPhase,
-        finalize: () => {} // Delay finalization until deployment is complete
+        finalize: () => {}, // Delay finalization until deployment is complete
+        subscribe: logCtrl.subscribe
       })
 
       // Step 3: Stop running container (minimal downtime starts here)
@@ -785,6 +802,7 @@ class App {
       return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
     } finally {
       this.#processing.delete(app.id)
+      Odac.server('Container').unregisterBuildLogger(app.name)
     }
   }
 

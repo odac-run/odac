@@ -26,7 +26,15 @@ class Container {
   subscribeToBuildLogs(appName, cb) {
     const logger = this.#buildLoggers.get(appName)
     if (!logger) return null
-    return logger.subscribe(cb)
+    return logger.subscribe(cb, 'build')
+  }
+
+  registerBuildLogger(appName, logger) {
+    this.#buildLoggers.set(appName, logger)
+  }
+
+  unregisterBuildLogger(appName) {
+    this.#buildLoggers.delete(appName)
   }
 
   constructor() {
@@ -174,7 +182,6 @@ class Container {
       return true
     } finally {
       this.#activeBuilds.delete(imageName)
-      if (appName) this.#buildLoggers.delete(appName)
     }
   }
 
@@ -235,20 +242,16 @@ class Container {
 
     try {
       await container.start()
+
+      // Stream logs in real-time if logger is available
+      if (activeLogger && activeLogger.stream) {
+        await this.#streamContainerLogs(container, activeLogger.stream, token)
+      }
+
       const result = await container.wait()
 
       if (result.StatusCode !== 0) {
-        // Fetch logs to debug failure
-        const logs = await container.logs({stdout: true, stderr: true})
-        let logStr = logs ? logs.toString('utf8') : 'No logs available'
-
-        // Sanitize sensitive token from logs
-        if (token) {
-          logStr = logStr.replaceAll(token, '*****')
-        }
-
-        log(`[Git] Container Logs: ${logStr}`)
-        throw new Error(`Git clone failed with exit code ${result.StatusCode}. Logs: ${logStr}`)
+        throw new Error(`Git clone failed with exit code ${result.StatusCode}.`)
       }
 
       log('[Git] Clone successful.')
@@ -320,14 +323,16 @@ class Container {
 
     try {
       await container.start()
+
+      // Stream logs in real-time if logger is available
+      if (activeLogger && activeLogger.stream) {
+        await this.#streamContainerLogs(container, activeLogger.stream, token)
+      }
+
       const result = await container.wait()
 
       if (result.StatusCode !== 0) {
-        const logs = await container.logs({stdout: true, stderr: true})
-        let logStr = logs ? logs.toString('utf8') : 'No logs available'
-        if (token) logStr = logStr.replaceAll(token, '*****')
-        log('[Git] Container Logs: %s', logStr)
-        throw new Error(`Git fetch failed with exit code ${result.StatusCode}. Logs: ${logStr}`)
+        throw new Error(`Git fetch failed with exit code ${result.StatusCode}.`)
       }
 
       log('[Git] Fetch and reset successful.')
@@ -826,6 +831,33 @@ class Container {
     } catch {
       return []
     }
+  }
+
+  /**
+   * Streams container logs to a target stream with optional token sanitization
+   * @param {Object} container - Dockerode container instance
+   * @param {import('stream').Writable} targetStream - Target stream to write to
+   * @param {string} [token] - Optional token to sanitize
+   */
+  async #streamContainerLogs(container, targetStream, token = null) {
+    const logStream = await container.logs({
+      follow: true,
+      stdout: true,
+      stderr: true
+    })
+
+    return new Promise((resolve, reject) => {
+      const handler = chunk => {
+        let content = chunk.toString('utf8')
+        if (token) content = content.replaceAll(token, '*****')
+        targetStream.write(content)
+      }
+
+      this.#docker.modem.demuxStream(logStream, {write: handler}, {write: handler})
+
+      logStream.on('end', resolve)
+      logStream.on('error', reject)
+    })
   }
 
   /**
