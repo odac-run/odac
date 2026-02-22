@@ -749,24 +749,104 @@ class App {
         subscribe: logCtrl.subscribe
       })
 
-      // Step 3: Stop running container (minimal downtime starts here)
-      if (logCtrl) logCtrl.startPhase('stop_old_container')
-      await this.stop(app.id)
-      if (logCtrl) logCtrl.endPhase('stop_old_container', true)
+      // Check if Zero-Downtime Deployment (ZDD) is applicable.
+      // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
+      const domainsConfig = Odac.core('Config').config.domains || {}
+      const hasDomains = Object.values(domainsConfig).some(d => d.appId === app.name || d.appId === app.id)
 
-      // Step 4: Restart with new image (inline instead of delegating to #run
-      // to keep #processing lock held for the entire operation lifecycle)
-      this.#set(app.id, {active: true, status: 'starting'})
+      if (hasDomains) {
+        // --- Zero-Downtime Deployment (Blue-Green) ---
+        log('ZDD enabled for %s (Has Domains). Executing Blue-Green switch.', app.name)
+        const greenContainerName = `${app.name}-green-${Date.now()}`
 
-      if (logCtrl) logCtrl.startPhase('start_new_container')
-      await this.#runGitApp(app)
-      if (logCtrl) logCtrl.endPhase('start_new_container', true)
+        // Step 3: Start new container (Green) without stopping the old one (Blue)
+        if (logCtrl) logCtrl.startPhase('start_new_container')
+        const greenApp = {...app, name: greenContainerName}
+        await this.#runGitApp(greenApp)
+        if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
-      this.#set(app.id, {status: 'running', started: Date.now()})
+        // Step 4: Atomic Proxy Swap
+        this.#set(app.id, {status: 'switching'})
 
-      if (logCtrl) logCtrl.startPhase('proxy_propagation')
-      Odac.server('Proxy').syncConfig()
-      if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
+        let expectedPort = 3000
+        if (app.ports && app.ports.length > 0 && app.ports[0].container) {
+          expectedPort = app.ports[0].container
+        }
+
+        let isReady = false
+        let attempts = 0
+        while (!isReady && attempts < 120) {
+          try {
+            const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
+            if (listeningPorts.includes(expectedPort) || (attempts >= 15 && listeningPorts.length > 0)) {
+              isReady = true
+              break
+            }
+          } catch {
+            /* ignore */
+          }
+
+          await new Promise(r => setTimeout(r, 1000))
+          attempts++
+        }
+
+        const greenIP = await Odac.server('Container').getIP(greenContainerName)
+
+        if (!isReady || !greenIP) {
+          // ZDD Abort
+          await Odac.server('Container').stop(greenContainerName)
+          await Odac.server('Container').remove(greenContainerName)
+          throw new Error('New container failed readiness probe (port bind timeout). Redeploy aborted to maintain uptime.')
+        }
+
+        // Update the main app's active IP to the green container's IP
+        app.ip = greenIP
+        this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
+
+        if (logCtrl) logCtrl.startPhase('proxy_propagation')
+        Odac.server('Proxy').syncConfig()
+        if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
+
+        // Step 5: Connection Draining & Cleanup
+        if (logCtrl) logCtrl.startPhase('stop_old_container')
+        if (process.env.NODE_ENV !== 'test') {
+          await new Promise(r => setTimeout(r, 5000))
+        }
+
+        // Stop and remove the old container (Blue)
+        await Odac.server('Container').stop(app.name)
+        await Odac.server('Container').remove(app.name)
+
+        // Docker rename back to original
+        await Odac.server('Container').docker.getContainer(greenContainerName).rename({name: app.name})
+
+        this.#set(app.id, {activeContainerId: null})
+        await new Promise(r => setTimeout(r, 1000))
+        if (logCtrl) logCtrl.endPhase('stop_old_container', true)
+
+        this.#set(app.id, {started: Date.now()})
+      } else {
+        // --- Standard Redeploy (No Domains) ---
+        log('Standard redeploy for %s (No Domains). Stopping old container first.', app.name)
+
+        // Step 3: Stop running container (minimal downtime starts here)
+        if (logCtrl) logCtrl.startPhase('stop_old_container')
+        await this.stop(app.id)
+        if (logCtrl) logCtrl.endPhase('stop_old_container', true)
+
+        // Step 4: Restart with new image
+        this.#set(app.id, {active: true, status: 'starting'})
+
+        if (logCtrl) logCtrl.startPhase('start_new_container')
+        await this.#runGitApp(app)
+        if (logCtrl) logCtrl.endPhase('start_new_container', true)
+
+        this.#set(app.id, {status: 'running', started: Date.now()})
+
+        if (logCtrl) logCtrl.startPhase('proxy_propagation')
+        Odac.server('Proxy').syncConfig()
+        if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
+      }
 
       // Persist updated metadata
       const updates = {}
