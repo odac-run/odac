@@ -782,18 +782,11 @@ class App {
         }
 
         let isReady = false
-        let discoveredPort = expectedPort
         let attempts = 0
         while (!isReady && attempts < 120) {
           try {
             const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
             if (listeningPorts.includes(expectedPort)) {
-              isReady = true
-              break
-            } else if (attempts >= 15 && listeningPorts.length > 0) {
-              // Auto-discovery fallback: The app isn't bound to expectedPort, but it IS listening somewhere.
-              // Prefer standard ports if available to avoid mapping ephemeral/internal management ports.
-              discoveredPort = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
               isReady = true
               break
             }
@@ -817,13 +810,6 @@ class App {
         // Update the main app's active IP to the green container's IP
         app.ip = greenIP
         this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
-
-        // Apply dynamically discovered port if it drifted from configuration
-        if (discoveredPort !== expectedPort) {
-          log('ZDD Auto-Discovery: App %s listening on %d instead of %d. Updating port matrix.', app.name, discoveredPort, expectedPort)
-          app.ports = [{container: discoveredPort}]
-          this.#saveApps()
-        }
 
         if (logCtrl) logCtrl.startPhase('proxy_propagation')
         Odac.server('Proxy').syncConfig()
