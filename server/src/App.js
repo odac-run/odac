@@ -839,10 +839,29 @@ class App {
         await Odac.server('Container').stop(app.name)
         await Odac.server('Container').remove(app.name)
 
-        // Docker rename back to original
-        await Odac.server('Container').docker.getContainer(greenContainerName).rename({name: app.name})
+        // Docker rename back to original with retry logic
+        let renameSuccess = false
+        for (let i = 0; i < 5; i++) {
+          try {
+            await Odac.server('Container').docker.getContainer(greenContainerName).rename({name: app.name})
+            renameSuccess = true
+            break
+          } catch (e) {
+            log('Docker rename failed, retrying in 2s (Attempt %d/5): %s', i + 1, e.message)
+            await new Promise(r => setTimeout(r, 2000))
+          }
+        }
 
-        this.#set(app.id, {activeContainerId: null})
+        if (renameSuccess) {
+          this.#set(app.id, {activeContainerId: null})
+        } else {
+          error(
+            'Failed to rename green container %s to %s after 5 attempts. ZDD will persist with activeContainerId.',
+            greenContainerName,
+            app.name
+          )
+        }
+
         await new Promise(r => setTimeout(r, 1000))
         if (logCtrl) logCtrl.endPhase('stop_old_container', true)
 
