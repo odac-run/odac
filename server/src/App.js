@@ -680,7 +680,6 @@ class App {
     if (branch && (branch.startsWith('-') || /[;&|`$(){}<>\n\r]/.test(branch))) {
       return Odac.server('Api').result(false, __('Invalid branch name format.'))
     }
-
     const targetBranch = branch || app.branch || 'main'
 
     // Concurrency guard: prevent parallel operations on the same app
@@ -688,6 +687,7 @@ class App {
       return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
     }
 
+    let greenContainerName = null
     this.#processing.add(app.id)
 
     // Register logger IMMEDIATELY to prevent race conditions with Hub requests
@@ -749,24 +749,131 @@ class App {
         subscribe: logCtrl.subscribe
       })
 
-      // Step 3: Stop running container (minimal downtime starts here)
-      if (logCtrl) logCtrl.startPhase('stop_old_container')
-      await this.stop(app.id)
-      if (logCtrl) logCtrl.endPhase('stop_old_container', true)
+      // Check if Zero-Downtime Deployment (ZDD) is applicable.
+      // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
+      const domainsConfig = Odac.core('Config').config.domains || {}
+      const hasDomains = Object.values(domainsConfig).some(d => d.appId === app.name || d.appId === app.id)
 
-      // Step 4: Restart with new image (inline instead of delegating to #run
-      // to keep #processing lock held for the entire operation lifecycle)
-      this.#set(app.id, {active: true, status: 'starting'})
+      if (hasDomains) {
+        // --- Zero-Downtime Deployment (Blue-Green) ---
+        log('ZDD enabled for %s (Has Domains). Executing Blue-Green switch.', app.name)
+        greenContainerName = `${app.name}-green-${Date.now()}`
 
-      if (logCtrl) logCtrl.startPhase('start_new_container')
-      await this.#runGitApp(app)
-      if (logCtrl) logCtrl.endPhase('start_new_container', true)
+        // Step 3: Start new container (Green) without stopping the old one (Blue)
+        if (logCtrl) logCtrl.startPhase('start_new_container')
 
-      this.#set(app.id, {status: 'running', started: Date.now()})
+        // Legacy App Fix: Assign default port beforehand so it persists in the main app config
+        if (!app.ports || app.ports.length === 0 || !app.ports[0].container) {
+          log('Legacy App Fix: Assigning default port 3000 to app %s during redeploy', app.name)
+          app.ports = [{container: 3000}]
+          this.#saveApps()
+        }
 
-      if (logCtrl) logCtrl.startPhase('proxy_propagation')
-      Odac.server('Proxy').syncConfig()
-      if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
+        const greenApp = {...app, name: greenContainerName}
+        await this.#runGitApp(greenApp)
+        if (logCtrl) logCtrl.endPhase('start_new_container', true)
+
+        // Step 4: Atomic Proxy Swap
+        this.#set(app.id, {status: 'switching'})
+
+        let expectedPort = 3000
+        if (app.ports && app.ports.length > 0 && app.ports[0].container) {
+          expectedPort = app.ports[0].container
+        }
+
+        let isReady = false
+        let attempts = 0
+        while (!isReady && attempts < 120) {
+          try {
+            const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
+            if (listeningPorts.includes(expectedPort)) {
+              isReady = true
+              break
+            }
+          } catch {
+            /* ignore */
+          }
+
+          await new Promise(r => setTimeout(r, 1000))
+          attempts++
+        }
+
+        const greenIP = await Odac.server('Container').getIP(greenContainerName)
+
+        if (!isReady || !greenIP) {
+          // ZDD Abort
+          await Odac.server('Container').stop(greenContainerName)
+          await Odac.server('Container').remove(greenContainerName)
+          throw new Error('New container failed readiness probe (port bind timeout). Redeploy aborted to maintain uptime.')
+        }
+
+        // Update the main app's active IP to the green container's IP
+        app.ip = greenIP
+        this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
+
+        if (logCtrl) logCtrl.startPhase('proxy_propagation')
+        Odac.server('Proxy').syncConfig()
+        if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
+
+        // Step 5: Connection Draining & Cleanup
+        if (logCtrl) logCtrl.startPhase('stop_old_container')
+        if (process.env.NODE_ENV !== 'test') {
+          await new Promise(r => setTimeout(r, 5000))
+        }
+
+        // Stop and remove the old container (Blue)
+        await Odac.server('Container').stop(app.name)
+        await Odac.server('Container').remove(app.name)
+
+        // Docker rename back to original with retry logic
+        let renameSuccess = false
+        for (let i = 0; i < 5; i++) {
+          try {
+            await Odac.server('Container').docker.getContainer(greenContainerName).rename({name: app.name})
+            renameSuccess = true
+            break
+          } catch (e) {
+            log('Docker rename failed, retrying in 2s (Attempt %d/5): %s', i + 1, e.message)
+            await new Promise(r => setTimeout(r, 2000))
+          }
+        }
+
+        if (renameSuccess) {
+          this.#set(app.id, {activeContainerId: null})
+        } else {
+          error(
+            'Failed to rename green container %s to %s after 5 attempts. ZDD will persist with activeContainerId.',
+            greenContainerName,
+            app.name
+          )
+        }
+
+        await new Promise(r => setTimeout(r, 1000))
+        if (logCtrl) logCtrl.endPhase('stop_old_container', true)
+
+        this.#set(app.id, {started: Date.now()})
+      } else {
+        // --- Standard Redeploy (No Domains) ---
+        log('Standard redeploy for %s (No Domains). Stopping old container first.', app.name)
+
+        // Step 3: Stop running container (minimal downtime starts here)
+        if (logCtrl) logCtrl.startPhase('stop_old_container')
+        await this.stop(app.id)
+        if (logCtrl) logCtrl.endPhase('stop_old_container', true)
+
+        // Step 4: Restart with new image
+        this.#set(app.id, {active: true, status: 'starting'})
+
+        if (logCtrl) logCtrl.startPhase('start_new_container')
+        await this.#runGitApp(app)
+        if (logCtrl) logCtrl.endPhase('start_new_container', true)
+
+        this.#set(app.id, {status: 'running', started: Date.now()})
+
+        if (logCtrl) logCtrl.startPhase('proxy_propagation')
+        Odac.server('Proxy').syncConfig()
+        if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
+      }
 
       // Persist updated metadata
       const updates = {}
@@ -798,6 +905,22 @@ class App {
         logCtrl.stream.write(`[Error] ${err.message}\n`)
         await logCtrl.finalize(false)
       }
+
+      // Cleanup leaked green container if ZDD failed mid-flight
+      if (greenContainerName) {
+        try {
+          // Verify if it exists before trying to kill it
+          const status = await Odac.server('Container').getStatus(greenContainerName)
+          if (status && status.running) {
+            log('ZDD Cleanup: Removing leaked temporary container %s due to redeploy abort.', greenContainerName)
+            await Odac.server('Container').stop(greenContainerName)
+            await Odac.server('Container').remove(greenContainerName)
+          }
+        } catch {
+          /* ignore cleanup errors */
+        }
+      }
+
       this.#set(app.id, {status: 'errored'})
       return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
     } finally {

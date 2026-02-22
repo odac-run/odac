@@ -298,8 +298,11 @@ class OdacProxy {
         // IP Resolution & Caching
         if (useInternal) {
           try {
+            // Check if there's an active ZDD transition happening via activeContainerId
+            const targetContainerName = app.activeContainerId || app.name
+
             // Priority 1: Runtime discovery
-            containerIP = await Odac.server('Container').getIP(app.name)
+            containerIP = await Odac.server('Container').getIP(targetContainerName)
 
             if (containerIP) {
               // Update cache if changed

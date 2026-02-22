@@ -13,7 +13,7 @@
 *   🛠️ **Zero-Bloat Architecture:** Engineered for maximum efficiency, leaving almost all system resources for your applications. No external dependencies like Redis, Postgres, Nginx, or Traefik required. Just download and run.
 *   ⚡ **Next-Gen Performance:** Built-in Go Proxy automatically upgrades legacy apps (Node.js, PHP, Python) to HTTP/3 (QUIC) and 0-RTT. Get instant page loads without changing a single line of code.
 *   🚀 **Zero-Config Deployment:** Push your code, and ODAC handles the build, ports, and reverse proxying automatically.
-*   🔄 **Atomic Updates & Self-Healing:** Updates are applied with Zero-Downtime. If a new version fails, ODAC automatically rolls back. Your infrastructure never sleeps or breaks.
+*   🔄 **Zero-Downtime Infrastructure:** ODAC updates itself with zero downtime and automatic rollbacks. For your apps, it uses true Blue-Green deployments with TCP Readiness Probes—traffic atomically switches only when your new container is fully booted and listening, ensuring 100% uptime.
 *   🐳 **Secure Isolation:** Applications run in isolated lightweight containers, preventing "noisy neighbor" issues.
 *   🔒 **Autopilot Security:** Zero-touch SSL generation, auto-renewal, and strict traffic analysis (Replay Attack protection).
 *   📬 **Built-in Mail Server:** A production-ready SMTP/IMAP server included. No need for external email services.
