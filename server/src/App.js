@@ -680,7 +680,6 @@ class App {
     if (branch && (branch.startsWith('-') || /[;&|`$(){}<>\n\r]/.test(branch))) {
       return Odac.server('Api').result(false, __('Invalid branch name format.'))
     }
-
     const targetBranch = branch || app.branch || 'main'
 
     // Concurrency guard: prevent parallel operations on the same app
@@ -688,6 +687,7 @@ class App {
       return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
     }
 
+    let greenContainerName = null
     this.#processing.add(app.id)
 
     // Register logger IMMEDIATELY to prevent race conditions with Hub requests
@@ -757,7 +757,7 @@ class App {
       if (hasDomains) {
         // --- Zero-Downtime Deployment (Blue-Green) ---
         log('ZDD enabled for %s (Has Domains). Executing Blue-Green switch.', app.name)
-        const greenContainerName = `${app.name}-green-${Date.now()}`
+        greenContainerName = `${app.name}-green-${Date.now()}`
 
         // Step 3: Start new container (Green) without stopping the old one (Blue)
         if (logCtrl) logCtrl.startPhase('start_new_container')
@@ -919,6 +919,22 @@ class App {
         logCtrl.stream.write(`[Error] ${err.message}\n`)
         await logCtrl.finalize(false)
       }
+
+      // Cleanup leaked green container if ZDD failed mid-flight
+      if (greenContainerName) {
+        try {
+          // Verify if it exists before trying to kill it
+          const status = await Odac.server('Container').getStatus(greenContainerName)
+          if (status && status.running) {
+            log('ZDD Cleanup: Removing leaked temporary container %s due to redeploy abort.', greenContainerName)
+            await Odac.server('Container').stop(greenContainerName)
+            await Odac.server('Container').remove(greenContainerName)
+          }
+        } catch {
+          /* ignore cleanup errors */
+        }
+      }
+
       this.#set(app.id, {status: 'errored'})
       return Odac.server('Api').result(false, __('Redeploy failed: %s', err.message))
     } finally {
