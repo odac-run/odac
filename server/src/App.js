@@ -761,6 +761,14 @@ class App {
 
         // Step 3: Start new container (Green) without stopping the old one (Blue)
         if (logCtrl) logCtrl.startPhase('start_new_container')
+
+        // Legacy App Fix: Assign default port beforehand so it persists in the main app config
+        if (!app.ports || app.ports.length === 0 || !app.ports[0].container) {
+          log('Legacy App Fix: Assigning default port 3000 to app %s during redeploy', app.name)
+          app.ports = [{container: 3000}]
+          this.#saveApps()
+        }
+
         const greenApp = {...app, name: greenContainerName}
         await this.#runGitApp(greenApp)
         if (logCtrl) logCtrl.endPhase('start_new_container', true)
