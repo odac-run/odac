@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://odac.run/assets/img/github/odac/header.png" alt="ODAC Header">
+  <img src="https://odac.run/assets/img/github/odac/header.png?v=1" alt="ODAC Header">
 </p>
 
 # ⚡ ODAC
