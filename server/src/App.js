@@ -173,11 +173,26 @@ class App {
       log('createFromRecipe: App %s is already being created', name)
       return Odac.server('Api').result(false, __('App %s is already being created', name))
     }
+
+    // Initialize Logger & Register SYNC to prevent race conditions with Hub requests
+    const logger = this.#getLoggerInstance(name)
+    Odac.server('Container').registerBuildLogger(name, logger)
+
     this.#creating.add(name)
+
+    let logCtrl = null
 
     try {
       const appDir = path.join(Odac.core('Config').config.app.path, name)
       if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
+
+      await logger.init()
+
+      const buildId = `build_${Date.now()}`
+      logCtrl = logger.createBuildStream(buildId, {
+        image: recipe.image,
+        strategy: 'recipe-app'
+      })
 
       const app = {
         id: this.#getNextId(),
@@ -199,10 +214,11 @@ class App {
 
       try {
         log('createFromRecipe: Starting app...')
-        if (await this.#run(app.id)) {
+        if (await this.#run(app.id, logCtrl)) {
           log('createFromRecipe: App started successfully')
           // Notify Hub
           Odac.server('Hub').trigger('app.list')
+          if (logCtrl) await logCtrl.finalize(true)
           return Odac.server('Api').result(true, __('App %s created successfully.', name))
         }
         throw new Error('Failed to start app container. Check logs for details.')
@@ -210,10 +226,12 @@ class App {
         error('createFromRecipe: Failed to start app: %s', e.message)
         this.#apps = this.#apps.filter(s => s.id !== app.id)
         this.#saveApps()
+        if (logCtrl) await logCtrl.finalize(false)
         return Odac.server('Api').result(false, e.message)
       }
     } finally {
       this.#creating.delete(name)
+      Odac.server('Container').unregisterBuildLogger(name)
     }
   }
 
@@ -1269,7 +1287,7 @@ class App {
   }
 
   // Private: App Execution
-  async #run(id) {
+  async #run(id, logCtrl = null) {
     const app = this.#get(id)
     if (!app) return false
 
@@ -1288,7 +1306,7 @@ class App {
       if (app.type === 'script') {
         await this.#runScript(app)
       } else if (app.type === 'container') {
-        await this.#runContainer(app)
+        await this.#runContainer(app, logCtrl)
       } else if (app.type === 'git') {
         await this.#runGitApp(app)
       }
@@ -1392,7 +1410,7 @@ class App {
     })
   }
 
-  async #runContainer(app) {
+  async #runContainer(app, logCtrl = null) {
     if (!Odac.server('Container').available) {
       throw new Error('Docker is not available via Container service.')
     }
@@ -1411,15 +1429,17 @@ class App {
       }
     }
 
-    await Odac.server('Container').runApp(app.name, {
-      image: app.image,
-      ports: app.ports,
-      volumes,
-      env
-    })
+    await Odac.server('Container').runApp(
+      app.name,
+      {
+        image: app.image,
+        ports: app.ports,
+        volumes,
+        env
+      },
+      logCtrl
+    )
 
-    // Start Runtime Logging
-    // Start Runtime Logging
     // Start Runtime Logging
     await this.#attachLogger(app)
   }
