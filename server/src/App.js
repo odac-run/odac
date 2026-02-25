@@ -646,6 +646,153 @@ class App {
 
     log('Restarting app %s', app.name)
 
+    // Check if Zero-Downtime Deployment (ZDD) is applicable.
+    // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
+    const domainsConfig = Odac.core('Config').config.domains || {}
+    const hasDomains = Object.values(domainsConfig).some(d => d.appId === app.name || d.appId === app.id)
+
+    if ((app.type === 'git' || app.type === 'container') && hasDomains) {
+      log('ZDD enabled for %s (Has Domains). Executing Blue-Green restart.', app.name)
+
+      // Concurrency guard: prevent parallel operations on the same app
+      if (this.#processing.has(app.id)) {
+        return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
+      }
+
+      let greenContainerName = null
+      this.#processing.add(app.id)
+
+      try {
+        greenContainerName = `${app.name}-green-${Date.now()}`
+
+        // Legacy App Fix: Assign default port beforehand so it persists in the main app config
+        if (!app.ports || app.ports.length === 0 || !app.ports[0].container) {
+          log('Legacy App Fix: Assigning default port 3000 to app %s during restart', app.name)
+          app.ports = [{container: 3000}]
+          this.#saveApps()
+        }
+
+        const greenApp = {...app, name: greenContainerName}
+
+        this.#set(app.id, {status: 'starting'})
+
+        if (app.type === 'git') {
+          await this.#runGitApp(greenApp)
+        } else {
+          await this.#runContainer(greenApp)
+        }
+
+        // Atomic Proxy Swap
+        this.#set(app.id, {status: 'switching'})
+
+        let expectedPort = 3000
+        if (app.ports && app.ports.length > 0 && app.ports[0].container) {
+          expectedPort = app.ports[0].container
+        }
+
+        let isReady = false
+        let attempts = 0
+        while (!isReady && attempts < 120) {
+          try {
+            const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
+            if (listeningPorts.includes(expectedPort)) {
+              isReady = true
+              break
+            }
+          } catch {
+            /* ignore */
+          }
+
+          await new Promise(r => setTimeout(r, 1000))
+          attempts++
+        }
+
+        const greenIP = await Odac.server('Container').getIP(greenContainerName)
+
+        if (!isReady || !greenIP) {
+          // ZDD Abort
+          await Odac.server('Container').stop(greenContainerName)
+          await Odac.server('Container').remove(greenContainerName)
+          throw new Error('New container failed readiness probe (port bind timeout). Restart aborted to maintain uptime.')
+        }
+
+        // L7 Health Check: Verify the app actually responds to HTTP requests.
+        // TCP port listening alone does NOT mean the app is ready (middleware/routes may still be loading).
+        const httpReady = await this.#httpHealthCheck(greenIP, expectedPort)
+        if (!httpReady) {
+          await Odac.server('Container').stop(greenContainerName)
+          await Odac.server('Container').remove(greenContainerName)
+          throw new Error('New container failed HTTP readiness probe. Restart aborted to maintain uptime.')
+        }
+
+        // Update the main app's active IP to the green container's IP
+        app.ip = greenIP
+        this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
+
+        await Odac.server('Proxy').syncConfig()
+
+        // Connection Draining & Cleanup
+        if (process.env.NODE_ENV !== 'test') {
+          await new Promise(r => setTimeout(r, 5000))
+        }
+
+        // Cleanup old container's log stream before stopping
+        const oldLogCtrl = this.#logStreams.get(app.name)
+        if (oldLogCtrl && typeof oldLogCtrl.end === 'function') oldLogCtrl.end()
+        this.#logStreams.delete(app.name)
+
+        // Stop and remove the old container (Blue)
+        await Odac.server('Container').stop(app.name)
+        await Odac.server('Container').remove(app.name)
+
+        // Cleanup green container's temporary log stream (attached under greenContainerName)
+        const greenLogCtrl = this.#logStreams.get(greenContainerName)
+        if (greenLogCtrl && typeof greenLogCtrl.end === 'function') greenLogCtrl.end()
+        this.#logStreams.delete(greenContainerName)
+
+        // Docker rename back to original with retry logic
+        let renameSuccess = false
+        for (let i = 0; i < 5; i++) {
+          try {
+            await Odac.server('Container').docker.getContainer(greenContainerName).rename({name: app.name})
+            renameSuccess = true
+            break
+          } catch (e) {
+            log('Docker rename failed, retrying in 2s (Attempt %d/5): %s', i + 1, e.message)
+            await new Promise(r => setTimeout(r, 2000))
+          }
+        }
+
+        if (renameSuccess) {
+          this.#set(app.id, {activeContainerId: null})
+        } else {
+          error(
+            'Failed to rename green container %s to %s after 5 attempts. ZDD will persist with activeContainerId.',
+            greenContainerName,
+            app.name
+          )
+        }
+
+        // Re-attach runtime log stream to the renamed container (now app.name)
+        await this.#attachLogger(app)
+
+        this.#set(app.id, {started: Date.now()})
+
+        // Notify Hub
+        Odac.server('Hub').trigger('app.list')
+        return Odac.server('Api').result(true, __('App %s restarted successfully with zero-downtime.', app.name))
+      } catch (e) {
+        error('Failed to restart app %s with ZDD: %s', app.name, e.message)
+        this.#set(app.id, {status: 'errored', updated: Date.now()})
+        return Odac.server('Api').result(false, __('Failed to restart app %s: %s', app.name, e.message))
+      } finally {
+        this.#processing.delete(app.id)
+      }
+    }
+
+    // Standard Restart (No Domains or Script App)
+    log('Standard restart for %s (No Domains or Script App). Stopping old container first.', app.name)
+
     // Stop the app first
     await this.stop(app.id)
 
@@ -825,12 +972,21 @@ class App {
           throw new Error('New container failed readiness probe (port bind timeout). Redeploy aborted to maintain uptime.')
         }
 
+        // L7 Health Check: Verify the app actually responds to HTTP requests.
+        // TCP port listening alone does NOT mean the app is ready (middleware/routes may still be loading).
+        const httpReady = await this.#httpHealthCheck(greenIP, expectedPort)
+        if (!httpReady) {
+          await Odac.server('Container').stop(greenContainerName)
+          await Odac.server('Container').remove(greenContainerName)
+          throw new Error('New container failed HTTP readiness probe. Redeploy aborted to maintain uptime.')
+        }
+
         // Update the main app's active IP to the green container's IP
         app.ip = greenIP
         this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
 
         if (logCtrl) logCtrl.startPhase('proxy_propagation')
-        Odac.server('Proxy').syncConfig()
+        await Odac.server('Proxy').syncConfig()
         if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
 
         // Step 5: Connection Draining & Cleanup
@@ -839,9 +995,19 @@ class App {
           await new Promise(r => setTimeout(r, 5000))
         }
 
+        // Cleanup old container's log stream before stopping
+        const oldRuntimeLog = this.#logStreams.get(app.name)
+        if (oldRuntimeLog && typeof oldRuntimeLog.end === 'function') oldRuntimeLog.end()
+        this.#logStreams.delete(app.name)
+
         // Stop and remove the old container (Blue)
         await Odac.server('Container').stop(app.name)
         await Odac.server('Container').remove(app.name)
+
+        // Cleanup green container's temporary log stream (attached under greenContainerName)
+        const greenRuntimeLog = this.#logStreams.get(greenContainerName)
+        if (greenRuntimeLog && typeof greenRuntimeLog.end === 'function') greenRuntimeLog.end()
+        this.#logStreams.delete(greenContainerName)
 
         // Docker rename back to original with retry logic
         let renameSuccess = false
@@ -865,6 +1031,9 @@ class App {
             app.name
           )
         }
+
+        // Re-attach runtime log stream to the renamed container (now app.name)
+        await this.#attachLogger(app)
 
         await new Promise(r => setTimeout(r, 1000))
         if (logCtrl) logCtrl.endPhase('stop_old_container', true)
@@ -1463,6 +1632,42 @@ class App {
       error('Failed to attach logger to app %s: %s', app.name, e.message)
     }
   }
+  /**
+   * Performs an HTTP-level health check against a container.
+   * TCP port listening does NOT guarantee the app can serve HTTP traffic.
+   * This method sends actual HTTP requests to verify L7 readiness,
+   * eliminating the brief 502 window during Blue-Green ZDD switches.
+   *
+   * @param {string} ip - Container IP address
+   * @param {number} port - Container port
+   * @param {number} [maxAttempts=30] - Maximum retry attempts (1s apart)
+   * @returns {Promise<boolean>} true if the container responds to HTTP
+   */
+  async #httpHealthCheck(ip, port, maxAttempts = 30) {
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        await new Promise((resolve, reject) => {
+          const req = require('http').get({hostname: ip, port, path: '/', timeout: 2000}, res => {
+            // Any HTTP response (even 404/500) means the app is serving
+            res.resume()
+            resolve()
+          })
+          req.on('error', reject)
+          req.on('timeout', () => {
+            req.destroy()
+            reject(new Error('timeout'))
+          })
+        })
+        log('HTTP health check passed for %s:%d (attempt %d)', ip, port, i + 1)
+        return true
+      } catch {
+        // App not ready yet, retry
+        await new Promise(r => setTimeout(r, 1000))
+      }
+    }
+    return false
+  }
+
   // Private: Helpers
   async #isAppRunning(app) {
     if (app.type === 'container' || Odac.server('Container').available) {
