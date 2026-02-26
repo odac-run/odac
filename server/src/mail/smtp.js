@@ -626,7 +626,18 @@ class smtp {
       let signature = ''
       if (this.config.enableDKIM) {
         try {
-          let dkim = Odac.core('Config').config.domains?.[domain]?.cert?.dkim
+          // Walk up to parent domain to find DKIM config (e.g. sub.example.com → example.com)
+          let dkim = null
+          let dkimDomain = domain
+          const domainsConfig = Odac.core('Config').config.domains ?? {}
+          while (dkimDomain.includes('.')) {
+            dkim = domainsConfig[dkimDomain]?.cert?.dkim
+            if (dkim) {
+              domain = dkimDomain
+              break
+            }
+            dkimDomain = dkimDomain.split('.').slice(1).join('.')
+          }
           if (dkim && this.#validateDKIMConfig(dkim)) {
             signature = this.#dkim({
               header: headers,

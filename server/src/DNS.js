@@ -1244,14 +1244,22 @@ nameserver 8.8.4.4
     }
   }
 
+  /**
+   * Processes TXT records and splits values exceeding the 255-byte DNS string limit
+   * into multiple character-strings per RFC 7208 / RFC 4408.
+   * This is essential for 2048-bit DKIM public keys (~392 chars).
+   */
   #processTXTRecords(records, questionName, response) {
     try {
       for (const record of records ?? []) {
         if (!record || record.name !== questionName) continue
+        const value = record.value ?? ''
+        // DNS TXT character-string limit is 255 bytes; split long values into chunks
+        const data = value.length > 255 ? value.match(/.{1,255}/g) : [value]
         response.answer.push(
           dns.TXT({
             name: record.name,
-            data: [record.value],
+            data,
             ttl: record.ttl ?? 3600
           })
         )

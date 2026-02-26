@@ -1,5 +1,8 @@
 const {log, error} = Odac.core('Log', false).init('Domain')
 
+const fsp = require('fs/promises')
+const os = require('os')
+
 /**
  * Domain management service for ODAC.
  * Handles domain CRUD operations, validation, and DNS zone management.
@@ -248,7 +251,8 @@ class Domain {
             {name: 'mail.' + domain, type: 'A'},
             {name: domain, type: 'MX'},
             {name: domain, type: 'TXT'},
-            {name: '_dmarc.' + domain, type: 'TXT'}
+            {name: '_dmarc.' + domain, type: 'TXT'},
+            {name: 'default._domainkey.' + domain, type: 'TXT'}
           ]
 
           for (const record of recordsToDelete) {
@@ -262,6 +266,21 @@ class Domain {
         } catch (e) {
           error('Failed to delete DNS records for %s: %s', domain, e.message)
           // Continue with domain removal even if DNS cleanup fails
+        }
+
+        // Clean up DKIM key files from disk
+        try {
+          const dkimDir = os.homedir() + '/.odac/cert/dkim'
+          await Promise.allSettled([fsp.unlink(dkimDir + '/' + domain + '.key'), fsp.unlink(dkimDir + '/' + domain + '.pub')])
+        } catch {
+          // Ignore if files don't exist
+        }
+
+        // Clear Mail SSL cache for deleted domain
+        try {
+          Odac.server('Mail').clearSSLCache(domain)
+        } catch {
+          // Mail service may not be initialized
         }
       }
 
