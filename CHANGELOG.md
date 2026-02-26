@@ -1,5 +1,16 @@
 ### 🛠️ Fixes & Improvements
 
+- add warn method to Log class and update Api to use it
+- API token authorization issue after Blue-Green deploy
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### 🛠️ Fixes & Improvements
+
 - **updater:** resolve update timeout by making storage paths dynamic
 
 
