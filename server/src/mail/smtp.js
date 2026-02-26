@@ -299,9 +299,9 @@ class smtp {
       // Check if target host supports IPv6 (has AAAA record)
       const targetSupportsIPv6 = forceIPv4 ? false : await this.#hostSupportsIPv6(host)
 
-      // Resolve the best local IP for this sender domain using PTR matching
-      const localAddress = this.#getLocalAddressForDomain(sender, targetSupportsIPv6)
-      return await this.#connect(sender, host, port, localAddress)
+      // Resolve the best local IP and EHLO hostname via PTR matching
+      const {address: localAddress, ehlo} = this.#getLocalAddressForDomain(sender, targetSupportsIPv6)
+      return await this.#connect(ehlo, host, port, localAddress)
     } catch (err) {
       // Check if this is a network unreachable error (IPv6 not working)
       const isIPv6NetworkError =
@@ -344,40 +344,39 @@ class smtp {
   }
 
   /**
-   * Gets the best local IP address for sending mail from a domain
-   * Uses DNS PTR matching to find an IP with matching reverse DNS
+   * Gets the best local IP address for sending mail from a domain.
+   * Uses DNS PTR matching to find an IP with matching reverse DNS.
    * Priority (when target supports IPv6): 1) PTR-matched IPv6, 2) PTR-matched IPv4, 3) First public IPv6, 4) First public IPv4
    * Priority (when target is IPv4 only): 1) PTR-matched IPv4, 2) First public IPv4
-   * @param {string} domain - Sender domain
+   * @param {string} domain - Sender mail hostname (e.g. mail.example.com)
    * @param {boolean} targetSupportsIPv6 - Whether target host has AAAA record
-   * @returns {string|null} - Local IP address or null to use default
+   * @returns {{address: string|null, ehlo: string}} - Local IP address and EHLO hostname from PTR
    */
   #getLocalAddressForDomain(domain, targetSupportsIPv6 = true) {
     try {
       const DNS = Odac.server('DNS')
-      if (!DNS || !DNS.ips) return null
+      if (!DNS || !DNS.ips) return {address: null, ehlo: domain}
+
+      // Extract root domain for broader PTR matching (mail.example.com → example.com)
+      const rootDomain = domain.split('.').slice(1).join('.') || domain
 
       // 1. Find IPv6 with PTR matching this domain (highest priority, if target supports)
       if (targetSupportsIPv6) {
         for (const ipObj of DNS.ips.ipv6) {
-          if (!ipObj.public) continue
-          if (!ipObj.ptr) continue
-
-          if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+          if (!ipObj.public || !ipObj.ptr) continue
+          if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${rootDomain}`)) {
             log('SMTP', `Using PTR-matched IPv6 ${ipObj.address} (${ipObj.ptr}) for domain ${domain}`)
-            return ipObj.address
+            return {address: ipObj.address, ehlo: ipObj.ptr}
           }
         }
       }
 
       // 2. Find IPv4 with PTR matching this domain
       for (const ipObj of DNS.ips.ipv4) {
-        if (!ipObj.public) continue
-        if (!ipObj.ptr) continue
-
-        if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${domain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
+        if (!ipObj.public || !ipObj.ptr) continue
+        if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${rootDomain}`)) {
           log('SMTP', `Using PTR-matched IPv4 ${ipObj.address} (${ipObj.ptr}) for domain ${domain}`)
-          return ipObj.address
+          return {address: ipObj.address, ehlo: ipObj.ptr}
         }
       }
 
@@ -386,7 +385,7 @@ class smtp {
         const publicIPv6 = DNS.ips.ipv6.find(i => i.public)
         if (publicIPv6) {
           log('SMTP', `Using default public IPv6 ${publicIPv6.address} for domain ${domain}`)
-          return publicIPv6.address
+          return {address: publicIPv6.address, ehlo: publicIPv6.ptr || domain}
         }
       }
 
@@ -394,18 +393,18 @@ class smtp {
       const publicIPv4 = DNS.ips.ipv4.find(i => i.public)
       if (publicIPv4) {
         log('SMTP', `Using default public IPv4 ${publicIPv4.address} for domain ${domain}`)
-        return publicIPv4.address
+        return {address: publicIPv4.address, ehlo: publicIPv4.ptr || domain}
       }
 
       // Fallback to DNS primary IP
       if (DNS.ip && DNS.ip !== '127.0.0.1') {
-        return DNS.ip
+        return {address: DNS.ip, ehlo: domain}
       }
 
-      return null
+      return {address: null, ehlo: domain}
     } catch {
       // DNS module may not be initialized, use default
-      return null
+      return {address: null, ehlo: domain}
     }
   }
 
@@ -768,7 +767,9 @@ class smtp {
       this.#checkRateLimit(domain)
 
       const host = await this.#host(domain)
-      const sender = obj.from.value[0].address.split('@')[1]
+      const senderDomain = obj.from.value[0].address.split('@')[1]
+      // Use mail subdomain as EHLO hostname to match PTR record (RFC 5321)
+      const sender = 'mail.' + senderDomain
 
       let socket = null
       let lastError = null
