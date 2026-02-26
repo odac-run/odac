@@ -948,7 +948,7 @@ class App {
 
         let isReady = false
         let attempts = 0
-        while (!isReady && attempts < 120) {
+        while (attempts < 120) {
           try {
             const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
             if (listeningPorts.includes(expectedPort)) {
