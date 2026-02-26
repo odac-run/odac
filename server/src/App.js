@@ -189,7 +189,7 @@ class App {
 
       await logger.init()
 
-      const buildId = `build_${Date.now()}`
+      const buildId = this.#generateRuntimeId('build')
       logCtrl = logger.createBuildStream(buildId, {
         image: recipe.image,
         strategy: 'recipe-app'
@@ -303,7 +303,7 @@ class App {
       let logCtrl = null
 
       try {
-        const buildId = `build_${Date.now()}`
+        const buildId = this.#generateRuntimeId('build')
         logCtrl = logger.createBuildStream(buildId, {
           image: imageName,
           strategy: 'git-app'
@@ -664,7 +664,7 @@ class App {
       this.#processing.add(app.id)
 
       try {
-        greenContainerName = `${app.name}-green-${Date.now()}`
+        greenContainerName = `${app.name}-green-${this.#generateRuntimeId()}`
         await this.#performBlueGreenDeploy(app, greenContainerName, {
           operation: 'Restart',
           runGreenContainer: async () => {
@@ -783,7 +783,7 @@ class App {
 
       await logger.init()
 
-      const buildId = `build_${Date.now()}`
+      const buildId = this.#generateRuntimeId('build')
       logCtrl = logger.createBuildStream(buildId, {
         image: imageName,
         strategy: 'git-app'
@@ -822,7 +822,7 @@ class App {
       if (hasDomains) {
         // --- Zero-Downtime Deployment (Blue-Green) ---
         log('ZDD enabled for %s (Has Domains). Executing Blue-Green switch.', app.name)
-        greenContainerName = `${app.name}-green-${Date.now()}`
+        greenContainerName = `${app.name}-green-${this.#generateRuntimeId()}`
         await this.#performBlueGreenDeploy(app, greenContainerName, {
           logCtrl,
           operation: 'Redeploy',
@@ -1601,6 +1601,11 @@ class App {
       .randomBytes(Math.ceil(length / 2))
       .toString('hex')
       .slice(0, length)
+  }
+
+  #generateRuntimeId(prefix = '') {
+    const suffix = `${Date.now()}_${nodeCrypto.randomBytes(4).toString('hex')}`
+    return prefix ? `${prefix}_${suffix}` : suffix
   }
 
   #generateUniqueName(baseName) {
