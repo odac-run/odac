@@ -692,12 +692,16 @@ class App {
 
         let isReady = false
         let attempts = 0
+        let greenIP = null
         while (attempts < 120) {
           try {
             const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
             if (listeningPorts.includes(expectedPort)) {
-              isReady = true
-              break
+              greenIP = await Odac.server('Container').getIP(greenContainerName)
+              if (greenIP) {
+                isReady = true
+                break
+              }
             }
           } catch {
             /* ignore */
@@ -706,8 +710,6 @@ class App {
           await new Promise(r => setTimeout(r, 1000))
           attempts++
         }
-
-        const greenIP = await Odac.server('Container').getIP(greenContainerName)
 
         if (!isReady || !greenIP) {
           // ZDD Abort
@@ -948,12 +950,16 @@ class App {
 
         let isReady = false
         let attempts = 0
+        let greenIP = null
         while (attempts < 120) {
           try {
             const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
             if (listeningPorts.includes(expectedPort)) {
-              isReady = true
-              break
+              greenIP = await Odac.server('Container').getIP(greenContainerName)
+              if (greenIP) {
+                isReady = true
+                break
+              }
             }
           } catch {
             /* ignore */
@@ -962,8 +968,6 @@ class App {
           await new Promise(r => setTimeout(r, 1000))
           attempts++
         }
-
-        const greenIP = await Odac.server('Container').getIP(greenContainerName)
 
         if (!isReady || !greenIP) {
           // ZDD Abort
