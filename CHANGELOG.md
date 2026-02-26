@@ -1,3 +1,13 @@
+### 🛠️ Fixes & Improvements
+
+- **updater:** resolve update timeout by making storage paths dynamic
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ⚙️ Engine Tuning
 
 - **app:** remove redundant comment for runtime logging attachment
