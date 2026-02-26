@@ -50,8 +50,9 @@ class MockOdac {
       Log: {
         init: jest.fn(function (moduleName) {
           return {
+            error: jest.fn(),
             log: jest.fn(),
-            error: jest.fn()
+            warn: jest.fn()
           }
         })
       }

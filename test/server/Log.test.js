@@ -3,15 +3,18 @@ const Log = require('../../core/Log')
 describe('Log', () => {
   let consoleLogSpy
   let consoleErrorSpy
+  let consoleWarnSpy
 
   beforeEach(() => {
     consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   afterEach(() => {
     consoleLogSpy.mockRestore()
     consoleErrorSpy.mockRestore()
+    consoleWarnSpy.mockRestore()
   })
 
   it('should initialize with a module prefix', () => {
@@ -69,5 +72,19 @@ describe('Log', () => {
     const result = logger.log()
     expect(consoleLogSpy).not.toHaveBeenCalled()
     expect(result).toBeInstanceOf(Log)
+  })
+
+  it('should log warn messages correctly', () => {
+    const log = new Log()
+    const logger = log.init('Test')
+    logger.warn('warning message')
+    expect(consoleWarnSpy).toHaveBeenCalledWith('[Test] ', 'warning message')
+  })
+
+  it('should sanitize sensitive data in warn messages', () => {
+    const log = new Log()
+    const logger = log.init('Test')
+    logger.warn('data', {password: 'secret123', name: 'test'})
+    expect(consoleWarnSpy).toHaveBeenCalledWith('[Test] ', 'data', {password: '***', name: 'test'})
   })
 })

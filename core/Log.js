@@ -14,7 +14,8 @@ class Log {
     this.module = '[' + arg.join('][') + '] '
     return {
       error: this.error.bind(this),
-      log: this.log.bind(this)
+      log: this.log.bind(this),
+      warn: this.warn.bind(this)
     }
   }
 
@@ -75,6 +76,12 @@ class Log {
       cleanArgs.unshift(message)
     }
     console.log(this.module, ...cleanArgs)
+  }
+
+  warn(...arg) {
+    // Always show warnings, even in CLI mode
+    const cleanArgs = arg.map(a => this.#sanitize(a))
+    console.warn(this.module, ...cleanArgs)
   }
 }
 
