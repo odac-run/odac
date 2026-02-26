@@ -1609,7 +1609,6 @@ class App {
       logCtrl
     )
 
-    // Start Runtime Logging
     await this.#attachLogger(app)
   }
 
