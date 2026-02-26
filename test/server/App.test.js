@@ -582,4 +582,349 @@ describe('App', () => {
       expect(savedApp._appIdentity).toBeUndefined()
     })
   })
+
+  describe('template deployment', () => {
+    let mockGetApp
+
+    beforeEach(() => {
+      mockConfig.app = {path: '/tmp/odac-test'}
+      mockConfig.apps = []
+      mockRunApp.mockResolvedValue(true)
+
+      mockGetApp = jest.fn()
+
+      // Override Odac.server to add Hub.getApp mock
+      const originalServer = global.Odac.server
+      global.Odac.server = jest.fn(module => {
+        if (module === 'Hub') {
+          return {
+            getApp: mockGetApp,
+            trigger: jest.fn()
+          }
+        }
+        return originalServer(module)
+      })
+    })
+
+    test('should detect template recipe and deploy multi-app stack', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'wordpress',
+        apps: {
+          db: {
+            image: 'mariadb:10.6',
+            volumes: [{host: 'data', container: '/var/lib/mysql'}],
+            env: {
+              MYSQL_DATABASE: 'wordpress',
+              MYSQL_PASSWORD: {generate: true, length: 16},
+              MYSQL_ROOT_PASSWORD: {generate: true, length: 24},
+              MYSQL_USER: 'wordpress'
+            }
+          },
+          web: {
+            image: 'wordpress:latest',
+            ports: [{container: 80, host: 'auto'}],
+            volumes: [{host: 'data', container: '/var/www/html'}],
+            linked: ['db'],
+            env: {
+              WORDPRESS_DB_HOST: '${db.name}',
+              WORDPRESS_DB_NAME: '${db.env.MYSQL_DATABASE}',
+              WORDPRESS_DB_PASSWORD: '${db.env.MYSQL_PASSWORD}',
+              WORDPRESS_DB_USER: '${db.env.MYSQL_USER}'
+            }
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'wordpress', name: 'myblog'})
+      expect(result.success).toBe(true)
+
+      // Should have created 2 apps
+      const {data: apps} = await App.list(true)
+      expect(apps).toHaveLength(2)
+
+      // Check DB app was created with template metadata
+      const dbApp = apps.find(a => a.name === 'myblog-db')
+      expect(dbApp).toBeDefined()
+      expect(dbApp.image).toBe('mariadb:10.6')
+      expect(dbApp.template).toEqual({group: 'myblog', name: 'wordpress', role: 'db'})
+
+      // Check Web app was created with template metadata
+      const webApp = apps.find(a => a.name === 'myblog-web')
+      expect(webApp).toBeDefined()
+      expect(webApp.image).toBe('wordpress:latest')
+      expect(webApp.template).toEqual({group: 'myblog', name: 'wordpress', role: 'web'})
+
+      // Web should be linked to DB
+      expect(webApp.env.linked).toContain('myblog-db')
+
+      // Container.runApp should have been called twice (db first, then web)
+      expect(mockRunApp).toHaveBeenCalledTimes(2)
+    })
+
+    test('should interpolate template variables correctly', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'test-stack',
+        apps: {
+          service: {
+            image: 'test:latest',
+            env: {
+              SERVICE_NAME: 'myservice',
+              SERVICE_SECRET: {generate: true, length: 8}
+            }
+          },
+          client: {
+            image: 'client:latest',
+            linked: ['service'],
+            env: {
+              BACKEND_HOST: '${service.name}',
+              BACKEND_SECRET: '${service.env.SERVICE_SECRET}'
+            }
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'test-stack', name: 'mystack'})
+      expect(result.success).toBe(true)
+
+      // Verify the interpolated env was passed to Container.runApp
+      // Second call = client (dependencies first: service, then client)
+      const clientCall = mockRunApp.mock.calls[1][1]
+      expect(clientCall.env.BACKEND_HOST).toBe('mystack-service')
+      // BACKEND_SECRET should be a generated password, not the template string
+      expect(clientCall.env.BACKEND_SECRET).not.toContain('${')
+      expect(clientCall.env.BACKEND_SECRET.length).toBe(8)
+    })
+
+    test('should resolve dependency order correctly (3-tier stack)', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'three-tier',
+        apps: {
+          cache: {
+            image: 'redis:alpine',
+            env: {}
+          },
+          db: {
+            image: 'postgres:alpine',
+            env: {POSTGRES_PASSWORD: {generate: true}}
+          },
+          web: {
+            image: 'node:lts',
+            linked: ['db', 'cache'],
+            env: {
+              CACHE_HOST: '${cache.name}',
+              DB_HOST: '${db.name}'
+            }
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'three-tier', name: 'myapp'})
+      expect(result.success).toBe(true)
+
+      // Container.runApp should be called 3 times
+      expect(mockRunApp).toHaveBeenCalledTimes(3)
+
+      // Web must be started LAST (depends on both db and cache)
+      const lastCallName = mockRunApp.mock.calls[2][0]
+      expect(lastCallName).toBe('myapp-web')
+    })
+
+    test('should rollback all apps on partial failure', async () => {
+      let callCount = 0
+      mockRunApp.mockImplementation(() => {
+        callCount++
+        // Fail on the second container start (web)
+        if (callCount >= 2) throw new Error('Container start failed')
+        return Promise.resolve(true)
+      })
+
+      mockGetApp.mockResolvedValue({
+        name: 'fail-stack',
+        apps: {
+          db: {
+            image: 'db:latest',
+            env: {DB_PASS: {generate: true}}
+          },
+          web: {
+            image: 'web:latest',
+            linked: ['db'],
+            env: {DB_HOST: '${db.name}'}
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'fail-stack', name: 'mybad'})
+      expect(result.success).toBe(false)
+
+      // All apps should be rolled back — empty list
+      const {data: apps} = await App.list(true)
+      expect(apps).toHaveLength(0)
+    })
+
+    test('should detect circular dependencies', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'circular',
+        apps: {
+          a: {image: 'a:latest', linked: ['b'], env: {}},
+          b: {image: 'b:latest', linked: ['a'], env: {}}
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'circular', name: 'loop'})
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Circular dependency/)
+    })
+
+    test('should detect undefined dependencies', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'broken',
+        apps: {
+          web: {image: 'web:latest', linked: ['nonexistent'], env: {}}
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'broken', name: 'nope'})
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/not defined/)
+    })
+
+    test('should handle single-app recipe (non-template) normally', async () => {
+      // A regular recipe without apps property should NOT trigger template handler
+      mockGetApp.mockResolvedValue({
+        name: 'redis',
+        image: 'redis:alpine',
+        ports: [{container: 6379, host: 'auto'}],
+        env: {}
+      })
+
+      const result = await App.create({type: 'app', app: 'redis', name: 'myredis'})
+      expect(result.success).toBe(true)
+
+      const {data: apps} = await App.list(true)
+      expect(apps).toHaveLength(1)
+      expect(apps[0].name).toBe('myredis')
+      expect(apps[0].template).toBeUndefined()
+    })
+
+    test('should leave unresolvable template variables as-is', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'partial',
+        apps: {
+          app: {
+            image: 'test:latest',
+            env: {
+              VALID: 'hello',
+              BROKEN_REF: '${nonexistent.env.FOO}',
+              BROKEN_PATH: '${app.env.NOPE}'
+            }
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'partial', name: 'mypartial'})
+      expect(result.success).toBe(true)
+
+      const call = mockRunApp.mock.calls[0][1]
+      expect(call.env.VALID).toBe('hello')
+      // Unresolvable vars should remain as-is (no crash)
+      expect(call.env.BROKEN_REF).toBe('${nonexistent.env.FOO}')
+    })
+
+    test('should apply user env overrides per template member', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'override-test',
+        apps: {
+          db: {
+            image: 'db:latest',
+            env: {DB_NAME: 'default_db'}
+          }
+        }
+      })
+
+      const result = await App.create({
+        type: 'app',
+        app: 'override-test',
+        name: 'myoverride',
+        env: {db: {DB_NAME: 'custom_db'}}
+      })
+      expect(result.success).toBe(true)
+
+      const call = mockRunApp.mock.calls[0][1]
+      expect(call.env.DB_NAME).toBe('custom_db')
+    })
+
+    test('should handle direct template payload (type: template) from Hub', async () => {
+      // Hub sends the full template data inline with Cloud-provided container names
+      const result = await App.create({
+        type: 'template',
+        name: 'wordpress',
+        apps: {
+          db: {
+            container: 'wordpress-db-a3f2c1',
+            image: 'mariadb:10.6',
+            env: {
+              MYSQL_DATABASE: 'wordpress',
+              MYSQL_PASSWORD: {generate: true, length: 16},
+              MYSQL_ROOT_PASSWORD: {generate: true, length: 24},
+              MYSQL_USER: 'wordpress'
+            },
+            ports: [],
+            volumes: [{host: 'data', container: '/var/lib/mysql'}],
+            linked: []
+          },
+          web: {
+            container: 'wordpress-web-a3f2c1',
+            image: 'wordpress:latest',
+            env: {
+              WORDPRESS_DB_HOST: '${db.name}',
+              WORDPRESS_DB_NAME: '${db.env.MYSQL_DATABASE}',
+              WORDPRESS_DB_PASSWORD: '${db.env.MYSQL_PASSWORD}',
+              WORDPRESS_DB_USER: '${db.env.MYSQL_USER}'
+            },
+            ports: [{container: 80, host: 'auto'}],
+            volumes: [{host: 'data', container: '/var/www/html'}],
+            linked: ['db']
+          }
+        }
+      })
+
+      expect(result.success).toBe(true)
+
+      // Hub.getApp should NOT have been called — data was inline
+      expect(mockGetApp).not.toHaveBeenCalled()
+
+      // Verify both apps were created with exact Cloud-provided names
+      const {data: apps} = await App.list(true)
+      expect(apps).toHaveLength(2)
+
+      const dbApp = apps.find(a => a.name === 'wordpress-db-a3f2c1')
+      const webApp = apps.find(a => a.name === 'wordpress-web-a3f2c1')
+      expect(dbApp).toBeDefined()
+      expect(webApp).toBeDefined()
+
+      // Web env should have interpolated DB container name
+      const webCall = mockRunApp.mock.calls[1][1]
+      expect(webCall.env.WORDPRESS_DB_HOST).toBe('wordpress-db-a3f2c1')
+      expect(webCall.env.WORDPRESS_DB_NAME).toBe('wordpress')
+      expect(webCall.env.WORDPRESS_DB_USER).toBe('wordpress')
+      // Password should be generated, not a template string
+      expect(webCall.env.WORDPRESS_DB_PASSWORD).not.toContain('${')
+      expect(webCall.env.WORDPRESS_DB_PASSWORD.length).toBe(16)
+    })
+
+    test('should reject direct template payload with missing apps', async () => {
+      const result = await App.create({type: 'template', name: 'empty'})
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/no apps defined/)
+    })
+
+    test('should reject direct template payload with missing name', async () => {
+      const result = await App.create({
+        type: 'template',
+        apps: {db: {image: 'db:latest', env: {}}}
+      })
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Missing template name/)
+    })
+  })
 })

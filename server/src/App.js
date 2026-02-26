@@ -138,6 +138,8 @@ class App {
         return this.#createFromGit(config)
       case 'github':
         return this.#createFromGithub(config)
+      case 'template':
+        return this.#createFromTemplatePayload(config)
       default:
         return Odac.server('Api').result(false, __('Unknown config type: %s', config.type))
     }
@@ -160,6 +162,12 @@ class App {
     } catch (e) {
       error('createFromRecipe: Failed to fetch recipe: %s', e)
       return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', appType, e))
+    }
+
+    // Template Detection: Multi-app stacks (e.g. WordPress + MariaDB) are delegated to the template handler
+    if (recipe.apps && typeof recipe.apps === 'object' && Object.keys(recipe.apps).length > 0) {
+      const baseName = customName || this.#generateUniqueName(recipe.name)
+      return this.#createFromTemplate(baseName, recipe, config)
     }
 
     const name = customName || this.#generateUniqueName(recipe.name)
@@ -233,6 +241,205 @@ class App {
     } finally {
       this.#creating.delete(name)
       Odac.server('Container').unregisterBuildLogger(name)
+    }
+  }
+
+  /**
+   * Handles direct template payloads from Hub (type: 'template').
+   * Hub sends the full template data inline — no additional fetch required.
+   * Validates required fields and delegates to the core #createFromTemplate orchestrator.
+   *
+   * @param {object} config - Direct template payload { type, name, apps, ... }
+   * @returns {Promise<object>} Api.result
+   */
+  async #createFromTemplatePayload(config) {
+    const {apps, name} = config
+
+    if (!apps || typeof apps !== 'object' || Object.keys(apps).length === 0) {
+      return Odac.server('Api').result(false, __('Invalid template: no apps defined.'))
+    }
+
+    if (!name) {
+      return Odac.server('Api').result(false, __('Missing template name.'))
+    }
+
+    const baseName = this.#generateUniqueName(name)
+    return this.#createFromTemplate(baseName, {name, apps}, config)
+  }
+
+  /**
+   * Deploys a multi-app template stack (e.g. WordPress + MariaDB) as a single atomic operation.
+   * Resolves inter-app dependencies via topological sort, generates secrets,
+   * interpolates template variables, and links apps via env.linked for runtime resolution.
+   * Rollback is automatic on partial failure — no orphan containers are left behind.
+   *
+   * @param {string} baseName - Base name for the stack (e.g. 'myblog')
+   * @param {object} recipe - Template recipe from Hub containing apps map
+   * @param {object} config - Original user config (may contain env overrides)
+   * @returns {Promise<object>} Api.result
+   */
+  async #createFromTemplate(baseName, recipe, config) {
+    log('createFromTemplate: Starting template deployment for %s (%s)', baseName, recipe.name)
+
+    const templateApps = recipe.apps
+    const appKeys = Object.keys(templateApps)
+
+    if (appKeys.length === 0) {
+      return Odac.server('Api').result(false, __('Template %s has no apps defined.', recipe.name))
+    }
+
+    // Phase 1: Resolve dependency order via topological sort (Kahn's O(V+E))
+    let orderedKeys
+    try {
+      orderedKeys = this.#resolveTemplateDependencies(templateApps)
+    } catch (e) {
+      return Odac.server('Api').result(false, e.message)
+    }
+
+    log('createFromTemplate: Dependency order: %j', orderedKeys)
+
+    // Phase 2: Resolve container names — use Cloud-provided names or generate locally
+    const nameMap = {} // appKey -> containerName
+    for (const key of orderedKeys) {
+      const cloudName = templateApps[key].container
+      const containerName = cloudName || this.#generateUniqueName(`${baseName}-${key}`)
+
+      if (this.#get(containerName)) {
+        return Odac.server('Api').result(false, __('App %s already exists', containerName))
+      }
+      if (this.#creating.has(containerName)) {
+        return Odac.server('Api').result(false, __('App %s is already being created', containerName))
+      }
+      nameMap[key] = containerName
+    }
+
+    // Acquire creation locks atomically for all template members
+    for (const key of orderedKeys) {
+      this.#creating.add(nameMap[key])
+    }
+
+    try {
+      // Phase 3: Pre-generate all environment variables (resolve 'generate' directives)
+      const envMap = {} // appKey -> resolved manual env
+      for (const key of orderedKeys) {
+        envMap[key] = this.#prepareEnv(templateApps[key].env || {})
+      }
+
+      // Phase 4: Build interpolation context and resolve ${...} template variables
+      const context = {}
+      for (const key of orderedKeys) {
+        context[key] = {env: envMap[key], name: nameMap[key]}
+      }
+      for (const key of orderedKeys) {
+        envMap[key] = this.#interpolateTemplateVars(envMap[key], context)
+      }
+
+      // Apply user-provided env overrides (if any)
+      const userEnv = config.env || {}
+      for (const key of orderedKeys) {
+        if (userEnv[key] && typeof userEnv[key] === 'object') {
+          Object.assign(envMap[key], userEnv[key])
+        }
+      }
+
+      // Phase 5: Create and start each app in dependency order
+      const createdApps = []
+      const loggers = new Map() // containerName -> { logger, logCtrl }
+
+      for (const key of orderedKeys) {
+        const appDef = templateApps[key]
+        const containerName = nameMap[key]
+        const appDir = path.join(Odac.core('Config').config.app.path, containerName)
+
+        await fs.promises.mkdir(appDir, {recursive: true})
+
+        // Initialize build logger for this template member
+        const logger = this.#getLoggerInstance(containerName)
+        Odac.server('Container').registerBuildLogger(containerName, logger)
+        await logger.init()
+
+        const buildId = this.#generateRuntimeId('build')
+        const logCtrl = logger.createBuildStream(buildId, {
+          image: appDef.image,
+          strategy: 'template-app',
+          template: {group: baseName, role: key}
+        })
+        loggers.set(containerName, {logCtrl, logger})
+
+        // Resolve linked container names for this template member
+        const linkedNames = (appDef.linked || []).map(depKey => nameMap[depKey]).filter(Boolean)
+
+        const app = {
+          id: this.#getNextId(),
+          name: containerName,
+          type: 'container',
+          image: appDef.image,
+          ports: await this.#preparePorts(appDef.ports),
+          volumes: this.#prepareVolumes(appDef.volumes, appDir),
+          env: {
+            manual: envMap[key],
+            linked: linkedNames
+          },
+          template: {
+            group: baseName,
+            name: recipe.name,
+            role: key
+          },
+          active: true,
+          created: Date.now(),
+          status: 'installing'
+        }
+
+        this.#apps.push(app)
+        this.#saveApps()
+
+        log('createFromTemplate: Starting %s [%s] (%s)...', containerName, key, appDef.image)
+
+        try {
+          if (!(await this.#run(app.id, logCtrl))) {
+            throw new Error('Container run returned false')
+          }
+          await logCtrl.finalize(true)
+        } catch (runErr) {
+          if (logCtrl) await logCtrl.finalize(false)
+          throw new Error(__('Failed to start %s (%s): %s', containerName, key, runErr.message))
+        }
+
+        createdApps.push(app)
+        log('createFromTemplate: %s started successfully', containerName)
+      }
+
+      // Notify Hub
+      Odac.server('Hub').trigger('app.list')
+
+      const names = createdApps.map(a => a.name).join(', ')
+      return Odac.server('Api').result(true, __('Template %s deployed successfully: %s', recipe.name, names))
+    } catch (e) {
+      error('createFromTemplate: Deployment failed, initiating rollback: %s', e.message)
+
+      // Rollback: Stop and remove all partially created apps
+      const rollbackApps = this.#apps.filter(a => a.template?.group === baseName && a.template?.name === recipe.name)
+      for (const app of rollbackApps) {
+        try {
+          await this.stop(app.id)
+          await Odac.server('Container').remove(app.name)
+        } catch {
+          /* ignore rollback errors */
+        }
+      }
+
+      // Remove from app list
+      const rollbackIds = new Set(rollbackApps.map(a => a.id))
+      this.#apps = this.#apps.filter(a => !rollbackIds.has(a.id))
+      this.#saveApps()
+
+      return Odac.server('Api').result(false, e.message)
+    } finally {
+      // Release all creation locks and unregister build loggers
+      for (const key of orderedKeys) {
+        this.#creating.delete(nameMap[key])
+        Odac.server('Container').unregisterBuildLogger(nameMap[key])
+      }
     }
   }
 
@@ -1774,6 +1981,60 @@ class App {
     })
   }
 
+  /**
+   * Performs topological sort on template app definitions based on linked dependencies.
+   * Uses Kahn's algorithm for O(V+E) performance. Detects circular dependencies.
+   *
+   * @param {object} templateApps - Map of appKey -> { linked?: string[], ... }
+   * @returns {string[]} Ordered array of app keys (dependencies first)
+   * @throws {Error} If circular dependencies detected or a dependency is undefined
+   */
+  #resolveTemplateDependencies(templateApps) {
+    const keys = Object.keys(templateApps)
+    const adjacency = {} // dep -> [dependents]
+    const inDegree = {} // key -> number of incoming edges
+
+    // Initialize graph
+    for (const key of keys) {
+      adjacency[key] = []
+      inDegree[key] = 0
+    }
+
+    // Build edges: if Web depends on DB, edge DB -> Web (DB must come first)
+    for (const key of keys) {
+      const deps = templateApps[key].linked || []
+      for (const dep of deps) {
+        if (!adjacency[dep]) {
+          throw new Error(__('Template dependency "%s" (required by "%s") is not defined.', dep, key))
+        }
+        adjacency[dep].push(key)
+        inDegree[key]++
+      }
+    }
+
+    // Kahn's Algorithm: BFS from nodes with zero in-degree
+    const queue = keys.filter(k => inDegree[k] === 0)
+    const sorted = []
+
+    while (queue.length > 0) {
+      const node = queue.shift()
+      sorted.push(node)
+
+      for (const neighbor of adjacency[node]) {
+        inDegree[neighbor]--
+        if (inDegree[neighbor] === 0) {
+          queue.push(neighbor)
+        }
+      }
+    }
+
+    if (sorted.length !== keys.length) {
+      throw new Error(__('Circular dependency detected in template.'))
+    }
+
+    return sorted
+  }
+
   // Private: Env Resolution
   #mergeRecipeEnv(recipe, userEnv = {}) {
     const defaultEnv = this.#prepareEnv(recipe.env)
@@ -1818,6 +2079,47 @@ class App {
     // Note: checking .linked presence is important because an app might have linked apps but empty manual envs.
     const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
     return isNewStructure ? envConfig.manual || {} : envConfig
+  }
+
+  /**
+   * Resolves template variable references in environment values.
+   * Supports ${appKey.name} for container name and ${appKey.env.VAR} for env values.
+   * Uses single-pass regex replacement — O(n) per env key.
+   *
+   * @param {object} env - Environment key-value pairs potentially containing ${...} references
+   * @param {object} context - Map of appKey -> { name, env } for all template members
+   * @returns {object} Resolved environment object with all variables interpolated
+   */
+  #interpolateTemplateVars(env, context) {
+    const resolved = {}
+    const varPattern = /\$\{([a-zA-Z0-9_]+)\.([a-zA-Z0-9_.]+)\}/g
+
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value !== 'string') {
+        resolved[key] = value
+        continue
+      }
+
+      resolved[key] = value.replace(varPattern, (match, appKey, propPath) => {
+        const appCtx = context[appKey]
+        if (!appCtx) return match // Leave unresolved if app not found
+
+        // Navigate dot-separated path: "env.MYSQL_PASSWORD" or "name"
+        const parts = propPath.split('.')
+        let current = appCtx
+        for (const part of parts) {
+          if (current && typeof current === 'object' && part in current) {
+            current = current[part]
+          } else {
+            return match // Leave unresolved if path not found
+          }
+        }
+
+        return typeof current === 'string' ? current : String(current)
+      })
+    }
+
+    return resolved
   }
 
   #resolveEnv(app, includeSystem = true) {
