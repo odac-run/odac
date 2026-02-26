@@ -36,8 +36,24 @@ class Updater {
     return this.#channel === 'beta' ? 'dev' : this.#channel
   }
 
+  /**
+   * Returns the base persistent storage path shared across containers.
+   * Derives from HOME env to support different volume mount configurations.
+   */
+  get #basePath() {
+    return path.join(os.homedir(), '.odac')
+  }
+
+  /**
+   * Returns the Unix domain socket path used for the zero-downtime handshake protocol.
+   * Must reside on the shared volume so both old and new containers can access it.
+   */
+  get #socketPath() {
+    return path.join(this.#basePath, 'run', 'update.sock')
+  }
+
   get #downloadPath() {
-    return '/app/storage/tmp/odac_source'
+    return path.join(this.#basePath, 'tmp', 'odac_source')
   }
 
   /**
@@ -45,7 +61,7 @@ class Updater {
    * Checks if an update socket exists, meaning we are the new instance in an update process.
    */
   async init() {
-    const socketPath = '/app/storage/run/update.sock'
+    const socketPath = this.#socketPath
 
     if (fs.existsSync(socketPath)) {
       log('Update socket found. Attempting handshake with previous process...')
@@ -190,10 +206,8 @@ class Updater {
 
       // 2. Clone Repository via Sidecar
       log('Cloning repository via Docker Sidecar...')
-      // Cloning into a subdirectory within the volume mount to ensure clean path mapping
-      // Sidecar mounts 'odac-storage' to '/git_target'
-      // It clones into '/git_target/tmp/odac_source'
-      // This corresponds to '/app/storage/tmp/odac_source' in OUR container (this.#downloadPath)
+      // Sidecar mounts the host bind of #basePath to '/git_target'
+      // It clones into '/git_target/tmp/odac_source' which maps to this.#downloadPath in our container
       await this.#gitCloneWithDocker(repo, branch, this.#downloadPath)
 
       // Verify clone
@@ -221,14 +235,19 @@ class Updater {
   async #gitCloneWithDocker(repo, branch, targetDir) {
     log('Using Docker Sidecar for git operations using target: %s', targetDir)
 
-    // Sidecar mounts 'odac-storage' to '/git_target'
-    // It clones into '/git_target/tmp/odac_source'
+    // Determine host bind mount for our base path to share with sidecar
+    const hostBind = await this.#resolveHostBind(this.#basePath)
+    if (!hostBind) {
+      throw new Error('Could not determine host path for storage volume. Cannot run git sidecar.')
+    }
 
+    // Sidecar mounts the resolved host path to '/git_target'
+    // It clones into '/git_target/tmp/odac_source'
     const options = {
       Image: 'alpine/git',
       Cmd: ['clone', '-b', branch, '--depth', '1', repo, '/git_target/tmp/odac_source'],
       HostConfig: {
-        Binds: ['odac-storage:/git_target'] // Assumes standard volume name 'odac-storage'
+        Binds: [`${hostBind}:/git_target`]
       }
     }
 
@@ -326,7 +345,7 @@ class Updater {
         createOptions.Env.push('ODAC_INSTANCE_ID=' + require('crypto').randomUUID())
         const currentInstanceId = process.env.ODAC_INSTANCE_ID || 'default'
         createOptions.Env.push(`ODAC_PREVIOUS_INSTANCE_ID=${currentInstanceId}`)
-        createOptions.Env.push('ODAC_UPDATE_SOCKET_PATH=/app/storage/run/update.sock')
+        createOptions.Env.push(`ODAC_UPDATE_SOCKET_PATH=${this.#socketPath}`)
         // Use separate log file for update process
         createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
 
@@ -404,8 +423,8 @@ class Updater {
    * @returns {Promise<{completion: Promise<boolean>}>}
    */
   async #createUpdateListener() {
-    const socketPath = '/app/storage/run/update.sock'
-    const socketDir = '/app/storage/run'
+    const socketPath = this.#socketPath
+    const socketDir = path.dirname(socketPath)
 
     if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, {recursive: true})
     if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
@@ -681,6 +700,41 @@ class Updater {
     })
   }
 
+  /**
+   * Resolves the host-side path for a given container mount point by inspecting current container binds.
+   * Required for sidecar containers that need to mount the same shared volume.
+   * @param {string} containerPath - The mount path inside the current container (e.g. /app/.odac)
+   * @returns {Promise<string|null>} The host path, or null if not found.
+   */
+  async #resolveHostBind(containerPath) {
+    try {
+      const container = this.#docker.getContainer(CONTAINER_NAME)
+      const info = await container.inspect()
+      const binds = info.HostConfig.Binds || []
+
+      for (const bind of binds) {
+        const parts = bind.split(':')
+        if (parts.length >= 2 && parts[1] === containerPath) {
+          return parts[0]
+        }
+      }
+
+      // Fallback: check Mounts for named volumes
+      const mounts = info.Mounts || []
+      for (const mount of mounts) {
+        if (mount.Destination === containerPath) {
+          return mount.Name || mount.Source
+        }
+      }
+
+      log('No host bind found for container path: %s', containerPath)
+      return null
+    } catch (e) {
+      log('Could not resolve host bind for %s: %s', containerPath, e.message)
+      return null
+    }
+  }
+
   async #getLocalImageId() {
     try {
       // Find the ID of the currently running 'odac' container
@@ -702,7 +756,7 @@ class Updater {
       // and might contain details not printed to stdout
       const logFileName = name === UPDATE_CONTAINER_NAME ? `.${name}.log` : '.odac.log'
 
-      await execAsync(`docker cp ${name}:/app/storage/.odac/logs/${logFileName} ${tempFile}`)
+      await execAsync(`docker cp ${name}:${this.#basePath}/logs/${logFileName} ${tempFile}`)
 
       if (fs.existsSync(tempFile)) {
         const content = fs.readFileSync(tempFile, 'utf8')
