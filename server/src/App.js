@@ -1455,6 +1455,7 @@ class App {
     let isReady = false
     let attempts = 0
     let greenIP = null
+    let lastReadinessError = null
     while (attempts < 120) {
       try {
         const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
@@ -1465,8 +1466,8 @@ class App {
             break
           }
         }
-      } catch {
-        /* ignore */
+      } catch (e) {
+        lastReadinessError = e && e.message ? e.message : 'unknown readiness probe error'
       }
 
       await new Promise(r => setTimeout(r, 1000))
@@ -1476,7 +1477,8 @@ class App {
     if (!isReady || !greenIP) {
       await Odac.server('Container').stop(greenContainerName)
       await Odac.server('Container').remove(greenContainerName)
-      throw new Error(`New container failed readiness probe (port bind timeout). ${operation} aborted to maintain uptime.`)
+      const details = lastReadinessError ? ` Last readiness error: ${lastReadinessError}` : ''
+      throw new Error(`New container failed readiness probe (port bind timeout). ${operation} aborted to maintain uptime.${details}`)
     }
 
     const httpReady = await this.#httpHealthCheck(greenIP, expectedPort)
