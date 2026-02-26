@@ -1,5 +1,32 @@
 ### ⚙️ Engine Tuning
 
+- **app:** remove redundant comment for runtime logging attachment
+- **app:** remove redundant readiness guard in restart loops
+- **app:** streamline blue-green deployment logic and extract common functionality
+
+### ✨ What's New
+
+- enterprise-grade zero downtime deployment for domain-bound apps
+- implement zero-downtime deployment with HTTP health checks for app restarts
+
+### 🛠️ Fixes & Improvements
+
+- adjust loop condition in port readiness check
+- enhance error handling during container readiness checks
+- enhance logging during app creation and image pulling in Container
+- ensure green IP is retrieved correctly during port readiness checks
+- ensure proper formatting in Zero Downtime Deployments guideline
+- remove redundant http import and streamline port readiness check
+- replace timestamp with runtime ID generation for build and container names
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - **logger:** simplify buffer size lookup and remove redundant type check
 
 ### 🛠️ Fixes & Improvements
