@@ -1,3 +1,4 @@
+const {error, log, warn} = Odac.core('Log', false).init('Api')
 const net = require('net')
 const nodeCrypto = require('crypto')
 const fs = require('fs')
@@ -110,10 +111,10 @@ class Api {
       // IP check for TCP connections only
       if (!skipIpCheck && socket.remoteAddress) {
         const ip = socket.remoteAddress.replace(/^.*:/, '')
-        Odac.core('Log').log('Api', `Incoming TCP connection from: ${ip}`)
+        log(`Incoming TCP connection from: ${ip}`)
         const isLocal = ip === '127.0.0.1' || ip === '::1'
         if (!isLocal && !this.#allowed.has(ip)) {
-          Odac.core('Log').log('Api', `Blocking connection from unauthorized IP: ${ip}`)
+          log(`Blocking connection from unauthorized IP: ${ip}`)
           socket.destroy()
           return
         }
@@ -149,13 +150,13 @@ class Api {
 
             // Validate that the app still exists and is active
             if (!app || !app.active) {
-              Odac.core('Log').warn('Api', `Rejected app token: App '${appAuth.n}' not found or inactive`)
+              warn(`Rejected app token: App '${appAuth.n}' not found or inactive`)
               return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
             }
 
             // Validate token expiration (e.g., 24 hours = 86400000 ms)
             if (Date.now() - appAuth.t > 86400000) {
-              Odac.core('Log').warn('Api', `Rejected token for '${appAuth.n}': expired`)
+              warn(`Rejected token for '${appAuth.n}': expired`)
               return socket.write(JSON.stringify({id, ...this.result(false, 'token_expired')}))
             }
 
@@ -187,7 +188,7 @@ class Api {
           }
 
           if (!allowed) {
-            Odac.core('Log').warn('Api', `Blocked unauthorized action '${action}' from '${clientDomain}'`)
+            warn(`Blocked unauthorized action '${action}' from '${clientDomain}'`)
             return socket.write(JSON.stringify({id, ...this.result(false, 'permission_denied')}))
           }
 
@@ -206,9 +207,9 @@ class Api {
         }
       })
 
-      socket.on('error', error => {
-        if (error.code !== 'ECONNRESET') {
-          Odac.core('Log').log('Api', `Socket error: ${error.message}`)
+      socket.on('error', err => {
+        if (err.code !== 'ECONNRESET') {
+          log(`Socket error: ${err.message}`)
         }
         delete this.#connections[id]
       })
@@ -238,10 +239,10 @@ class Api {
         if (e.code === 'EADDRINUSE') {
           // If port is busy, it implies the old container is still running.
           // We wait and retry until it hands over the port (Zero Downtime Handover).
-          Odac.core('Log').log('Api', 'Port 1453 in use. Waiting for release...')
+          log('Port 1453 in use. Waiting for release...')
           setTimeout(startTcpServer, 1000)
         } else {
-          Odac.core('Log').error('Api', `TCP Server error: ${e.message}`)
+          error(`TCP Server error: ${e.message}`)
         }
       })
 
@@ -260,13 +261,13 @@ class Api {
       try {
         fs.unlinkSync(sockPath)
       } catch (e) {
-        Odac.core('Log').error('Api', `Failed to remove old socket: ${e.message}`)
+        error(`Failed to remove old socket: ${e.message}`)
       }
     }
     this.#unixServer = net.createServer(socket => this.#connectionHandler(socket, true))
     this.#unixServer.listen(sockPath, () => {
       fs.chmodSync(sockPath, 0o666)
-      Odac.core('Log').log('Api', `Unix socket listening at ${sockPath}`)
+      log(`Unix socket listening at ${sockPath}`)
       // Grant privileges to newly created socket
       // (Optional: chown if needed, but chmod 666 is usually enough for group access)
     })
@@ -288,7 +289,7 @@ class Api {
       }
       this.#started = false
     } catch (e) {
-      Odac.core('Log').error('Api', `Error stopping API services: ${e.message}`)
+      error(`Error stopping API services: ${e.message}`)
     }
   }
 

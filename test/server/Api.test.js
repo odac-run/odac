@@ -6,8 +6,9 @@
 const {setupGlobalMocks, cleanupGlobalMocks} = require('./__mocks__/testHelpers')
 
 // Create mock log function first
-const mockLog = jest.fn()
 const mockError = jest.fn()
+const mockLog = jest.fn()
+const mockWarn = jest.fn()
 
 describe('Api', () => {
   let Api
@@ -19,20 +20,20 @@ describe('Api', () => {
     const {mockOdac} = require('./__mocks__/globalOdac')
     mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
-        log: mockLog,
         error: mockError,
-        warn: jest.fn()
+        log: mockLog,
+        warn: mockWarn
       }),
-      log: mockLog,
       error: mockError,
-      warn: jest.fn()
+      log: mockLog,
+      warn: mockWarn
     })
 
     // Ensure log method exists on the core Log mock
     Object.assign(global.Odac.core('Log'), {
-      log: mockLog,
       error: mockError,
-      warn: jest.fn()
+      log: mockLog,
+      warn: mockWarn
     })
 
     // Mock the net module at the module level

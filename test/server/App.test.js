@@ -463,4 +463,123 @@ describe('App', () => {
       expect(app.env.linked).not.toContain('app-db')
     })
   })
+
+  describe('Blue-Green deploy API token identity', () => {
+    test('should use _appIdentity for API token instead of container name when present', async () => {
+      // Simulate a Blue-Green scenario: app.name is the ephemeral green container name,
+      // but _appIdentity preserves the canonical app name for token generation.
+      const mockGenerateAppToken = jest.fn(() => 'mock-app-token')
+
+      const originalServer = global.Odac.server
+      global.Odac.server = jest.fn(module => {
+        if (module === 'Api') {
+          return {
+            result: jest.fn((result, message, data) => {
+              if (typeof message === 'object') {
+                data = message
+                message = undefined
+              }
+              return {result, success: result, message, data}
+            }),
+            generateAppToken: mockGenerateAppToken,
+            hostSocketDir: '/tmp/odac-socket'
+          }
+        }
+        return originalServer(module)
+      })
+
+      // App with _appIdentity simulates a green container object during ZDD.
+      // name = green container name, _appIdentity = original canonical name.
+      mockConfig.apps = [
+        {
+          id: 201,
+          name: 'zdd-app-green-build_12345',
+          _appIdentity: 'zdd-app',
+          active: true,
+          type: 'container',
+          image: 'test:latest',
+          api: ['app.list']
+        }
+      ]
+      mockConfig.app = {path: '/tmp/odac-test'}
+
+      mockRunApp.mockResolvedValue(true)
+
+      // check() triggers #run() -> #runContainer() for the active app
+      await App.check()
+
+      // Token MUST be generated with the canonical name, NOT the green container name
+      expect(mockGenerateAppToken).toHaveBeenCalled()
+      const [tokenAppName, tokenPerms] = mockGenerateAppToken.mock.calls[0]
+      expect(tokenAppName).toBe('zdd-app')
+      expect(tokenAppName).not.toMatch(/green/)
+      expect(tokenPerms).toEqual(['app.list'])
+    })
+
+    test('should use app.name for API token when _appIdentity is absent (normal flow)', async () => {
+      // Normal flow: no _appIdentity, token should use app.name
+      const mockGenerateAppToken = jest.fn(() => 'mock-app-token')
+
+      const originalServer = global.Odac.server
+      global.Odac.server = jest.fn(module => {
+        if (module === 'Api') {
+          return {
+            result: jest.fn((result, message, data) => {
+              if (typeof message === 'object') {
+                data = message
+                message = undefined
+              }
+              return {result, success: result, message, data}
+            }),
+            generateAppToken: mockGenerateAppToken,
+            hostSocketDir: '/tmp/odac-socket'
+          }
+        }
+        return originalServer(module)
+      })
+
+      mockConfig.apps = [
+        {
+          id: 301,
+          name: 'normal-app',
+          active: true,
+          type: 'container',
+          image: 'test:latest',
+          api: true
+        }
+      ]
+      mockConfig.app = {path: '/tmp/odac-test'}
+
+      mockRunApp.mockResolvedValue(true)
+
+      await App.check()
+
+      expect(mockGenerateAppToken).toHaveBeenCalled()
+      const [tokenAppName] = mockGenerateAppToken.mock.calls[0]
+      expect(tokenAppName).toBe('normal-app')
+    })
+
+    test('should strip _appIdentity from saved config', async () => {
+      mockConfig.apps = [
+        {
+          id: 401,
+          name: 'saved-app',
+          _appIdentity: 'should-be-removed',
+          active: true,
+          type: 'container',
+          image: 'test:latest'
+        }
+      ]
+      mockConfig.app = {path: '/tmp/odac-test'}
+
+      mockRunApp.mockResolvedValue(true)
+
+      // Trigger a save via check -> run -> set
+      await App.check()
+
+      // Verify _appIdentity is NOT persisted in saved config
+      const savedApp = mockConfig.apps.find(a => a.name === 'saved-app')
+      expect(savedApp._appIdentity).toBeUndefined()
+    })
+  })
 })
