@@ -35,3 +35,6 @@ trigger: always_on
 
 ## Security
 - **Log Sanitation:** Never log raw configuration objects or environment variables. Always sanitize sensitive fields (password, token, key, secret, auth, env) before logging.
+
+## Architectural Updates
+- **Zero Downtime Deployments (ZDD):** All redeployments and container swaps must be executed using the Blue-Green architectural model. Never kill the active container until the new container has fully initialized, passed readiness checks (acquired an IP/Port), and the ODAC Proxy has been explicitly synced to drain traffic.

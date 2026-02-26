@@ -111,12 +111,15 @@ class Container {
   /**
    * Helper to pull image if not exists
    */
-  async #ensureImage(imageName) {
+  async #ensureImage(imageName, activeLogger = null) {
     try {
       const image = this.#docker.getImage(imageName)
       const inspect = await image.inspect().catch(() => null)
       if (!inspect) {
         log(`Pulling image ${imageName}...`)
+        if (activeLogger && activeLogger.stream) {
+          activeLogger.stream.write(`Pulling image ${imageName}...\n`)
+        }
         await new Promise((resolve, reject) => {
           this.#docker.pull(imageName, (err, stream) => {
             if (err) return reject(err)
@@ -124,17 +127,33 @@ class Container {
 
             function onFinished(err, output) {
               if (err) return reject(err)
+              if (activeLogger && activeLogger.stream) {
+                activeLogger.stream.write(`Image ${imageName} pulled successfully.\n`)
+              }
               resolve(output)
             }
-            function onProgress() {
-              // Optional: log progress
+            function onProgress(event) {
+              if (activeLogger && activeLogger.stream && event.stream) {
+                activeLogger.stream.write(event.stream)
+              } else if (activeLogger && activeLogger.stream && event.status) {
+                let msg = event.status
+                if (event.progress) msg += ` ${event.progress}`
+                activeLogger.stream.write(`${msg}\n`)
+              }
             }
           })
         })
         log(`Image ${imageName} pulled successfully.`)
+      } else {
+        if (activeLogger && activeLogger.stream) {
+          activeLogger.stream.write(`Image ${imageName} already exists locally.\n`)
+        }
       }
     } catch (err) {
       error(`Failed to pull image ${imageName}: ${err.message}`)
+      if (activeLogger && activeLogger.stream) {
+        activeLogger.stream.write(`Failed to pull image ${imageName}: ${err.message}\n`)
+      }
       throw err
     }
   }
@@ -486,8 +505,9 @@ class Container {
    * @param {Object} options.env - Environment variables {KEY: 'VALUE'}
    * @param {Array} options.cmd - Command to run (optional)
    * @param {string} options.user - User to run as (optional, e.g., 'root')
+   * @param {Object} [activeLogger] - Optional logger instance
    */
-  async runApp(name, options) {
+  async runApp(name, options, activeLogger = null) {
     if (!this.available) return false
 
     await this.remove(name)
@@ -524,8 +544,11 @@ class Container {
       await this.#ensureNetwork(networkName)
 
       log(`Starting app container ${name} (${options.image})...`)
-      await this.#ensureImage(options.image)
+      if (activeLogger) activeLogger.startPhase('pull_image')
+      await this.#ensureImage(options.image, activeLogger)
+      if (activeLogger) activeLogger.endPhase('pull_image', true)
 
+      if (activeLogger) activeLogger.startPhase('start_new_container')
       const containerConfig = {
         Image: options.image,
         name: name,
@@ -550,6 +573,7 @@ class Container {
       const container = await this.#docker.createContainer(containerConfig)
 
       await container.start()
+      if (activeLogger) activeLogger.endPhase('start_new_container', true)
       return true
     } catch (err) {
       error(`Failed to start app container ${name}: ${err.message}`)

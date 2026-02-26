@@ -65,6 +65,8 @@ describe('App', () => {
             list: jest.fn(() => []),
             getStats: jest.fn(),
             getStatus: jest.fn(() => Promise.resolve({running: false, restarts: 0})),
+            getIP: jest.fn(() => '10.0.0.5'), // Mock IP to prevent infinite loop
+            getListeningPorts: jest.fn(() => [3000]), // Mock to pass readiness probe
             remove: jest.fn(),
             fetchRepo: jest.fn(),
             getImageExposedPorts: jest.fn(() => []),
@@ -73,7 +75,8 @@ describe('App', () => {
               getContainer: jest.fn(() => ({
                 modem: {
                   demuxStream: jest.fn()
-                }
+                },
+                rename: jest.fn(() => Promise.resolve()) // Ensure rename returns a promise
               }))
             }
           }
