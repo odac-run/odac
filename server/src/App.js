@@ -399,10 +399,13 @@ class App {
   }
 
   async #runGitApp(app) {
+    // Canonical identity for API tokens & resource paths (survives Blue-Green rename)
+    const appIdentity = app._appIdentity || app.name
+
     const volumes = []
     if (app.dev) {
       // Mount total app directory to /app for live development
-      const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+      const appDir = path.join(Odac.core('Config').config.app.path, appIdentity)
       volumes.push({host: appDir, container: '/app'})
     }
 
@@ -423,7 +426,7 @@ class App {
     // API Permission Injection
     if (app.api) {
       const api = Odac.server('Api')
-      env.ODAC_API_KEY = api.generateAppToken(app.name, app.api)
+      env.ODAC_API_KEY = api.generateAppToken(appIdentity, app.api)
 
       // Mount API Socket
       if (api.hostSocketDir) {
@@ -668,7 +671,7 @@ class App {
         await this.#performBlueGreenDeploy(app, greenContainerName, {
           operation: 'Restart',
           runGreenContainer: async () => {
-            const greenApp = {...app, name: greenContainerName}
+            const greenApp = {...app, name: greenContainerName, _appIdentity: app.name}
             if (app.type === 'git') {
               await this.#runGitApp(greenApp)
             } else {
@@ -827,7 +830,7 @@ class App {
           logCtrl,
           operation: 'Redeploy',
           runGreenContainer: async () => {
-            const greenApp = {...app, name: greenContainerName}
+            const greenApp = {...app, name: greenContainerName, _appIdentity: app.name}
             await this.#runGitApp(greenApp)
           }
         })
@@ -1235,6 +1238,7 @@ class App {
     const cleanApps = this.#apps.map(app => {
       const copy = {...app}
       // Remove runtime/ephemeral properties
+      delete copy._appIdentity
       delete copy.status
       delete copy.pid
       delete copy.uptime
@@ -1349,13 +1353,16 @@ class App {
     const ext = path.extname(filename)
     const runner = SCRIPT_RUNNERS[ext] || SCRIPT_RUNNERS['.js']
 
+    // Canonical identity for API tokens (survives Blue-Green rename)
+    const appIdentity = app._appIdentity || app.name
+
     const env = {ODAC_APP: 'true'}
     const volumes = [{host: dir, container: '/app'}]
 
     // API Permission Injection
     if (app.api) {
       const api = Odac.server('Api')
-      env.ODAC_API_KEY = api.generateAppToken(app.name, app.api)
+      env.ODAC_API_KEY = api.generateAppToken(appIdentity, app.api)
 
       if (api.hostSocketDir) {
         volumes.push({host: api.hostSocketDir, container: '/odac:ro'})
@@ -1376,13 +1383,16 @@ class App {
       throw new Error('Docker is not available via Container service.')
     }
 
+    // Canonical identity for API tokens (survives Blue-Green rename)
+    const appIdentity = app._appIdentity || app.name
+
     const env = this.#resolveEnv(app)
     const volumes = [...(app.volumes || [])]
 
     // API Permission Injection
     if (app.api) {
       const api = Odac.server('Api')
-      env.ODAC_API_KEY = api.generateAppToken(app.name, app.api)
+      env.ODAC_API_KEY = api.generateAppToken(appIdentity, app.api)
 
       if (api.hostSocketDir) {
         volumes.push({host: api.hostSocketDir, container: '/odac:ro'})
