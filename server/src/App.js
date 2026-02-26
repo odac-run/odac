@@ -1,5 +1,6 @@
 const {log, error} = Odac.core('Log', false).init('App')
 const fs = require('fs')
+const http = require('http')
 const path = require('path')
 const net = require('net')
 const nodeCrypto = require('crypto')
@@ -1650,7 +1651,7 @@ class App {
     for (let i = 0; i < maxAttempts; i++) {
       try {
         await new Promise((resolve, reject) => {
-          const req = require('http').get({hostname: ip, port, path: '/', timeout: 2000}, res => {
+          const req = http.get({hostname: ip, port, path: '/', timeout: 2000}, res => {
             // Any HTTP response (even 404/500) means the app is serving
             res.resume()
             resolve()
