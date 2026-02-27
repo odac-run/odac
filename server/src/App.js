@@ -692,20 +692,28 @@ class App {
         // It might be an ephemeral/debug port (like 45769) while the main port (3000) is starting.
         // We give it 5 seconds (attempts < 5) to see if the expected port appears.
         if (attempts >= 5) {
-          // Timeout reached, accept the random port
-          // Prefer 80/8080/3000 if available in the list to avoid random ancillary ports
-          const preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
+          let preferred = null
+
+          // HTTP Probe: When multiple ports are open, identify the actual HTTP port
+          // by sending a HEAD request. DB/Redis/WS-only ports won't respond to HTTP.
+          const containerIP = await container.getIP(app.name)
+          if (containerIP && listeningPorts.length > 1) {
+            preferred = await this.#detectHttpPort(containerIP, listeningPorts)
+            if (preferred) {
+              log('Auto-Discovery: HTTP probe identified port %d for app %s', preferred, app.name)
+            }
+          }
+
+          // Fallback: well-known HTTP ports, then first available
+          if (!preferred) {
+            preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
+          }
 
           log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, expectedPort)
           app.ports = [{container: preferred}]
 
-          // Also try to capture and save the current IP to "warm up" the cache
-          try {
-            const currentIP = await container.getIP(app.name)
-            if (currentIP) app.ip = currentIP
-          } catch {
-            /* ignore */
-          }
+          // Cache container IP for zero-downtime Proxy routing
+          if (containerIP) app.ip = containerIP
 
           this.#saveApps()
 
@@ -722,6 +730,54 @@ class App {
 
     // Retry after 1 second
     setTimeout(() => this.#pollForPort(app, expectedPort, attempts + 1), 1000)
+  }
+
+  /**
+   * Probes multiple container ports to detect which one speaks HTTP.
+   * Sends a minimal HEAD request to each port in parallel with a short timeout.
+   * Non-HTTP services (databases, message queues, raw TCP) will not respond with valid HTTP.
+   *
+   * @param {string} ip - Container IP address (Docker network)
+   * @param {number[]} ports - Array of listening ports to probe
+   * @param {number} [timeout=1500] - Per-port probe timeout in ms
+   * @returns {Promise<number|null>} The detected HTTP port, or null if none found
+   */
+  async #detectHttpPort(ip, ports, timeout = 1500) {
+    const probes = ports.map(
+      port =>
+        new Promise(resolve => {
+          const req = http.request(
+            {
+              hostname: ip,
+              method: 'HEAD',
+              path: '/',
+              port,
+              timeout
+            },
+            res => {
+              // Any HTTP response (even 4xx/5xx) confirms this port speaks HTTP
+              res.destroy()
+              resolve(port)
+            }
+          )
+
+          req.on('error', () => resolve(null))
+          req.on('timeout', () => {
+            req.destroy()
+            resolve(null)
+          })
+
+          req.end()
+        })
+    )
+
+    const results = await Promise.all(probes)
+    const httpPorts = results.filter(p => p !== null)
+
+    if (httpPorts.length === 0) return null
+
+    // If multiple ports respond to HTTP, prefer well-known HTTP ports
+    return httpPorts.find(p => [80, 443, 8080, 3000, 5000, 8000].includes(p)) || httpPorts[0]
   }
 
   async stopAll() {
@@ -858,11 +914,13 @@ class App {
     log('Restarting app %s', app.name)
 
     // Check if Zero-Downtime Deployment (ZDD) is applicable.
-    // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
+    // ZDD requires: 1) Git-based app (deterministic image builds), 2) At least one domain for Proxy routing.
+    // Container (recipe) apps are excluded — they use pre-built images where Blue-Green adds
+    // complexity without benefit (no build step, just pull & restart).
     const domainsConfig = Odac.core('Config').config.domains || {}
     const hasDomains = Object.values(domainsConfig).some(d => d.appId === app.name || d.appId === app.id)
 
-    if ((app.type === 'git' || app.type === 'container') && hasDomains) {
+    if (app.type === 'git' && hasDomains) {
       log('ZDD enabled for %s (Has Domains). Executing Blue-Green restart.', app.name)
 
       // Concurrency guard: prevent parallel operations on the same app
@@ -1593,8 +1651,18 @@ class App {
     // Canonical identity for API tokens (survives Blue-Green rename)
     const appIdentity = app._appIdentity || app.name
 
+    // Pull image FIRST so all subsequent inspections (port, user) have metadata available.
+    // Without this, getImageExposedPorts and getImageUser fail on un-pulled images → null results.
+    await Odac.server('Container').ensureImage(app.image, logCtrl)
+
+    // Port Resolution: Detect from image EXPOSE or assign default
+    const port = await this.#resolveContainerPort(app)
+
     const env = this.#resolveEnv(app)
     const volumes = [...(app.volumes || [])]
+
+    // Inject PORT env so well-behaved apps can discover their port
+    if (port) env.PORT = port.toString()
 
     // API Permission Injection
     if (app.api) {
@@ -1607,11 +1675,18 @@ class App {
       }
     }
 
+    // Fix volume permissions before starting the app container.
+    // Host-created directories default to root:root 0755, but many images run as
+    // non-root (e.g., node:1000). chmod 0777 ensures any container user can write.
+    await this.#fixVolumePermissions(volumes)
+
     await Odac.server('Container').runApp(
       app.name,
       {
         image: app.image,
-        ports: app.ports,
+        // Only pass ports with host binding to Docker. Internal-only ports (container-only)
+        // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
+        ports: (app.ports || []).filter(p => p.host),
         volumes,
         env
       },
@@ -1619,6 +1694,78 @@ class App {
     )
 
     await this.#attachLogger(app)
+
+    // Runtime Port Discovery:
+    // Verify the container is actually listening on the expected port.
+    // Handles images that ignore PORT env var or have no EXPOSE metadata.
+    this.#pollForPort(app, port || 3000)
+  }
+
+  /**
+   * Ensures volume host directories are writable by any container user.
+   * Many Docker images run as non-root (e.g., node:1000) but host-created
+   * directories default to root:root 0755, causing EACCES on write.
+   *
+   * Sets 0o777 on each volume's host directory directly from the ODAC process.
+   * This is the most reliable approach — no init containers, no user detection,
+   * works regardless of image USER directive or /etc/passwd contents.
+   *
+   * @param {Array<{host: string, container: string}>} volumes - Volume mappings
+   */
+  async #fixVolumePermissions(volumes) {
+    if (!volumes || volumes.length === 0) return
+
+    for (const vol of volumes) {
+      // Skip read-only mounts
+      if (vol.container.endsWith(':ro')) continue
+      // Skip unresolved or non-absolute host paths
+      if (!vol.host || !path.isAbsolute(vol.host)) continue
+
+      try {
+        await fs.promises.mkdir(vol.host, {recursive: true})
+        await fs.promises.chmod(vol.host, 0o777)
+        log('FixVolPerms: Set 0777 on %s', vol.host)
+      } catch (e) {
+        error('FixVolPerms: chmod failed for %s: %s', vol.host, e.message)
+      }
+    }
+  }
+
+  /**
+   * Resolves the internal port for a container app.
+   * Priority: existing config > image EXPOSE metadata > default (3000).
+   * Persists the result so Proxy can route immediately.
+   *
+   * @param {object} app - App record
+   * @returns {Promise<number>} Resolved container port
+   */
+  async #resolveContainerPort(app) {
+    // Priority 1: Already configured
+    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
+      return app.ports[0].container
+    }
+
+    // Priority 2: Auto-detect from Docker image EXPOSE
+    if (app.image) {
+      try {
+        const exposed = await Odac.server('Container').getImageExposedPorts(app.image)
+        if (exposed && exposed.length > 0) {
+          const detected = exposed[0]
+          log('Port Auto-Detect: Discovered port %d from image EXPOSE for app %s', detected, app.name)
+          app.ports = [{container: detected}]
+          this.#saveApps()
+          return detected
+        }
+      } catch (e) {
+        error('Port Auto-Detect: Failed to inspect image for app %s: %s', app.name, e.message)
+      }
+    }
+
+    // Priority 3: Fallback to default
+    log('Port Auto-Detect: No port info available for app %s. Assigning default 3000.', app.name)
+    app.ports = [{container: 3000}]
+    this.#saveApps()
+    return 3000
   }
 
   async #attachLogger(app) {
@@ -1917,8 +2064,10 @@ class App {
     return recipeVolumes.map(vol => {
       let host = vol.host
 
-      if (host === 'data') {
-        host = path.join(appDir, 'data')
+      // Named volumes (non-absolute paths like 'data', 'config', 'workspace')
+      // are resolved under the app's dedicated directory for isolation.
+      if (host && !path.isAbsolute(host)) {
+        host = path.join(appDir, host)
         if (!fs.existsSync(host)) fs.mkdirSync(host, {recursive: true})
       }
 

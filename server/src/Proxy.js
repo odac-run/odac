@@ -323,8 +323,11 @@ class OdacProxy {
           }
         }
 
-        if (typeof log !== 'undefined')
-          log('Proxy: Adding domain %s -> %s:%d (IP: %s)', domainName, app.name, port, containerIP || '127.0.0.1')
+        if (typeof log !== 'undefined') {
+          const targetType = useInternal ? 'Container Network' : 'Host Network'
+          const targetIP = containerIP || '127.0.0.1'
+          log('Proxy: Routing domain [%s] -> App [%s] via %s (%s:%d)', domainName, app.name, targetType, targetIP, port)
+        }
 
         proxyDomains[domainName] = {
           domain: domainName,

@@ -109,9 +109,13 @@ class Container {
   }
 
   /**
-   * Helper to pull image if not exists
+   * Helper to pull image if not exists.
+   * Safe to call multiple times — skips pull if image already exists locally.
+   *
+   * @param {string} imageName - Docker image name
+   * @param {Object} [activeLogger] - Optional build logger for progress output
    */
-  async #ensureImage(imageName, activeLogger = null) {
+  async ensureImage(imageName, activeLogger = null) {
     try {
       const image = this.#docker.getImage(imageName)
       const inspect = await image.inspect().catch(() => null)
@@ -217,7 +221,7 @@ class Container {
 
     const gitImage = 'alpine/git'
     if (activeLogger) activeLogger.startPhase('pull_git_image')
-    await this.#ensureImage(gitImage)
+    await this.ensureImage(gitImage)
     if (activeLogger) activeLogger.endPhase('pull_git_image', true)
 
     // Securely construct URL with token inside the container env if needed
@@ -297,7 +301,7 @@ class Container {
 
     const gitImage = 'alpine/git'
     if (activeLogger) activeLogger.startPhase('pull_git_image')
-    await this.#ensureImage(gitImage)
+    await this.ensureImage(gitImage)
     if (activeLogger) activeLogger.endPhase('pull_git_image', true)
 
     let secureUrl = url
@@ -464,7 +468,7 @@ class Container {
       await this.#ensureNetwork(networkName)
 
       log(`Starting container for ${name}...`)
-      await this.#ensureImage(NODE_IMAGE)
+      await this.ensureImage(NODE_IMAGE)
 
       const container = await this.#docker.createContainer({
         Image: NODE_IMAGE,
@@ -492,6 +496,55 @@ class Container {
     } catch (err) {
       error(`Failed to start container for ${name}: ${err.message}`)
       return false
+    }
+  }
+
+  /**
+   * Runs a short-lived init container to fix volume permissions.
+   * Executes as root with the same volume mounts, runs the given command, then removes itself.
+   * Uses --rm semantics (AutoRemove) so no cleanup is needed.
+   *
+   * @param {string} imageName - Docker image to use (same as app image for layer cache)
+   * @param {Array<{host: string, container: string}>} volumes - Volume mappings
+   * @param {string} command - Shell command to execute (e.g., 'chown -R node /data')
+   */
+  async runInit(imageName, volumes, command) {
+    if (!this.available) return
+
+    const bindings = []
+    if (volumes) {
+      for (const vol of volumes) {
+        const hostPath = this.#resolveHostPath(vol.host)
+        bindings.push(`${hostPath}:${vol.container.replace(/:ro$/, '')}`)
+      }
+    }
+
+    const initName = `odac-init-${Date.now()}`
+
+    try {
+      const container = await this.#docker.createContainer({
+        Image: imageName,
+        name: initName,
+        Cmd: ['sh', '-c', command],
+        User: 'root',
+        HostConfig: {
+          AutoRemove: true,
+          Binds: bindings
+        }
+      })
+
+      await container.start()
+      await container.wait()
+    } catch (err) {
+      // Cleanup on failure (AutoRemove may not trigger if create failed)
+      try {
+        const c = this.#docker.getContainer(initName)
+        await c.remove({force: true})
+      } catch {
+        /* ignore */
+      }
+
+      throw err
     }
   }
 
@@ -545,7 +598,7 @@ class Container {
 
       log(`Starting app container ${name} (${options.image})...`)
       if (activeLogger) activeLogger.startPhase('pull_image')
-      await this.#ensureImage(options.image, activeLogger)
+      await this.ensureImage(options.image, activeLogger)
       if (activeLogger) activeLogger.endPhase('pull_image', true)
 
       if (activeLogger) activeLogger.startPhase('start_new_container')
