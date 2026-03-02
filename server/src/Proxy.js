@@ -244,21 +244,25 @@ class OdacProxy {
    * @param {string} keyAuthorization - The key authorization string to serve
    */
   async setACMEChallenge(token, keyAuthorization) {
-    if (!this.#proxyProcess) return
-    if (!this.#proxySocketPath && !this.#proxyApiPort) return
+    if (!this.#proxyProcess) throw new Error('Proxy process not running')
+    if (!this.#proxySocketPath && !this.#proxyApiPort) throw new Error('Proxy API not available')
 
-    try {
-      const payload = {keyAuthorization, token}
-      if (this.#proxySocketPath) {
-        await axios.post('http://localhost/acme/challenge', payload, {
-          socketPath: this.#proxySocketPath,
-          validateStatus: () => true
-        })
-      } else {
-        await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, payload)
-      }
-    } catch (e) {
-      if (typeof error !== 'undefined') error('Failed to set ACME challenge token: %s', e.message)
+    const payload = {keyAuthorization, token}
+    let response
+
+    if (this.#proxySocketPath) {
+      response = await axios.post('http://localhost/acme/challenge', payload, {
+        socketPath: this.#proxySocketPath,
+        validateStatus: () => true
+      })
+    } else {
+      response = await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, payload, {
+        validateStatus: () => true
+      })
+    }
+
+    if (response.status !== 200) {
+      throw new Error(`Proxy returned HTTP ${response.status} for ACME challenge`)
     }
   }
 

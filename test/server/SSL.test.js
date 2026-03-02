@@ -282,7 +282,7 @@ describe('SSL', () => {
       expect(fs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('example.com.crt'), expect.any(String))
     })
 
-    test('should use http-01 as primary challenge priority', async () => {
+    test('should use http-01 as primary challenge', async () => {
       const result = await SSL.renew('example.com')
       expect(result.result).toBe(true)
 
@@ -292,10 +292,52 @@ describe('SSL', () => {
       expect(acme.Client).toHaveBeenCalled()
 
       const clientInstance = acme.Client.mock.results[0].value
+      // First auto() call should use http-01 only
       const autoOpts = clientInstance.auto.mock.calls[0][0]
+      expect(autoOpts.challengePriority).toEqual(['http-01'])
+    })
 
-      // Verify http-01 is first priority, dns-01 is fallback
-      expect(autoOpts.challengePriority).toEqual(['http-01', 'dns-01'])
+    test('should fallback to dns-01 when http-01 fails', async () => {
+      // First auto call (http-01) rejects, second (dns-01) resolves
+      const autoFn = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('HTTP-01 challenge validation failed'))
+        .mockResolvedValueOnce('mock-certificate-dns')
+
+      jest.resetModules()
+      acme = require('acme-client')
+      fs = require('fs')
+      os = require('os')
+      selfsigned = require('selfsigned')
+
+      acme.forge.createPrivateKey.mockResolvedValue('mock-account-key')
+      acme.forge.createCsr.mockResolvedValue(['mock-domain-key', 'mock-csr'])
+      acme.Client.mockImplementation(() => ({auto: autoFn}))
+      fs.existsSync.mockReturnValue(true)
+      fs.mkdirSync.mockImplementation(() => {})
+      fs.writeFileSync.mockImplementation(() => {})
+      os.homedir.mockReturnValue('/home/user')
+      selfsigned.generate.mockReturnValue({private: 'mock-private-key', cert: 'mock-cert'})
+
+      // Only one domain that needs renewal to isolate the fallback test
+      mockConfig.config.domains = {
+        'expired.com': {
+          appId: 'myapp',
+          subdomain: [],
+          cert: {ssl: {expiry: Date.now() - 100000}}
+        }
+      }
+
+      SSL = require('../../server/src/SSL')
+      await SSL.check()
+
+      // Should have called auto() twice: first http-01, then dns-01
+      expect(autoFn).toHaveBeenCalledTimes(2)
+      expect(autoFn.mock.calls[0][0].challengePriority).toEqual(['http-01'])
+      expect(autoFn.mock.calls[1][0].challengePriority).toEqual(['dns-01'])
+
+      // Should save the certificate from dns-01 fallback
+      expect(fs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('expired.com.crt'), 'mock-certificate-dns')
     })
 
     test('should set ACME challenge on proxy for http-01', async () => {
@@ -340,18 +382,24 @@ describe('SSL', () => {
       expect(Odac.server('DNS').delete).not.toHaveBeenCalled()
     })
 
-    test('should create DNS record for dns-01 challenge', async () => {
+    test('should create DNS record for dns-01 challenge via fallback', async () => {
+      // HTTP-01 fails → DNS-01 fallback. We capture the dns-01 callbacks.
+      const autoFn = jest.fn().mockImplementation(opts => {
+        // Simulate calling challengeCreateFn for the given type
+        const type = opts.challengePriority[0]
+        if (type === 'http-01') return Promise.reject(new Error('HTTP-01 failed'))
+        // For dns-01, invoke the callback so we can verify it
+        opts.challengeCreateFn({identifier: {value: 'example.com'}}, {type: 'dns-01'}, 'dns-key-auth')
+        return Promise.resolve('mock-cert')
+      })
+
+      acme.Client.mockImplementation(() => ({auto: autoFn}))
+
       const result = await SSL.renew('example.com')
       expect(result.result).toBe(true)
 
       await wait()
       await wait()
-
-      const clientInstance = acme.Client.mock.results[0].value
-      const autoOpts = clientInstance.auto.mock.calls[0][0]
-
-      // Simulate DNS-01 challenge creation
-      await autoOpts.challengeCreateFn({identifier: {value: 'example.com'}}, {type: 'dns-01'}, 'dns-key-auth')
 
       expect(Odac.server('DNS').record).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -360,6 +408,7 @@ describe('SSL', () => {
           value: 'dns-key-auth'
         })
       )
+      // Proxy should NOT have been called for dns-01 flow
       expect(Odac.server('Proxy').setACMEChallenge).not.toHaveBeenCalled()
     })
 
