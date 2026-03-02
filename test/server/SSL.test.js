@@ -103,6 +103,13 @@ describe('SSL', () => {
       clearSSLCache: jest.fn()
     })
 
+    // Setup Proxy mock for ACME HTTP-01 challenge management
+    mockOdac.setMock('server', 'Proxy', {
+      deleteACMEChallenge: jest.fn().mockResolvedValue(),
+      setACMEChallenge: jest.fn().mockResolvedValue(),
+      syncConfig: jest.fn().mockResolvedValue()
+    })
+
     // Global translation mock
     global.__ = jest.fn((msg, ...args) => msg.replace('%s', args[0]))
     global.Odac = mockOdac
@@ -273,6 +280,87 @@ describe('SSL', () => {
       expect(acme.Client).toHaveBeenCalled()
       // Should renew for the main domain 'example.com'
       expect(fs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('example.com.crt'), expect.any(String))
+    })
+
+    test('should use http-01 as primary challenge priority', async () => {
+      const result = await SSL.renew('example.com')
+      expect(result.result).toBe(true)
+
+      await wait()
+      await wait()
+
+      expect(acme.Client).toHaveBeenCalled()
+
+      const clientInstance = acme.Client.mock.results[0].value
+      const autoOpts = clientInstance.auto.mock.calls[0][0]
+
+      // Verify http-01 is first priority, dns-01 is fallback
+      expect(autoOpts.challengePriority).toEqual(['http-01', 'dns-01'])
+    })
+
+    test('should set ACME challenge on proxy for http-01', async () => {
+      const result = await SSL.renew('example.com')
+      expect(result.result).toBe(true)
+
+      await wait()
+      await wait()
+
+      const clientInstance = acme.Client.mock.results[0].value
+      const autoOpts = clientInstance.auto.mock.calls[0][0]
+
+      // Simulate HTTP-01 challenge creation
+      await autoOpts.challengeCreateFn(
+        {identifier: {value: 'example.com'}},
+        {type: 'http-01', token: 'test-token-abc123'},
+        'test-key-authorization'
+      )
+
+      expect(Odac.server('Proxy').setACMEChallenge).toHaveBeenCalledWith('test-token-abc123', 'test-key-authorization')
+      expect(Odac.server('DNS').record).not.toHaveBeenCalled()
+    })
+
+    test('should remove ACME challenge from proxy for http-01', async () => {
+      const result = await SSL.renew('example.com')
+      expect(result.result).toBe(true)
+
+      await wait()
+      await wait()
+
+      const clientInstance = acme.Client.mock.results[0].value
+      const autoOpts = clientInstance.auto.mock.calls[0][0]
+
+      // Simulate HTTP-01 challenge removal
+      await autoOpts.challengeRemoveFn(
+        {identifier: {value: 'example.com'}},
+        {type: 'http-01', token: 'test-token-abc123'},
+        'test-key-authorization'
+      )
+
+      expect(Odac.server('Proxy').deleteACMEChallenge).toHaveBeenCalledWith('test-token-abc123')
+      expect(Odac.server('DNS').delete).not.toHaveBeenCalled()
+    })
+
+    test('should create DNS record for dns-01 challenge', async () => {
+      const result = await SSL.renew('example.com')
+      expect(result.result).toBe(true)
+
+      await wait()
+      await wait()
+
+      const clientInstance = acme.Client.mock.results[0].value
+      const autoOpts = clientInstance.auto.mock.calls[0][0]
+
+      // Simulate DNS-01 challenge creation
+      await autoOpts.challengeCreateFn({identifier: {value: 'example.com'}}, {type: 'dns-01'}, 'dns-key-auth')
+
+      expect(Odac.server('DNS').record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: '_acme-challenge.example.com',
+          type: 'TXT',
+          value: 'dns-key-auth'
+        })
+      )
+      expect(Odac.server('Proxy').setACMEChallenge).not.toHaveBeenCalled()
     })
 
     test('should fail for non-existent domain', async () => {

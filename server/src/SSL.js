@@ -158,10 +158,13 @@ class SSL {
       const cert = await client.auto({
         csr,
         termsOfServiceAgreed: true,
-        challengePriority: ['dns-01'],
+        challengePriority: ['http-01', 'dns-01'],
         challengeCreateFn: async (authz, challenge, keyAuthorization) => {
-          if (challenge.type === 'dns-01') {
-            log('Creating DNS challenge for %s', authz.identifier.value)
+          if (challenge.type === 'http-01') {
+            log('Creating HTTP-01 challenge for %s (token: %.8s...)', authz.identifier.value, challenge.token)
+            await Odac.server('Proxy').setACMEChallenge(challenge.token, keyAuthorization)
+          } else if (challenge.type === 'dns-01') {
+            log('Creating DNS-01 challenge for %s', authz.identifier.value)
             Odac.server('DNS').record({
               name: '_acme-challenge.' + authz.identifier.value,
               type: 'TXT',
@@ -172,8 +175,11 @@ class SSL {
           }
         },
         challengeRemoveFn: async (authz, challenge, keyAuthorization) => {
-          if (challenge.type === 'dns-01') {
-            log('Removing DNS challenge for %s', authz.identifier.value)
+          if (challenge.type === 'http-01') {
+            log('Removing HTTP-01 challenge for %s (token: %.8s...)', authz.identifier.value, challenge.token)
+            await Odac.server('Proxy').deleteACMEChallenge(challenge.token)
+          } else if (challenge.type === 'dns-01') {
+            log('Removing DNS-01 challenge for %s', authz.identifier.value)
             Odac.server('DNS').delete({
               name: '_acme-challenge.' + authz.identifier.value,
               type: 'TXT',

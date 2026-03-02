@@ -212,6 +212,56 @@ class OdacProxy {
     }
   }
 
+  /**
+   * Removes an ACME HTTP-01 challenge token from the Go proxy.
+   * Called after Let's Encrypt completes or abandons validation.
+   * @param {string} token - The ACME challenge token to remove
+   */
+  async deleteACMEChallenge(token) {
+    if (!this.#proxyProcess) return
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return
+
+    try {
+      const payload = {token}
+      if (this.#proxySocketPath) {
+        await axios.delete('http://localhost/acme/challenge', {
+          data: payload,
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        await axios.delete(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, {data: payload})
+      }
+    } catch (e) {
+      if (typeof error !== 'undefined') error('Failed to delete ACME challenge token: %s', e.message)
+    }
+  }
+
+  /**
+   * Sends an ACME HTTP-01 challenge token to the Go proxy for serving.
+   * The proxy will respond to Let's Encrypt at /.well-known/acme-challenge/{token}.
+   * @param {string} token - The ACME challenge token
+   * @param {string} keyAuthorization - The key authorization string to serve
+   */
+  async setACMEChallenge(token, keyAuthorization) {
+    if (!this.#proxyProcess) return
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return
+
+    try {
+      const payload = {keyAuthorization, token}
+      if (this.#proxySocketPath) {
+        await axios.post('http://localhost/acme/challenge', payload, {
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, payload)
+      }
+    } catch (e) {
+      if (typeof error !== 'undefined') error('Failed to set ACME challenge token: %s', e.message)
+    }
+  }
+
   start() {
     this.#active = true
     this.spawnProxy()

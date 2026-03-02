@@ -83,13 +83,15 @@ func (bufferPool) Put(buf []byte) {
 }
 
 type Proxy struct {
-	domains      map[string]config.Website
-	sslCache     map[string]*tls.Certificate
-	ocspCache    map[string]*ocspCacheEntry // OCSP response cache
-	globalSSL    *config.SSL
-	mu           sync.RWMutex
-	reverseProxy *httputil.ReverseProxy
-	httpClient   *http.Client // For OCSP requests
+	acmeChallenges map[string]string          // ACME HTTP-01 challenge tokens: token -> keyAuthorization
+	acmeMu         sync.RWMutex               // Separate mutex for ACME challenges to avoid contention
+	domains        map[string]config.Website
+	sslCache       map[string]*tls.Certificate
+	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
+	globalSSL      *config.SSL
+	mu             sync.RWMutex
+	reverseProxy   *httputil.ReverseProxy
+	httpClient     *http.Client // For OCSP requests
 }
 
 // ocspCacheEntry stores OCSP response with expiration
@@ -100,9 +102,10 @@ type ocspCacheEntry struct {
 
 func NewProxy() *Proxy {
 	p := &Proxy{
-		domains:   make(map[string]config.Website),
-		sslCache:  make(map[string]*tls.Certificate),
-		ocspCache: make(map[string]*ocspCacheEntry),
+		acmeChallenges: make(map[string]string),
+		domains:        make(map[string]config.Website),
+		sslCache:       make(map[string]*tls.Certificate),
+		ocspCache:      make(map[string]*ocspCacheEntry),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // OCSP requests should be fast
 		},
@@ -159,6 +162,23 @@ func NewProxy() *Proxy {
 	}
 
 	return p
+}
+
+// DeleteACMEChallenge removes an HTTP-01 ACME challenge token after validation completes.
+func (p *Proxy) DeleteACMEChallenge(token string) {
+	p.acmeMu.Lock()
+	delete(p.acmeChallenges, token)
+	p.acmeMu.Unlock()
+	log.Printf("ACME HTTP-01 challenge token removed: %.8s...", token)
+}
+
+// SetACMEChallenge stores an HTTP-01 ACME challenge token for Let's Encrypt validation.
+// The token is served at /.well-known/acme-challenge/{token} on port 80.
+func (p *Proxy) SetACMEChallenge(token, keyAuthorization string) {
+	p.acmeMu.Lock()
+	p.acmeChallenges[token] = keyAuthorization
+	p.acmeMu.Unlock()
+	log.Printf("ACME HTTP-01 challenge token set: %.8s...", token)
 }
 
 func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL) {
@@ -286,6 +306,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// HTTP 425 (Too Early) tells the client to retry after handshake completion.
 			w.WriteHeader(http.StatusTooEarly)
 			return
+		}
+	}
+
+	// ACME HTTP-01 Challenge Intercept
+	// Serve challenge responses on plain HTTP BEFORE any redirect or host validation.
+	// Let's Encrypt validates domain ownership via GET http://{domain}/.well-known/acme-challenge/{token}
+	if r.TLS == nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+		token := strings.TrimPrefix(r.URL.Path, "/.well-known/acme-challenge/")
+		if token != "" {
+			p.acmeMu.RLock()
+			keyAuth, exists := p.acmeChallenges[token]
+			p.acmeMu.RUnlock()
+			if exists {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(keyAuth))
+				return
+			}
 		}
 	}
 
