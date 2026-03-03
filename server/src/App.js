@@ -1375,6 +1375,93 @@ class App {
     return Odac.server('Api').result(true, __('Unlinked %s from %s. Restart required to apply.', target, app.name))
   }
 
+  // Port & Volume Management
+
+  /**
+   * Replaces the port mappings for an app with a new set.
+   * Validates each entry for correct structure and port range (1-65535).
+   * Auto-assigns host ports when 'auto' is specified.
+   * @param {string|number} id - App id, name, or file
+   * @param {Array<{host: number|string, container: number}>} ports - New port mappings
+   * @returns {object} Api.result
+   */
+  async setPorts(id, ports) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(ports)) {
+      return Odac.server('Api').result(false, __('Invalid ports payload. Expected an array.'))
+    }
+
+    // Validate each port mapping
+    for (const entry of ports) {
+      if (!entry || typeof entry !== 'object') {
+        return Odac.server('Api').result(false, __('Invalid port entry. Expected {host, container}.'))
+      }
+      if (entry.container === undefined || entry.container === null) {
+        return Odac.server('Api').result(false, __('Each port entry must have a container port.'))
+      }
+      const containerPort = Number(entry.container)
+      if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) {
+        return Odac.server('Api').result(false, __('Invalid container port: %s. Must be 1-65535.', entry.container))
+      }
+      if (entry.host !== undefined && entry.host !== 'auto') {
+        const hostPort = Number(entry.host)
+        if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
+          return Odac.server('Api').result(false, __('Invalid host port: %s. Must be 1-65535 or "auto".', entry.host))
+        }
+      }
+    }
+
+    // Resolve 'auto' host ports
+    const resolved = await this.#preparePorts(ports)
+    app.ports = resolved
+    this.#saveApps()
+
+    return Odac.server('Api').result(true, __('Ports updated for %s. Restart required to apply.', app.name))
+  }
+
+  /**
+   * Replaces the volume mappings for an app with a new set.
+   * Validates each entry for correct structure and ensures container paths are absolute.
+   * Named (relative) host paths are resolved under the app's directory for isolation.
+   * @param {string|number} id - App id, name, or file
+   * @param {Array<{host: string, container: string}>} volumes - New volume mappings
+   * @returns {object} Api.result
+   */
+  setVolumes(id, volumes) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(volumes)) {
+      return Odac.server('Api').result(false, __('Invalid volumes payload. Expected an array.'))
+    }
+
+    // Validate each volume mapping
+    for (const entry of volumes) {
+      if (!entry || typeof entry !== 'object') {
+        return Odac.server('Api').result(false, __('Invalid volume entry. Expected {host, container}.'))
+      }
+      if (!entry.container || typeof entry.container !== 'string') {
+        return Odac.server('Api').result(false, __('Each volume entry must have a container path string.'))
+      }
+      if (!entry.host || typeof entry.host !== 'string') {
+        return Odac.server('Api').result(false, __('Each volume entry must have a host path string.'))
+      }
+    }
+
+    // Resolve named volumes relative to app directory
+    const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+    app.volumes = this.#prepareVolumes(volumes, appDir)
+    this.#saveApps()
+
+    return Odac.server('Api').result(true, __('Volumes updated for %s. Restart required to apply.', app.name))
+  }
+
   async list(detailed = false) {
     if (this.#apps.length === 0) {
       this.#apps = this.#loadAppsFromConfig()
