@@ -695,6 +695,84 @@ describe('App', () => {
       expect(clientCall.env.BACKEND_SECRET.length).toBe(8)
     })
 
+    test('should resolve container directive in env to container name', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'container-ref',
+        apps: {
+          db: {
+            image: 'postgres:alpine',
+            env: {
+              POSTGRES_PASSWORD: {generate: true},
+              SERVICE_NAME: {type: 'container'}
+            }
+          },
+          web: {
+            image: 'node:lts',
+            linked: ['db'],
+            env: {
+              APP_NAME: {type: 'container'},
+              DB_HOST: '${db.name}'
+            }
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'container-ref', name: 'mystack'})
+      expect(result.success).toBe(true)
+
+      // DB container: SERVICE_NAME should resolve to the DB container name
+      const dbCall = mockRunApp.mock.calls[0][1]
+      expect(dbCall.env.SERVICE_NAME).toBe('mystack-db')
+
+      // Web container: APP_NAME should resolve to the web container name
+      const webCall = mockRunApp.mock.calls[1][1]
+      expect(webCall.env.APP_NAME).toBe('mystack-web')
+    })
+
+    test('should resolve container directive in single-app recipe', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'redis',
+        image: 'redis:alpine',
+        env: {
+          HOSTNAME: {type: 'container'},
+          MODE: 'standalone'
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'redis', name: 'myredis'})
+      expect(result.success).toBe(true)
+
+      const runCall = mockRunApp.mock.calls[0][1]
+      expect(runCall.env.HOSTNAME).toBe('myredis')
+      expect(runCall.env.MODE).toBe('standalone')
+    })
+
+    test('should support explicit type field in env directives', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'typed-stack',
+        apps: {
+          db: {
+            image: 'postgres:alpine',
+            env: {
+              CONTAINER_NAME: {type: 'container'},
+              DB_PASS: {type: 'generate', length: 24},
+              LEGACY_PASS: {generate: true, length: 12},
+              STATIC_VAR: 'hello'
+            }
+          }
+        }
+      })
+
+      const result = await App.create({type: 'app', app: 'typed-stack', name: 'mytyped'})
+      expect(result.success).toBe(true)
+
+      const dbCall = mockRunApp.mock.calls[0][1]
+      expect(dbCall.env.CONTAINER_NAME).toBe('mytyped-db')
+      expect(dbCall.env.DB_PASS).toHaveLength(24)
+      expect(dbCall.env.LEGACY_PASS).toHaveLength(12)
+      expect(dbCall.env.STATIC_VAR).toBe('hello')
+    })
+
     test('should resolve dependency order correctly (3-tier stack)', async () => {
       mockGetApp.mockResolvedValue({
         name: 'three-tier',

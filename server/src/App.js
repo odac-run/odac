@@ -8,6 +8,7 @@ const childProcess = require('child_process')
 const os = require('os')
 const Logger = require('./Container/Logger')
 
+const LEGACY_ENV_DIRECTIVES = new Set(['generate'])
 const SCRIPT_EXTENSIONS = ['.js', '.py', '.php', '.sh', '.rb']
 const SCRIPT_RUNNERS = {
   '.js': {image: 'node:lts-alpine', cmd: 'node', local: 'node'},
@@ -217,7 +218,7 @@ class App {
         image: recipe.image,
         ports: await this.#preparePorts(recipe.ports),
         volumes: this.#prepareVolumes(recipe.volumes, appDir),
-        env: this.#mergeRecipeEnv(recipe, config.env),
+        env: this.#mergeRecipeEnv(recipe, config.env, name),
         active: true,
         created: Date.now(),
         status: 'installing'
@@ -326,10 +327,10 @@ class App {
     }
 
     try {
-      // Phase 3: Pre-generate all environment variables (resolve 'generate' directives)
+      // Phase 3: Pre-generate all environment variables (resolve 'generate' and 'container' directives)
       const envMap = {} // appKey -> resolved manual env
       for (const key of orderedKeys) {
-        envMap[key] = this.#prepareEnv(templateApps[key].env || {})
+        envMap[key] = this.#prepareEnv(templateApps[key].env || {}, nameMap[key])
       }
 
       // Phase 4: Build interpolation context and resolve ${...} template variables
@@ -2227,19 +2228,38 @@ class App {
     return ports
   }
 
-  #prepareEnv(recipeEnv) {
+  #prepareEnv(recipeEnv, containerName = '') {
     if (!recipeEnv) return {}
 
+    const ctx = {containerName}
     const env = {}
     for (const [key, value] of Object.entries(recipeEnv)) {
-      if (typeof value === 'object' && value.generate) {
-        env[key] = this.#generatePassword(value.length || 16)
-      } else {
-        env[key] = value
-      }
+      env[key] = typeof value === 'object' && value !== null ? this.#resolveEnvDirective(value, ctx) : value
     }
 
     return env
+  }
+
+  /**
+   * Resolves a single env directive object into its runtime value.
+   * Supports explicit {type: 'x', ...} format and legacy shorthand (e.g. {generate: true}).
+   * New directives can be added by extending the switch cases.
+   *
+   * @param {object} directive - Directive object from recipe env definition
+   * @param {object} ctx - Resolution context (containerName, etc.)
+   * @returns {*} Resolved value
+   */
+  #resolveEnvDirective(directive, ctx) {
+    const type = directive.type || Object.keys(directive).find(k => LEGACY_ENV_DIRECTIVES.has(k))
+
+    switch (type) {
+      case 'container':
+        return ctx.containerName
+      case 'generate':
+        return this.#generatePassword(directive.length || 16)
+      default:
+        return directive
+    }
   }
 
   // Private: Port Management
@@ -2325,8 +2345,8 @@ class App {
   }
 
   // Private: Env Resolution
-  #mergeRecipeEnv(recipe, userEnv = {}) {
-    const defaultEnv = this.#prepareEnv(recipe.env)
+  #mergeRecipeEnv(recipe, userEnv = {}, containerName = '') {
+    const defaultEnv = this.#prepareEnv(recipe.env, containerName)
     const defaultLinked = recipe.linked || []
 
     const userIsStructured = userEnv.manual || Array.isArray(userEnv.linked)
