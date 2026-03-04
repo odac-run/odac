@@ -58,6 +58,7 @@ class App {
 
   async check() {
     this.#apps = this.#loadAppsFromConfig()
+    let triggeredRun = false
 
     for (const app of this.#apps) {
       if (!app.active) continue
@@ -75,9 +76,15 @@ class App {
       if (!isRunning && app.status === 'running') {
         log('App %s is not running. Restarting...', app.name)
         this.#run(app.id)
+        triggeredRun = true
       } else if (!isRunning && !['stopped', 'errored', 'starting', 'installing'].includes(app.status)) {
         this.#run(app.id)
+        triggeredRun = true
       }
+    }
+
+    if (triggeredRun) {
+      await new Promise(resolve => setImmediate(resolve))
     }
   }
 
@@ -1731,7 +1738,9 @@ class App {
   }
 
   async #runContainer(app, logCtrl = null) {
-    if (!Odac.server('Container').available) {
+    const container = Odac.server('Container')
+
+    if (!container.available) {
       throw new Error('Docker is not available via Container service.')
     }
 
@@ -1740,7 +1749,9 @@ class App {
 
     // Pull image FIRST so all subsequent inspections (port, user) have metadata available.
     // Without this, getImageExposedPorts and getImageUser fail on un-pulled images → null results.
-    await Odac.server('Container').ensureImage(app.image, logCtrl)
+    if (typeof container.ensureImage === 'function') {
+      await container.ensureImage(app.image, logCtrl)
+    }
 
     // Port Resolution: Detect from image EXPOSE or assign default
     const port = await this.#resolveContainerPort(app)
@@ -1767,7 +1778,7 @@ class App {
     // non-root (e.g., node:1000). chmod 0777 ensures any container user can write.
     await this.#fixVolumePermissions(volumes)
 
-    await Odac.server('Container').runApp(
+    await container.runApp(
       app.name,
       {
         image: app.image,
