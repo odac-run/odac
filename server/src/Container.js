@@ -954,16 +954,71 @@ class Container {
     try {
       const container = this.#docker.getContainer(name)
       const data = await container.inspect()
+
+      const networks = data.NetworkSettings && data.NetworkSettings.Networks ? Object.keys(data.NetworkSettings.Networks) : []
+
       return {
         running: data.State.Running,
         restarts: data.RestartCount || 0,
-        startTime: data.State.StartedAt
+        startTime: data.State.StartedAt,
+        networks: networks.length > 0 ? networks : data.HostConfig?.NetworkMode ? [data.HostConfig.NetworkMode] : []
       }
     } catch (err) {
       if (err.statusCode !== 404) {
         error(`Failed to get status for ${name}: ${err.message}`)
       }
       return {running: false, restarts: 0}
+    }
+  }
+
+  /**
+   * Sets the Docker networks for a running container.
+   * Disconnects from removed networks and connects to new ones.
+   * @param {string} name - Container name
+   * @param {string[]} networks - Desired network names
+   * @returns {Promise<{success: boolean, networks: string[]}>}
+   */
+  async setNetworks(name, networks) {
+    if (!this.available) return {success: false, message: 'Docker is not available'}
+
+    try {
+      const container = this.#docker.getContainer(name)
+      const data = await container.inspect()
+
+      const current = data.NetworkSettings && data.NetworkSettings.Networks ? Object.keys(data.NetworkSettings.Networks) : []
+
+      // Ensure all target networks exist
+      for (const net of networks) {
+        await this.#ensureNetwork(net)
+      }
+
+      // Disconnect from networks no longer desired
+      for (const net of current) {
+        if (!networks.includes(net)) {
+          log(`Disconnecting ${name} from network ${net}`)
+          const network = this.#docker.getNetwork(net)
+          await network.disconnect({Container: name})
+        }
+      }
+
+      // Connect to new networks
+      for (const net of networks) {
+        if (!current.includes(net)) {
+          log(`Connecting ${name} to network ${net}`)
+          const network = this.#docker.getNetwork(net)
+          await network.connect({Container: name})
+        }
+      }
+
+      // Refresh and return final state
+      const updated = await container.inspect()
+      const final = updated.NetworkSettings && updated.NetworkSettings.Networks ? Object.keys(updated.NetworkSettings.Networks) : []
+
+      log(`Networks updated for ${name}: [${final.join(', ')}]`)
+      return {success: true, networks: final}
+    } catch (err) {
+      error(`Failed to set networks for ${name}: ${err.message}`)
+      return {success: false, message: err.message}
     }
   }
 }

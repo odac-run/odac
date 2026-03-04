@@ -59,7 +59,11 @@ class Hub {
         interval: 30 * 60 * 1000,
         lastRun: 0
       },
-      'app.ports.set': {
+      'app.network.set': {
+        fn: payload => Odac.server('App').setNetworks(payload.name || payload.id, payload.networks),
+        triggers: ['app.list']
+      },
+      'app.port.set': {
         fn: payload => Odac.server('App').setPorts(payload.name || payload.id, payload.ports),
         triggers: ['app.list']
       },

@@ -1469,6 +1469,45 @@ class App {
     return Odac.server('Api').result(true, __('Volumes updated for %s. Restart required to apply.', app.name))
   }
 
+  /**
+   * Updates the Docker networks for a running app container.
+   * Validates network names and delegates to Container.setNetworks.
+   * @param {string|number} id - App id, name, or file
+   * @param {string[]} networks - Desired network names
+   * @returns {object} Api.result
+   */
+  async setNetworks(id, networks) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(networks)) {
+      return Odac.server('Api').result(false, __('Invalid networks payload. Expected an array of network names.'))
+    }
+
+    // Validate each network name (alphanumeric, hyphens, underscores)
+    const validName = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
+    for (const net of networks) {
+      if (typeof net !== 'string' || !validName.test(net)) {
+        return Odac.server('Api').result(false, __('Invalid network name: %s', net))
+      }
+    }
+
+    const container = Odac.server('Container')
+    const status = await container.getStatus(app.name)
+    if (!status.running) {
+      return Odac.server('Api').result(false, __('App %s is not running. Start the app first.', app.name))
+    }
+
+    const result = await container.setNetworks(app.name, networks)
+    if (!result.success) {
+      return Odac.server('Api').result(false, result.message || __('Failed to update networks for %s.', app.name))
+    }
+
+    return Odac.server('Api').result(true, __('Networks updated for %s: %s', app.name, result.networks.join(', ')))
+  }
+
   async list(detailed = false) {
     if (this.#apps.length === 0) {
       this.#apps = this.#loadAppsFromConfig()
@@ -1506,6 +1545,9 @@ class App {
       }
 
       copy.status = isRunning ? 'running' : 'stopped'
+      if (statusInfo.networks) {
+        copy.networks = statusInfo.networks
+      }
       if (isRunning && statusInfo.startTime) {
         copy.started = new Date(statusInfo.startTime).getTime()
       }
