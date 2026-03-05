@@ -404,9 +404,9 @@ describe('Hub', () => {
   })
 
   describe('port and volume commands', () => {
-    it('should register app.ports.set command with triggers', () => {
-      expect(Hub.commands['app.ports.set']).toBeDefined()
-      expect(Hub.commands['app.ports.set'].triggers).toEqual(['app.list'])
+    it('should register app.port.set command with triggers', () => {
+      expect(Hub.commands['app.port.set']).toBeDefined()
+      expect(Hub.commands['app.port.set'].triggers).toEqual(['app.list'])
     })
 
     it('should register app.volumes.set command with triggers', () => {
@@ -414,11 +414,11 @@ describe('Hub', () => {
       expect(Hub.commands['app.volumes.set'].triggers).toEqual(['app.list'])
     })
 
-    it('should call App.setPorts via app.ports.set command', () => {
+    it('should call App.setPorts via app.port.set command', () => {
       const mockSetPorts = jest.fn().mockResolvedValue({success: true, message: 'Ports updated'})
       mockOdac.setMock('server', 'App', {setPorts: mockSetPorts})
 
-      Hub.commands['app.ports.set'].fn({name: 'my-app', ports: [{host: 8080, container: 80}]})
+      Hub.commands['app.port.set'].fn({name: 'my-app', ports: [{host: 8080, container: 80}]})
 
       expect(mockSetPorts).toHaveBeenCalledWith('my-app', [{host: 8080, container: 80}])
     })
@@ -437,7 +437,7 @@ describe('Hub', () => {
       const mockSetPorts = jest.fn().mockResolvedValue({success: true, message: 'Ports updated'})
       mockOdac.setMock('server', 'App', {setPorts: mockSetPorts})
 
-      Hub.commands['app.ports.set'].fn({id: 'app-123', ports: [{host: 8080, container: 80}]})
+      Hub.commands['app.port.set'].fn({id: 'app-123', ports: [{host: 8080, container: 80}]})
 
       expect(mockSetPorts).toHaveBeenCalledWith('app-123', [{host: 8080, container: 80}])
     })
