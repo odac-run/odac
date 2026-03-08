@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
+
+  - package-ecosystem: "gomod"
+    directory: "/server/proxy"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
