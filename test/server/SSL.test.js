@@ -105,9 +105,9 @@ describe('SSL', () => {
 
     // Setup Proxy mock for ACME HTTP-01 challenge management
     mockOdac.setMock('server', 'Proxy', {
-      deleteACMEChallenge: jest.fn().mockResolvedValue(),
-      setACMEChallenge: jest.fn().mockResolvedValue(),
-      syncConfig: jest.fn().mockResolvedValue()
+      deleteACMEChallenge: jest.fn().mockResolvedValue(undefined),
+      setACMEChallenge: jest.fn().mockResolvedValue(undefined),
+      syncConfig: jest.fn().mockResolvedValue(undefined)
     })
 
     // Global translation mock
