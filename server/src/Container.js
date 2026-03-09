@@ -500,55 +500,6 @@ class Container {
   }
 
   /**
-   * Runs a short-lived init container to fix volume permissions.
-   * Executes as root with the same volume mounts, runs the given command, then removes itself.
-   * Uses --rm semantics (AutoRemove) so no cleanup is needed.
-   *
-   * @param {string} imageName - Docker image to use (same as app image for layer cache)
-   * @param {Array<{host: string, container: string}>} volumes - Volume mappings
-   * @param {string} command - Shell command to execute (e.g., 'chown -R node /data')
-   */
-  async runInit(imageName, volumes, command) {
-    if (!this.available) return
-
-    const bindings = []
-    if (volumes) {
-      for (const vol of volumes) {
-        const hostPath = this.#resolveHostPath(vol.host)
-        bindings.push(`${hostPath}:${vol.container.replace(/:ro$/, '')}`)
-      }
-    }
-
-    const initName = `odac-init-${Date.now()}`
-
-    try {
-      const container = await this.#docker.createContainer({
-        Image: imageName,
-        name: initName,
-        Cmd: ['sh', '-c', command],
-        User: 'root',
-        HostConfig: {
-          AutoRemove: true,
-          Binds: bindings
-        }
-      })
-
-      await container.start()
-      await container.wait()
-    } catch (err) {
-      // Cleanup on failure (AutoRemove may not trigger if create failed)
-      try {
-        const c = this.#docker.getContainer(initName)
-        await c.remove({force: true})
-      } catch {
-        /* ignore */
-      }
-
-      throw err
-    }
-  }
-
-  /**
    * Generic method to run any app container
    * @param {string} name - Unique container name
    * @param {Object} options - Configuration options
