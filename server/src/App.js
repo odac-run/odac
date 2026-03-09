@@ -1856,11 +1856,19 @@ class App {
   async #fixVolumePermissions(volumes) {
     if (!volumes || volumes.length === 0) return
 
+    const appsPath = path.resolve(Odac.core('Config').config.app.path)
+
     for (const vol of volumes) {
       // Skip read-only mounts
       if (vol.container.endsWith(':ro')) continue
       // Skip unresolved or non-absolute host paths
       if (!vol.host || !path.isAbsolute(vol.host)) continue
+
+      const resolvedHost = path.resolve(vol.host)
+      if (!resolvedHost.startsWith(appsPath)) {
+        error('FixVolPerms: Skipping chmod on path outside app directory for security: %s', vol.host)
+        continue
+      }
 
       try {
         await fs.promises.mkdir(vol.host, {recursive: true})
