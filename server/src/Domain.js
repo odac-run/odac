@@ -243,6 +243,8 @@ class Domain {
       // Phase 3: Delete DNS records (skip for localhost and IP addresses)
       if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
         try {
+          const dkimSelector = domainRecord.cert?.dkim?.selector || 'default'
+
           // Delete all DNS records associated with this domain
           const recordsToDelete = [
             {name: domain, type: 'A'},
@@ -252,7 +254,7 @@ class Domain {
             {name: domain, type: 'MX'},
             {name: domain, type: 'TXT'},
             {name: '_dmarc.' + domain, type: 'TXT'},
-            {name: 'default._domainkey.' + domain, type: 'TXT'}
+            {name: `${dkimSelector}._domainkey.` + domain, type: 'TXT'}
           ]
 
           for (const record of recordsToDelete) {
