@@ -38,7 +38,6 @@
     "find-process": "^2.0.0",
     "mailparser": "^3.9.1",
     "native-dns": "^0.7.0",
-    "node-forge": "^1.3.3",
     "selfsigned": "^2.4.1",
     "smtp-server": "^3.17.1",
     "sqlite3": "^5.1.7",

@@ -8,6 +8,7 @@ const childProcess = require('child_process')
 const os = require('os')
 const Logger = require('./Container/Logger')
 
+const LEGACY_ENV_DIRECTIVES = new Set(['generate'])
 const SCRIPT_EXTENSIONS = ['.js', '.py', '.php', '.sh', '.rb']
 const SCRIPT_RUNNERS = {
   '.js': {image: 'node:lts-alpine', cmd: 'node', local: 'node'},
@@ -58,6 +59,7 @@ class App {
 
   async check() {
     this.#apps = this.#loadAppsFromConfig()
+    let triggeredRun = false
 
     for (const app of this.#apps) {
       if (!app.active) continue
@@ -75,9 +77,15 @@ class App {
       if (!isRunning && app.status === 'running') {
         log('App %s is not running. Restarting...', app.name)
         this.#run(app.id)
+        triggeredRun = true
       } else if (!isRunning && !['stopped', 'errored', 'starting', 'installing'].includes(app.status)) {
         this.#run(app.id)
+        triggeredRun = true
       }
+    }
+
+    if (triggeredRun) {
+      await new Promise(resolve => setImmediate(resolve))
     }
   }
 
@@ -138,6 +146,8 @@ class App {
         return this.#createFromGit(config)
       case 'github':
         return this.#createFromGithub(config)
+      case 'template':
+        return this.#createFromTemplatePayload(config)
       default:
         return Odac.server('Api').result(false, __('Unknown config type: %s', config.type))
     }
@@ -160,6 +170,12 @@ class App {
     } catch (e) {
       error('createFromRecipe: Failed to fetch recipe: %s', e)
       return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', appType, e))
+    }
+
+    // Template Detection: Multi-app stacks (e.g. WordPress + MariaDB) are delegated to the template handler
+    if (recipe.apps && typeof recipe.apps === 'object' && Object.keys(recipe.apps).length > 0) {
+      const baseName = customName || this.#generateUniqueName(recipe.name)
+      return this.#createFromTemplate(baseName, recipe, config)
     }
 
     const name = customName || this.#generateUniqueName(recipe.name)
@@ -202,7 +218,7 @@ class App {
         image: recipe.image,
         ports: await this.#preparePorts(recipe.ports),
         volumes: this.#prepareVolumes(recipe.volumes, appDir),
-        env: this.#mergeRecipeEnv(recipe, config.env),
+        env: this.#mergeRecipeEnv(recipe, config.env, name),
         active: true,
         created: Date.now(),
         status: 'installing'
@@ -233,6 +249,206 @@ class App {
     } finally {
       this.#creating.delete(name)
       Odac.server('Container').unregisterBuildLogger(name)
+    }
+  }
+
+  /**
+   * Handles direct template payloads from Hub (type: 'template').
+   * Hub sends the full template data inline — no additional fetch required.
+   * Validates required fields and delegates to the core #createFromTemplate orchestrator.
+   *
+   * @param {object} config - Direct template payload { type, name, apps, ... }
+   * @returns {Promise<object>} Api.result
+   */
+  async #createFromTemplatePayload(config) {
+    const {apps, name} = config
+
+    if (!apps || typeof apps !== 'object' || Object.keys(apps).length === 0) {
+      return Odac.server('Api').result(false, __('Invalid template: no apps defined.'))
+    }
+
+    if (!name) {
+      return Odac.server('Api').result(false, __('Missing template name.'))
+    }
+
+    const hasCloudContainers = Object.values(apps).every(app => app && typeof app === 'object' && app.container)
+    const baseName = hasCloudContainers ? name : this.#generateUniqueName(name)
+    return this.#createFromTemplate(baseName, {name, apps}, config)
+  }
+
+  /**
+   * Deploys a multi-app template stack (e.g. WordPress + MariaDB) as a single atomic operation.
+   * Resolves inter-app dependencies via topological sort, generates secrets,
+   * interpolates template variables, and links apps via env.linked for runtime resolution.
+   * Rollback is automatic on partial failure — no orphan containers are left behind.
+   *
+   * @param {string} baseName - Base name for the stack (e.g. 'myblog')
+   * @param {object} recipe - Template recipe from Hub containing apps map
+   * @param {object} config - Original user config (may contain env overrides)
+   * @returns {Promise<object>} Api.result
+   */
+  async #createFromTemplate(baseName, recipe, config) {
+    log('createFromTemplate: Starting template deployment for %s (%s)', baseName, recipe.name)
+
+    const templateApps = recipe.apps
+    const appKeys = Object.keys(templateApps)
+
+    if (appKeys.length === 0) {
+      return Odac.server('Api').result(false, __('Template %s has no apps defined.', recipe.name))
+    }
+
+    // Phase 1: Resolve dependency order via topological sort (Kahn's O(V+E))
+    let orderedKeys
+    try {
+      orderedKeys = this.#resolveTemplateDependencies(templateApps)
+    } catch (e) {
+      return Odac.server('Api').result(false, e.message)
+    }
+
+    log('createFromTemplate: Dependency order: %j', orderedKeys)
+
+    // Phase 2: Resolve container names — use Cloud-provided names or generate locally
+    const nameMap = {} // appKey -> containerName
+    for (const key of orderedKeys) {
+      const cloudName = templateApps[key].container
+      const containerName = cloudName || this.#generateUniqueName(`${baseName}-${key}`)
+
+      if (this.#get(containerName)) {
+        return Odac.server('Api').result(false, __('App %s already exists', containerName))
+      }
+      if (this.#creating.has(containerName)) {
+        return Odac.server('Api').result(false, __('App %s is already being created', containerName))
+      }
+      nameMap[key] = containerName
+    }
+
+    // Acquire creation locks atomically for all template members
+    for (const key of orderedKeys) {
+      this.#creating.add(nameMap[key])
+    }
+
+    try {
+      // Phase 3: Pre-generate all environment variables (resolve 'generate' and 'container' directives)
+      const envMap = {} // appKey -> resolved manual env
+      for (const key of orderedKeys) {
+        envMap[key] = this.#prepareEnv(templateApps[key].env || {}, nameMap[key])
+      }
+
+      // Phase 4: Build interpolation context and resolve ${...} template variables
+      const context = {}
+      for (const key of orderedKeys) {
+        context[key] = {env: envMap[key], name: nameMap[key]}
+      }
+      for (const key of orderedKeys) {
+        envMap[key] = this.#interpolateTemplateVars(envMap[key], context)
+      }
+
+      // Apply user-provided env overrides (if any)
+      const userEnv = config.env || {}
+      for (const key of orderedKeys) {
+        if (userEnv[key] && typeof userEnv[key] === 'object') {
+          Object.assign(envMap[key], userEnv[key])
+        }
+      }
+
+      // Phase 5: Create and start each app in dependency order
+      const createdApps = []
+      const loggers = new Map() // containerName -> { logger, logCtrl }
+
+      for (const key of orderedKeys) {
+        const appDef = templateApps[key]
+        const containerName = nameMap[key]
+        const appDir = path.join(Odac.core('Config').config.app.path, containerName)
+
+        await fs.promises.mkdir(appDir, {recursive: true})
+
+        // Initialize build logger for this template member
+        const logger = this.#getLoggerInstance(containerName)
+        Odac.server('Container').registerBuildLogger(containerName, logger)
+        await logger.init()
+
+        const buildId = this.#generateRuntimeId('build')
+        const logCtrl = logger.createBuildStream(buildId, {
+          image: appDef.image,
+          strategy: 'template-app',
+          template: {group: baseName, role: key}
+        })
+        loggers.set(containerName, {logCtrl, logger})
+
+        // Resolve linked container names for this template member
+        const linkedNames = (appDef.linked || []).map(depKey => nameMap[depKey]).filter(Boolean)
+
+        const app = {
+          id: this.#getNextId(),
+          name: containerName,
+          type: 'container',
+          image: appDef.image,
+          ports: await this.#preparePorts(appDef.ports),
+          volumes: this.#prepareVolumes(appDef.volumes, appDir),
+          env: {
+            manual: envMap[key],
+            linked: linkedNames
+          },
+          template: {
+            group: baseName,
+            name: recipe.name,
+            role: key
+          },
+          active: true,
+          created: Date.now(),
+          status: 'installing'
+        }
+
+        this.#apps.push(app)
+        this.#saveApps()
+
+        log('createFromTemplate: Starting %s [%s] (%s)...', containerName, key, appDef.image)
+
+        try {
+          if (!(await this.#run(app.id, logCtrl))) {
+            throw new Error('Container run returned false')
+          }
+          await logCtrl.finalize(true)
+        } catch (runErr) {
+          if (logCtrl) await logCtrl.finalize(false)
+          throw new Error(__('Failed to start %s (%s): %s', containerName, key, runErr.message))
+        }
+
+        createdApps.push(app)
+        log('createFromTemplate: %s started successfully', containerName)
+      }
+
+      // Notify Hub
+      Odac.server('Hub').trigger('app.list')
+
+      const names = createdApps.map(a => a.name).join(', ')
+      return Odac.server('Api').result(true, __('Template %s deployed successfully: %s', recipe.name, names))
+    } catch (e) {
+      error('createFromTemplate: Deployment failed, initiating rollback: %s', e.message)
+
+      // Rollback: Stop and remove all partially created apps
+      const rollbackApps = this.#apps.filter(a => a.template?.group === baseName && a.template?.name === recipe.name)
+      for (const app of rollbackApps) {
+        try {
+          await this.stop(app.id)
+          await Odac.server('Container').remove(app.name)
+        } catch {
+          /* ignore rollback errors */
+        }
+      }
+
+      // Remove from app list
+      const rollbackIds = new Set(rollbackApps.map(a => a.id))
+      this.#apps = this.#apps.filter(a => !rollbackIds.has(a.id))
+      this.#saveApps()
+
+      return Odac.server('Api').result(false, e.message)
+    } finally {
+      // Release all creation locks and unregister build loggers
+      for (const key of orderedKeys) {
+        this.#creating.delete(nameMap[key])
+        Odac.server('Container').unregisterBuildLogger(nameMap[key])
+      }
     }
   }
 
@@ -485,20 +701,28 @@ class App {
         // It might be an ephemeral/debug port (like 45769) while the main port (3000) is starting.
         // We give it 5 seconds (attempts < 5) to see if the expected port appears.
         if (attempts >= 5) {
-          // Timeout reached, accept the random port
-          // Prefer 80/8080/3000 if available in the list to avoid random ancillary ports
-          const preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
+          let preferred = null
+
+          // HTTP Probe: When multiple ports are open, identify the actual HTTP port
+          // by sending a HEAD request. DB/Redis/WS-only ports won't respond to HTTP.
+          const containerIP = await container.getIP(app.name)
+          if (containerIP && listeningPorts.length > 1) {
+            preferred = await this.#detectHttpPort(containerIP, listeningPorts)
+            if (preferred) {
+              log('Auto-Discovery: HTTP probe identified port %d for app %s', preferred, app.name)
+            }
+          }
+
+          // Fallback: well-known HTTP ports, then first available
+          if (!preferred) {
+            preferred = listeningPorts.find(p => [80, 8080, 3000, 5000].includes(p)) || listeningPorts[0]
+          }
 
           log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, expectedPort)
           app.ports = [{container: preferred}]
 
-          // Also try to capture and save the current IP to "warm up" the cache
-          try {
-            const currentIP = await container.getIP(app.name)
-            if (currentIP) app.ip = currentIP
-          } catch {
-            /* ignore */
-          }
+          // Cache container IP for zero-downtime Proxy routing
+          if (containerIP) app.ip = containerIP
 
           this.#saveApps()
 
@@ -515,6 +739,54 @@ class App {
 
     // Retry after 1 second
     setTimeout(() => this.#pollForPort(app, expectedPort, attempts + 1), 1000)
+  }
+
+  /**
+   * Probes multiple container ports to detect which one speaks HTTP.
+   * Sends a minimal HEAD request to each port in parallel with a short timeout.
+   * Non-HTTP services (databases, message queues, raw TCP) will not respond with valid HTTP.
+   *
+   * @param {string} ip - Container IP address (Docker network)
+   * @param {number[]} ports - Array of listening ports to probe
+   * @param {number} [timeout=1500] - Per-port probe timeout in ms
+   * @returns {Promise<number|null>} The detected HTTP port, or null if none found
+   */
+  async #detectHttpPort(ip, ports, timeout = 1500) {
+    const probes = ports.map(
+      port =>
+        new Promise(resolve => {
+          const req = http.request(
+            {
+              hostname: ip,
+              method: 'HEAD',
+              path: '/',
+              port,
+              timeout
+            },
+            res => {
+              // Any HTTP response (even 4xx/5xx) confirms this port speaks HTTP
+              res.destroy()
+              resolve(port)
+            }
+          )
+
+          req.on('error', () => resolve(null))
+          req.on('timeout', () => {
+            req.destroy()
+            resolve(null)
+          })
+
+          req.end()
+        })
+    )
+
+    const results = await Promise.all(probes)
+    const httpPorts = results.filter(p => p !== null)
+
+    if (httpPorts.length === 0) return null
+
+    // If multiple ports respond to HTTP, prefer well-known HTTP ports
+    return httpPorts.find(p => [80, 443, 8080, 3000, 5000, 8000].includes(p)) || httpPorts[0]
   }
 
   async stopAll() {
@@ -651,11 +923,13 @@ class App {
     log('Restarting app %s', app.name)
 
     // Check if Zero-Downtime Deployment (ZDD) is applicable.
-    // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
+    // ZDD requires: 1) Git-based app (deterministic image builds), 2) At least one domain for Proxy routing.
+    // Container (recipe) apps are excluded — they use pre-built images where Blue-Green adds
+    // complexity without benefit (no build step, just pull & restart).
     const domainsConfig = Odac.core('Config').config.domains || {}
     const hasDomains = Object.values(domainsConfig).some(d => d.appId === app.name || d.appId === app.id)
 
-    if ((app.type === 'git' || app.type === 'container') && hasDomains) {
+    if (app.type === 'git' && hasDomains) {
       log('ZDD enabled for %s (Has Domains). Executing Blue-Green restart.', app.name)
 
       // Concurrency guard: prevent parallel operations on the same app
@@ -1110,6 +1384,132 @@ class App {
     return Odac.server('Api').result(true, __('Unlinked %s from %s. Restart required to apply.', target, app.name))
   }
 
+  // Port & Volume Management
+
+  /**
+   * Replaces the port mappings for an app with a new set.
+   * Validates each entry for correct structure and port range (1-65535).
+   * Auto-assigns host ports when 'auto' is specified.
+   * @param {string|number} id - App id, name, or file
+   * @param {Array<{host: number|string, container: number}>} ports - New port mappings
+   * @returns {object} Api.result
+   */
+  async setPorts(id, ports) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(ports)) {
+      return Odac.server('Api').result(false, __('Invalid ports payload. Expected an array.'))
+    }
+
+    // Validate each port mapping
+    for (const entry of ports) {
+      if (!entry || typeof entry !== 'object') {
+        return Odac.server('Api').result(false, __('Invalid port entry. Expected {host, container}.'))
+      }
+      if (entry.container === undefined || entry.container === null) {
+        return Odac.server('Api').result(false, __('Each port entry must have a container port.'))
+      }
+      const containerPort = Number(entry.container)
+      if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) {
+        return Odac.server('Api').result(false, __('Invalid container port: %s. Must be 1-65535.', entry.container))
+      }
+      if (entry.host !== undefined && entry.host !== 'auto') {
+        const hostPort = Number(entry.host)
+        if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
+          return Odac.server('Api').result(false, __('Invalid host port: %s. Must be 1-65535 or "auto".', entry.host))
+        }
+      }
+    }
+
+    // Resolve 'auto' host ports
+    const resolved = await this.#preparePorts(ports)
+    app.ports = resolved
+    this.#saveApps()
+
+    return Odac.server('Api').result(true, __('Ports updated for %s. Restart required to apply.', app.name))
+  }
+
+  /**
+   * Replaces the volume mappings for an app with a new set.
+   * Validates each entry for correct structure and ensures container paths are absolute.
+   * Named (relative) host paths are resolved under the app's directory for isolation.
+   * @param {string|number} id - App id, name, or file
+   * @param {Array<{host: string, container: string}>} volumes - New volume mappings
+   * @returns {object} Api.result
+   */
+  setVolumes(id, volumes) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(volumes)) {
+      return Odac.server('Api').result(false, __('Invalid volumes payload. Expected an array.'))
+    }
+
+    // Validate each volume mapping
+    for (const entry of volumes) {
+      if (!entry || typeof entry !== 'object') {
+        return Odac.server('Api').result(false, __('Invalid volume entry. Expected {host, container}.'))
+      }
+      if (!entry.container || typeof entry.container !== 'string') {
+        return Odac.server('Api').result(false, __('Each volume entry must have a container path string.'))
+      }
+      if (!entry.host || typeof entry.host !== 'string') {
+        return Odac.server('Api').result(false, __('Each volume entry must have a host path string.'))
+      }
+    }
+
+    // Resolve named volumes relative to app directory
+    const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+    app.volumes = this.#prepareVolumes(volumes, appDir)
+    this.#saveApps()
+
+    return Odac.server('Api').result(true, __('Volumes updated for %s. Restart required to apply.', app.name))
+  }
+
+  /**
+   * Updates the Docker networks for a running app container.
+   * Validates network names and delegates to Container.setNetworks.
+   * @param {string|number} id - App id, name, or file
+   * @param {string[]} networks - Desired network names
+   * @returns {object} Api.result
+   */
+  async setNetworks(id, networks) {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!Array.isArray(networks)) {
+      return Odac.server('Api').result(false, __('Invalid networks payload. Expected an array of network names.'))
+    }
+
+    // Validate each network name (alphanumeric, hyphens, underscores)
+    const validName = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
+    for (const net of networks) {
+      if (typeof net !== 'string' || !validName.test(net)) {
+        return Odac.server('Api').result(false, __('Invalid network name: %s', net))
+      }
+    }
+
+    const container = Odac.server('Container')
+    const status = await container.getStatus(app.name)
+    if (!status.running) {
+      return Odac.server('Api').result(false, __('App %s is not running. Start the app first.', app.name))
+    }
+
+    const result = await container.setNetworks(app.name, networks)
+    if (!result.success) {
+      return Odac.server('Api').result(false, result.message || __('Failed to update networks for %s.', app.name))
+    }
+
+    return Odac.server('Api').result(true, __('Networks updated for %s: %s', app.name, result.networks.join(', ')))
+  }
+
   async list(detailed = false) {
     if (this.#apps.length === 0) {
       this.#apps = this.#loadAppsFromConfig()
@@ -1147,6 +1547,9 @@ class App {
       }
 
       copy.status = isRunning ? 'running' : 'stopped'
+      if (statusInfo.networks) {
+        copy.networks = statusInfo.networks
+      }
       if (isRunning && statusInfo.startTime) {
         copy.started = new Date(statusInfo.startTime).getTime()
       }
@@ -1379,15 +1782,29 @@ class App {
   }
 
   async #runContainer(app, logCtrl = null) {
-    if (!Odac.server('Container').available) {
+    const container = Odac.server('Container')
+
+    if (!container.available) {
       throw new Error('Docker is not available via Container service.')
     }
 
     // Canonical identity for API tokens (survives Blue-Green rename)
     const appIdentity = app._appIdentity || app.name
 
+    // Pull image FIRST so all subsequent inspections (port, user) have metadata available.
+    // Without this, getImageExposedPorts and getImageUser fail on un-pulled images → null results.
+    if (typeof container.ensureImage === 'function') {
+      await container.ensureImage(app.image, logCtrl)
+    }
+
+    // Port Resolution: Detect from image EXPOSE or assign default
+    const port = await this.#resolveContainerPort(app)
+
     const env = this.#resolveEnv(app)
     const volumes = [...(app.volumes || [])]
+
+    // Inject PORT env so well-behaved apps can discover their port
+    if (port) env.PORT = port.toString()
 
     // API Permission Injection
     if (app.api) {
@@ -1400,11 +1817,18 @@ class App {
       }
     }
 
-    await Odac.server('Container').runApp(
+    // Fix volume permissions before starting the app container.
+    // Host-created directories default to root:root 0755, but many images run as
+    // non-root (e.g., node:1000). chmod 0777 ensures any container user can write.
+    await this.#fixVolumePermissions(volumes)
+
+    await container.runApp(
       app.name,
       {
         image: app.image,
-        ports: app.ports,
+        // Only pass ports with host binding to Docker. Internal-only ports (container-only)
+        // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
+        ports: (app.ports || []).filter(p => p.host),
         volumes,
         env
       },
@@ -1412,6 +1836,86 @@ class App {
     )
 
     await this.#attachLogger(app)
+
+    // Runtime Port Discovery:
+    // Verify the container is actually listening on the expected port.
+    // Handles images that ignore PORT env var or have no EXPOSE metadata.
+    this.#pollForPort(app, port || 3000)
+  }
+
+  /**
+   * Ensures volume host directories are writable by any container user.
+   * Many Docker images run as non-root (e.g., node:1000) but host-created
+   * directories default to root:root 0755, causing EACCES on write.
+   *
+   * Sets 0o777 on each volume's host directory directly from the ODAC process.
+   * This is the most reliable approach — no init containers, no user detection,
+   * works regardless of image USER directive or /etc/passwd contents.
+   *
+   * @param {Array<{host: string, container: string}>} volumes - Volume mappings
+   */
+  async #fixVolumePermissions(volumes) {
+    if (!volumes || volumes.length === 0) return
+
+    const appsPath = path.resolve(Odac.core('Config').config.app.path)
+
+    for (const vol of volumes) {
+      // Skip read-only mounts
+      if (vol.container.endsWith(':ro')) continue
+      // Skip unresolved or non-absolute host paths
+      if (!vol.host || !path.isAbsolute(vol.host)) continue
+
+      const resolvedHost = path.resolve(vol.host)
+      if (!resolvedHost.startsWith(appsPath)) {
+        error('FixVolPerms: Skipping chmod on path outside app directory for security: %s', vol.host)
+        continue
+      }
+
+      try {
+        await fs.promises.mkdir(vol.host, {recursive: true})
+        await fs.promises.chmod(vol.host, 0o777)
+        log('FixVolPerms: Set 0777 on %s', vol.host)
+      } catch (e) {
+        error('FixVolPerms: chmod failed for %s: %s', vol.host, e.message)
+      }
+    }
+  }
+
+  /**
+   * Resolves the internal port for a container app.
+   * Priority: existing config > image EXPOSE metadata > default (3000).
+   * Persists the result so Proxy can route immediately.
+   *
+   * @param {object} app - App record
+   * @returns {Promise<number>} Resolved container port
+   */
+  async #resolveContainerPort(app) {
+    // Priority 1: Already configured
+    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
+      return app.ports[0].container
+    }
+
+    // Priority 2: Auto-detect from Docker image EXPOSE
+    if (app.image) {
+      try {
+        const exposed = await Odac.server('Container').getImageExposedPorts(app.image)
+        if (exposed && exposed.length > 0) {
+          const detected = exposed[0]
+          log('Port Auto-Detect: Discovered port %d from image EXPOSE for app %s', detected, app.name)
+          app.ports = [{container: detected}]
+          this.#saveApps()
+          return detected
+        }
+      } catch (e) {
+        error('Port Auto-Detect: Failed to inspect image for app %s: %s', app.name, e.message)
+      }
+    }
+
+    // Priority 3: Fallback to default
+    log('Port Auto-Detect: No port info available for app %s. Assigning default 3000.', app.name)
+    app.ports = [{container: 3000}]
+    this.#saveApps()
+    return 3000
   }
 
   async #attachLogger(app) {
@@ -1710,8 +2214,10 @@ class App {
     return recipeVolumes.map(vol => {
       let host = vol.host
 
-      if (host === 'data') {
-        host = path.join(appDir, 'data')
+      // Named volumes (non-absolute paths like 'data', 'config', 'workspace')
+      // are resolved under the app's dedicated directory for isolation.
+      if (host && !path.isAbsolute(host)) {
+        host = path.join(appDir, host)
         if (!fs.existsSync(host)) fs.mkdirSync(host, {recursive: true})
       }
 
@@ -1731,19 +2237,38 @@ class App {
     return ports
   }
 
-  #prepareEnv(recipeEnv) {
+  #prepareEnv(recipeEnv, containerName = '') {
     if (!recipeEnv) return {}
 
+    const ctx = {containerName}
     const env = {}
     for (const [key, value] of Object.entries(recipeEnv)) {
-      if (typeof value === 'object' && value.generate) {
-        env[key] = this.#generatePassword(value.length || 16)
-      } else {
-        env[key] = value
-      }
+      env[key] = typeof value === 'object' && value !== null ? this.#resolveEnvDirective(value, ctx) : value
     }
 
     return env
+  }
+
+  /**
+   * Resolves a single env directive object into its runtime value.
+   * Supports explicit {type: 'x', ...} format and legacy shorthand (e.g. {generate: true}).
+   * New directives can be added by extending the switch cases.
+   *
+   * @param {object} directive - Directive object from recipe env definition
+   * @param {object} ctx - Resolution context (containerName, etc.)
+   * @returns {*} Resolved value
+   */
+  #resolveEnvDirective(directive, ctx) {
+    const type = directive.type || Object.keys(directive).find(k => LEGACY_ENV_DIRECTIVES.has(k))
+
+    switch (type) {
+      case 'container':
+        return ctx.containerName
+      case 'generate':
+        return this.#generatePassword(directive.length || 16)
+      default:
+        return directive
+    }
   }
 
   // Private: Port Management
@@ -1774,9 +2299,63 @@ class App {
     })
   }
 
+  /**
+   * Performs topological sort on template app definitions based on linked dependencies.
+   * Uses Kahn's algorithm for O(V+E) performance. Detects circular dependencies.
+   *
+   * @param {object} templateApps - Map of appKey -> { linked?: string[], ... }
+   * @returns {string[]} Ordered array of app keys (dependencies first)
+   * @throws {Error} If circular dependencies detected or a dependency is undefined
+   */
+  #resolveTemplateDependencies(templateApps) {
+    const keys = Object.keys(templateApps)
+    const adjacency = {} // dep -> [dependents]
+    const inDegree = {} // key -> number of incoming edges
+
+    // Initialize graph
+    for (const key of keys) {
+      adjacency[key] = []
+      inDegree[key] = 0
+    }
+
+    // Build edges: if Web depends on DB, edge DB -> Web (DB must come first)
+    for (const key of keys) {
+      const deps = templateApps[key].linked || []
+      for (const dep of deps) {
+        if (!adjacency[dep]) {
+          throw new Error(__('Template dependency "%s" (required by "%s") is not defined.', dep, key))
+        }
+        adjacency[dep].push(key)
+        inDegree[key]++
+      }
+    }
+
+    // Kahn's Algorithm: BFS from nodes with zero in-degree
+    const queue = keys.filter(k => inDegree[k] === 0)
+    const sorted = []
+
+    while (queue.length > 0) {
+      const node = queue.shift()
+      sorted.push(node)
+
+      for (const neighbor of adjacency[node]) {
+        inDegree[neighbor]--
+        if (inDegree[neighbor] === 0) {
+          queue.push(neighbor)
+        }
+      }
+    }
+
+    if (sorted.length !== keys.length) {
+      throw new Error(__('Circular dependency detected in template.'))
+    }
+
+    return sorted
+  }
+
   // Private: Env Resolution
-  #mergeRecipeEnv(recipe, userEnv = {}) {
-    const defaultEnv = this.#prepareEnv(recipe.env)
+  #mergeRecipeEnv(recipe, userEnv = {}, containerName = '') {
+    const defaultEnv = this.#prepareEnv(recipe.env, containerName)
     const defaultLinked = recipe.linked || []
 
     const userIsStructured = userEnv.manual || Array.isArray(userEnv.linked)
@@ -1818,6 +2397,47 @@ class App {
     // Note: checking .linked presence is important because an app might have linked apps but empty manual envs.
     const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
     return isNewStructure ? envConfig.manual || {} : envConfig
+  }
+
+  /**
+   * Resolves template variable references in environment values.
+   * Supports ${appKey.name} for container name and ${appKey.env.VAR} for env values.
+   * Uses single-pass regex replacement — O(n) per env key.
+   *
+   * @param {object} env - Environment key-value pairs potentially containing ${...} references
+   * @param {object} context - Map of appKey -> { name, env } for all template members
+   * @returns {object} Resolved environment object with all variables interpolated
+   */
+  #interpolateTemplateVars(env, context) {
+    const resolved = {}
+    const varPattern = /\$\{([a-zA-Z0-9_]+)\.([a-zA-Z0-9_.]+)\}/g
+
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value !== 'string') {
+        resolved[key] = value
+        continue
+      }
+
+      resolved[key] = value.replace(varPattern, (match, appKey, propPath) => {
+        const appCtx = context[appKey]
+        if (!appCtx) return match // Leave unresolved if app not found
+
+        // Navigate dot-separated path: "env.MYSQL_PASSWORD" or "name"
+        const parts = propPath.split('.')
+        let current = appCtx
+        for (const part of parts) {
+          if (current && typeof current === 'object' && part in current) {
+            current = current[part]
+          } else {
+            return match // Leave unresolved if path not found
+          }
+        }
+
+        return typeof current === 'string' ? current : String(current)
+      })
+    }
+
+    return resolved
   }
 
   #resolveEnv(app, includeSystem = true) {

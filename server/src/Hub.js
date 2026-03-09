@@ -59,6 +59,14 @@ class Hub {
         interval: 30 * 60 * 1000,
         lastRun: 0
       },
+      'app.network.set': {
+        fn: payload => Odac.server('App').setNetworks(payload.name || payload.id, payload.networks),
+        triggers: ['app.list']
+      },
+      'app.port.set': {
+        fn: payload => Odac.server('App').setPorts(payload.name || payload.id, payload.ports),
+        triggers: ['app.list']
+      },
       'app.redeploy': {
         fn: payload => Odac.server('App').redeploy(payload),
         triggers: ['app.list', 'app.stats']
@@ -71,6 +79,10 @@ class Hub {
         fn: () => this.getAppStats(),
         interval: 60 * 1000,
         lastRun: 0
+      },
+      'app.volumes.set': {
+        fn: payload => Odac.server('App').setVolumes(payload.name || payload.id, payload.volumes),
+        triggers: ['app.list']
       },
       'domain.add': {
         fn: payload => Odac.server('Domain').add(payload.domain, payload.app),

@@ -212,6 +212,60 @@ class OdacProxy {
     }
   }
 
+  /**
+   * Removes an ACME HTTP-01 challenge token from the Go proxy.
+   * Called after Let's Encrypt completes or abandons validation.
+   * @param {string} token - The ACME challenge token to remove
+   */
+  async deleteACMEChallenge(token) {
+    if (!this.#proxyProcess) return
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return
+
+    try {
+      const payload = {token}
+      if (this.#proxySocketPath) {
+        await axios.delete('http://localhost/acme/challenge', {
+          data: payload,
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        await axios.delete(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, {data: payload})
+      }
+    } catch (e) {
+      if (typeof error !== 'undefined') error('Failed to delete ACME challenge token: %s', e.message)
+    }
+  }
+
+  /**
+   * Sends an ACME HTTP-01 challenge token to the Go proxy for serving.
+   * The proxy will respond to Let's Encrypt at /.well-known/acme-challenge/{token}.
+   * @param {string} token - The ACME challenge token
+   * @param {string} keyAuthorization - The key authorization string to serve
+   */
+  async setACMEChallenge(token, keyAuthorization) {
+    if (!this.#proxyProcess) throw new Error('Proxy process not running')
+    if (!this.#proxySocketPath && !this.#proxyApiPort) throw new Error('Proxy API not available')
+
+    const payload = {keyAuthorization, token}
+    let response
+
+    if (this.#proxySocketPath) {
+      response = await axios.post('http://localhost/acme/challenge', payload, {
+        socketPath: this.#proxySocketPath,
+        validateStatus: () => true
+      })
+    } else {
+      response = await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, payload, {
+        validateStatus: () => true
+      })
+    }
+
+    if (response.status !== 200) {
+      throw new Error(`Proxy returned HTTP ${response.status} for ACME challenge`)
+    }
+  }
+
   start() {
     this.#active = true
     this.spawnProxy()
@@ -323,8 +377,11 @@ class OdacProxy {
           }
         }
 
-        if (typeof log !== 'undefined')
-          log('Proxy: Adding domain %s -> %s:%d (IP: %s)', domainName, app.name, port, containerIP || '127.0.0.1')
+        if (typeof log !== 'undefined') {
+          const targetType = useInternal ? 'Container Network' : 'Host Network'
+          const targetIP = containerIP || '127.0.0.1'
+          log('Proxy: Routing domain [%s] -> App [%s] via %s (%s:%d)', domainName, app.name, targetType, targetIP, port)
+        }
 
         proxyDomains[domainName] = {
           domain: domainName,

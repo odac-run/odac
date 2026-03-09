@@ -1,12 +1,14 @@
 const {log, error} = Odac.core('Log', false).init('Mail')
 
 const bcrypt = require('bcrypt')
-const SMTPServer = require('smtp-server').SMTPServer
-const parser = require('mailparser').simpleParser
-const sqlite3 = require('sqlite3').verbose()
-const forge = require('node-forge')
+const {generateKeyPair} = require('crypto')
 const fs = require('fs')
+const fsp = require('fs/promises')
 const os = require('os')
+const parser = require('mailparser').simpleParser
+const SMTPServer = require('smtp-server').SMTPServer
+const sqlite3 = require('sqlite3').verbose()
+const {promisify} = require('util')
 const server = require('./mail/server')
 const smtp = require('./mail/smtp')
 const tls = require('tls')
@@ -79,15 +81,21 @@ class Mail {
     return email.match(/^[a-zA-Z0-9._%+\-=]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/)
   }
 
-  check() {
+  async check() {
     if (this.#checking) return
     if (!this.#started) this.init()
     if (!this.#started) return
     this.#checking = true
-    for (const domain of Object.keys(Odac.core('Config').config.domains ?? {})) {
-      if (!Odac.core('Config').config.domains[domain].DNS || !Odac.core('Config').config.domains[domain].DNS.MX) continue
-      if (Odac.core('Config').config.domains[domain].cert !== false && !Odac.core('Config').config.domains[domain].cert?.dkim)
-        this.#dkim(domain)
+    try {
+      const dnsConfig = Odac.core('Config').config.dns ?? {}
+      for (const domain of Object.keys(Odac.core('Config').config.domains ?? {})) {
+        const zone = dnsConfig[domain]
+        if (!zone?.records?.some(r => r.type === 'MX')) continue
+        if (Odac.core('Config').config.domains[domain].cert !== false && !Odac.core('Config').config.domains[domain].cert?.dkim)
+          await this.#dkim(domain)
+      }
+    } catch (e) {
+      error('DKIM check failed: %s', e.message)
     }
     this.#checking = false
   }
@@ -136,29 +144,42 @@ class Mail {
     return Odac.server('Api').result(true, await __('Mail account %s deleted successfully.', email))
   }
 
-  #dkim(domain) {
-    let keys = forge.pki.rsa.generateKeyPair(1024)
-    const privateKeyPem = forge.pki.privateKeyToPem(keys.privateKey)
-    let publicKeyPem = forge.pki.publicKeyToPem(keys.publicKey)
-    if (!fs.existsSync(os.homedir() + '/.odac/cert/dkim')) fs.mkdirSync(os.homedir() + '/.odac/cert/dkim', {recursive: true})
-    fs.writeFileSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.key', privateKeyPem)
-    fs.chmodSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.key', 0o600)
-    fs.writeFileSync(os.homedir() + '/.odac/cert/dkim/' + domain + '.pub', publicKeyPem)
-    publicKeyPem = publicKeyPem
+  /**
+   * Generates a 2048-bit RSA DKIM key pair using native crypto (non-blocking),
+   * persists keys to disk, and publishes the public key as a DNS TXT record.
+   * Uses PKCS#1 for private key (dkim-signer compatibility) and SPKI for public.
+   * @param {string} domain - The domain to generate DKIM keys for
+   */
+  async #dkim(domain) {
+    const generateKeyPairAsync = promisify(generateKeyPair)
+    const {privateKey, publicKey} = await generateKeyPairAsync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: {format: 'pem', type: 'pkcs1'},
+      publicKeyEncoding: {format: 'pem', type: 'spki'}
+    })
+    const dkimDir = os.homedir() + '/.odac/cert/dkim'
+    const selector = 'default'
+    await fsp.mkdir(dkimDir, {recursive: true})
+    await fsp.writeFile(dkimDir + '/' + domain + '.key', privateKey)
+    await fsp.chmod(dkimDir + '/' + domain + '.key', 0o600)
+    await fsp.writeFile(dkimDir + '/' + domain + '.pub', publicKey)
+    const publicKeyBase64 = publicKey
       .replace('-----BEGIN PUBLIC KEY-----', '')
       .replace('-----END PUBLIC KEY-----', '')
-      .replace(/\r\n/g, '')
-      .replace(/\n/g, '')
+      .replace(/[\r\n]/g, '')
     if (!Odac.core('Config').config.domains[domain].cert) Odac.core('Config').config.domains[domain].cert = {}
     Odac.core('Config').config.domains[domain].cert.dkim = {
-      private: os.homedir() + '/.odac/cert/dkim/' + domain + '.key',
-      public: os.homedir() + '/.odac/cert/dkim/' + domain + '.pub'
+      private: dkimDir + '/' + domain + '.key',
+      public: dkimDir + '/' + domain + '.pub',
+      selector
     }
     Odac.server('DNS').record({
       type: 'TXT',
-      name: `default._domainkey.${domain}`,
-      value: `v=DKIM1; k=rsa; p=${publicKeyPem}`
+      name: `${selector}._domainkey.${domain}`,
+      value: `v=DKIM1; k=rsa; p=${publicKeyBase64}`
     })
+    if (Odac.core('Config').force) Odac.core('Config').force()
+    log('DKIM 2048-bit keys generated for %s (selector: %s)', domain, selector)
   }
 
   async exists(email) {

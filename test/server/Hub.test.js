@@ -403,6 +403,46 @@ describe('Hub', () => {
     })
   })
 
+  describe('port and volume commands', () => {
+    it('should register app.port.set command with triggers', () => {
+      expect(Hub.commands['app.port.set']).toBeDefined()
+      expect(Hub.commands['app.port.set'].triggers).toEqual(['app.list'])
+    })
+
+    it('should register app.volumes.set command with triggers', () => {
+      expect(Hub.commands['app.volumes.set']).toBeDefined()
+      expect(Hub.commands['app.volumes.set'].triggers).toEqual(['app.list'])
+    })
+
+    it('should call App.setPorts via app.port.set command', () => {
+      const mockSetPorts = jest.fn().mockResolvedValue({success: true, message: 'Ports updated'})
+      mockOdac.setMock('server', 'App', {setPorts: mockSetPorts})
+
+      Hub.commands['app.port.set'].fn({name: 'my-app', ports: [{host: 8080, container: 80}]})
+
+      expect(mockSetPorts).toHaveBeenCalledWith('my-app', [{host: 8080, container: 80}])
+    })
+
+    it('should call App.setVolumes via app.volumes.set command', () => {
+      const mockSetVolumes = jest.fn().mockReturnValue({success: true, message: 'Volumes updated'})
+      mockOdac.setMock('server', 'App', {setVolumes: mockSetVolumes})
+
+      const volumes = [{host: '/data', container: '/app/data'}]
+      Hub.commands['app.volumes.set'].fn({name: 'my-app', volumes})
+
+      expect(mockSetVolumes).toHaveBeenCalledWith('my-app', volumes)
+    })
+
+    it('should use payload.id fallback when name is not provided', () => {
+      const mockSetPorts = jest.fn().mockResolvedValue({success: true, message: 'Ports updated'})
+      mockOdac.setMock('server', 'App', {setPorts: mockSetPorts})
+
+      Hub.commands['app.port.set'].fn({id: 'app-123', ports: [{host: 8080, container: 80}]})
+
+      expect(mockSetPorts).toHaveBeenCalledWith('app-123', [{host: 8080, container: 80}])
+    })
+  })
+
   describe('Linux distro detection', () => {
     it('should return null on non-Linux platforms via System', () => {
       os.platform.mockReturnValue('darwin')

@@ -275,9 +275,9 @@ describe('Domain', () => {
       expect(mockConfig.config.domains['other.com']).toBeDefined()
 
       // Verify DNS cleanup called for each main domain
-      // 7 records * 2 domains = 14 calls
+      // 8 records * 2 domains = 16 calls (A, AAAA, CNAME, mail A, MX, TXT, DMARC TXT, DKIM TXT)
       const dnsMock = Odac.server('DNS')
-      expect(dnsMock.delete).toHaveBeenCalledTimes(14)
+      expect(dnsMock.delete).toHaveBeenCalledTimes(16)
     })
 
     test('should handle apps with no domains gracefully', async () => {
