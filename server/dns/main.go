@@ -110,12 +110,20 @@ func main() {
 
 // determineDNSPort finds an available port for the DNS server.
 // Tries port 53 first, then falls back to 5353, 1053, 8053.
+// In update mode on Linux, SO_REUSEPORT allows port sharing with the old instance.
 func determineDNSPort() int {
 	// Allow override via environment variable
 	if envPort := os.Getenv("ODAC_DNS_PORT"); envPort != "" {
 		if p, err := strconv.Atoi(envPort); err == nil {
 			return p
 		}
+	}
+
+	// In update mode on Linux, SO_REUSEPORT allows binding to the same port
+	// as the old instance for zero-downtime overlap
+	if os.Getenv("ODAC_UPDATE_MODE") == "true" && runtime.GOOS == "linux" {
+		log.Println("[DNS] Update mode: using port 53 with SO_REUSEPORT overlap")
+		return 53
 	}
 
 	// Try port 53 first
