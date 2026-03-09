@@ -271,7 +271,8 @@ class App {
       return Odac.server('Api').result(false, __('Missing template name.'))
     }
 
-    const baseName = this.#generateUniqueName(name)
+    const hasCloudContainers = Object.values(apps).every(app => app && typeof app === 'object' && app.container)
+    const baseName = hasCloudContainers ? name : this.#generateUniqueName(name)
     return this.#createFromTemplate(baseName, {name, apps}, config)
   }
 
