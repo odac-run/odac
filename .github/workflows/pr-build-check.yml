@@ -15,28 +15,36 @@ jobs:
   go-build:
     name: Go Build & Test
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./server/proxy
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24'
 
-      - name: Verify Dependencies
-        run: go mod verify
+      - name: Verify Proxy Dependencies
+        run: cd server/proxy && go mod verify
 
-      - name: Build Binary
+      - name: Build Proxy Binary
         env:
           GOOS: linux
-        run: go build -v ./...
+        run: cd server/proxy && go build -v ./...
 
-      - name: Run Go Tests
-        run: go test -v ./...
+      - name: Run Proxy Go Tests
+        run: cd server/proxy && go test -v ./...
+
+      - name: Verify DNS Dependencies
+        run: cd server/dns && go mod verify
+
+      - name: Build DNS Binary
+        env:
+          GOOS: linux
+        run: cd server/dns && go build -v ./...
+
+      - name: Run DNS Go Tests
+        run: cd server/dns && go test -v ./...
 
   # Check 2: Full Docker Build (Dry Run)
   # This ensures the Dockerfile stages (including the Go build inside Alpine) work correctly
