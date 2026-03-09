@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"regexp"
-	"strings"
 
 	"odac-proxy/config"
 	"odac-proxy/proxy"
