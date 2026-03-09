@@ -32,7 +32,7 @@
   "dependencies": {
     "acme-client": "^5.1.0",
     "axios": "^1.13.5",
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "dkim-signer": "^0.2.2",
     "dockerode": "^4.0.9",
     "find-process": "^2.0.0",
