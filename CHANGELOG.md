@@ -1,3 +1,36 @@
+### ⚙️ Engine Tuning
+
+- **container:** remove dead runInit method superseded by host driven by host permissions
+- **smtp:** enhance local IP resolution and EHLO hostname handling
+
+### ✨ What's New
+
+- **acme:** implement HTTP-01 challenge management in proxy and SSL modules
+- **app:** add cloud-driven template stack deployment with env linking and rollback
+- **app:** add commands for setting ports and volumes with validation
+- **app:** add setNetworks method for updating Docker networks of running app containers
+- **app:** enhance environment variable resolution with container directives support
+- **mail:** upgrade DKIM to 2048-bit RSA and automate DNS provisioning
+- **proxy:** enhance logging for domain routing with detailed target information
+- **ssl:** implement HTTP-01 challenge with fallback to DNS-01 for certificate generation
+
+### 🛠️ Fixes & Improvements
+
+- **api:** remove unused import of strings package
+- **app:** correct command names for setting ports in Hub tests
+- **app:** enhance volume permission handling to ensure security by restricting chmod operations to app directory
+- **app:** improve app check logic and container handling for better stability
+- **app:** prevent basename overwrite on templates deployed with cloud containers
+- **domain:** read dkim selector dynamically from config instead of hardcoding default
+- **mail:** restore PTR match for sender subdomains in smtp domains nested under root PTR
+- **proxy/security:** enforce strict base64url validation for acme tokens with precompiled regex token
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - add warn method to Log class and update Api to use it
