@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"odac-proxy/config"
 	"odac-proxy/proxy"
 )
+
+var validTokenRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // acmeRequest represents the JSON payload for ACME HTTP-01 challenge token management.
 type acmeRequest struct {
@@ -43,7 +46,7 @@ func (s *Server) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Security: Validate token format (base64url characters only, max 256 chars)
-		if len(req.Token) > 256 || strings.ContainsAny(req.Token, " \t\n\r/\\") {
+		if len(req.Token) > 256 || !validTokenRegex.MatchString(req.Token) {
 			http.Error(w, "Invalid token format", http.StatusBadRequest)
 			return
 		}
