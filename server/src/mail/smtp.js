@@ -364,7 +364,7 @@ class smtp {
       if (targetSupportsIPv6) {
         for (const ipObj of DNS.ips.ipv6) {
           if (!ipObj.public || !ipObj.ptr) continue
-          if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${rootDomain}`)) {
+          if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${rootDomain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
             log('SMTP', `Using PTR-matched IPv6 ${ipObj.address} (${ipObj.ptr}) for domain ${domain}`)
             return {address: ipObj.address, ehlo: ipObj.ptr}
           }
@@ -374,7 +374,7 @@ class smtp {
       // 2. Find IPv4 with PTR matching this domain
       for (const ipObj of DNS.ips.ipv4) {
         if (!ipObj.public || !ipObj.ptr) continue
-        if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${rootDomain}`)) {
+        if (ipObj.ptr === domain || ipObj.ptr.endsWith(`.${rootDomain}`) || domain.endsWith(`.${ipObj.ptr}`)) {
           log('SMTP', `Using PTR-matched IPv4 ${ipObj.address} (${ipObj.ptr}) for domain ${domain}`)
           return {address: ipObj.address, ehlo: ipObj.ptr}
         }
