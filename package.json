@@ -37,7 +37,6 @@
     "dockerode": "^4.0.9",
     "find-process": "^2.0.0",
     "mailparser": "^3.9.1",
-    "native-dns": "^0.7.0",
     "selfsigned": "^2.4.1",
     "smtp-server": "^3.17.1",
     "sqlite3": "^5.1.7",
@@ -66,15 +65,21 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "lint:go": "cd server/proxy && go fmt ./... && go vet ./...",
+    "lint:go": "cd server/proxy && go fmt ./... && go vet ./... && cd ../dns && go fmt ./... && go vet ./...",
     "prepare": "husky || true",
-    "test:go": "cd server/proxy && go test ./...",
+    "test:go": "cd server/proxy && go test ./... && cd ../dns && go test ./...",
     "test": "npm run test:go && jest --coverage",
     "test:watch": "jest --watch",
     "release": "semantic-release",
-    "build:proxy": "cd server/proxy && go build -o ../../bin/odac-proxy",
-    "build:proxy:linux": "cd server/proxy && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../../bin/odac-proxy",
-    "build:proxy:linux:arm": "cd server/proxy && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../../bin/odac-proxy"
+    "build:proxy": "cd server/proxy && go build -buildvcs=false -o ../../bin/odac-proxy",
+    "build:proxy:linux": "cd server/proxy && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o ../../bin/odac-proxy",
+    "build:proxy:linux:arm": "cd server/proxy && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -o ../../bin/odac-proxy",
+    "build:dns": "cd server/dns && go build -buildvcs=false -o ../../bin/odac-dns",
+    "build:dns:linux": "cd server/dns && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o ../../bin/odac-dns",
+    "build:dns:linux:arm": "cd server/dns && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -o ../../bin/odac-dns",
+    "build:all": "npm run build:proxy && npm run build:dns",
+    "build:all:linux": "npm run build:proxy:linux && npm run build:dns:linux",
+    "build:all:linux:arm": "npm run build:proxy:linux:arm && npm run build:dns:linux:arm"
   },
   "lint-staged": {
     "*.js": [
@@ -83,7 +88,8 @@
       "jest --bail --findRelatedTests --passWithNoTests"
     ],
     "*.go": [
-      "cd server/proxy && go fmt ./... && go vet ./..."
+      "cd server/proxy && go fmt ./... && go vet ./...",
+      "cd server/dns && go fmt ./... && go vet ./..."
     ]
   }
 }

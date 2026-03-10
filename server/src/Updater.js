@@ -499,29 +499,30 @@ class Updater {
         // Phase 4 (TAKEOVER_COMPLETE): Final stability confirmed. Old instance self-destructs.
 
         if (message === 'HANDSHAKE_READY') {
-          log('New container ready. Stopping services (except Web) and releasing ports...')
+          log('New container ready. Stopping services (except Web & DNS) and releasing ports...')
 
-          // Stop all services EXCEPT Web (Mail, DNS, Api, Hub)
-          // Web continues running due to SO_REUSEPORT - new container's Web will overlap
+          // Stop all services EXCEPT Web and DNS (Mail, Api, Hub)
+          // Web and DNS continue running due to SO_REUSEPORT - new container will overlap
           try {
-            Odac.server('Server').stop(true) // exceptWeb = true
-            log('Non-Web services stopped. Ports released. Web still running.')
+            Odac.server('Server').stop(true) // exceptWeb = true (also keeps DNS alive)
+            log('Non-overlap services stopped. Ports released. Web & DNS still running via SO_REUSEPORT.')
           } catch (e) {
             error('Failed to stop services: %s', e.message)
           }
 
-          // Send ACK - NEW can now start ALL services (including Web)
+          // Send ACK - NEW can now start ALL services (including Web & DNS with SO_REUSEPORT overlap)
           socket.write('HANDSHAKE_ACK')
-          log('ACK sent. New container can now bind ports (Web will overlap via SO_REUSEPORT).')
+          log('ACK sent. New container can now bind ports (Web & DNS will overlap via SO_REUSEPORT).')
         } else if (message === 'WEB_READY') {
-          log("New container's Web is stable. Stopping old Web now...")
+          log("New container's Web & DNS are stable. Stopping old overlap services now...")
 
-          // Stop Web service immediately - NEW's Web is proven to work
+          // Stop Web and DNS services immediately - NEW's services are proven to work
           try {
             Odac.server('Proxy').stop()
-            log('Old Web stopped. Zero-downtime handover complete (overlap: ~3s).')
+            Odac.server('DNS').stop()
+            log('Old Web & DNS stopped. Zero-downtime handover complete (overlap: ~3s).')
           } catch (e) {
-            error('Failed to stop Web: %s', e.message)
+            error('Failed to stop overlap services: %s', e.message)
           }
         } else if (message === 'TAKEOVER_COMPLETE') {
           log('Stability check passed. New instance is stable.')
@@ -563,14 +564,15 @@ class Updater {
   }
 
   async #selfDestruct() {
-    log('Old container mission complete. Stopping Web and exiting.')
+    log('Old container mission complete. Stopping overlap services and exiting.')
 
-    // Stop Web service now (was kept running during handover for zero-downtime)
+    // Stop Web and DNS services now (were kept running during handover for zero-downtime)
     try {
       Odac.server('Proxy').stop()
-      log('Web service stopped.')
+      Odac.server('DNS').stop()
+      log('Web & DNS services stopped.')
     } catch (e) {
-      error('Failed to stop Web: %s', e.message)
+      error('Failed to stop overlap services: %s', e.message)
     }
 
     // Disable restart policy to prevent Docker from restarting this container
