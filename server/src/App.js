@@ -1559,6 +1559,10 @@ class App {
         delete copy.ip
         delete copy.uptime
 
+        const appIdentity = copy._appIdentity || copy.name
+        const internalAppDir = copy.file ? path.dirname(copy.file) : path.join(Odac.core('Config').config.app.path, appIdentity)
+        copy.path = container.resolveHostPath ? container.resolveHostPath(internalAppDir) : internalAppDir
+
         // Security: Expose only env keys, not values
         // Structure: { manual: [KEY1, KEY2], linked: [APP1, APP2] }
         const rawEnv = copy.env || {}
@@ -1573,6 +1577,14 @@ class App {
             manual: Object.keys(rawEnv),
             linked: []
           }
+        }
+
+        // Container path to Host path resolution for volumes
+        if (Array.isArray(copy.volumes)) {
+          copy.volumes = copy.volumes.map(vol => ({
+            host: container.resolveHostPath ? container.resolveHostPath(vol.host) : vol.host,
+            container: vol.container
+          }))
         }
 
         cleanApps.push(copy)

@@ -86,7 +86,7 @@ class Container {
    * Resolves container path to host path (for DooD support)
    * @param {string} localPath
    */
-  #resolveHostPath(localPath) {
+  resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) {
       log(`[DEBUG] resolveHostPath: No ODAC_HOST_ROOT, returning as-is: ${localPath}`)
       return localPath
@@ -186,7 +186,7 @@ class Container {
     const logger = activeLogger
 
     try {
-      const hostPath = this.#resolveHostPath(sourceDir)
+      const hostPath = this.resolveHostPath(sourceDir)
       const name = appName || path.basename(sourceDir)
 
       // We pass both paths to the builder:
@@ -236,7 +236,7 @@ class Container {
 
     log(`[Git] Cloning ${url} (branch: ${branch || 'default'}) into isolated sandbox...`)
 
-    const hostPath = this.#resolveHostPath(targetDir)
+    const hostPath = this.resolveHostPath(targetDir)
 
     const envVars = []
     if (token) {
@@ -312,7 +312,7 @@ class Container {
 
     log('[Git] Fetching updates (branch: %s, commit: %s)...', branch || 'default', commitSha || 'HEAD')
 
-    const hostPath = this.#resolveHostPath(targetDir)
+    const hostPath = this.resolveHostPath(targetDir)
 
     // Pass all dynamic values via env vars to prevent shell injection
     const envVars = [`GIT_BRANCH=${branch}`]
@@ -441,14 +441,14 @@ class Container {
     await this.remove(name)
 
     const internalPort = 1071
-    const hostPath = this.#resolveHostPath(volumePath)
+    const hostPath = this.resolveHostPath(volumePath)
 
     const bindings = [`${hostPath}:/app`]
 
     // Mount API socket directory for container communication (bypasses network issues)
     const socketDir = Odac.server('Api').hostSocketDir
     if (socketDir) {
-      const hostSocketDir = this.#resolveHostPath(socketDir)
+      const hostSocketDir = this.resolveHostPath(socketDir)
       bindings.push(`${hostSocketDir}:/odac:ro`)
     }
 
@@ -519,7 +519,7 @@ class Container {
     const bindings = []
     if (options.volumes) {
       for (const vol of options.volumes) {
-        const hostPath = this.#resolveHostPath(vol.host)
+        const hostPath = this.resolveHostPath(vol.host)
         bindings.push(`${hostPath}:${vol.container}`)
       }
     }
