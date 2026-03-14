@@ -136,9 +136,11 @@ class Domain {
       }
     }
 
+    const isLocalOrIP = domain === 'localhost' || !!domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)
+
     // Phase 4: Create DNS records for the domain (skip for localhost and IP addresses)
     let sslEnabled = false
-    if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+    if (!isLocalOrIP) {
       try {
         // Build DNS records - A and AAAA without value, DNS will resolve dynamically via PTR matching
         const dnsRecords = [
@@ -182,7 +184,7 @@ class Domain {
     const domainRecord = {
       appId: targetApp.name,
       created: Date.now(),
-      subdomain: ['www', 'mail']
+      subdomain: isLocalOrIP ? [] : ['www', 'mail']
     }
 
     // Initialize SSL cert tracking if SSL is enabled
