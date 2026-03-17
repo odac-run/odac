@@ -1,7 +1,9 @@
 const mockLog = jest.fn()
 const mockError = jest.fn()
 
-const {mockOdac} = require('./__mocks__/globalOdac')
+const {MockOdac} = require('./__mocks__/globalOdac')
+const mockOdac = new MockOdac()
+const {mockLangGet} = require('./__mocks__/globalOdac')
 
 mockOdac.setMock('core', 'Log', {
   init: jest.fn().mockReturnValue({
@@ -58,6 +60,16 @@ describe('Hub', () => {
       {times: {user: 1000, nice: 0, sys: 500, idle: 8500, irq: 0}}
     ])
 
+    global.Odac = mockOdac
+
+    // Clear specific module cache to prevent pollution between runs in the same process
+    const hubPath = require.resolve('../../server/src/Hub')
+    const systemPath = require.resolve('../../server/src/Hub/System')
+    const wsPath = require.resolve('../../server/src/Hub/WebSocket')
+    delete require.cache[hubPath]
+    delete require.cache[systemPath]
+    delete require.cache[wsPath]
+
     jest.isolateModules(() => {
       Hub = require('../../server/src/Hub')
       Hub.start()
@@ -69,9 +81,7 @@ describe('Hub', () => {
   })
 
   afterEach(() => {
-    if (Hub.ws && Hub.ws.socket) {
-      Hub.ws.disconnect()
-    }
+    Hub.stop()
     Hub.checkCounter = 0
   })
 
@@ -125,8 +135,10 @@ describe('Hub', () => {
 
       sendSpy.mockClear()
       await Hub.check()
-      // task fn is async, check might return before send
-      await new Promise(resolve => setTimeout(resolve, 0))
+      // task fn is async, wait for sendSpy to be called
+      for (let i = 0; i < 50 && !sendSpy.mock.calls.length; i++) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
       expect(sendSpy).toHaveBeenCalled()
     })
   })
@@ -187,8 +199,10 @@ describe('Hub', () => {
 
       await Hub.check()
 
-      // Wait for async operations to complete
-      await new Promise(resolve => setTimeout(resolve, 50))
+      // Wait for async operations to complete (more robustly)
+      for (let i = 0; i < 50 && !sendSpy.mock.calls.length; i++) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
 
       expect(sendSpy).toHaveBeenCalled()
 

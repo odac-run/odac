@@ -12,6 +12,8 @@ class OdacProxy {
   #proxyApiPort = null
   #proxyProcess = null
   #proxySocketPath = null
+  #syncTimer = null
+  #cleanupTimer = null
 
   check() {
     if (!this.#active) return
@@ -111,7 +113,8 @@ class OdacProxy {
         }
 
         // Give a moment for other services to initialize (Container, etc)
-        setTimeout(() => this.syncConfig(), 1000)
+        if (this.#syncTimer) clearTimeout(this.#syncTimer)
+        this.#syncTimer = setTimeout(() => this.syncConfig(), 1000)
         return
       } catch (err) {
         // Logic for when we fail to adopt the process
@@ -187,13 +190,15 @@ class OdacProxy {
       })
 
       // Give it a moment to start
-      setTimeout(() => this.syncConfig(), 1000)
+      if (this.#syncTimer) clearTimeout(this.#syncTimer)
+      this.#syncTimer = setTimeout(() => this.syncConfig(), 1000)
 
       // 3. Cleanup Previous Instance Files (Garbage Collection)
       const prevId = process.env.ODAC_PREVIOUS_INSTANCE_ID
       if (prevId) {
         // Wait for handover to definitely complete (60s)
-        setTimeout(() => {
+        if (this.#cleanupTimer) clearTimeout(this.#cleanupTimer)
+        this.#cleanupTimer = setTimeout(() => {
           log(`Cleaning up files from previous instance: ${prevId}`)
           const prevPidFile = path.join(runDir, `proxy-${prevId}.pid`)
           const prevSockFile = path.join(runDir, `proxy-${prevId}.sock`)
@@ -205,6 +210,7 @@ class OdacProxy {
           } catch (e) {
             log(`Warning: Failed to cleanup previous instance files: ${e.message}`)
           }
+          this.#cleanupTimer = null
         }, 60000)
       }
     } catch (err) {
@@ -284,6 +290,16 @@ class OdacProxy {
           /* ignore */
         }
       }
+    }
+
+    if (this.#syncTimer) {
+      clearTimeout(this.#syncTimer)
+      this.#syncTimer = null
+    }
+
+    if (this.#cleanupTimer) {
+      clearTimeout(this.#cleanupTimer)
+      this.#cleanupTimer = null
     }
   }
 

@@ -139,10 +139,7 @@ describe('SSL', () => {
     SSL = require('../../server/src/SSL')
   })
 
-  afterEach(() => {
-    delete global.Odac
-    delete global.__
-  })
+  afterEach(() => {})
 
   describe('check()', () => {
     test('should renew expired certificates', async () => {

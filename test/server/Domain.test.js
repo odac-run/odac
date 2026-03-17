@@ -80,10 +80,7 @@ describe('Domain', () => {
     Domain = require('../../server/src/Domain')
   })
 
-  afterEach(() => {
-    delete global.Odac
-    delete global.__
-  })
+  afterEach(() => {})
 
   describe('add()', () => {
     test('should add a valid domain to an app', async () => {

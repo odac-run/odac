@@ -66,8 +66,6 @@ const cleanupAllMocks = () => {
   path.__resetMocks()
 
   // Reset global references
-  delete global.Odac
-  delete global.__
 }
 
 /**
