@@ -3,7 +3,6 @@ const mockError = jest.fn()
 
 const {MockOdac} = require('./__mocks__/globalOdac')
 const mockOdac = new MockOdac()
-const {mockLangGet} = require('./__mocks__/globalOdac')
 
 mockOdac.setMock('core', 'Log', {
   init: jest.fn().mockReturnValue({
