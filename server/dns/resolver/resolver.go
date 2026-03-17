@@ -126,10 +126,14 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	// RFC 1034: CNAME takes precedence. If a CNAME exists for this name,
-	// return only the CNAME regardless of the query type.
+	// return the CNAME first, then chase in-zone targets to include their
+	// A/AAAA records in the same response. This prevents resolution failures
+	// with recursive resolvers that fail to chase CNAMEs independently
+	// (common with certain ISP resolvers).
 	cnameKey := recordKey{name: qName, rtype: "CNAME"}
 	if cnameRecords, ok := zone.records[cnameKey]; ok && len(cnameRecords) > 0 {
 		r.processCNAME(msg, cnameRecords, qName)
+		r.chaseCNAME(msg, zone, cnameRecords, qType, ips)
 		w.WriteMsg(msg)
 		return
 	}
@@ -217,4 +221,40 @@ func (r *Resolver) addSOAAuthority(msg *dns.Msg, zone *zoneData, domain string) 
 		Retry:   uint32(soa.Retry),
 		Serial:  uint32(soa.Serial),
 	})
+}
+// chaseCNAME resolves in-zone CNAME targets and appends their A/AAAA records
+// to the answer section. This is critical for resolvers that do not perform
+// independent CNAME chasing (common with ISP recursive resolvers). Only chases
+// up to 8 levels to prevent infinite CNAME loops. O(depth) per query.
+func (r *Resolver) chaseCNAME(msg *dns.Msg, zone *zoneData, cnameRecords []config.Record, qType uint16, ips config.IPConfig) {
+	if qType != dns.TypeA && qType != dns.TypeAAAA {
+		return
+	}
+
+	const maxDepth = 8
+	for i := 0; i < maxDepth; i++ {
+		if len(cnameRecords) == 0 {
+			return
+		}
+
+		target := strings.ToLower(strings.TrimSuffix(cnameRecords[0].Value, "."))
+		fqdn := dns.Fqdn(target)
+
+		// Check if target has another CNAME (chain)
+		nextCNAME := recordKey{name: target, rtype: "CNAME"}
+		if nextRecords, ok := zone.records[nextCNAME]; ok && len(nextRecords) > 0 {
+			r.processCNAME(msg, nextRecords, target)
+			cnameRecords = nextRecords
+			continue
+		}
+
+		// Resolve terminal target's A or AAAA record
+		switch qType {
+		case dns.TypeA:
+			r.processA(msg, zone, target, fqdn, ips)
+		case dns.TypeAAAA:
+			r.processAAAA(msg, zone, target, fqdn, ips)
+		}
+		return
+	}
 }
