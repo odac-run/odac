@@ -1,111 +1,117 @@
 /**
- * Comprehensive unit tests for the DNS.js module
- * Tests DNS server functionality, record management, and query processing
+ * Unit tests for DNS.js module
+ * Tests Go DNS process management, record CRUD, IP detection, and config sync.
+ * DNS query processing is handled by the Go binary (server/dns/) and is not
+ * tested here — this file tests the Node.js orchestration layer only.
  */
 
 const {setupGlobalMocks, cleanupGlobalMocks} = require('./__mocks__/testHelpers')
 const {createMockWebsiteConfig} = require('./__mocks__/testFactories')
 
-// Create mock log functions first
 const mockLog = jest.fn()
 const mockError = jest.fn()
+
+// Mock definitions — must be before any require()
+const mockFs = {
+  existsSync: jest.fn().mockReturnValue(true),
+  mkdirSync: jest.fn(),
+  openSync: jest.fn().mockReturnValue(1),
+  readFileSync: jest.fn().mockReturnValue('12345'),
+  unlinkSync: jest.fn(),
+  writeFileSync: jest.fn()
+}
+
+const mockChildProcess = {
+  spawn: jest.fn().mockReturnValue({
+    kill: jest.fn(),
+    on: jest.fn(),
+    pid: 12345,
+    unref: jest.fn()
+  })
+}
+
+const mockOs = {
+  homedir: jest.fn().mockReturnValue('/home/user'),
+  networkInterfaces: jest.fn().mockReturnValue({
+    eth0: [
+      {address: '192.168.1.10', family: 'IPv4', internal: false},
+      {address: 'fe80::1', family: 'IPv6', internal: false}
+    ],
+    lo: [{address: '127.0.0.1', family: 'IPv4', internal: true}]
+  }),
+  platform: jest.fn().mockReturnValue('linux')
+}
+
+const mockAxios = {
+  get: jest.fn().mockResolvedValue({data: '93.184.216.34'}),
+  post: jest.fn().mockResolvedValue({status: 200})
+}
+
+const mockDns = {
+  promises: {
+    reverse: jest.fn().mockResolvedValue([])
+  }
+}
+
+jest.mock('fs', () => mockFs)
+jest.mock('child_process', () => mockChildProcess)
+jest.mock('os', () => mockOs)
+jest.mock('axios', () => mockAxios)
+jest.mock('dns', () => mockDns)
+
+const {mockOdac} = require('./__mocks__/globalOdac')
 
 describe('DNS Module', () => {
   let DNS
   let mockConfig
 
   beforeEach(() => {
-    // Clear mock calls before each test
+    jest.clearAllMocks()
     mockLog.mockClear()
     mockError.mockClear()
 
     setupGlobalMocks()
 
-    // Set up the Log mock before requiring DNS
-    const {mockOdac} = require('./__mocks__/globalOdac')
     mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
-        log: mockLog,
-        error: mockError
+        error: mockError,
+        log: mockLog
       })
     })
 
-    // Mock native-dns module
-    jest.doMock('native-dns', () => ({
-      createServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      createTCPServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      consts: {
-        NAME_TO_QTYPE: {
-          A: 1,
-          AAAA: 28,
-          CNAME: 5,
-          MX: 15,
-          TXT: 16,
-          NS: 2,
-          SOA: 6,
-          CAA: 257,
-          ANY: 255
-        }
-      },
-      A: jest.fn(data => ({type: 'A', ...data})),
-      AAAA: jest.fn(data => ({type: 'AAAA', ...data})),
-      CNAME: jest.fn(data => ({type: 'CNAME', ...data})),
-      MX: jest.fn(data => ({type: 'MX', ...data})),
-      TXT: jest.fn(data => ({type: 'TXT', ...data})),
-      NS: jest.fn(data => ({type: 'NS', ...data})),
-      SOA: jest.fn(data => ({type: 'SOA', ...data}))
-    }))
-
-    // Mock child_process for system commands
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn().mockReturnValue('')
-    }))
-
-    // Mock axios module
-    jest.doMock('axios', () => ({
-      get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
-    }))
-
-    // Setup mock config with domains
     mockConfig = {
       config: {
         dns: {
           'example.com': {
+            records: [
+              {id: '1', name: 'example.com', ttl: 3600, type: 'A', value: '127.0.0.1'},
+              {id: '2', name: 'example.com', ttl: 3600, type: 'AAAA', value: '::1'},
+              {id: '3', name: 'example.com', priority: 10, ttl: 3600, type: 'MX', value: 'mail.example.com'},
+              {id: '4', name: 'example.com', ttl: 3600, type: 'TXT', value: 'v=spf1 mx ~all'}
+            ],
             soa: {
-              primary: 'ns1.example.com',
               email: 'hostmaster.example.com',
-              serial: 2024010101,
-              refresh: 3600,
-              retry: 600,
               expire: 604800,
               minimum: 3600,
+              primary: 'ns1.example.com',
+              refresh: 3600,
+              retry: 600,
+              serial: 2024010101,
               ttl: 3600
-            },
-            records: [
-              {id: '1', type: 'A', name: 'example.com', value: '127.0.0.1', ttl: 3600},
-              {id: '2', type: 'AAAA', name: 'example.com', value: '::1', ttl: 3600},
-              {id: '3', type: 'MX', name: 'example.com', value: 'mail.example.com', priority: 10, ttl: 3600},
-              {id: '4', type: 'TXT', name: 'example.com', value: 'v=spf1 mx ~all', ttl: 3600}
-            ]
+            }
           },
           'test.org': {
+            records: [],
             soa: {
-              primary: 'ns1.test.org',
               email: 'hostmaster.test.org',
-              serial: 2024010101,
-              refresh: 3600,
-              retry: 600,
               expire: 604800,
               minimum: 3600,
+              primary: 'ns1.test.org',
+              refresh: 3600,
+              retry: 600,
+              serial: 2024010101,
               ttl: 3600
-            },
-            records: []
+            }
           }
         },
         domains: {
@@ -118,257 +124,243 @@ describe('DNS Module', () => {
 
     global.Odac.setMock('core', 'Config', mockConfig)
 
-    // Clear module cache and require DNS
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
+    // Default fs behavior: binary exists, PID file throw ENOENT (forces spawn)
+    mockFs.existsSync.mockReturnValue(true)
+    mockFs.readFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), {code: 'ENOENT'})
+    })
+
+    jest.isolateModules(() => {
+      DNS = require('../../server/src/DNS')
+    })
   })
 
   afterEach(() => {
     cleanupGlobalMocks()
-    jest.resetModules()
-    jest.dontMock('native-dns')
-    jest.dontMock('child_process')
-    jest.dontMock('axios')
   })
 
-  describe('initialization', () => {
-    it('should create UDP and TCP DNS servers on initialization', () => {
-      const dns = require('native-dns')
+  // ─── Process Management ──────────────────────────────────────────
 
-      DNS.init()
-
-      expect(dns.createServer).toHaveBeenCalled()
-      expect(dns.createTCPServer).toHaveBeenCalled()
+  describe('process management', () => {
+    test('should spawn DNS process if not running', () => {
+      DNS.spawnDNS()
+      expect(mockChildProcess.spawn).toHaveBeenCalled()
     })
 
-    it('should attempt to get external IP from curlmyip.org', () => {
-      const axios = require('axios')
+    test('should not spawn if process already exists', () => {
+      DNS.spawnDNS()
+      mockChildProcess.spawn.mockClear()
 
-      DNS.init()
-      DNS.start()
+      DNS.spawnDNS()
+      expect(mockChildProcess.spawn).not.toHaveBeenCalled()
+    })
 
-      expect(axios.get).toHaveBeenCalledWith('https://curlmyip.org/', {
-        headers: {'User-Agent': 'Odac-DNS/1.0'},
-        timeout: 5000
+    test('should adopt orphaned DNS process via PID file', () => {
+      // readFileSync: PID for pid file, cmdline for /proc check
+      mockFs.readFileSync.mockImplementation(filePath => {
+        if (typeof filePath === 'string' && filePath.includes('/proc/')) return 'odac-dns'
+        return '54321'
       })
+      const originalKill = process.kill
+      process.kill = jest.fn()
+      mockFs.existsSync.mockReturnValue(true)
+
+      DNS.spawnDNS()
+
+      expect(mockChildProcess.spawn).not.toHaveBeenCalled()
+      expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('Reconnecting'))
+      process.kill = originalKill
     })
 
-    it('should start DNS servers on port 53 when domains exist', async () => {
-      const dns = require('native-dns')
+    test('should spawn new process when PID file exists but process is dead', () => {
+      mockFs.readFileSync.mockReturnValue('54321')
+      const originalKill = process.kill
+      process.kill = jest.fn(() => {
+        throw new Error('ESRCH')
+      })
 
-      DNS.init()
-      DNS.start()
+      DNS.spawnDNS()
 
-      // Wait for async initialization to complete
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // The servers should be created
-      expect(dns.createServer).toHaveBeenCalled()
-      expect(dns.createTCPServer).toHaveBeenCalled()
-
-      // Note: serve() is called asynchronously after port availability check
-      // This test verifies servers are created, actual serving is tested in integration tests
-    }, 10000)
-
-    it('should set external IP when successfully retrieved', async () => {
-      const axios = require('axios')
-      axios.get.mockResolvedValue({data: '203.0.113.1'})
-
-      DNS.init()
-      DNS.start()
-
-      // Wait for the axios promise to resolve
-      await new Promise(resolve => setTimeout(resolve, 0))
-
-      expect(DNS.ip).toBe('203.0.113.1')
+      expect(mockChildProcess.spawn).toHaveBeenCalled()
+      process.kill = originalKill
     })
 
-    it('should handle invalid IP format from external service', async () => {
-      const axios = require('axios')
-      // mockLog already defined at top
-      axios.get.mockResolvedValue({data: 'invalid-ip-format'})
+    test('should force new instance in update mode', () => {
+      const originalEnv = process.env.ODAC_UPDATE_MODE
+      process.env.ODAC_UPDATE_MODE = 'true'
 
-      DNS.init()
-      DNS.start()
+      mockFs.readFileSync.mockReturnValue('54321')
 
-      // Wait for the axios promise to resolve
-      await new Promise(resolve => setTimeout(resolve, 100))
+      DNS.spawnDNS()
 
-      // Should fallback to local network IP (not 127.0.0.1 and not the invalid format)
-      expect(DNS.ip).not.toBe('127.0.0.1')
-      expect(DNS.ip).not.toBe('invalid-ip-format')
-      expect(DNS.ip).toMatch(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)
+      expect(mockChildProcess.spawn).toHaveBeenCalled()
+      process.env.ODAC_UPDATE_MODE = originalEnv
     })
 
-    it('should handle external IP detection failure', async () => {
-      const axios = require('axios')
-      // mockLog already defined at top
-      const networkError = new Error('Network timeout')
-      axios.get.mockRejectedValue(networkError)
+    test('should not spawn when binary is missing', () => {
+      mockFs.existsSync.mockReturnValue(false)
 
-      DNS.init()
-      DNS.start()
+      DNS.spawnDNS()
 
-      // Wait for the axios promise to resolve
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // Should fallback to local network IP (not 127.0.0.1)
-      expect(DNS.ip).not.toBe('127.0.0.1')
-      expect(DNS.ip).toMatch(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)
+      expect(mockChildProcess.spawn).not.toHaveBeenCalled()
+      expect(mockError).toHaveBeenCalled()
     })
 
-    it('should handle DNS server startup errors gracefully', async () => {
-      const dns = require('native-dns')
-      // mockLog already defined at top
-      const udpServer = {
-        on: jest.fn(),
-        serve: jest.fn(() => {
-          throw new Error('Port 53 already in use')
-        })
-      }
-      const tcpServer = {
-        on: jest.fn(),
-        serve: jest.fn(() => {
-          throw new Error('Port 53 already in use')
-        })
-      }
+    test('should write PID file after spawning', () => {
+      DNS.spawnDNS()
 
-      dns.createServer.mockReturnValue(udpServer)
-      dns.createTCPServer.mockReturnValue(tcpServer)
-
-      DNS.init()
-      DNS.start()
-
-      // Wait for async initialization
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // Server creation should still happen even if serve fails
-      expect(dns.createServer).toHaveBeenCalled()
-      expect(dns.createTCPServer).toHaveBeenCalled()
+      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('dns-'),
+        '12345',
+        expect.objectContaining({flag: expect.any(String)})
+      )
     })
 
-    it('should set up error handlers for UDP and TCP servers', async () => {
-      const dns = require('native-dns')
-      const udpServer = {on: jest.fn(), serve: jest.fn()}
-      const tcpServer = {on: jest.fn(), serve: jest.fn()}
+    test('should stop and cleanup DNS process', () => {
+      const mockChild = {kill: jest.fn(), on: jest.fn(), pid: 12345, unref: jest.fn()}
+      mockChildProcess.spawn.mockReturnValue(mockChild)
 
-      dns.createServer.mockReturnValue(udpServer)
-      dns.createTCPServer.mockReturnValue(tcpServer)
+      DNS.spawnDNS()
+      DNS.stop()
 
-      DNS.init()
-      DNS.start()
-
-      // Wait for async initialization
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // Verify request handlers are set up (error handlers are set up during attemptDNSStart)
-      expect(udpServer.on).toHaveBeenCalledWith('request', expect.any(Function))
-      expect(tcpServer.on).toHaveBeenCalledWith('request', expect.any(Function))
+      expect(mockChild.kill).toHaveBeenCalled()
     })
 
-    it('should log DNS server errors when they occur', async () => {
-      const dns = require('native-dns')
-      // mockError already defined at top
-      const udpServer = {on: jest.fn(), serve: jest.fn()}
-      const tcpServer = {on: jest.fn(), serve: jest.fn()}
-
-      dns.createServer.mockReturnValue(udpServer)
-      dns.createTCPServer.mockReturnValue(tcpServer)
-
-      DNS.init()
-      DNS.start()
-
-      // Wait for async initialization
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // Get the request handler functions (error handlers are set during attemptDNSStart)
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')?.[1]
-
-      // Verify request handler exists
-      expect(requestHandler).toBeDefined()
-      expect(typeof requestHandler).toBe('function')
-    })
-
-    it('should not start servers when no domains are configured', () => {
-      const dns = require('native-dns')
-      const udpServer = {on: jest.fn(), serve: jest.fn()}
-      const tcpServer = {on: jest.fn(), serve: jest.fn()}
-
-      dns.createServer.mockReturnValue(udpServer)
-      dns.createTCPServer.mockReturnValue(tcpServer)
-
-      // Clear domains config
-      global.Odac.core('Config').config.domains = {}
-
-      DNS.init()
-      DNS.start()
-
-      expect(udpServer.serve).not.toHaveBeenCalled()
-      expect(tcpServer.serve).not.toHaveBeenCalled()
+    test('should handle stop when no process exists', () => {
+      expect(() => DNS.stop()).not.toThrow()
     })
   })
+
+  // ─── Lifecycle ───────────────────────────────────────────────────
+
+  describe('lifecycle', () => {
+    test('should spawn DNS in check if active', async () => {
+      await DNS.start()
+      DNS.reset()
+
+      DNS.check()
+      expect(mockChildProcess.spawn).toHaveBeenCalledTimes(2)
+    })
+
+    test('should not spawn DNS in check if not active', () => {
+      DNS.check()
+      expect(mockChildProcess.spawn).not.toHaveBeenCalled()
+    })
+
+    test('should start service with IP detection and spawn', async () => {
+      await DNS.start()
+      expect(mockAxios.get).toHaveBeenCalled()
+      expect(mockChildProcess.spawn).toHaveBeenCalled()
+    })
+
+    test('should not start twice', async () => {
+      await DNS.start()
+      mockChildProcess.spawn.mockClear()
+      mockAxios.get.mockClear()
+
+      await DNS.start()
+      expect(mockAxios.get).not.toHaveBeenCalled()
+    })
+  })
+
+  // ─── Config Sync ─────────────────────────────────────────────────
+
+  describe('config sync', () => {
+    test('should sync config to DNS binary via axios', async () => {
+      DNS.spawnDNS()
+      await DNS.syncConfig()
+
+      expect(mockAxios.post).toHaveBeenCalledWith(
+        'http://localhost/config',
+        expect.objectContaining({
+          ips: expect.any(Object),
+          zones: expect.any(Object)
+        }),
+        expect.objectContaining({socketPath: expect.any(String)})
+      )
+    })
+
+    test('should not sync when no process exists', async () => {
+      await DNS.syncConfig()
+      expect(mockAxios.post).not.toHaveBeenCalled()
+    })
+
+    test('should retry on connection refused', async () => {
+      jest.useFakeTimers()
+
+      DNS.spawnDNS()
+      mockAxios.post.mockClear()
+
+      let callCount = 0
+      mockAxios.post.mockImplementation(() => {
+        callCount++
+        if (callCount === 1) {
+          return Promise.reject(Object.assign(new Error('ECONNREFUSED'), {code: 'ECONNREFUSED'}))
+        }
+        return Promise.resolve({status: 200})
+      })
+
+      const promise = DNS.syncConfig()
+      await jest.advanceTimersByTimeAsync(1100)
+      await promise
+
+      // At least 2 calls: initial failure + retry success (spawn timer may add more)
+      expect(mockAxios.post.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+      jest.useRealTimers()
+    })
+
+    test('should send zone data in payload', async () => {
+      DNS.spawnDNS()
+      mockAxios.post.mockClear()
+      await DNS.syncConfig()
+
+      const payload = mockAxios.post.mock.calls[0][1]
+      expect(payload.zones['example.com']).toBeDefined()
+      expect(payload.zones['test.org']).toBeDefined()
+    })
+  })
+
+  // ─── DNS Record Management ──────────────────────────────────────
 
   describe('DNS record management', () => {
-    it('should add A record to website configuration', () => {
-      const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
-
-      DNS.record(record)
+    test('should add A record to zone configuration', () => {
+      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
       expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'example.com',
-          value: '192.168.1.1'
-        })
+        expect.objectContaining({name: 'example.com', value: '192.168.1.1'})
       )
     })
 
-    it('should add multiple record types to website configuration', () => {
-      const records = [
+    test('should add multiple record types', () => {
+      DNS.record(
         {name: 'example.com', type: 'A', value: '192.168.1.1'},
-        {name: 'example.com', type: 'MX', value: 'mail.example.com', priority: 10},
+        {name: 'example.com', type: 'MX', priority: 10, value: 'mail.example.com'},
         {name: 'example.com', type: 'TXT', value: 'v=spf1 mx ~all'}
-      ]
-
-      DNS.record(...records)
-
-      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'example.com',
-          value: '192.168.1.1'
-        })
       )
-      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'MX').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'example.com',
-          value: 'mail.example.com',
-          priority: 10
-        })
+
+      const dns = mockConfig.config.dns['example.com']
+      expect(dns.records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: '192.168.1.1'})
       )
-      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'TXT').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'example.com',
-          value: 'v=spf1 mx ~all'
-        })
+      expect(dns.records.filter(r => r.type === 'MX').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', priority: 10, value: 'mail.example.com'})
+      )
+      expect(dns.records.filter(r => r.type === 'TXT').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', value: 'v=spf1 mx ~all'})
       )
     })
 
-    it('should handle subdomain records by finding parent domain', () => {
-      const record = {name: 'www.example.com', type: 'A', value: '192.168.1.1'}
-
-      DNS.record(record)
+    test('should handle subdomain records by finding parent domain', () => {
+      DNS.record({name: 'www.example.com', type: 'A', value: '192.168.1.1'})
 
       expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'www.example.com',
-          value: '192.168.1.1'
-        })
+        expect.objectContaining({name: 'www.example.com', value: '192.168.1.1'})
       )
     })
 
-    it('should automatically generate SOA record with current date serial', () => {
-      const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
-
-      DNS.record(record)
+    test('should automatically generate SOA record with current date serial', () => {
+      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
       const soa = mockConfig.config.dns['example.com'].soa
       expect(soa).toBeDefined()
@@ -376,164 +368,126 @@ describe('DNS Module', () => {
       expect(soa.email).toBe('hostmaster.example.com')
     })
 
-    it('should delete DNS records by name and type', () => {
-      // Add a record first
+    test('should delete DNS records by name and type', () => {
       DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
-
-      // Delete the record
       DNS.delete({name: 'example.com', type: 'A'})
 
-      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value === '192.168.1.1')
-      expect(exampleRecords).toHaveLength(0)
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(
+        r => r.type === 'A' && r.name === 'example.com' && r.value === '192.168.1.1'
+      )
+      expect(aRecords).toHaveLength(0)
     })
 
-    it('should delete DNS records by name, type, and value', () => {
-      // Add multiple records with same name
+    test('should delete DNS records by name, type, and value', () => {
       DNS.record(
-        {name: 'example.com', type: 'A', value: '192.168.1.1', unique: false},
-        {name: 'example.com', type: 'A', value: '192.168.1.2', unique: false}
+        {name: 'example.com', type: 'A', unique: false, value: '192.168.1.1'},
+        {name: 'example.com', type: 'A', unique: false, value: '192.168.1.2'}
       )
 
-      // Delete only one specific record
       DNS.delete({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
-      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      const remainingRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
-      expect(remainingRecords).toHaveLength(1)
-      expect(remainingRecords[0].value).toBe('192.168.1.2')
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(
+        r => r.type === 'A' && r.name === 'example.com' && r.value !== '127.0.0.1'
+      )
+      expect(aRecords).toHaveLength(1)
+      expect(aRecords[0].value).toBe('192.168.1.2')
     })
 
-    it('should ignore records for non-existent domains', () => {
-      const record = {name: 'nonexistent.com', type: 'A', value: '192.168.1.1'}
-
-      DNS.record(record)
-
-      expect(mockConfig.config.domains).not.toHaveProperty('nonexistent.com')
-    })
-
-    it('should replace existing unique records by default', () => {
-      // Add initial record
+    test('should replace existing unique records by default', () => {
       DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
-
-      // Add another record with same name (should replace)
       DNS.record({name: 'example.com', type: 'A', value: '192.168.1.2'})
 
-      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
-      expect(exampleRecords).toHaveLength(1)
-      expect(exampleRecords[0].value).toBe('192.168.1.2')
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(
+        r => r.type === 'A' && r.name === 'example.com' && r.value !== '127.0.0.1'
+      )
+      expect(aRecords).toHaveLength(1)
+      expect(aRecords[0].value).toBe('192.168.1.2')
     })
 
-    it('should allow multiple records when unique is false', () => {
+    test('should allow multiple records when unique is false', () => {
       DNS.record(
-        {name: 'example.com', type: 'A', value: '192.168.1.1', unique: false},
-        {name: 'example.com', type: 'A', value: '192.168.1.2', unique: false}
+        {name: 'example.com', type: 'A', unique: false, value: '192.168.1.1'},
+        {name: 'example.com', type: 'A', unique: false, value: '192.168.1.2'}
       )
 
-      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
-      expect(exampleRecords).toHaveLength(2)
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(
+        r => r.type === 'A' && r.name === 'example.com' && r.value !== '127.0.0.1'
+      )
+      expect(aRecords).toHaveLength(2)
     })
 
-    it('should handle all supported DNS record types', () => {
-      const records = [
+    test('should handle all supported DNS record types', () => {
+      DNS.record(
         {name: 'example.com', type: 'A', value: '192.168.1.1'},
         {name: 'example.com', type: 'AAAA', value: '2001:db8::1'},
         {name: 'www.example.com', type: 'CNAME', value: 'example.com'},
-        {name: 'example.com', type: 'MX', value: 'mail.example.com', priority: 10},
+        {name: 'example.com', type: 'MX', priority: 10, value: 'mail.example.com'},
         {name: 'example.com', type: 'TXT', value: 'v=spf1 mx ~all'},
         {name: 'example.com', type: 'NS', value: 'ns1.example.com'}
-      ]
+      )
 
-      DNS.record(...records)
-
-      const dnsConfig = mockConfig.config.dns['example.com']
-      expect(dnsConfig.records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
+      const dns = mockConfig.config.dns['example.com']
+      expect(dns.records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
         expect.objectContaining({name: 'example.com', value: '192.168.1.1'})
       )
-      expect(dnsConfig.records.filter(r => r.type === 'AAAA').map(({id, ...rest}) => rest)).toContainEqual(
+      expect(dns.records.filter(r => r.type === 'AAAA').map(({id, ...rest}) => rest)).toContainEqual(
         expect.objectContaining({name: 'example.com', value: '2001:db8::1'})
       )
-      expect(dnsConfig.records.filter(r => r.type === 'CNAME').map(({id, ...rest}) => rest)).toContainEqual(
+      expect(dns.records.filter(r => r.type === 'CNAME').map(({id, ...rest}) => rest)).toContainEqual(
         expect.objectContaining({name: 'www.example.com', value: 'example.com'})
       )
-      expect(dnsConfig.records.filter(r => r.type === 'MX').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({name: 'example.com', value: 'mail.example.com', priority: 10})
+      expect(dns.records.filter(r => r.type === 'MX').map(({id, ...rest}) => rest)).toContainEqual(
+        expect.objectContaining({name: 'example.com', priority: 10, value: 'mail.example.com'})
       )
-      expect(dnsConfig.records.filter(r => r.type === 'TXT').map(({id, ...rest}) => rest)).toContainEqual(
+      expect(dns.records.filter(r => r.type === 'TXT').map(({id, ...rest}) => rest)).toContainEqual(
         expect.objectContaining({name: 'example.com', value: 'v=spf1 mx ~all'})
       )
-      expect(dnsConfig.records.filter(r => r.type === 'NS').map(({id, ...rest}) => rest)).toContainEqual(
+      expect(dns.records.filter(r => r.type === 'NS').map(({id, ...rest}) => rest)).toContainEqual(
         expect.objectContaining({name: 'example.com', value: 'ns1.example.com'})
       )
     })
 
-    it('should ignore unsupported DNS record types', () => {
-      const record = {name: 'example.com', type: 'INVALID', value: 'test'}
+    test('should ignore unsupported DNS record types', () => {
+      DNS.record({name: 'example.com', type: 'INVALID', value: 'test'})
 
-      DNS.record(record)
-
-      const dnsConfig = mockConfig.config.dns['example.com']
-      expect(dnsConfig.records.find(r => r.type === 'INVALID')).toBeUndefined()
+      expect(mockConfig.config.dns['example.com'].records.find(r => r.type === 'INVALID')).toBeUndefined()
     })
 
-    it('should ignore records without type specified', () => {
-      const record = {name: 'example.com', value: '192.168.1.1'}
+    test('should ignore records without type specified', () => {
+      DNS.record({name: 'example.com', value: '192.168.1.1'})
 
-      DNS.record(record)
-
-      // Should not add any new records beyond the existing ones
-      const dnsConfig = mockConfig.config.dns['example.com']
-      const aRecords = dnsConfig.records.filter(r => r.type === 'A' && r.value === '192.168.1.1')
+      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A' && r.value === '192.168.1.1')
       expect(aRecords).toHaveLength(0)
     })
 
-    it('should initialize DNS object if it does not exist', () => {
-      // Remove DNS config
+    test('should initialize zone if it does not exist', () => {
       delete mockConfig.config.dns['example.com']
 
-      const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
-      DNS.record(record)
+      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
-      expect(mockConfig.config.domains['example.com']).toBeDefined()
+      expect(mockConfig.config.dns['example.com']).toBeDefined()
+      expect(mockConfig.config.dns['example.com'].soa).toBeDefined()
       expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'example.com',
-          value: '192.168.1.1'
-        })
+        expect.objectContaining({name: 'example.com', value: '192.168.1.1'})
       )
     })
 
-    it('should initialize record type array if it does not exist', () => {
-      if (!mockConfig.config.dns['example.com']) {
-        mockConfig.config.dns['example.com'] = {soa: {serial: 2024010101}, records: []}
-      }
-      // Remove A records
-      mockConfig.config.dns['example.com'].records = mockConfig.config.dns['example.com'].records.filter(r => r.type !== 'A')
+    test('should create default CAA records for new zones', () => {
+      delete mockConfig.config.dns['example.com']
 
-      const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
-      DNS.record(record)
+      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
-      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toBeDefined()
-      expect(mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)).toContainEqual(
-        expect.objectContaining({
-          name: 'example.com',
-          value: '192.168.1.1'
-        })
-      )
+      const caaRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'CAA')
+      expect(caaRecords).toHaveLength(2)
+      expect(caaRecords[0].value).toContain('letsencrypt.org')
+      expect(caaRecords[1].value).toContain('letsencrypt.org')
     })
 
-    it('should generate SOA record with correct date serial format', () => {
-      const record = {name: 'example.com', type: 'A', value: '192.168.1.1'}
-
-      DNS.record(record)
+    test('should generate SOA record with correct date serial format', () => {
+      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
       const soa = mockConfig.config.dns['example.com'].soa
       expect(soa).toBeDefined()
-      expect(soa.primary).toBe('ns1.example.com')
-      expect(soa.email).toBe('hostmaster.example.com')
-      expect(soa.serial).toBeDefined()
       expect(String(soa.serial)).toMatch(/^\d{10}$/)
       expect(soa.refresh).toBe(3600)
       expect(soa.retry).toBe(600)
@@ -542,1599 +496,187 @@ describe('DNS Module', () => {
       expect(soa.ttl).toBe(3600)
     })
 
-    it('should update SOA record for multiple domains', () => {
-      const records = [
-        {name: 'example.com', type: 'A', value: '192.168.1.1'},
-        {name: 'test.org', type: 'A', value: '192.168.1.2'}
-      ]
+    test('should update SOA serial for multiple domains', () => {
+      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'}, {name: 'test.org', type: 'A', value: '192.168.1.2'})
 
-      DNS.record(...records)
-
-      expect(mockConfig.config.dns['example.com'].soa).toBeDefined()
-      expect(mockConfig.config.dns['test.org'].soa).toBeDefined()
-      expect(mockConfig.config.dns['example.com'].soa.primary).toBe('ns1.example.com')
-      expect(mockConfig.config.dns['test.org'].soa.primary).toBe('ns1.test.org')
+      const soaExample = mockConfig.config.dns['example.com'].soa
+      const soaTest = mockConfig.config.dns['test.org'].soa
+      expect(soaExample.serial).toBeGreaterThanOrEqual(2024010101)
+      expect(soaTest.serial).toBeGreaterThanOrEqual(2024010101)
     })
 
-    it('should delete records by type only', () => {
-      // Add multiple A records
-      DNS.record(
-        {name: 'example.com', type: 'A', value: '192.168.1.1', unique: false},
-        {name: 'www.example.com', type: 'A', value: '192.168.1.2', unique: false}
-      )
+    test('should delete by type only', () => {
+      DNS.record({name: 'example.com', type: 'TXT', value: 'test-value'})
 
-      // Delete all A records for example.com
-      DNS.delete({name: 'example.com', type: 'A'})
+      DNS.delete({name: 'example.com', type: 'TXT'})
 
-      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      const exampleRecords = aRecords.filter(r => r.name === 'example.com' && r.value !== '127.0.0.1')
-      expect(exampleRecords).toHaveLength(0)
-
-      // www.example.com record should still exist
-      const wwwRecords = aRecords.filter(r => r.name === 'www.example.com')
-      expect(wwwRecords).toHaveLength(1)
+      const txtRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'TXT' && r.name === 'example.com')
+      expect(txtRecords).toHaveLength(0)
     })
 
-    it('should handle deletion of non-existent records gracefully', () => {
-      DNS.delete({name: 'nonexistent.com', type: 'A'})
-      DNS.delete({name: 'example.com', type: 'NONEXISTENT'})
-
-      // Should not throw errors and existing records should remain
-      if (!mockConfig.config.dns['example.com']) {
-        mockConfig.config.dns['example.com'] = {soa: {}, records: []}
-      }
-      const aRecords = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      expect(aRecords).toBeDefined()
+    test('should handle deletion of non-existent records gracefully', () => {
+      expect(() => {
+        DNS.delete({name: 'example.com', type: 'SRV'})
+      }).not.toThrow()
     })
 
-    it('should handle deletion when DNS config does not exist', () => {
-      delete mockConfig.config.dns['example.com']
-
-      DNS.delete({name: 'example.com', type: 'A'})
-
-      // Should not throw errors
-      expect(mockConfig.config.dns['example.com']).toBeUndefined()
+    test('should handle deletion when DNS config does not exist', () => {
+      mockConfig.config.dns = undefined
+      expect(() => {
+        DNS.delete({name: 'example.com', type: 'A'})
+      }).not.toThrow()
     })
 
-    it('should handle deletion when record type does not exist', () => {
-      if (!mockConfig.config.dns['example.com']) {
-        mockConfig.config.dns['example.com'] = {soa: {}, records: []}
-      }
-      mockConfig.config.dns['example.com'].records = mockConfig.config.dns['example.com'].records.filter(r => r.type !== 'A')
+    test('should call force and syncConfig after record changes', () => {
+      DNS.spawnDNS()
 
-      DNS.delete({name: 'example.com', type: 'A'})
-
-      // Should not throw errors
-      const records = mockConfig.config.dns['example.com'].records.filter(r => r.type === 'A').map(({id, ...rest}) => rest)
-      expect(records).toHaveLength(0)
-    })
-  })
-
-  describe('DNS query processing', () => {
-    let mockRequest, mockResponse
-
-    beforeEach(() => {
-      // Set up mock DNS request and response objects
-      mockRequest = {
-        address: {address: '127.0.0.1'}
-      }
-
-      mockResponse = {
-        question: [{name: 'example.com', type: 1}], // A record query
-        answer: [],
-        authority: [],
-        header: {},
-        send: jest.fn()
-      }
-
-      // Initialize DNS to set up servers
-      DNS.init()
-      DNS.start()
-    })
-
-    it('should process A record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.A = 1
-
-      // Add A record
       DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
 
-      mockResponse.question[0] = {name: 'example.com', type: 1}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.A).toHaveBeenCalledWith({
-        name: 'example.com',
-        address: '192.168.1.1',
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
+      expect(mockConfig.force).toHaveBeenCalled()
     })
 
-    it('should process AAAA record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.AAAA = 28
-
-      // Add AAAA record
-      DNS.record({name: 'example.com', type: 'AAAA', value: '2001:db8::1'})
-
-      mockResponse.question[0] = {name: 'example.com', type: 28}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.AAAA).toHaveBeenCalledWith({
-        name: 'example.com',
-        address: '2001:db8::1',
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should process CNAME record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.CNAME = 5
-
-      // Add CNAME record
-      DNS.record({name: 'www.example.com', type: 'CNAME', value: 'example.com'})
-
-      mockResponse.question[0] = {name: 'www.example.com', type: 5}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.CNAME).toHaveBeenCalledWith({
-        name: 'www.example.com',
-        data: 'example.com',
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should process MX record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.MX = 15
-
-      // Add MX record
-      DNS.record({name: 'example.com', type: 'MX', value: 'mail.example.com', priority: 10})
-
-      mockResponse.question[0] = {name: 'example.com', type: 15}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.MX).toHaveBeenCalledWith({
-        name: 'example.com',
-        exchange: 'mail.example.com',
-        priority: 10,
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should process TXT record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.TXT = 16
-
-      // Add TXT record
-      DNS.record({name: 'example.com', type: 'TXT', value: 'v=spf1 mx ~all'})
-
-      mockResponse.question[0] = {name: 'example.com', type: 16}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.TXT).toHaveBeenCalledWith({
-        name: 'example.com',
-        data: ['v=spf1 mx ~all'],
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should process NS record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.NS = 2
-
-      // Add NS record
-      DNS.record({name: 'example.com', type: 'NS', value: 'ns1.example.com'})
-
-      mockResponse.question[0] = {name: 'example.com', type: 2}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.NS).toHaveBeenCalledWith({
-        name: 'example.com',
-        data: 'ns1.example.com',
-        ttl: 3600
-      })
-      expect(mockResponse.header.aa).toBe(1)
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should process SOA record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.SOA = 6
-
-      // Add SOA record manually (normally auto-generated)
-      mockConfig.config.dns['example.com'].soa = {
-        primary: 'ns1.example.com',
-        email: 'hostmaster.example.com',
-        serial: 2023120101,
-        refresh: 3600,
-        retry: 600,
-        expire: 604800,
-        minimum: 3600,
-        ttl: 3600
-      }
-
-      mockResponse.question[0] = {name: 'example.com', type: 6}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.SOA).toHaveBeenCalledWith({
-        name: 'example.com',
-        primary: 'ns1.example.com',
-        admin: 'hostmaster.example.com',
-        serial: 2023120101,
-        refresh: 3600,
-        retry: 600,
-        expiration: 604800,
-        minimum: 3600,
-        ttl: 3600
-      })
-      expect(mockResponse.header.aa).toBe(1)
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle queries for non-existent domains', () => {
-      mockResponse.question[0] = {name: 'nonexistent.com', type: 1}
-
-      // Get the request handler
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(mockResponse.send).toHaveBeenCalled()
-      expect(mockResponse.answer).toHaveLength(0)
-    })
-
-    it('should handle queries for domains without DNS config', () => {
-      delete mockConfig.config.dns['example.com']
-
-      mockResponse.question[0] = {name: 'example.com', type: 1}
-
-      // Get the request handler
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(mockResponse.send).toHaveBeenCalled()
-      expect(mockResponse.answer).toHaveLength(0)
-    })
-
-    it('should implement rate limiting per client IP', () => {
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      // Mock Date.now to control time
-      const originalDateNow = Date.now
-      let currentTime = 1000000
-      Date.now = jest.fn(() => currentTime)
-
-      // Make 101 requests (exceeding rate limit of 100)
-      for (let i = 0; i < 101; i++) {
-        const request = {address: {address: '192.168.1.100'}}
-        const response = {
-          question: [{name: 'example.com', type: 1}],
-          answer: [],
-          authority: [],
-          header: {},
-          send: jest.fn()
-        }
-        requestHandler(request, response)
-      }
-
-      // The 101st request should be rate limited (no processing)
-      expect(mockResponse.send).toHaveBeenCalledTimes(0) // Original response not used in loop
-
-      // Restore Date.now
-      Date.now = originalDateNow
-    })
-
-    it('should reset rate limiting after time window', () => {
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      // Mock Date.now to control time
-      const originalDateNow = Date.now
-      let currentTime = 1000000
-      Date.now = jest.fn(() => currentTime)
-
-      // Make 100 requests
-      for (let i = 0; i < 100; i++) {
-        const request = {address: {address: '192.168.1.100'}}
-        const response = {
-          question: [{name: 'example.com', type: 1}],
-          answer: [],
-          authority: [],
-          header: {},
-          send: jest.fn()
-        }
-        requestHandler(request, response)
-      }
-
-      // Advance time by more than rate limit window (60 seconds)
-      currentTime += 61000
-
-      // Make another request - should be allowed
-      const request = {address: {address: '192.168.1.100'}}
-      const response = {
-        question: [{name: 'example.com', type: 1}],
-        answer: [],
-        authority: [],
-        header: {},
-        send: jest.fn()
-      }
-      requestHandler(request, response)
-
-      expect(response.send).toHaveBeenCalled()
-
-      // Restore Date.now
-      Date.now = originalDateNow
-    })
-
-    it('should handle malformed DNS requests gracefully', () => {
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      // Test with null request - should not crash
-      expect(() => requestHandler(null, mockResponse)).not.toThrow()
-
-      // Test with missing question - create a proper request but invalid response
-      const invalidResponse = {send: jest.fn()}
-      expect(() => requestHandler(mockRequest, invalidResponse)).not.toThrow()
-
-      // Test with empty question array
-      const emptyQuestionResponse = {question: [], send: jest.fn()}
-      expect(() => requestHandler(mockRequest, emptyQuestionResponse)).not.toThrow()
-
-      // Verify error handling doesn't crash
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle request processing errors gracefully', () => {
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      // Mock DNS record processing to throw an error
-      dns.A.mockImplementation(() => {
-        throw new Error('DNS processing error')
-      })
-
-      // Add A record to trigger processing
-      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
-
-      // Should handle processing errors without crashing
-      expect(() => requestHandler(mockRequest, mockResponse)).not.toThrow()
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle case-insensitive domain names', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.A = 1
-
-      // Add A record
-      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1'})
-
-      // Query with uppercase domain
-      mockResponse.question[0] = {name: 'EXAMPLE.COM', type: 1}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(mockResponse.question[0].name).toBe('example.com') // Should be normalized
-      expect(dns.A).toHaveBeenCalled()
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should process ANY queries by returning all record types', () => {
-      const dns = require('native-dns')
-
-      // Add multiple record types
-      DNS.record(
-        {name: 'example.com', type: 'A', value: '192.168.1.1'},
-        {name: 'example.com', type: 'MX', value: 'mail.example.com', priority: 10},
-        {name: 'example.com', type: 'TXT', value: 'v=spf1 mx ~all'}
-      )
-
-      // Query with unknown type (should process all)
-      mockResponse.question[0] = {name: 'example.com', type: 255} // ANY query
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // SECURITY: ANY queries should only return SOA or minimal info, not all records
-      expect(dns.SOA).toHaveBeenCalled()
-      expect(dns.A).not.toHaveBeenCalled()
-      expect(dns.MX).not.toHaveBeenCalled()
-      expect(dns.TXT).not.toHaveBeenCalled()
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should skip A record when resolved IP is 127.0.0.1', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.A = 1
-
-      // Add A record without value (would resolve to 127.0.0.1 since no public IP)
-      DNS.record({name: 'example.com', type: 'A'})
-
-      mockResponse.question[0] = {name: 'example.com', type: 1}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      // Reset dns.A mock to check calls
-      dns.A.mockClear()
-
-      requestHandler(mockRequest, mockResponse)
-
-      // A record should NOT be created when IP is 127.0.0.1
-      expect(dns.A).not.toHaveBeenCalled()
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle subdomain queries by finding parent domain', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.A = 1
-
-      // Add A record for subdomain
-      DNS.record({name: 'api.example.com', type: 'A', value: '192.168.1.100'})
-
-      mockResponse.question[0] = {name: 'api.example.com', type: 1}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.A).toHaveBeenCalledWith({
-        name: 'api.example.com',
-        address: '192.168.1.100',
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle CAA record queries correctly', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.CAA = 257
-
-      // Add CAA record
-      DNS.record({name: 'example.com', type: 'CAA', value: '0 issue letsencrypt.org'})
-
-      mockResponse.question[0] = {name: 'example.com', type: 257}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(mockResponse.answer).toHaveLength(1)
-      const record = mockResponse.answer[0]
-      expect(record.name).toBe('example.com')
-      expect(record.type).toBe(257)
-      expect(record.class).toBe(1)
-      expect(record.ttl).toBe(3600)
-      expect(Buffer.isBuffer(record.data)).toBe(true)
-      expect(record.data.length).toBeGreaterThan(0)
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should add default CAA records when none exist', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.CAA = 257
-
-      // Initialize CAA array but leave it empty
-      mockConfig.config.dns['example.com'].records = []
-
-      mockResponse.question[0] = {name: 'example.com', type: 257}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // Should add default Let's Encrypt CAA records
-      expect(mockResponse.answer).toHaveLength(2)
-
-      const issueRecord = mockResponse.answer.find(r => r.data.toString().includes('issue'))
-      expect(issueRecord).toBeDefined()
-      expect(issueRecord.type).toBe(257)
-
-      const issuewildRecord = mockResponse.answer.find(r => r.data.toString().includes('issuewild'))
-      expect(issuewildRecord).toBeDefined()
-      expect(issuewildRecord.type).toBe(257)
-
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle NXDOMAIN for unknown domains', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_RCODE = {NXDOMAIN: 3}
-
-      mockResponse.question[0] = {name: 'unknown.domain', type: 1}
-
-      // Get the request handler
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(mockResponse.header.rcode).toBe(3)
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should skip rate limiting for localhost', () => {
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      let lastResponse
-      // Make 150 requests from localhost (exceeds rate limit)
-      for (let i = 0; i < 150; i++) {
-        const request = {address: {address: '127.0.0.1'}}
-        lastResponse = {
-          question: [{name: 'example.com', type: 1}],
-          answer: [],
-          authority: [],
-          header: {},
-          send: jest.fn()
-        }
-        requestHandler(request, lastResponse)
-      }
-
-      // All requests should be processed (no rate limiting for localhost)
-      // Last response should have been sent
-      expect(lastResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle malformed CAA records gracefully', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.CAA = 257
-
-      // Add malformed CAA record (missing parts)
-      mockConfig.config.dns['example.com'].records = [
-        {name: 'example.com', value: '0 issue'} // Missing value part
-      ]
-
-      mockResponse.question[0] = {name: 'example.com', type: 257}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // Should not crash, should send response
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle malformed SOA records gracefully', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.SOA = 6
-
-      // Add malformed SOA record (not enough parts)
-      mockConfig.config.dns['example.com'].soa = {
-        primary: 'ns1.example.com',
-        email: 'hostmaster.example.com'
-        // Missing other fields
-      }
-
-      mockResponse.question[0] = {name: 'example.com', type: 6}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // Should not crash, should send response
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle null records in TXT processing', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.TXT = 16
-
-      // Add null record
-      mockConfig.config.dns['example.com'].records = [null, {name: 'example.com', type: 'TXT', value: 'valid-txt', ttl: 3600}]
-
-      mockResponse.question[0] = {name: 'example.com', type: 16}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // Should process valid record and skip null
-      expect(dns.TXT).toHaveBeenCalledWith({
-        name: 'example.com',
-        data: ['valid-txt'],
-        ttl: 3600
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle null records in CAA processing', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.CAA = 257
-
-      // Add null record
-      mockConfig.config.dns['example.com'].records = [null, {name: 'example.com', type: 'CAA', value: '0 issue letsencrypt.org', ttl: 3600}]
-
-      mockResponse.question[0] = {name: 'example.com', type: 257}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      // Should process valid record and skip null
-      expect(mockResponse.answer).toHaveLength(1)
-      expect(mockResponse.answer[0].type).toBe(257)
-      expect(mockResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle response.send failure gracefully', () => {
-      const dns = require('native-dns')
-      // mockError already defined at top
-
-      mockResponse.send = jest.fn(() => {
-        throw new Error('Send failed')
-      })
-      mockResponse.question[0] = {name: 'example.com', type: 1}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      // Should not throw
-      expect(() => requestHandler(mockRequest, mockResponse)).not.toThrow()
-    })
-
-    it('should handle request with unknown client IP', () => {
-      const dns = require('native-dns')
-      // mockLog already defined at top
-
-      const requestWithoutIP = {}
-      const response = {
-        question: [{name: 'example.com', type: 1}],
-        answer: [],
-        authority: [],
-        header: {},
-        send: jest.fn()
-      }
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(requestWithoutIP, response)
-
-      // Should handle gracefully
-      expect(response.send).toHaveBeenCalled()
-    })
-
-    it('should handle IPv6 localhost in rate limiting', () => {
-      const dns = require('native-dns')
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      let lastResponse
-      // Make 150 requests from IPv6 localhost (exceeds rate limit)
-      for (let i = 0; i < 150; i++) {
-        const request = {address: {address: '::1'}}
-        lastResponse = {
-          question: [{name: 'example.com', type: 1}],
-          answer: [],
-          authority: [],
-          header: {},
-          send: jest.fn()
-        }
-        requestHandler(request, lastResponse)
-      }
-
-      // All requests should be processed (no rate limiting for localhost)
-      expect(lastResponse.send).toHaveBeenCalled()
-    })
-
-    it('should handle custom TTL values in records', () => {
-      const dns = require('native-dns')
-      dns.consts.NAME_TO_QTYPE.A = 1
-
-      // Add A record with custom TTL
-      DNS.record({name: 'example.com', type: 'A', value: '192.168.1.1', ttl: 7200})
-
-      mockResponse.question[0] = {name: 'example.com', type: 1}
-
-      const udpServer = dns.createServer.mock.results[0].value
-      const requestHandler = udpServer.on.mock.calls.find(call => call[0] === 'request')[1]
-
-      requestHandler(mockRequest, mockResponse)
-
-      expect(dns.A).toHaveBeenCalledWith({
-        name: 'example.com',
-        address: '192.168.1.1',
-        ttl: 7200
-      })
-      expect(mockResponse.send).toHaveBeenCalled()
+    test('should protect against prototype pollution in domain names', () => {
+      DNS.record({name: '__proto__', type: 'A', value: '1.2.3.4'})
+      DNS.record({name: 'constructor', type: 'A', value: '1.2.3.4'})
+      DNS.record({name: 'prototype', type: 'A', value: '1.2.3.4'})
+
+      // Use Object.keys to avoid __proto__ quirks with toHaveProperty
+      const keys = Object.keys(mockConfig.config.dns)
+      expect(keys).not.toContain('__proto__')
+      expect(keys).not.toContain('constructor')
+      expect(keys).not.toContain('prototype')
     })
   })
 
-  describe('advanced initialization scenarios', () => {
-    beforeEach(() => {
-      setupGlobalMocks()
+  // ─── IP Detection ───────────────────────────────────────────────
 
-      jest.doMock('native-dns', () => ({
-        createServer: jest.fn(() => ({
-          on: jest.fn(),
-          serve: jest.fn()
-        })),
-        createTCPServer: jest.fn(() => ({
-          on: jest.fn(),
-          serve: jest.fn()
-        })),
-        consts: {
-          NAME_TO_QTYPE: {A: 1},
-          NAME_TO_RCODE: {NXDOMAIN: 3}
-        },
-        A: jest.fn(data => ({type: 'A', ...data}))
-      }))
+  describe('IP detection', () => {
+    test('should detect external IPv4 from service', async () => {
+      mockAxios.get.mockResolvedValueOnce({data: '93.184.216.34'})
 
-      jest.doMock('axios', () => ({
-        get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
-      }))
+      await DNS.start()
 
-      mockConfig = {
-        config: {
-          domains: {
-            'example.com': createMockWebsiteConfig('example.com')
-          }
-        }
-      }
-
-      global.Odac.setMock('core', 'Config', mockConfig)
-
-      jest.resetModules()
-      DNS = require('../../server/src/DNS')
+      expect(DNS.ip).toBe('93.184.216.34')
     })
 
-    afterEach(() => {
-      cleanupGlobalMocks()
-      jest.resetModules()
-      jest.dontMock('native-dns')
-      jest.dontMock('axios')
+    test('should handle invalid IP format from external service', async () => {
+      mockAxios.get.mockResolvedValue({data: 'not-an-ip'})
+
+      await DNS.start()
+
+      // Should not set invalid IP, falls back to local detection
+      expect(DNS.ip).not.toBe('not-an-ip')
     })
 
-    it('should handle multiple IP service failures and use local network IP', async () => {
-      const axios = require('axios')
-      // mockLog already defined at top
+    test('should handle external IP detection failure', async () => {
+      mockAxios.get.mockRejectedValue(new Error('Network error'))
 
-      // All services fail
-      axios.get.mockRejectedValue(new Error('Network error'))
+      await DNS.start()
 
-      DNS.init()
-      DNS.start()
-
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // Should fallback to local network IP (not 127.0.0.1)
-      expect(DNS.ip).not.toBe('127.0.0.1')
-      expect(DNS.ip).toMatch(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)
+      // Should fall back gracefully
+      expect(DNS.ip).toBeDefined()
     })
 
-    it('should handle second IP service success after first fails', async () => {
-      const axios = require('axios')
+    test('should collect local network IPs', async () => {
+      mockOs.networkInterfaces.mockReturnValue({
+        eth0: [
+          {address: '10.0.0.5', family: 'IPv4', internal: false},
+          {address: '2001:db8::1', family: 'IPv6', internal: false}
+        ]
+      })
 
-      // First service fails, second succeeds
-      axios.get.mockRejectedValueOnce(new Error('First service failed')).mockResolvedValueOnce({data: '203.0.113.50'})
+      await DNS.start()
 
-      DNS.init()
-      DNS.start()
-
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      expect(DNS.ip).toBe('203.0.113.50')
+      expect(DNS.ips.ipv4.length).toBeGreaterThanOrEqual(1)
     })
 
-    it('should trim whitespace from IP response', async () => {
-      const axios = require('axios')
+    test('should skip link-local IPv6 addresses', async () => {
+      mockOs.networkInterfaces.mockReturnValue({
+        eth0: [{address: 'fe80::1', family: 'IPv6', internal: false}]
+      })
 
-      axios.get.mockResolvedValue({data: '  203.0.113.75  \n'})
+      await DNS.start()
 
-      DNS.init()
-      DNS.start()
-
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      expect(DNS.ip).toBe('203.0.113.75')
+      const linkLocal = DNS.ips.ipv6.find(i => i.address === 'fe80::1')
+      expect(linkLocal).toBeUndefined()
     })
 
-    it('should handle execSync errors in logSystemInfo', async () => {
-      // Mock child_process before requiring DNS
-      jest.doMock('child_process', () => ({
-        execSync: jest.fn(() => {
-          throw new Error('Command failed')
-        })
-      }))
+    test('should skip internal interfaces', async () => {
+      mockOs.networkInterfaces.mockReturnValue({
+        lo: [{address: '127.0.0.1', family: 'IPv4', internal: true}]
+      })
 
-      jest.resetModules()
-      const DNSWithError = require('../../server/src/DNS')
+      await DNS.start()
 
-      // Should not crash when init is called
-      expect(() => {
-        DNSWithError.init()
-        DNSWithError.start()
-      }).not.toThrow()
-
-      await new Promise(resolve => setTimeout(resolve, 100))
+      const loopback = DNS.ips.ipv4.find(i => i.address === '127.0.0.1')
+      expect(loopback).toBeUndefined()
     })
 
-    it('should handle platform-specific checks on non-Linux systems', async () => {
-      // Mock os module before requiring DNS
-      jest.doMock('os', () => ({
-        platform: jest.fn(() => 'darwin'),
-        arch: jest.fn(() => 'x64'),
-        networkInterfaces: jest.fn(() => ({
-          en0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-        }))
-      }))
+    test('should mark private IPs as non-public', async () => {
+      mockOs.networkInterfaces.mockReturnValue({
+        eth0: [{address: '192.168.1.10', family: 'IPv4', internal: false}]
+      })
+      mockAxios.get.mockRejectedValue(new Error('offline'))
 
-      jest.resetModules()
-      const DNSWithDarwin = require('../../server/src/DNS')
+      await DNS.start()
 
-      // Should not crash on non-Linux platforms
-      expect(() => {
-        DNSWithDarwin.init()
-        DNSWithDarwin.start()
-      }).not.toThrow()
-
-      await new Promise(resolve => setTimeout(resolve, 100))
+      const privateIP = DNS.ips.ipv4.find(i => i.address === '192.168.1.10')
+      expect(privateIP).toBeDefined()
+      expect(privateIP.public).toBe(false)
     })
 
-    it('should handle Linux platform with systemd-resolved checks', async () => {
-      // mockLog already defined at top
-
-      // Mock os and child_process modules
-      mockLog.mockClear() // Clear previous calls
-
-      jest.doMock('os', () => ({
-        platform: jest.fn(() => 'linux'),
-        arch: jest.fn(() => 'x64'),
-        networkInterfaces: jest.fn(() => ({
-          eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-        }))
-      }))
-
-      jest.doMock('child_process', () => ({
-        execSync: jest.fn(cmd => {
-          if (cmd.includes('systemctl is-active')) return 'active'
-          if (cmd.includes('systemd-resolve') || cmd.includes('resolvectl')) return 'DNS Server: 127.0.0.53'
-          return ''
-        })
-      }))
-
-      jest.resetModules()
-      const DNSWithLinux = require('../../server/src/DNS')
-
-      // Should not crash on Linux with systemd-resolved
-      expect(() => {
-        DNSWithLinux.init()
-        DNSWithLinux.start()
-      }).not.toThrow()
-
-      await new Promise(resolve => setTimeout(resolve, 100))
-    })
-  })
-})
-
-describe('port management and conflict resolution', () => {
-  let DNS, mockConfig
-
-  beforeEach(() => {
-    // Clear mock calls before each test
-    mockLog.mockClear()
-    mockError.mockClear()
-
-    setupGlobalMocks()
-
-    // Set up the Log mock before requiring DNS
-    const {mockOdac} = require('./__mocks__/globalOdac')
-    mockOdac.setMock('core', 'Log', {
-      init: jest.fn().mockReturnValue({
-        log: mockLog,
-        error: mockError
+    test('should attempt PTR lookups for detected IPs', async () => {
+      mockOs.networkInterfaces.mockReturnValue({
+        eth0: [{address: '93.184.216.34', family: 'IPv4', internal: false}]
       })
+      mockDns.promises.reverse.mockResolvedValue(['server.example.com'])
+
+      await DNS.start()
+
+      expect(mockDns.promises.reverse).toHaveBeenCalled()
     })
 
-    jest.doMock('native-dns', () => ({
-      createServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      createTCPServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      consts: {
-        NAME_TO_QTYPE: {A: 1},
-        NAME_TO_RCODE: {NXDOMAIN: 3}
-      },
-      A: jest.fn(data => ({type: 'A', ...data}))
-    }))
+    test('should handle PTR lookup failures gracefully', async () => {
+      mockDns.promises.reverse.mockRejectedValue(new Error('ENOTFOUND'))
 
-    jest.doMock('axios', () => ({
-      get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
-    }))
+      await DNS.start()
 
-    mockConfig = {
-      config: {
-        domains: {
-          'example.com': createMockWebsiteConfig('example.com')
-        }
-      }
-    }
-
-    global.Odac.setMock('core', 'Config', mockConfig)
-  })
-
-  afterEach(() => {
-    cleanupGlobalMocks()
-    jest.resetModules()
-    jest.dontMock('native-dns')
-    jest.dontMock('axios')
-    jest.dontMock('child_process')
-    jest.dontMock('os')
-    jest.dontMock('fs')
-  })
-
-  it('should detect port 53 is in use', async () => {
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'systemd-resolve 1234 root   13u  IPv4 12345      0t0  UDP 127.0.0.53:domain'
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle port conflict gracefully
-    expect(() => {
-      DNS.init()
-      DNS.start()
-    }).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-  })
-
-  it('should detect port is available', async () => {
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return '' // Port is free
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should start successfully when port is available
-    expect(() => {
-      DNS.init()
-      DNS.start()
-    }).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-  })
-
-  it('should handle port check errors gracefully', async () => {
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(() => {
-        throw new Error('Command not found')
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle port check errors without crashing
-    expect(() => {
-      DNS.init()
-      DNS.start()
-    }).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-  })
-
-  it('should detect systemd-resolved on Linux', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'linux'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'systemd-resolve 1234 root   13u  IPv4 12345      0t0  UDP 127.0.0.53:domain'
-        if (cmd.includes('systemctl is-active')) return 'active'
-        return ''
-      })
-    }))
-
-    jest.doMock('fs', () => ({
-      existsSync: jest.fn(() => false)
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle systemd-resolved detection without crashing
-    expect(() => {
-      DNS.init()
-      DNS.start()
-    }).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should skip systemd-resolved handling on non-Linux', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'darwin'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        en0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'some-process 1234 user'
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should skip systemd-resolved handling on non-Linux without crashing
-    expect(() => {
-      DNS.init()
-      DNS.start()
-    }).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should handle non-systemd process on port 53', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'linux'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'dnsmasq 1234 root'
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle non-systemd process without crashing
-    expect(() => {
-      DNS.init()
-      DNS.start()
-    }).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should handle systemd-resolved not active', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'linux'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'systemd-resolve 1234 root'
-        if (cmd.includes('systemctl is-active')) return 'inactive'
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle inactive systemd-resolved without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should handle sudo permission errors', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'linux'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'systemd-resolve 1234 root'
-        if (cmd.includes('systemctl is-active')) return 'active'
-        if (cmd.includes('sudo')) throw new Error('sudo: no tty present')
-        return ''
-      })
-    }))
-
-    jest.doMock('fs', () => ({
-      existsSync: jest.fn(() => false)
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle sudo permission errors gracefully
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should handle error handler with EADDRINUSE', async () => {
-    const dns = require('native-dns')
-    // mockError already defined at top
-
-    const udpServer = {
-      on: jest.fn(),
-      serve: jest.fn()
-    }
-    const tcpServer = {
-      on: jest.fn(),
-      serve: jest.fn()
-    }
-
-    dns.createServer.mockReturnValue(udpServer)
-    dns.createTCPServer.mockReturnValue(tcpServer)
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(() => '')
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    DNS.init()
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-
-    // Get the error handler
-    const errorHandler = udpServer.on.mock.calls.find(call => call[0] === 'error')?.[1]
-
-    if (errorHandler) {
-      const error = new Error('Port in use')
-      error.code = 'EADDRINUSE'
-      await errorHandler(error)
-
-      expect(mockLog).toHaveBeenCalledWith('DNS UDP Server Error:', 'Port in use')
-    }
-  })
-
-  it('should handle error handler with EACCES', async () => {
-    const dns = require('native-dns')
-    // mockError already defined at top
-
-    const udpServer = {
-      on: jest.fn(),
-      serve: jest.fn()
-    }
-    const tcpServer = {
-      on: jest.fn(),
-      serve: jest.fn()
-    }
-
-    dns.createServer.mockReturnValue(udpServer)
-    dns.createTCPServer.mockReturnValue(tcpServer)
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(() => '')
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    DNS.init()
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-
-    // Get the error handler
-    const errorHandler = tcpServer.on.mock.calls.find(call => call[0] === 'error')?.[1]
-
-    if (errorHandler) {
-      const error = new Error('Permission denied')
-      error.code = 'EACCES'
-      await errorHandler(error)
-
-      expect(mockLog).toHaveBeenCalledWith('DNS TCP Server Error:', 'Permission denied')
-    }
-  })
-})
-
-describe('alternative port and system DNS configuration', () => {
-  let DNS, mockConfig
-
-  beforeEach(() => {
-    // Clear mock calls before each test
-    mockLog.mockClear()
-    mockError.mockClear()
-
-    setupGlobalMocks()
-
-    // Set up the Log mock before requiring DNS
-    const {mockOdac} = require('./__mocks__/globalOdac')
-    mockOdac.setMock('core', 'Log', {
-      init: jest.fn().mockReturnValue({
-        log: mockLog,
-        error: mockError
-      })
+      // Should not throw, PTR just remains null
+      expect(DNS.ips.ipv4.every(i => i.ptr === null || typeof i.ptr === 'string')).toBe(true)
     })
 
-    jest.doMock('native-dns', () => ({
-      createServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      createTCPServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      consts: {
-        NAME_TO_QTYPE: {A: 1},
-        NAME_TO_RCODE: {NXDOMAIN: 3}
-      },
-      A: jest.fn(data => ({type: 'A', ...data}))
-    }))
+    test('should detect IPv6 from external service', async () => {
+      // IPv4 services (5 services, first one succeeds so others not called)
+      mockAxios.get
+        .mockResolvedValueOnce({data: '93.184.216.34'})
+        // IPv6 services (3 services)
+        .mockResolvedValueOnce({data: '2001:db8::1'})
 
-    jest.doMock('axios', () => ({
-      get: jest.fn().mockResolvedValue({data: '127.0.0.1'})
-    }))
+      await DNS.start()
 
-    mockConfig = {
-      config: {
-        domains: {
-          'example.com': createMockWebsiteConfig('example.com')
-        }
-      }
-    }
-
-    global.Odac.setMock('core', 'Config', mockConfig)
-  })
-
-  afterEach(() => {
-    cleanupGlobalMocks()
-    jest.resetModules()
-    jest.dontMock('native-dns')
-    jest.dontMock('axios')
-    jest.dontMock('child_process')
-    jest.dontMock('os')
-    jest.dontMock('fs')
-  })
-
-  it('should try alternative ports when port 53 is unavailable', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'darwin'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        en0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        // Port 53 is in use
-        if (cmd.includes('lsof -i :53')) return 'some-process 1234 user'
-        // Port 5353 is free
-        if (cmd.includes('lsof -i :5353')) return ''
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should try alternative ports without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 400))
-  })
-
-  it('should handle all alternative ports in use', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'darwin'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        en0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        // All ports are in use
-        if (cmd.includes('lsof -i :')) return 'some-process 1234 user'
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle all ports in use without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 400))
-  })
-
-  it('should handle alternative port startup errors', async () => {
-    const dns = require('native-dns')
-
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'darwin'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        en0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'some-process 1234 user'
-        if (cmd.includes('lsof -i :5353')) return '' // Port 5353 appears free
-        return ''
-      })
-    }))
-
-    // Make serve throw error
-    dns.createServer.mockReturnValue({
-      on: jest.fn(),
-      serve: jest.fn(() => {
-        throw new Error('Failed to bind')
-      })
+      expect(DNS.ips.ipv6.find(i => i.address === '2001:db8::1')).toBeDefined()
     })
 
-    dns.createTCPServer.mockReturnValue({
-      on: jest.fn(),
-      serve: jest.fn(() => {
-        throw new Error('Failed to bind')
-      })
+    test('should trim whitespace from IP response', async () => {
+      mockAxios.get.mockResolvedValueOnce({data: '  93.184.216.34\n  '})
+
+      await DNS.start()
+
+      expect(DNS.ip).toBe('93.184.216.34')
     })
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle startup errors without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 400))
   })
 
-  it('should handle serve() throwing EADDRINUSE in attemptDNSStart', async () => {
-    jest.doMock('native-dns', () => ({
-      createServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn(() => {
-          const err = new Error('Address in use')
-          err.code = 'EADDRINUSE'
-          throw err
-        })
-      })),
-      createTCPServer: jest.fn(() => ({
-        on: jest.fn(),
-        serve: jest.fn()
-      })),
-      consts: {
-        NAME_TO_QTYPE: {A: 1},
-        NAME_TO_RCODE: {NXDOMAIN: 3}
-      },
-      A: jest.fn(data => ({type: 'A', ...data}))
-    }))
+  // ─── Reset Helper ───────────────────────────────────────────────
 
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(() => '')
-    }))
+  describe('reset', () => {
+    test('should reset internal state for tests', () => {
+      DNS.spawnDNS()
+      DNS.reset()
 
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should not throw
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should setup system DNS for internet access on port 53', async () => {
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return '' // Port is free
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should setup DNS without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should handle setupSystemDNSForInternet errors gracefully', async () => {
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return '' // Port is free
-        if (cmd.includes('sudo')) throw new Error('Permission denied')
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle permission errors without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-  })
-
-  it('should handle updateSystemDNSConfig errors gracefully', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'darwin'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        en0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'some-process 1234 user'
-        if (cmd.includes('lsof -i :5353')) return '' // Port 5353 is free
-        if (cmd.includes('sudo')) throw new Error('Permission denied')
-        return ''
-      })
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle DNS config errors without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 400))
-  })
-
-  it('should handle fs.existsSync returning true', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'linux'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) return 'systemd-resolve 1234 root'
-        if (cmd.includes('systemctl is-active')) return 'active'
-        return ''
-      })
-    }))
-
-    jest.doMock('fs', () => ({
-      existsSync: jest.fn(() => true) // Directory already exists
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle existing directory without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 400))
-  })
-
-  it('should handle successful systemd-resolved configuration', async () => {
-    jest.doMock('os', () => ({
-      platform: jest.fn(() => 'linux'),
-      arch: jest.fn(() => 'x64'),
-      networkInterfaces: jest.fn(() => ({
-        eth0: [{internal: false, family: 'IPv4', address: '192.168.1.10'}]
-      }))
-    }))
-
-    jest.doMock('child_process', () => ({
-      execSync: jest.fn(cmd => {
-        if (cmd.includes('lsof -i :53')) {
-          // First call: port in use, second call after restart: port free
-          if (cmd.match(/lsof/g)?.length === 1) return 'systemd-resolve 1234 root'
-          return ''
-        }
-        if (cmd.includes('systemctl is-active')) return 'active'
-        return ''
-      })
-    }))
-
-    jest.doMock('fs', () => ({
-      existsSync: jest.fn(() => false)
-    }))
-
-    jest.resetModules()
-    DNS = require('../../server/src/DNS')
-
-    // Should handle systemd-resolved configuration without crashing
-    expect(() => DNS.init()).not.toThrow()
-
-    await new Promise(resolve => setTimeout(resolve, 4000))
+      // After reset, spawnDNS should work again
+      mockChildProcess.spawn.mockClear()
+      DNS.spawnDNS()
+      expect(mockChildProcess.spawn).toHaveBeenCalled()
+    })
   })
 })

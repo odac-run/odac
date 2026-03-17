@@ -3,10 +3,13 @@ FROM golang:1.24-alpine AS go-builder
 WORKDIR /build
 # Copy Go source
 COPY server/proxy ./server/proxy
+COPY server/dns ./server/dns
 # Build static binary
 # -ldflags="-s -w" reduces binary size by stripping debug symbols
 RUN cd server/proxy && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-proxy
+RUN cd server/dns && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-dns
 
 # Stage 1: Build Node.js Native Dependencies
 FROM node:22-alpine AS node-builder
@@ -57,13 +60,14 @@ RUN npm ci --omit=dev
 # Copy Node.js modules from builder
 COPY --from=node-builder /app/node_modules ./node_modules
 
-# Copy Go Proxy binary from go-builder
+# Copy Go Proxy and DNS binaries from go-builder
 COPY --from=go-builder /build/odac-proxy ./bin/odac-proxy
+COPY --from=go-builder /build/odac-dns ./bin/odac-dns
 
 # Copy application source code
 COPY . .
 # Ensure binary is executable
-RUN chmod +x ./bin/odac-proxy
+RUN chmod +x ./bin/odac-proxy && chmod +x ./bin/odac-dns
 
 # Create necessary directories
 RUN mkdir -p /app/.odac

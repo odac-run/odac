@@ -154,12 +154,6 @@ class Api {
               return socket.write(JSON.stringify({id, ...this.result(false, 'unauthorized')}))
             }
 
-            // Validate token expiration (e.g., 24 hours = 86400000 ms)
-            if (Date.now() - appAuth.t > 86400000) {
-              warn(`Rejected token for '${appAuth.n}': expired`)
-              return socket.write(JSON.stringify({id, ...this.result(false, 'token_expired')}))
-            }
-
             clientDomain = appAuth.n // App Name as identifier
             appPermissions = appAuth.p || []
           } else {

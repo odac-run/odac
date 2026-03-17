@@ -116,8 +116,6 @@ describe('App', () => {
   })
 
   afterEach(() => {
-    delete global.Odac
-    delete global.__
     jest.clearAllMocks()
   })
 

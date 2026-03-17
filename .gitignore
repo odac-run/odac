@@ -48,8 +48,11 @@ jest-*
 # Kiro
 .kiro/specs/*
 
+# Binaries
+bin/odac-proxy
+bin/odac-dns
+
 .secret/
 .odac/
 docker-compose.dev.yml
-# Binaries
-bin/odac-proxy
+

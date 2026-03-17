@@ -121,7 +121,6 @@ class TestServer {
     if (this.originalCandy) {
       global.Odac = this.originalCandy
     } else {
-      delete global.Odac
     }
   }
 }
@@ -135,7 +134,6 @@ describe('Server', () => {
     jest.useFakeTimers()
 
     // Clear any existing global Odac
-    delete global.Odac
   })
 
   afterEach(() => {
@@ -143,7 +141,6 @@ describe('Server', () => {
       server.destroy()
     }
     jest.useRealTimers()
-    delete global.Odac
   })
 
   describe('initialization', () => {

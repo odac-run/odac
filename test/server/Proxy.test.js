@@ -76,8 +76,7 @@ describe('Proxy', () => {
   })
 
   afterEach(() => {
-    delete global.Odac
-    delete global.__
+    if (ProxyService) ProxyService.stop()
   })
 
   describe('proxy management', () => {

@@ -41,13 +41,13 @@ class Server {
     }
     // Stop non-web services first (they don't support SO_REUSEPORT)
     Odac.server('Mail').stop()
-    Odac.server('DNS').stop()
     Odac.server('Api').stop()
     Odac.server('Hub').stop()
 
-    // Web is stopped last (or not at all if exceptWeb=true)
-    // This allows new container's Web to start BEFORE old one stops (SO_REUSEPORT)
+    // DNS and Web support SO_REUSEPORT on Linux — keep them alive during
+    // zero-downtime updates so the new instance can overlap before takeover
     if (!exceptWeb) {
+      Odac.server('DNS').stop()
       Odac.server('Proxy').stop()
     }
   }

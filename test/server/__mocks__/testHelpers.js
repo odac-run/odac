@@ -30,8 +30,6 @@ const cleanupGlobalMocks = () => {
   mockLangGet.mockClear()
 
   // Reset global references
-  delete global.Odac
-  delete global.__
 }
 
 /**
