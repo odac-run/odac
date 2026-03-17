@@ -1,5 +1,29 @@
 ### ⚙️ Engine Tuning
 
+- Improve test cleanup and robustness, enhance proxy timer management, and add error handling for system network statistics.
+
+### ⚡️ Performance Upgrades
+
+- **dns:** migrate dns server to high-performance go binary with zero-downtime update
+
+### 🛠️ Fixes & Improvements
+
+- **api:** remove token expiration validation from app authentication
+- **app:** expose real host paths in app.list payload instead of internal container paths
+- **dns:** chase CNAME targets to include A/AAAA records in response
+- **dns:** prevent file descriptor leak by closing log file copy in parent process
+- **dns:** prevent unmarshal panic by normalizing null ptr strings for Go config
+- **dns:** probe both TCP and UDP bindings for port availability to prevent startup crashes
+- **domain:** enhance domain validation to handle localhost and IP addresses
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - **container:** remove dead runInit method superseded by host driven by host permissions
 - **smtp:** enhance local IP resolution and EHLO hostname handling
 
