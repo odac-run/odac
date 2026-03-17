@@ -414,10 +414,25 @@ class DNS {
 
     const dnsConfig = Odac.core('Config').config.dns || {}
 
+    // Normalize PTR fields so the Go config struct (which uses string, not *string)
+    // never receives null values for ptr.
+    const normalizePtr = ip => {
+      if (!ip) return ip
+      return {
+        ...ip,
+        ptr: ip.ptr != null ? String(ip.ptr) : ''
+      }
+    }
+
+    const normalizedIps = {
+      ipv4: (this.ips.ipv4 || []).map(normalizePtr),
+      ipv6: (this.ips.ipv6 || []).map(normalizePtr)
+    }
+
     const payload = {
       ips: {
-        ipv4: this.ips.ipv4,
-        ipv6: this.ips.ipv6,
+        ipv4: normalizedIps.ipv4,
+        ipv6: normalizedIps.ipv6,
         primary: this.ip
       },
       zones: dnsConfig
