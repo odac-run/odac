@@ -155,14 +155,24 @@ func determineDNSPort() int {
 	return 5353
 }
 
-// isPortAvailable checks if a UDP port is available for binding.
+// isPortAvailable checks if both UDP and TCP are available for binding on the given port.
 func isPortAvailable(port int) bool {
 	addr := fmt.Sprintf(":%d", port)
-	conn, err := net.ListenPacket("udp", addr)
+	
+	// Check UDP availability
+	udpConn, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	udpConn.Close()
+
+	// Check TCP availability
+	tcpLn, err := net.Listen("tcp", addr)
+	if err != nil {
+		return false
+	}
+	tcpLn.Close()
+
 	return true
 }
 
