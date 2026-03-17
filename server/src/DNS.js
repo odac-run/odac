@@ -317,6 +317,14 @@ class DNS {
 
       this.#dnsProcess.unref()
 
+      // Close the log file descriptor in the parent process;
+      // the child keeps its own duplicated descriptors.
+      try {
+        fs.closeSync(logFd)
+      } catch {
+        /* ignore */
+      }
+
       if (this.#dnsProcess.pid) {
         try {
           const flags = isUpdateMode ? 'w' : 'wx'
