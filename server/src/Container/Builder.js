@@ -12,18 +12,17 @@ const Logger = require('./Logger')
  * Centralized to avoid magic strings and allow easy updates.
  */
 const BUILD_STRATEGIES = {
-  PYTHON: {
-    name: 'Python',
-    triggers: ['requirements.txt', 'pyproject.toml'],
-    image: 'python:3.11-slim',
-    installCmd: '[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps',
-    buildCmd: 'rm -rf __pycache__',
-    cleanupCmd: null,
+  BUN: {
+    name: 'Bun',
+    triggers: ['bun.lock', 'bun.lockb'],
+    image: 'oven/bun:alpine',
+    installCmd: 'bun install --frozen-lockfile',
+    buildCmd: 'bun run build --if-present',
+    cleanupCmd: 'bun install --production && rm -rf test tests',
     package: {
-      baseImage: 'python:3.11-slim',
-      user: 'nobody',
-      cmd: ['python', 'app.py'],
-      env: {PYTHONPATH: '/app/deps'}
+      baseImage: 'oven/bun:alpine',
+      user: 'bun',
+      cmd: ['bun', 'run', 'start']
     }
   },
   GO: {
@@ -39,14 +38,39 @@ const BUILD_STRATEGIES = {
       cmd: ['/app/app']
     }
   },
-  NODE: {
-    name: 'Node.js',
-    triggers: ['package.json'],
+  NODE_NPM: {
+    name: 'Node.js (npm)',
+    triggers: ['package-lock.json'],
     image: 'node:lts-alpine',
-    // Industry Standard: Install ALL deps (so prepare & build tools are available)
     installCmd: 'if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi',
-    buildCmd: 'if [ -f "tsconfig.json" ] || grep -q "build" package.json; then npm run build --if-present; fi',
+    buildCmd: 'npm run build --if-present',
     cleanupCmd: 'npm prune --production && rm -rf test tests',
+    package: {
+      baseImage: 'node:lts-alpine',
+      user: 'node',
+      cmd: ['npm', 'start']
+    }
+  },
+  NODE_PNPM: {
+    name: 'Node.js (pnpm)',
+    triggers: ['pnpm-lock.yaml'],
+    image: 'node:lts-alpine',
+    installCmd: 'corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile',
+    buildCmd: 'pnpm run build --if-present',
+    cleanupCmd: 'pnpm prune --prod && rm -rf test tests',
+    package: {
+      baseImage: 'node:lts-alpine',
+      user: 'node',
+      cmd: ['npm', 'start']
+    }
+  },
+  NODE_YARN: {
+    name: 'Node.js (yarn)',
+    triggers: ['yarn.lock'],
+    image: 'node:lts-alpine',
+    installCmd: 'corepack enable && yarn install --frozen-lockfile',
+    buildCmd: 'yarn run build --if-present',
+    cleanupCmd: 'yarn install --production --frozen-lockfile && rm -rf test tests',
     package: {
       baseImage: 'node:lts-alpine',
       user: 'node',
@@ -71,6 +95,33 @@ const BUILD_STRATEGIES = {
         // Fix permissions for non-root execution
         'chown -R www-data:www-data /var/run/apache2 /var/log/apache2 /var/lock/apache2 /var/lib/apache2'
       ]
+    }
+  },
+  PYTHON: {
+    name: 'Python',
+    triggers: ['requirements.txt', 'pyproject.toml'],
+    image: 'python:3.11-slim',
+    installCmd: '[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps',
+    buildCmd: 'rm -rf __pycache__',
+    cleanupCmd: null,
+    package: {
+      baseImage: 'python:3.11-slim',
+      user: 'nobody',
+      cmd: ['python', 'app.py'],
+      env: {PYTHONPATH: '/app/deps'}
+    }
+  },
+  RUST: {
+    name: 'Rust',
+    triggers: ['Cargo.toml'],
+    image: 'rust:alpine',
+    installCmd: 'apk add --no-cache musl-dev',
+    buildCmd: 'cargo build --release && cp target/release/$(basename $(pwd)) /app/app || cp target/release/app /app/app',
+    cleanupCmd: 'rm -rf target src',
+    package: {
+      baseImage: 'alpine:latest',
+      user: 'nobody',
+      cmd: ['/app/app']
     }
   },
   STATIC: {
@@ -264,7 +315,16 @@ class Builder {
 
     if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PYTHON)) return BUILD_STRATEGIES.PYTHON
     if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.GO)) return BUILD_STRATEGIES.GO
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE)) return BUILD_STRATEGIES.NODE
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.RUST)) return BUILD_STRATEGIES.RUST
+
+    // Node.js / Bun: Lock file takes priority to select the correct runtime
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.BUN)) return BUILD_STRATEGIES.BUN
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_PNPM)) return BUILD_STRATEGIES.NODE_PNPM
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_YARN)) return BUILD_STRATEGIES.NODE_YARN
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_NPM)) return BUILD_STRATEGIES.NODE_NPM
+    // Fallback: package.json exists but no lock file
+    if (await this.#exists(path.join(internalPath, 'package.json'))) return BUILD_STRATEGIES.NODE_NPM
+
     if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PHP)) return BUILD_STRATEGIES.PHP
     if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.STATIC)) return BUILD_STRATEGIES.STATIC
 
