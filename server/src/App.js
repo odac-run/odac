@@ -2226,6 +2226,17 @@ class App {
     return recipeVolumes.map(vol => {
       let host = vol.host
 
+      // Host-to-container path normalization (DooD support):
+      // When users add volumes via UI, they may provide host-native paths
+      // (e.g. /var/odac/.odac/apps/...). These must be converted back to
+      // container-internal /app/... paths so that:
+      //   1) resolveHostPath correctly transforms them for Docker daemon
+      //   2) #fixVolumePermissions can create/chmod dirs inside the container
+      const hostRoot = process.env.ODAC_HOST_ROOT
+      if (host && hostRoot && path.isAbsolute(host) && host.startsWith(hostRoot)) {
+        host = path.join('/app', host.substring(hostRoot.length))
+      }
+
       // Named volumes (non-absolute paths like 'data', 'config', 'workspace')
       // are resolved under the app's dedicated directory for isolation.
       if (host && !path.isAbsolute(host)) {
