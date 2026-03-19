@@ -618,7 +618,7 @@ class App {
     // Canonical identity for API tokens & resource paths (survives Blue-Green rename)
     const appIdentity = app._appIdentity || app.name
 
-    const volumes = []
+    const volumes = [...(app.volumes || [])]
     if (app.dev) {
       // Mount total app directory to /app for live development
       const appDir = path.join(Odac.core('Config').config.app.path, appIdentity)
@@ -669,6 +669,9 @@ class App {
       log('Active Dev Mode detected for %s. Forcing container to run as ROOT to handle volume permissions.', app.name)
       runOptions.user = 'root'
     }
+
+    // Fix volume permissions before starting the app container.
+    await this.#fixVolumePermissions(volumes)
 
     await Odac.server('Container').runApp(app.name, runOptions)
 
@@ -1860,7 +1863,8 @@ class App {
    * Many Docker images run as non-root (e.g., node:1000) but host-created
    * directories default to root:root 0755, causing EACCES on write.
    *
-   * Sets 0o777 on each volume's host directory directly from the ODAC process.
+   * Normalizes host-native paths (e.g. /var/odac/...) to container-internal
+   * paths (/app/...) so mkdir/chmod operates through the existing bind mount.
    * This is the most reliable approach — no init containers, no user detection,
    * works regardless of image USER directive or /etc/passwd contents.
    *
@@ -1870,6 +1874,7 @@ class App {
     if (!volumes || volumes.length === 0) return
 
     const appsPath = path.resolve(Odac.core('Config').config.app.path)
+    const hostRoot = process.env.ODAC_HOST_ROOT
 
     for (const vol of volumes) {
       // Skip read-only mounts
@@ -1877,18 +1882,27 @@ class App {
       // Skip unresolved or non-absolute host paths
       if (!vol.host || !path.isAbsolute(vol.host)) continue
 
-      const resolvedHost = path.resolve(vol.host)
-      if (!resolvedHost.startsWith(appsPath)) {
+      // Normalize host-native paths to container-internal paths for FS operations.
+      // Volume configs may store host paths (e.g. /var/odac/.odac/apps/...) which
+      // don't exist inside the container. Convert to /app/... so mkdir/chmod
+      // operates through the existing /app bind mount → reflected on host too.
+      let fsPath = vol.host
+      if (hostRoot && fsPath.startsWith(hostRoot)) {
+        fsPath = path.join('/app', fsPath.substring(hostRoot.length))
+      }
+
+      const resolvedFsPath = path.resolve(fsPath)
+      if (!resolvedFsPath.startsWith(appsPath)) {
         error('FixVolPerms: Skipping chmod on path outside app directory for security: %s', vol.host)
         continue
       }
 
       try {
-        await fs.promises.mkdir(vol.host, {recursive: true})
-        await fs.promises.chmod(vol.host, 0o777)
-        log('FixVolPerms: Set 0777 on %s', vol.host)
+        await fs.promises.mkdir(fsPath, {recursive: true})
+        await fs.promises.chmod(fsPath, 0o777)
+        log('FixVolPerms: Set 0777 on %s (from %s)', fsPath, vol.host)
       } catch (e) {
-        error('FixVolPerms: chmod failed for %s: %s', vol.host, e.message)
+        error('FixVolPerms: chmod failed for %s: %s', fsPath, e.message)
       }
     }
   }
