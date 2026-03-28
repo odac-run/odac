@@ -37,39 +37,25 @@
       ]
     },
     {
-      "file": "03-service",
-      "title": "Running a Service",
+      "file": "03-app",
+      "title": "Managing Applications",
       "children": [
         {
-          "file": "01-start-a-new-service.md",
-          "title": "Start a New Service"
+          "file": "01-create-an-app.md",
+          "title": "Create an App"
         },
         {
-          "file": "02-delete-a-service.md",
-          "title": "Delete a Service"
+          "file": "02-list-apps.md",
+          "title": "List Apps"
+        },
+        {
+          "file": "03-delete-an-app.md",
+          "title": "Delete an App"
         }
       ]
     },
     {
-      "file": "04-web",
-      "title": "Managing Websites",
-      "children": [
-        {
-          "file": "01-create-a-website.md",
-          "title": "Create a Website"
-        },
-        {
-          "file": "02-list-websites.md",
-          "title": "List Websites"
-        },
-        {
-          "file": "03-delete-a-website.md",
-          "title": "Delete a Website"
-        }
-      ]
-    },
-    {
-      "file": "06-ssl",
+      "file": "04-ssl",
       "title": "Managing SSL",
       "children": [
         {
@@ -79,7 +65,7 @@
       ]
     },
     {
-      "file": "07-mail",
+      "file": "05-mail",
       "title": "Managing Mail",
       "children": [
         {
@@ -101,7 +87,7 @@
       ]
     },
     {
-      "file": "08-domain",
+      "file": "06-domain",
       "title": "Managing Domains",
       "children": [
         {

@@ -6,7 +6,7 @@ A compact reference for all Odac CLI commands with their prefix arguments.
 ```bash
 odac                    # Show server status
 odac restart            # Restart server
-odac monit              # Monitor services
+odac monit              # Monitor applications
 odac debug              # View live logs
 odac help               # Show help
 ```
@@ -16,24 +16,19 @@ odac help               # Show help
 odac auth [-k|--key] <key>
 ```
 
-### Services
-```bash
-odac run <file>                           # Start new service
-odac service delete [-i|--id] <service>  # Delete service
-```
 
-### Websites
+### Applications
 ```bash
-odac web create [-d|--domain] <domain>   # Create website
-odac web delete [-d|--domain] <domain>   # Delete website
-odac web list                             # List websites
+odac app create [-n|--name] <name> [-u|--url] <gitUrl>  # Create app
+odac app delete [-i|--id] <app>                          # Delete app
+odac app list                                            # List apps
 ```
 
 ### Domains
 ```bash
-odac domain add [-d|--domain] <domain> [-i|--id] <appId>  # Add domain
-odac domain delete [-d|--domain] <domain>                  # Delete domain
-odac domain list [-i|--id] <appId>                        # List domains
+odac domain add [-d|--domain] <domain> [-a|--app] <appId>  # Add domain
+odac domain delete [-d|--domain] <domain>                    # Delete domain
+odac domain list [-a|--app] <appId>                          # List domains
 ```
 
 
@@ -58,27 +53,27 @@ odac mail password [-e|--email] <email> [-p|--password] <password> # Change pass
 | `-e` | `--email` | Email address |
 | `-p` | `--password` | Password |
 
-| `-i` | `--id` | Service ID/name |
+| `-i` | `--id` | Project ID/name |
 | `-k` | `--key` | Authentication key |
 
 ### Usage Patterns
 
 **Interactive Mode:**
 ```bash
-odac web create
-# Prompts for domain name
+odac app create
+# Prompts for app details
 ```
 
 **Single-Line Mode:**
 ```bash
-odac web create -d example.com
+odac app create -n my-app -u https://github.com/user/repo.git
 # No prompts, immediate execution
 ```
 
 **Mixed Mode:**
 ```bash
-odac mail create -e user@example.com
-# Prompts only for password
+odac app create -n my-app
+# Prompts only for URL/repo
 ```
 
 ### Automation Examples
