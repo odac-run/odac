@@ -1,7 +1,6 @@
 const {log, error} = Odac.core('Log', false).init('Mail')
 
-const bcrypt = require('bcrypt')
-const {generateKeyPair} = require('crypto')
+const {generateKeyPair, randomBytes, scrypt} = require('crypto')
 const fs = require('fs')
 const fsp = require('fs/promises')
 const os = require('os')
@@ -25,6 +24,33 @@ class Mail {
   #started = false
   #sslCache = new Map()
   #blocked = new Map()
+
+  async #hashPassword(password) {
+    return new Promise((resolve, reject) => {
+      randomBytes(16, (err, salt) => {
+        if (err) return reject(err)
+        scrypt(password, salt, 64, (err, derivedKey) => {
+          if (err) return reject(err)
+          resolve(`scrypt$${salt.toString('hex')}$${derivedKey.toString('hex')}`)
+        })
+      })
+    })
+  }
+
+  async #comparePassword(password, storedHash) {
+    if (storedHash.startsWith('scrypt$')) {
+      const [, saltHex, keyHex] = storedHash.split('$')
+      const salt = Buffer.from(saltHex, 'hex')
+      return new Promise(resolve => {
+        scrypt(password, salt, 64, (err, derivedKey) => {
+          if (err) return resolve(false)
+          resolve(derivedKey.toString('hex') === keyHex)
+        })
+      })
+    }
+    // We can't verify old bcrypt hashes without bcrypt, so fail gracefully
+    return false
+  }
 
   clearSSLCache(domain) {
     if (domain) {
@@ -103,12 +129,7 @@ class Mail {
   async create(email, password, retype) {
     if (!email || !password || !retype) return Odac.server('Api').result(false, await __('All fields are required.'))
     if (password != retype) return Odac.server('Api').result(false, await __('Passwords do not match.'))
-    password = await new Promise((resolve, reject) => {
-      bcrypt.hash(password, 10, (err, hash) => {
-        if (err) reject(err)
-        resolve(hash)
-      })
-    })
+    password = await this.#hashPassword(password)
     if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (await this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s already exists.', email))
     let domain = email.split('@')[1]
@@ -278,7 +299,7 @@ class Mail {
         }
 
         self.exists(auth.username).then(async result => {
-          if (result && (await bcrypt.compare(auth.password, result.password))) {
+          if (result && (await self.#comparePassword(auth.password, result.password))) {
             // Successful login, clear attempts
             if (self.#clients[ip]) delete self.#clients[ip]
             return callback(null, {user: auth.username})
@@ -649,12 +670,7 @@ class Mail {
   async password(email, password, retype) {
     if (!email || !password || !retype) return Odac.server('Api').result(false, await __('All fields are required.'))
     if (password != retype) return Odac.server('Api').result(false, await __('Passwords do not match.'))
-    password = await new Promise((resolve, reject) => {
-      bcrypt.hash(password, 10, (err, hash) => {
-        if (err) reject(err)
-        resolve(hash)
-      })
-    })
+    password = await this.#hashPassword(password)
     if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
     if (!this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s not found.', email))
     this.#db.serialize(() => {
