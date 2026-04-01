@@ -82,6 +82,28 @@ class Hub {
         fn: payload => Odac.server('App').setVolumes(payload.name || payload.id, payload.volumes),
         triggers: ['app.list']
       },
+      'dns.add': {
+        fn: payload => {
+          Odac.server('DNS').record(payload)
+          return Odac.server('Api').result(true, __('DNS record added'))
+        },
+        triggers: ['dns.list']
+      },
+      'dns.delete': {
+        fn: payload => {
+          Odac.server('DNS').delete(payload)
+          return Odac.server('Api').result(true, __('DNS record deleted'))
+        },
+        triggers: ['dns.list']
+      },
+      'dns.list': {
+        fn: () => {
+          const zones = Odac.core('Config').config.dns || {}
+          return Odac.server('Api').result(true, zones)
+        },
+        interval: 60 * 60 * 1000,
+        lastRun: 0
+      },
       'domain.add': {
         fn: payload => Odac.server('Domain').add(payload.domain, payload.app),
         triggers: ['domain.list', 'system.info']
@@ -222,6 +244,7 @@ class Hub {
       onConnect: () => {
         this.trigger('system.info')
         this.trigger('app.list')
+        this.trigger('dns.list')
         this.trigger('domain.list')
       },
       onMessage: data => this.#handleMessage(data),
