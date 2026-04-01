@@ -5,7 +5,6 @@ const childProcess = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const axios = require('axios')
 
 class OdacProxy {
   #active = false
@@ -230,13 +229,13 @@ class OdacProxy {
     try {
       const payload = {token}
       if (this.#proxySocketPath) {
-        await axios.delete('http://localhost/acme/challenge', {
+        await Odac.core('Http').delete('http://localhost/acme/challenge', {
           data: payload,
           socketPath: this.#proxySocketPath,
           validateStatus: () => true
         })
       } else {
-        await axios.delete(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, {data: payload})
+        await Odac.core('Http').delete(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, {data: payload})
       }
     } catch (e) {
       if (typeof error !== 'undefined') error('Failed to delete ACME challenge token: %s', e.message)
@@ -257,12 +256,12 @@ class OdacProxy {
     let response
 
     if (this.#proxySocketPath) {
-      response = await axios.post('http://localhost/acme/challenge', payload, {
+      response = await Odac.core('Http').post('http://localhost/acme/challenge', payload, {
         socketPath: this.#proxySocketPath,
         validateStatus: () => true
       })
     } else {
-      response = await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, payload, {
+      response = await Odac.core('Http').post(`http://127.0.0.1:${this.#proxyApiPort}/acme/challenge`, payload, {
         validateStatus: () => true
       })
     }
@@ -421,13 +420,13 @@ class OdacProxy {
     try {
       if (this.#proxySocketPath) {
         // Unix Socket Request
-        await axios.post('http://localhost/config', config, {
+        await Odac.core('Http').post('http://localhost/config', config, {
           socketPath: this.#proxySocketPath,
           validateStatus: () => true
         })
       } else {
         // TCP Request
-        await axios.post(`http://127.0.0.1:${this.#proxyApiPort}/config`, config)
+        await Odac.core('Http').post(`http://127.0.0.1:${this.#proxyApiPort}/config`, config)
       }
     } catch (e) {
       if (retryCount < 3 && (e.code === 'ECONNREFUSED' || e.code === 'ENOENT' || e.code === 'ECONNRESET')) {

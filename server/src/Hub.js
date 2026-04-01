@@ -1,9 +1,7 @@
 const {log, error} = Odac.core('Log', false).init('Hub')
 
-const axios = require('axios')
 const nodeCrypto = require('crypto')
 const os = require('os')
-const https = require('https')
 const packageJson = require('../../package.json')
 
 const System = require('./Hub/System')
@@ -220,14 +218,6 @@ class Hub {
       }
     }
 
-    this.agent = new https.Agent({
-      rejectUnauthorized: true,
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 25,
-      timeout: 30000
-    })
-
     this.ws.setHandlers({
       onConnect: () => {
         this.trigger('system.info')
@@ -374,10 +364,10 @@ class Hub {
 
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const response = await axios.post(url, data, {
+        const response = await Odac.core('Http').post(url, data, {
           headers,
-          httpsAgent: this.agent,
-          timeout: 30000
+          timeout: 30000,
+          rejectUnauthorized: true // Explicitly enforce SSL security
         })
 
         return this.#parseResponse(action, response)

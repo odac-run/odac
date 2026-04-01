@@ -42,11 +42,6 @@ const mockOs = {
   platform: jest.fn().mockReturnValue('linux')
 }
 
-const mockAxios = {
-  get: jest.fn().mockResolvedValue({data: '93.184.216.34'}),
-  post: jest.fn().mockResolvedValue({status: 200})
-}
-
 const mockDns = {
   promises: {
     reverse: jest.fn().mockResolvedValue([])
@@ -56,7 +51,6 @@ const mockDns = {
 jest.mock('fs', () => mockFs)
 jest.mock('child_process', () => mockChildProcess)
 jest.mock('os', () => mockOs)
-jest.mock('axios', () => mockAxios)
 jest.mock('dns', () => mockDns)
 
 const {mockOdac} = require('./__mocks__/globalOdac')
@@ -71,6 +65,11 @@ describe('DNS Module', () => {
     mockError.mockClear()
 
     setupGlobalMocks()
+
+    mockOdac.setMock('core', 'Http', {
+      get: jest.fn().mockResolvedValue({data: '93.184.216.34'}),
+      post: jest.fn().mockResolvedValue({status: 200})
+    })
 
     mockOdac.setMock('core', 'Log', {
       init: jest.fn().mockReturnValue({
@@ -249,17 +248,17 @@ describe('DNS Module', () => {
 
     test('should start service with IP detection and spawn', async () => {
       await DNS.start()
-      expect(mockAxios.get).toHaveBeenCalled()
+      expect(mockOdac.core('Http').get).toHaveBeenCalled()
       expect(mockChildProcess.spawn).toHaveBeenCalled()
     })
 
     test('should not start twice', async () => {
       await DNS.start()
       mockChildProcess.spawn.mockClear()
-      mockAxios.get.mockClear()
+      mockOdac.core('Http').get.mockClear()
 
       await DNS.start()
-      expect(mockAxios.get).not.toHaveBeenCalled()
+      expect(mockOdac.core('Http').get).not.toHaveBeenCalled()
     })
   })
 
@@ -270,7 +269,7 @@ describe('DNS Module', () => {
       DNS.spawnDNS()
       await DNS.syncConfig()
 
-      expect(mockAxios.post).toHaveBeenCalledWith(
+      expect(mockOdac.core('Http').post).toHaveBeenCalledWith(
         'http://localhost/config',
         expect.objectContaining({
           ips: expect.any(Object),
@@ -282,17 +281,17 @@ describe('DNS Module', () => {
 
     test('should not sync when no process exists', async () => {
       await DNS.syncConfig()
-      expect(mockAxios.post).not.toHaveBeenCalled()
+      expect(mockOdac.core('Http').post).not.toHaveBeenCalled()
     })
 
     test('should retry on connection refused', async () => {
       jest.useFakeTimers()
 
       DNS.spawnDNS()
-      mockAxios.post.mockClear()
+      mockOdac.core('Http').post.mockClear()
 
       let callCount = 0
-      mockAxios.post.mockImplementation(() => {
+      mockOdac.core('Http').post.mockImplementation(() => {
         callCount++
         if (callCount === 1) {
           return Promise.reject(Object.assign(new Error('ECONNREFUSED'), {code: 'ECONNREFUSED'}))
@@ -305,17 +304,17 @@ describe('DNS Module', () => {
       await promise
 
       // At least 2 calls: initial failure + retry success (spawn timer may add more)
-      expect(mockAxios.post.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(mockOdac.core('Http').post.mock.calls.length).toBeGreaterThanOrEqual(2)
 
       jest.useRealTimers()
     })
 
     test('should send zone data in payload', async () => {
       DNS.spawnDNS()
-      mockAxios.post.mockClear()
+      mockOdac.core('Http').post.mockClear()
       await DNS.syncConfig()
 
-      const payload = mockAxios.post.mock.calls[0][1]
+      const payload = mockOdac.core('Http').post.mock.calls[0][1]
       expect(payload.zones['example.com']).toBeDefined()
       expect(payload.zones['test.org']).toBeDefined()
     })
@@ -552,7 +551,7 @@ describe('DNS Module', () => {
 
   describe('IP detection', () => {
     test('should detect external IPv4 from service', async () => {
-      mockAxios.get.mockResolvedValueOnce({data: '93.184.216.34'})
+      mockOdac.core('Http').get.mockResolvedValueOnce({data: '93.184.216.34'})
 
       await DNS.start()
 
@@ -560,7 +559,7 @@ describe('DNS Module', () => {
     })
 
     test('should handle invalid IP format from external service', async () => {
-      mockAxios.get.mockResolvedValue({data: 'not-an-ip'})
+      mockOdac.core('Http').get.mockResolvedValue({data: 'not-an-ip'})
 
       await DNS.start()
 
@@ -569,7 +568,7 @@ describe('DNS Module', () => {
     })
 
     test('should handle external IP detection failure', async () => {
-      mockAxios.get.mockRejectedValue(new Error('Network error'))
+      mockOdac.core('Http').get.mockRejectedValue(new Error('Network error'))
 
       await DNS.start()
 
@@ -616,7 +615,7 @@ describe('DNS Module', () => {
       mockOs.networkInterfaces.mockReturnValue({
         eth0: [{address: '192.168.1.10', family: 'IPv4', internal: false}]
       })
-      mockAxios.get.mockRejectedValue(new Error('offline'))
+      mockOdac.core('Http').get.mockRejectedValue(new Error('offline'))
 
       await DNS.start()
 
@@ -647,8 +646,9 @@ describe('DNS Module', () => {
 
     test('should detect IPv6 from external service', async () => {
       // IPv4 services (5 services, first one succeeds so others not called)
-      mockAxios.get
-        .mockResolvedValueOnce({data: '93.184.216.34'})
+      mockOdac
+        .core('Http')
+        .get.mockResolvedValueOnce({data: '93.184.216.34'})
         // IPv6 services (3 services)
         .mockResolvedValueOnce({data: '2001:db8::1'})
 
@@ -658,7 +658,7 @@ describe('DNS Module', () => {
     })
 
     test('should trim whitespace from IP response', async () => {
-      mockAxios.get.mockResolvedValueOnce({data: '  93.184.216.34\n  '})
+      mockOdac.core('Http').get.mockResolvedValueOnce({data: '  93.184.216.34\n  '})
 
       await DNS.start()
 

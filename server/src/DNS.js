@@ -1,6 +1,5 @@
 const {log, error} = Odac.core('Log', false).init('DNS')
 
-const axios = require('axios')
 const childProcess = require('child_process')
 const fs = require('fs')
 const nodeDns = require('dns')
@@ -450,12 +449,12 @@ class DNS {
 
     try {
       if (this.#dnsSocketPath) {
-        await axios.post('http://localhost/config', payload, {
+        await Odac.core('Http').post('http://localhost/config', payload, {
           socketPath: this.#dnsSocketPath,
           validateStatus: () => true
         })
       } else {
-        await axios.post(`http://127.0.0.1:${this.#dnsApiPort}/config`, payload)
+        await Odac.core('Http').post(`http://127.0.0.1:${this.#dnsApiPort}/config`, payload)
       }
     } catch (e) {
       if (retryCount < 3 && (e.code === 'ECONNREFUSED' || e.code === 'ENOENT' || e.code === 'ECONNRESET')) {
@@ -514,7 +513,7 @@ class DNS {
     for (const service of ipv4Services) {
       try {
         log(`Attempting to get external IPv4 from ${service}`)
-        const response = await axios.get(service, {
+        const response = await Odac.core('Http').get(service, {
           headers: {'User-Agent': 'Odac-DNS/1.0'},
           timeout: 5000
         })
@@ -539,7 +538,7 @@ class DNS {
     for (const service of ipv6Services) {
       try {
         log(`Attempting to get external IPv6 from ${service}`)
-        const response = await axios.get(service, {
+        const response = await Odac.core('Http').get(service, {
           family: 6,
           headers: {'User-Agent': 'Odac-DNS/1.0'},
           timeout: 5000
