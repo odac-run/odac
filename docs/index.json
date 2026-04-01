@@ -9,8 +9,8 @@
           "title": "Quick Install"
         },
         {
-          "file": "02-manual-installation-via-npm.md",
-          "title": "Manual Installation (via NPM)"
+          "file": "02-manual-installation.md",
+          "title": "Manual Installation"
         }
       ]
     },
