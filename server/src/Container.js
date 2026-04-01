@@ -88,23 +88,17 @@ class Container {
    */
   resolveHostPath(localPath) {
     if (!process.env.ODAC_HOST_ROOT) {
-      log(`[DEBUG] resolveHostPath: No ODAC_HOST_ROOT, returning as-is: ${localPath}`)
       return localPath
     }
     if (localPath.startsWith('/app')) {
-      const result = path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
-      log(`[DEBUG] resolveHostPath: /app prefix found. ${localPath} -> ${result}`)
-      return result
+      return path.join(process.env.ODAC_HOST_ROOT, localPath.substring(4))
     }
     if (!path.isAbsolute(localPath)) {
       const absPath = path.resolve(localPath)
       if (absPath.startsWith('/app')) {
-        const result = path.join(process.env.ODAC_HOST_ROOT, absPath.substring(4))
-        log(`[DEBUG] resolveHostPath: Relative path resolved. ${localPath} -> ${result}`)
-        return result
+        return path.join(process.env.ODAC_HOST_ROOT, absPath.substring(4))
       }
     }
-    log(`[DEBUG] resolveHostPath: No transformation. ${localPath}`)
     return localPath
   }
 

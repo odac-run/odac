@@ -1,10 +1,10 @@
 const {log, error} = Odac.core('Log', false).init('SSL')
 
-const acme = require('acme-client')
+const Acme = require('./SSL/Acme')
 const fs = require('fs')
+const nodeCrypto = require('crypto')
 const os = require('os')
 const selfsigned = require('selfsigned')
-const nodeCrypto = require('crypto')
 
 class SSL {
   #checking = false
@@ -96,38 +96,40 @@ class SSL {
    * Attempts SSL certificate generation with HTTP-01 challenge first, then falls back to DNS-01.
    * HTTP-01 is faster and works without nameserver delegation, but requires the Go proxy
    * to serve tokens on port 80. DNS-01 is the universal fallback.
-   * @param {import('acme-client').Client} client - ACME client instance
-   * @param {Buffer} csr - Certificate Signing Request
+   * @param {Acme} client - Native ACME client instance
+   * @param {Buffer} csr - DER-encoded Certificate Signing Request
+   * @param {string[]} domains - Domain names matching the CSR
    * @param {{cancelled: boolean}} context - Cancellation context
    * @returns {Promise<string|null>} PEM certificate or null
    */
-  async #requestCertificate(client, csr, context) {
+  async #requestCertificate(client, csr, domains, context) {
     // Phase 1: Try HTTP-01 (fast, no DNS delegation needed)
     try {
       log('Attempting SSL via HTTP-01 challenge...')
-      return await this.#acmeAuto(client, csr, 'http-01', context)
+      return await this.#acmeOrder(client, csr, domains, 'http-01', context)
     } catch (err) {
       if (context.cancelled) throw err // Propagate cancellation, don't fallback
       log('HTTP-01 challenge failed: %s. Falling back to DNS-01...', err.message)
     }
 
     // Phase 2: Fallback to DNS-01 (requires nameserver delegation)
-    return await this.#acmeAuto(client, csr, 'dns-01', context)
+    return await this.#acmeOrder(client, csr, domains, 'dns-01', context)
   }
 
   /**
-   * Executes ACME auto flow with a specific challenge type.
-   * @param {import('acme-client').Client} client - ACME client instance
-   * @param {Buffer} csr - Certificate Signing Request
+   * Executes ACME order flow with a specific challenge type.
+   * @param {Acme} client - Native ACME client instance
+   * @param {Buffer} csr - DER-encoded Certificate Signing Request
+   * @param {string[]} domains - Domain names matching the CSR
    * @param {'dns-01'|'http-01'} challengeType - Challenge type to use
    * @param {{cancelled: boolean}} context - Cancellation context
    * @returns {Promise<string>} PEM certificate
    */
-  async #acmeAuto(client, csr, challengeType, context) {
-    return client.auto({
+  async #acmeOrder(client, csr, domains, challengeType, context) {
+    return client.order({
+      challengeType,
       csr,
-      termsOfServiceAgreed: true,
-      challengePriority: [challengeType],
+      domains,
       challengeCreateFn: async (authz, challenge, keyAuthorization) => {
         if (context.cancelled) return
 
@@ -196,12 +198,7 @@ class SSL {
     this.#processing.set(domain, context)
 
     try {
-      const accountPrivateKey = await acme.forge.createPrivateKey()
-
-      const client = new acme.Client({
-        directoryUrl: acme.directory.letsencrypt.production,
-        accountKey: accountPrivateKey
-      })
+      const client = await Acme.create()
 
       const domainRecord = Odac.core('Config').config.domains[domain]
       let subdomains = [domain]
@@ -216,10 +213,8 @@ class SSL {
         return
       }
 
-      const [key, csr] = await acme.forge.createCsr({
-        commonName: domain,
-        altNames: subdomains
-      })
+      const {pem: domainKeyPem, privateKey} = Acme.generateKeyPair()
+      const csr = Acme.createCsr(subdomains, privateKey)
 
       log('Requesting SSL certificate for domain %s...', domain)
 
@@ -228,7 +223,7 @@ class SSL {
         return
       }
 
-      const cert = await this.#requestCertificate(client, csr, context)
+      const cert = await this.#requestCertificate(client, csr, subdomains, context)
 
       if (context.cancelled) {
         log('SSL generation for %s cancelled after ACME response. Discarding stale certificate.', domain)
@@ -240,7 +235,7 @@ class SSL {
         return
       }
 
-      this.#saveCertificate(domain, key, cert)
+      this.#saveCertificate(domain, domainKeyPem, cert)
     } catch (err) {
       if (!context.cancelled) {
         this.#handleSSLError(domain, err)
@@ -259,7 +254,8 @@ class SSL {
   }
 
   #handleSSLError(domain, err) {
-    if (!this.#checked[domain]) this.#checked[domain] = {error: 0}
+    if (!this.#checked[domain]) this.#checked[domain] = {}
+    if (!this.#checked[domain].error) this.#checked[domain].error = 0
     this.#checked[domain].error += 1
 
     const errorCount = this.#checked[domain].error

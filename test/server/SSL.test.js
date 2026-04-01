@@ -4,17 +4,10 @@
  */
 
 // Mock dependencies
-jest.mock('acme-client', () => ({
-  Client: jest.fn(),
-  forge: {
-    createPrivateKey: jest.fn(),
-    createCsr: jest.fn()
-  },
-  directory: {
-    letsencrypt: {
-      production: 'mock-url'
-    }
-  }
+jest.mock('../../server/src/SSL/Acme', () => ({
+  create: jest.fn(),
+  createCsr: jest.fn(),
+  generateKeyPair: jest.fn()
 }))
 jest.mock('selfsigned')
 jest.mock('fs')
@@ -24,9 +17,10 @@ const {mockOdac} = require('./__mocks__/globalOdac')
 
 describe('SSL', () => {
   let SSL
+  let Acme
   let mockConfig
   let mockLog
-  let acme
+  let mockOrderFn
   let selfsigned
   let fs
   let os
@@ -40,7 +34,7 @@ describe('SSL', () => {
     mockOdac.resetMocks()
 
     // Re-require mocked modules to get fresh instances
-    acme = require('acme-client')
+    Acme = require('../../server/src/SSL/Acme')
     selfsigned = require('selfsigned')
     fs = require('fs')
     os = require('os')
@@ -129,11 +123,10 @@ describe('SSL', () => {
     })
 
     // Setup default ACME mock implementations
-    acme.forge.createPrivateKey.mockResolvedValue('mock-account-key')
-    acme.forge.createCsr.mockResolvedValue(['mock-domain-key', 'mock-csr'])
-    acme.Client.mockImplementation(() => ({
-      auto: jest.fn().mockResolvedValue('mock-certificate')
-    }))
+    mockOrderFn = jest.fn().mockResolvedValue('mock-certificate')
+    Acme.create.mockResolvedValue({order: mockOrderFn})
+    Acme.createCsr.mockReturnValue(Buffer.from('mock-csr'))
+    Acme.generateKeyPair.mockReturnValue({pem: 'mock-domain-key', privateKey: {}})
 
     // Import SSL
     SSL = require('../../server/src/SSL')
@@ -151,11 +144,8 @@ describe('SSL', () => {
       }
 
       // Should attempt to renew 'expired.com'
-      expect(acme.Client).toHaveBeenCalled()
-
-      // Get the returned client object from the mock results
-      const clientInstance = acme.Client.mock.results[0].value
-      expect(clientInstance.auto).toHaveBeenCalled()
+      expect(Acme.create).toHaveBeenCalled()
+      expect(mockOrderFn).toHaveBeenCalled()
 
       // Should save new certificate
       expect(fs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('expired.com.crt'), 'mock-certificate')
@@ -168,16 +158,14 @@ describe('SSL', () => {
     test('should skip valid certificates', async () => {
       // Fresh module to avoid singleton state leak
       jest.resetModules()
-      acme = require('acme-client')
+      Acme = require('../../server/src/SSL/Acme')
       fs = require('fs')
       os = require('os')
       selfsigned = require('selfsigned')
 
-      acme.forge.createPrivateKey.mockResolvedValue('mock-account-key')
-      acme.forge.createCsr.mockResolvedValue(['mock-domain-key', 'mock-csr'])
-      acme.Client.mockImplementation(() => ({
-        auto: jest.fn().mockResolvedValue('mock-certificate')
-      }))
+      Acme.create.mockResolvedValue({order: jest.fn().mockResolvedValue('mock-certificate')})
+      Acme.createCsr.mockReturnValue(Buffer.from('mock-csr'))
+      Acme.generateKeyPair.mockReturnValue({pem: 'mock-domain-key', privateKey: {}})
       fs.existsSync.mockReturnValue(true)
       fs.mkdirSync.mockImplementation(() => {})
       fs.writeFileSync.mockImplementation(() => {})
@@ -225,7 +213,7 @@ describe('SSL', () => {
       SSL = require('../../server/src/SSL')
       await SSL.check()
 
-      expect(acme.Client).not.toHaveBeenCalled()
+      expect(Acme.create).not.toHaveBeenCalled()
 
       // Restore
       nodeCrypto.X509Certificate = originalX509
@@ -246,14 +234,13 @@ describe('SSL', () => {
         console.error('SSL Error Logs:', mockLog.error.mock.calls)
       }
 
-      expect(acme.Client).toHaveBeenCalled()
+      expect(Acme.create).toHaveBeenCalled()
 
       // Verify DNS challenge creation
-      const clientInstance = acme.Client.mock.results[0].value
-      const autoOpts = clientInstance.auto.mock.calls[0][0]
+      const orderOpts = mockOrderFn.mock.calls[0][0]
 
       // Simulate challenge creation callback
-      const challengeFn = autoOpts.challengeCreateFn
+      const challengeFn = orderOpts.challengeCreateFn
       await challengeFn({identifier: {value: 'example.com'}}, {type: 'dns-01'}, 'mock-auth')
 
       expect(Odac.server('DNS').record).toHaveBeenCalledWith(
@@ -274,7 +261,7 @@ describe('SSL', () => {
       await wait()
       await wait()
 
-      expect(acme.Client).toHaveBeenCalled()
+      expect(Acme.create).toHaveBeenCalled()
       // Should renew for the main domain 'example.com'
       expect(fs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('example.com.crt'), expect.any(String))
     })
@@ -286,30 +273,29 @@ describe('SSL', () => {
       await wait()
       await wait()
 
-      expect(acme.Client).toHaveBeenCalled()
+      expect(Acme.create).toHaveBeenCalled()
 
-      const clientInstance = acme.Client.mock.results[0].value
-      // First auto() call should use http-01 only
-      const autoOpts = clientInstance.auto.mock.calls[0][0]
-      expect(autoOpts.challengePriority).toEqual(['http-01'])
+      // First order() call should use http-01
+      const orderOpts = mockOrderFn.mock.calls[0][0]
+      expect(orderOpts.challengeType).toBe('http-01')
     })
 
     test('should fallback to dns-01 when http-01 fails', async () => {
-      // First auto call (http-01) rejects, second (dns-01) resolves
-      const autoFn = jest
+      // First order call (http-01) rejects, second (dns-01) resolves
+      const orderFn = jest
         .fn()
         .mockRejectedValueOnce(new Error('HTTP-01 challenge validation failed'))
         .mockResolvedValueOnce('mock-certificate-dns')
 
       jest.resetModules()
-      acme = require('acme-client')
+      Acme = require('../../server/src/SSL/Acme')
       fs = require('fs')
       os = require('os')
       selfsigned = require('selfsigned')
 
-      acme.forge.createPrivateKey.mockResolvedValue('mock-account-key')
-      acme.forge.createCsr.mockResolvedValue(['mock-domain-key', 'mock-csr'])
-      acme.Client.mockImplementation(() => ({auto: autoFn}))
+      Acme.create.mockResolvedValue({order: orderFn})
+      Acme.createCsr.mockReturnValue(Buffer.from('mock-csr'))
+      Acme.generateKeyPair.mockReturnValue({pem: 'mock-domain-key', privateKey: {}})
       fs.existsSync.mockReturnValue(true)
       fs.mkdirSync.mockImplementation(() => {})
       fs.writeFileSync.mockImplementation(() => {})
@@ -328,10 +314,10 @@ describe('SSL', () => {
       SSL = require('../../server/src/SSL')
       await SSL.check()
 
-      // Should have called auto() twice: first http-01, then dns-01
-      expect(autoFn).toHaveBeenCalledTimes(2)
-      expect(autoFn.mock.calls[0][0].challengePriority).toEqual(['http-01'])
-      expect(autoFn.mock.calls[1][0].challengePriority).toEqual(['dns-01'])
+      // Should have called order() twice: first http-01, then dns-01
+      expect(orderFn).toHaveBeenCalledTimes(2)
+      expect(orderFn.mock.calls[0][0].challengeType).toBe('http-01')
+      expect(orderFn.mock.calls[1][0].challengeType).toBe('dns-01')
 
       // Should save the certificate from dns-01 fallback
       expect(fs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('expired.com.crt'), 'mock-certificate-dns')
@@ -344,11 +330,10 @@ describe('SSL', () => {
       await wait()
       await wait()
 
-      const clientInstance = acme.Client.mock.results[0].value
-      const autoOpts = clientInstance.auto.mock.calls[0][0]
+      const orderOpts = mockOrderFn.mock.calls[0][0]
 
       // Simulate HTTP-01 challenge creation
-      await autoOpts.challengeCreateFn(
+      await orderOpts.challengeCreateFn(
         {identifier: {value: 'example.com'}},
         {type: 'http-01', token: 'test-token-abc123'},
         'test-key-authorization'
@@ -365,11 +350,10 @@ describe('SSL', () => {
       await wait()
       await wait()
 
-      const clientInstance = acme.Client.mock.results[0].value
-      const autoOpts = clientInstance.auto.mock.calls[0][0]
+      const orderOpts = mockOrderFn.mock.calls[0][0]
 
       // Simulate HTTP-01 challenge removal
-      await autoOpts.challengeRemoveFn(
+      await orderOpts.challengeRemoveFn(
         {identifier: {value: 'example.com'}},
         {type: 'http-01', token: 'test-token-abc123'},
         'test-key-authorization'
@@ -381,16 +365,15 @@ describe('SSL', () => {
 
     test('should create DNS record for dns-01 challenge via fallback', async () => {
       // HTTP-01 fails → DNS-01 fallback. We capture the dns-01 callbacks.
-      const autoFn = jest.fn().mockImplementation(opts => {
+      const orderFn = jest.fn().mockImplementation(opts => {
         // Simulate calling challengeCreateFn for the given type
-        const type = opts.challengePriority[0]
-        if (type === 'http-01') return Promise.reject(new Error('HTTP-01 failed'))
+        if (opts.challengeType === 'http-01') return Promise.reject(new Error('HTTP-01 failed'))
         // For dns-01, invoke the callback so we can verify it
         opts.challengeCreateFn({identifier: {value: 'example.com'}}, {type: 'dns-01'}, 'dns-key-auth')
         return Promise.resolve('mock-cert')
       })
 
-      acme.Client.mockImplementation(() => ({auto: autoFn}))
+      Acme.create.mockResolvedValue({order: orderFn})
 
       const result = await SSL.renew('example.com')
       expect(result.result).toBe(true)
@@ -414,7 +397,7 @@ describe('SSL', () => {
 
       expect(result.result).toBe(false)
       expect(result.message).toContain('Domain unknown.com not found')
-      expect(acme.Client).not.toHaveBeenCalled()
+      expect(Acme.create).not.toHaveBeenCalled()
     })
 
     test('should fail for IP addresses', async () => {
@@ -432,10 +415,10 @@ describe('SSL', () => {
         resolveFirstAuto = resolve
       })
 
-      // First ACME auto call hangs until we resolve it
-      const autoFn = jest.fn().mockReturnValueOnce(firstAutoPromise).mockResolvedValueOnce('mock-certificate-v2')
+      // First ACME order call hangs until we resolve it
+      const orderFn = jest.fn().mockReturnValueOnce(firstAutoPromise).mockResolvedValueOnce('mock-certificate-v2')
 
-      acme.Client.mockImplementation(() => ({auto: autoFn}))
+      Acme.create.mockResolvedValue({order: orderFn})
 
       // Trigger first SSL (will block on auto())
       SSL.renew('expired.com')
