@@ -113,7 +113,7 @@ const BUILD_STRATEGIES = {
   },
   RUST: {
     name: 'Rust',
-    triggers: ['Cargo.toml'],
+    triggers: ['Cargo.toml', 'Cargo.lock'],
     image: 'rust:alpine',
     installCmd: 'apk add --no-cache musl-dev',
     buildCmd: 'cargo build --release && cp target/release/$(basename $(pwd)) /app/app || cp target/release/app /app/app',
