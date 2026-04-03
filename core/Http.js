@@ -18,7 +18,10 @@ class Http {
     const {
       method = 'GET',
       data = null,
+      family,
       headers = {},
+      lookup,
+      servername,
       socketPath,
       validateStatus,
       timeout = 30000,
@@ -40,6 +43,11 @@ class Http {
         timeout,
         rejectUnauthorized
       }
+
+      // Forward Node.js socket options when explicitly provided
+      if (family !== undefined) requestOptions.family = family
+      if (lookup !== undefined) requestOptions.lookup = lookup
+      if (servername !== undefined) requestOptions.servername = servername
 
       if (socketPath) {
         requestOptions.socketPath = socketPath

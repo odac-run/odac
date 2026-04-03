@@ -254,6 +254,16 @@ class Acme {
 
     // Directory discovery
     const dirRes = await httpRequest(directoryUrl)
+    if (dirRes.status >= 400 || typeof dirRes.body !== 'object') {
+      const detail = typeof dirRes.body === 'string' ? dirRes.body : JSON.stringify(dirRes.body)
+      throw new Error('ACME directory fetch failed (status ' + dirRes.status + '): ' + detail)
+    }
+    const requiredEndpoints = ['newAccount', 'newNonce', 'newOrder']
+    for (const ep of requiredEndpoints) {
+      if (!dirRes.body[ep]) {
+        throw new Error('ACME directory missing required endpoint: ' + ep)
+      }
+    }
     this.#directory = dirRes.body
 
     // Initial nonce
@@ -276,7 +286,7 @@ class Acme {
    * @param {Object|string} payload Object for POST, empty string '' for POST-as-GET
    * @param {boolean} [useJwk=false] Use JWK header instead of kid (for newAccount)
    */
-  async #signedRequest(url, payload, useJwk = false) {
+  async #signedRequest(url, payload, useJwk = false, _retried = false) {
     if (!this.#nonce) await this.#fetchNonce()
 
     const header = {alg: 'ES256', nonce: this.#nonce, url}
@@ -312,6 +322,13 @@ class Acme {
     })
 
     if (res.headers['replay-nonce']) this.#nonce = res.headers['replay-nonce']
+
+    // RFC 8555 §6.5 — retry once on badNonce with a fresh nonce
+    if (!_retried && res.body?.type === 'urn:ietf:params:acme:error:badNonce') {
+      this.#nonce = null
+      return this.#signedRequest(url, payload, useJwk, true)
+    }
+
     return res
   }
 

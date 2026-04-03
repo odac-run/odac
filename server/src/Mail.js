@@ -1,6 +1,6 @@
 const {log, error} = Odac.core('Log', false).init('Mail')
 
-const {generateKeyPair, randomBytes, scrypt} = require('crypto')
+const {generateKeyPair, randomBytes, scrypt, timingSafeEqual} = require('crypto')
 const fs = require('fs')
 const fsp = require('fs/promises')
 const os = require('os')
@@ -41,10 +41,12 @@ class Mail {
     if (storedHash.startsWith('scrypt$')) {
       const [, saltHex, keyHex] = storedHash.split('$')
       const salt = Buffer.from(saltHex, 'hex')
+      const storedKey = Buffer.from(keyHex, 'hex')
       return new Promise(resolve => {
         scrypt(password, salt, 64, (err, derivedKey) => {
           if (err) return resolve(false)
-          resolve(derivedKey.toString('hex') === keyHex)
+          if (derivedKey.length !== storedKey.length) return resolve(false)
+          resolve(timingSafeEqual(derivedKey, storedKey))
         })
       })
     }
