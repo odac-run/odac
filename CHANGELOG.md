@@ -1,5 +1,36 @@
 ### ⚙️ Engine Tuning
 
+- implement native ACME client with ECDSA-P256 support to replace acme-client dependency
+- replace bcrypt dependency with native crypto scrypt implementation
+- replace website and service terminology with applications throughout documentation and CLI references
+
+### ✨ What's New
+
+- add 'Cargo.lock' trigger for Rust build strategy
+- **container:** add support for Bun, pnpm, yarn, and Rust build strategies
+- **dns:** dns.list endpoints with dynamic IP resolution and CLI support
+- **hub:** allow managing DNS records from cloud
+- replace axios with a custom zero-dependency Http core module
+
+### 📚 Documentation
+
+- update installation script URL and replace npm manual install guide with comprehensive manual setup documentation
+
+### 🛠️ Fixes & Improvements
+
+- **config:** increase rate limit threshold for production environments
+- Implement host-to-container path normalization for Docker-out-of-Docker volume mounts.
+- Initialize app volumes and normalize host paths to container paths when fixing volume permissions before app startup.
+- **security:** timing-safe auth, ACME badNonce retry, IPv6 passthrough
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - Improve test cleanup and robustness, enhance proxy timer management, and add error handling for system network statistics.
 
 ### ⚡️ Performance Upgrades
