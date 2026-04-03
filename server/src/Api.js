@@ -27,6 +27,7 @@ class Api {
     'app.list': (...args) => Odac.server('App').list(...args),
     'app.restart': (...args) => Odac.server('App').restart(...args),
     'app.start': (...args) => Odac.server('App').start(...args),
+    'dns.list': (...args) => Odac.server('DNS').list(...args),
     'domain.add': (...args) => Odac.server('Domain').add(...args),
     'domain.delete': (...args) => Odac.server('Domain').delete(...args),
     'domain.list': (...args) => Odac.server('Domain').list(...args),

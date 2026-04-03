@@ -45,7 +45,20 @@ class Connector {
             if (payload.result) {
               if (payload.message) console.log(payload.message)
               if (Array.isArray(payload.data) && payload.data.length > 0) {
-                this.#printTable(payload.data)
+                if (this.currentCommand && this.currentCommand.table === false) {
+                  payload.data.forEach(row => {
+                    const keys = Object.keys(row)
+                    const maxKeyLen = Math.max(...keys.map(k => k.length))
+                    console.log('---')
+                    keys.forEach(k => {
+                      const val = Array.isArray(row[k]) ? row[k].join(', ') : row[k]
+                      console.log(`${k.padEnd(maxKeyLen)} : ${val || '-'}`)
+                    })
+                  })
+                  console.log('---')
+                } else {
+                  this.#printTable(payload.data)
+                }
               } else if (typeof payload.data === 'object' && payload.data !== null) {
                 console.dir(payload.data, {depth: null, colors: true})
               }
@@ -140,6 +153,7 @@ class Connector {
 
   call(command) {
     if (!command) return
+    this.currentCommand = command
     this.manualClose = false
     this.#connect()
     this.socket.write(

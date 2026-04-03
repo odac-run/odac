@@ -154,6 +154,26 @@ module.exports = {
       }
     }
   },
+  dns: {
+    title: 'DNS',
+    sub: {
+      list: {
+        description: 'List DNS records for a domain',
+        args: ['-d', '--domain'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let domain = cli.parseArg(args, ['-d', '--domain']) || args[0]
+          if (!domain) domain = await cli.question(__('Enter the domain name: '))
+
+          await Odac.cli('Connector').call({
+            action: 'dns.list',
+            data: [domain],
+            table: false
+          })
+        }
+      }
+    }
+  },
   domain: {
     title: 'DOMAIN',
     sub: {

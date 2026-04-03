@@ -97,10 +97,7 @@ class Hub {
         triggers: ['dns.list']
       },
       'dns.list': {
-        fn: () => {
-          const zones = Odac.core('Config').config.dns || {}
-          return Odac.server('Api').result(true, zones)
-        },
+        fn: () => Odac.server('DNS').list(),
         interval: 60 * 60 * 1000,
         lastRun: 0
       },

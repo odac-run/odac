@@ -89,6 +89,49 @@ class DNS {
   }
 
   /**
+   * Retrieves and formats all DNS zones.
+   * Resolves dynamic IPs for empty A and AAAA records.
+   * @param {string} [domain] - Optional domain name to filter
+   * @returns {Object} API result with DNS zones or domain records
+   */
+  list(domain) {
+    if (typeof domain !== 'string') {
+      domain = undefined
+    } else {
+      const normalized = domain.trim().toLowerCase()
+      if (normalized === 'undefined' || normalized === 'null') {
+        domain = undefined
+      } else {
+        domain = normalized
+      }
+    }
+
+    const configZones = Odac.core('Config').config.dns || {}
+    const zones = JSON.parse(JSON.stringify(configZones))
+
+    for (const zone of Object.values(zones)) {
+      if (!Array.isArray(zone.records)) continue
+      for (const record of zone.records) {
+        if (record.type === 'A' && !record.value) {
+          record.value = this.ip || '127.0.0.1'
+        } else if (record.type === 'AAAA' && !record.value) {
+          const ipv6 = this.ips?.ipv6?.find(i => i.public)?.address || this.ips?.ipv6?.[0]?.address
+          if (ipv6) record.value = ipv6
+        }
+      }
+    }
+
+    if (domain) {
+      if (zones[domain]) {
+        return Odac.server('Api').result(true, zones[domain].records || [])
+      }
+      return Odac.server('Api').result(false, __('No DNS records found for domain %s.', domain))
+    }
+
+    return Odac.server('Api').result(true, zones)
+  }
+
+  /**
    * Adds or updates DNS records in zone config.
    * Creates new zones automatically with SOA and default CAA.
    * Triggers config sync to Go binary after modification.
