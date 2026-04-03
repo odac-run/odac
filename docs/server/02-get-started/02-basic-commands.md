@@ -3,19 +3,19 @@
 These are the most common commands for interacting with the Odac server.
 
 ### Check Status
-To see the current status of the Odac server, including uptime and the number of running services, simply run the `odac` command with no arguments:
+To see the current status of the Odac server, including uptime and the number of active applications, simply run the `odac` command with no arguments:
 ```bash
 odac
 ```
 
 ### Restart the Server
-If you need to apply new configurations or restart all services, you can use the `restart` command:
+If you need to apply new configurations or restart the Odac system, you can use the `restart` command:
 ```bash
 odac restart
 ```
 
-### Monitor Services
-To get a real-time, interactive view of your running websites and services, use the `monit` command:
+### Monitor Applications
+To get a real-time, interactive view of your running applications, use the `monit` command:
 ```bash
 odac monit
 ```
@@ -40,18 +40,18 @@ Many Odac commands support prefix arguments that allow you to provide values dir
 - `-e`, `--email`: Specify email address  
 - `-p`, `--password`: Specify password
 - `-s`, `--subdomain`: Specify subdomain
-- `-i`, `--id`: Specify service ID
+- `-i`, `--id`: Specify project ID
 - `-k`, `--key`: Specify authentication key
 
 **Example:**
 ```bash
 # Interactive mode (prompts for input)
-odac web create
+odac app create
 
 # Single-line mode with prefix
-odac web create -d example.com
+odac app create -n example-app -u https://github.com/user/repo.git
 ```
 
 ---
 
-**Next Steps:** For more advanced topics, such as managing websites, services, SSL certificates, and mail accounts, please refer to the upcoming documentation files.
+**Next Steps:** For more advanced topics, such as managing applications, SSL certificates, and mail accounts, please refer to the upcoming documentation files.

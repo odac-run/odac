@@ -16,7 +16,7 @@ odac domain add <domain> <appId>
 ```
 OR using prefixes:
 ```bash
-odac domain add -d <domain> -i <appId>
+odac domain add -d <domain> -a <appId>
 ```
 
 ### Parameters

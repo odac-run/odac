@@ -1,9 +1,7 @@
 const {log, error} = Odac.core('Log', false).init('Hub')
 
-const axios = require('axios')
 const nodeCrypto = require('crypto')
 const os = require('os')
-const https = require('https')
 const packageJson = require('../../package.json')
 
 const System = require('./Hub/System')
@@ -83,6 +81,25 @@ class Hub {
       'app.volumes.set': {
         fn: payload => Odac.server('App').setVolumes(payload.name || payload.id, payload.volumes),
         triggers: ['app.list']
+      },
+      'dns.add': {
+        fn: payload => {
+          Odac.server('DNS').record(payload)
+          return Odac.server('Api').result(true, __('DNS record added'))
+        },
+        triggers: ['dns.list']
+      },
+      'dns.delete': {
+        fn: payload => {
+          Odac.server('DNS').delete(payload)
+          return Odac.server('Api').result(true, __('DNS record deleted'))
+        },
+        triggers: ['dns.list']
+      },
+      'dns.list': {
+        fn: () => Odac.server('DNS').list(),
+        interval: 60 * 60 * 1000,
+        lastRun: 0
       },
       'domain.add': {
         fn: payload => Odac.server('Domain').add(payload.domain, payload.app),
@@ -220,18 +237,11 @@ class Hub {
       }
     }
 
-    this.agent = new https.Agent({
-      rejectUnauthorized: true,
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 25,
-      timeout: 30000
-    })
-
     this.ws.setHandlers({
       onConnect: () => {
         this.trigger('system.info')
         this.trigger('app.list')
+        this.trigger('dns.list')
         this.trigger('domain.list')
       },
       onMessage: data => this.#handleMessage(data),
@@ -374,10 +384,10 @@ class Hub {
 
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const response = await axios.post(url, data, {
+        const response = await Odac.core('Http').post(url, data, {
           headers,
-          httpsAgent: this.agent,
-          timeout: 30000
+          timeout: 30000,
+          rejectUnauthorized: true // Explicitly enforce SSL security
         })
 
         return this.#parseResponse(action, response)

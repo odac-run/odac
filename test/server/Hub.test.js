@@ -13,9 +13,6 @@ mockOdac.setMock('core', 'Log', {
 
 global.Odac = mockOdac
 
-jest.mock('axios')
-const axios = require('axios')
-
 jest.mock('ws')
 const WebSocketLib = require('ws')
 
@@ -47,6 +44,17 @@ describe('Hub', () => {
 
     mockOdac.setMock('server', 'Api', {
       result: jest.fn((success, message) => ({success, message}))
+    })
+
+    mockOdac.setMock('core', 'Http', {
+      post: jest.fn().mockResolvedValue({
+        status: 200,
+        data: {
+          result: {success: true},
+          data: {token: 'new-token', secret: 'new-secret'}
+        }
+      }),
+      get: jest.fn()
     })
 
     os.hostname.mockReturnValue('test-host')
@@ -241,6 +249,7 @@ describe('Hub', () => {
   describe('authentication', () => {
     it('should authenticate with valid code', async () => {
       const mockResponse = {
+        status: 200,
         data: {
           result: {success: true},
           data: {
@@ -255,11 +264,12 @@ describe('Hub', () => {
         result: jest.fn(() => mockApiResult)
       })
 
-      axios.post.mockResolvedValue(mockResponse)
+      const mockHttp = mockOdac.core('Http')
+      mockHttp.post.mockResolvedValue(mockResponse)
 
       const result = await Hub.auth('valid-code')
 
-      expect(axios.post).toHaveBeenCalled()
+      expect(mockHttp.post).toHaveBeenCalled()
       expect(result).toEqual(mockApiResult)
       expect(mockOdac.core('Config').config.hub).toEqual({
         token: 'new-token',
@@ -273,7 +283,7 @@ describe('Hub', () => {
         result: jest.fn(() => mockApiResult)
       })
 
-      axios.post.mockRejectedValue(new Error('Invalid code'))
+      mockOdac.core('Http').post.mockRejectedValue(new Error('Invalid code'))
 
       const result = await Hub.auth('invalid-code')
 
@@ -366,7 +376,8 @@ describe('Hub', () => {
 
   describe('API calls', () => {
     it('should make successful API call', async () => {
-      axios.post.mockResolvedValue({
+      const mockHttp = mockOdac.core('Http')
+      mockHttp.post.mockResolvedValue({
         data: {
           result: {success: true},
           data: {response: 'data'}
@@ -376,7 +387,7 @@ describe('Hub', () => {
       const result = await Hub.call('test-action', {param: 'value'})
 
       expect(result).toEqual({response: 'data'})
-      expect(axios.post).toHaveBeenCalledWith('https://hub.odac.run/test-action', {param: 'value'}, expect.any(Object))
+      expect(mockHttp.post).toHaveBeenCalledWith('https://hub.odac.run/test-action', {param: 'value'}, expect.any(Object))
     })
 
     it('should include authorization header when token exists', async () => {
@@ -386,7 +397,8 @@ describe('Hub', () => {
         }
       })
 
-      axios.post.mockResolvedValue({
+      const mockHttp = mockOdac.core('Http')
+      mockHttp.post.mockResolvedValue({
         data: {
           result: {success: true},
           data: {}
@@ -395,12 +407,12 @@ describe('Hub', () => {
 
       await Hub.call('test', {})
 
-      const callArgs = axios.post.mock.calls[0][2]
+      const callArgs = mockHttp.post.mock.calls[0][2]
       expect(callArgs.headers.Authorization).toBe('Bearer test-token')
     })
 
     it('should handle API errors', async () => {
-      axios.post.mockResolvedValue({
+      mockOdac.core('Http').post.mockResolvedValue({
         data: {
           result: {success: false, message: 'API error'}
         }
@@ -410,7 +422,7 @@ describe('Hub', () => {
     })
 
     it('should handle network errors', async () => {
-      axios.post.mockRejectedValue(new Error('Server error'))
+      mockOdac.core('Http').post.mockRejectedValue(new Error('Server error'))
 
       await expect(Hub.call('test', {})).rejects.toThrow('Server error')
     })

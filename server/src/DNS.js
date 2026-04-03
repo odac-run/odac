@@ -1,6 +1,5 @@
 const {log, error} = Odac.core('Log', false).init('DNS')
 
-const axios = require('axios')
 const childProcess = require('child_process')
 const fs = require('fs')
 const nodeDns = require('dns')
@@ -87,6 +86,49 @@ class DNS {
       if (Odac.core('Config').force) Odac.core('Config').force()
       this.syncConfig()
     }
+  }
+
+  /**
+   * Retrieves and formats all DNS zones.
+   * Resolves dynamic IPs for empty A and AAAA records.
+   * @param {string} [domain] - Optional domain name to filter
+   * @returns {Object} API result with DNS zones or domain records
+   */
+  list(domain) {
+    if (typeof domain !== 'string') {
+      domain = undefined
+    } else {
+      const normalized = domain.trim().toLowerCase()
+      if (normalized === 'undefined' || normalized === 'null') {
+        domain = undefined
+      } else {
+        domain = normalized
+      }
+    }
+
+    const configZones = Odac.core('Config').config.dns || {}
+    const zones = JSON.parse(JSON.stringify(configZones))
+
+    for (const zone of Object.values(zones)) {
+      if (!Array.isArray(zone.records)) continue
+      for (const record of zone.records) {
+        if (record.type === 'A' && !record.value) {
+          record.value = this.ip || '127.0.0.1'
+        } else if (record.type === 'AAAA' && !record.value) {
+          const ipv6 = this.ips?.ipv6?.find(i => i.public)?.address || this.ips?.ipv6?.[0]?.address
+          if (ipv6) record.value = ipv6
+        }
+      }
+    }
+
+    if (domain) {
+      if (zones[domain]) {
+        return Odac.server('Api').result(true, zones[domain].records || [])
+      }
+      return Odac.server('Api').result(false, __('No DNS records found for domain %s.', domain))
+    }
+
+    return Odac.server('Api').result(true, zones)
   }
 
   /**
@@ -450,12 +492,12 @@ class DNS {
 
     try {
       if (this.#dnsSocketPath) {
-        await axios.post('http://localhost/config', payload, {
+        await Odac.core('Http').post('http://localhost/config', payload, {
           socketPath: this.#dnsSocketPath,
           validateStatus: () => true
         })
       } else {
-        await axios.post(`http://127.0.0.1:${this.#dnsApiPort}/config`, payload)
+        await Odac.core('Http').post(`http://127.0.0.1:${this.#dnsApiPort}/config`, payload)
       }
     } catch (e) {
       if (retryCount < 3 && (e.code === 'ECONNREFUSED' || e.code === 'ENOENT' || e.code === 'ECONNRESET')) {
@@ -514,7 +556,7 @@ class DNS {
     for (const service of ipv4Services) {
       try {
         log(`Attempting to get external IPv4 from ${service}`)
-        const response = await axios.get(service, {
+        const response = await Odac.core('Http').get(service, {
           headers: {'User-Agent': 'Odac-DNS/1.0'},
           timeout: 5000
         })
@@ -539,7 +581,7 @@ class DNS {
     for (const service of ipv6Services) {
       try {
         log(`Attempting to get external IPv6 from ${service}`)
-        const response = await axios.get(service, {
+        const response = await Odac.core('Http').get(service, {
           family: 6,
           headers: {'User-Agent': 'Odac-DNS/1.0'},
           timeout: 5000

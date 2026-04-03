@@ -17,7 +17,7 @@ Most commands support prefix arguments that allow you to provide values directly
 - `-d`, `--domain`: Domain name
 - `-e`, `--email`: Email address  
 - `-p`, `--password`: Password
-- `-i`, `--id`: Service ID or name
+- `-i`, `--id`: Project ID or name
 - `-k`, `--key`: Authentication key
 
 ### Authentication Commands
@@ -45,74 +45,48 @@ Display server status, uptime, and statistics.
 Restart the Odac server.
 
 #### `odac monit`
-Monitor websites and services in real-time.
+Monitor applications in real-time.
 
 #### `odac debug`
 View live server and application logs.
 
 #### `odac help`
 Display help information for all commands.
+### Application Management
 
-### Service Management
-
-#### `odac run <file>`
-Add a new service by specifying the entry file path.
-
-**Example:**
-```bash
-odac run /path/to/your/app.js
-odac run ./index.js
-```
-
-#### `odac service delete`
-Delete a running service.
+#### `odac app create`
+Create a new application configuration.
 
 **Interactive:**
 ```bash
-odac service delete
+odac app create
 ```
 
 **Single-line:**
 ```bash
-odac service delete -i service-name
-odac service delete --id service-name
+odac app create -n my-app -u https://github.com/user/repo.git
+odac app create --name my-app --url https://github.com/user/repo.git
 ```
 
-### Website Management
-
-#### `odac web create`
-Create a new website configuration.
+#### `odac app delete`
+Delete an application configuration.
 
 **Interactive:**
 ```bash
-odac web create
+odac app delete
 ```
 
 **Single-line:**
 ```bash
-odac web create -d example.com
-odac web create --domain example.com
+odac app delete -i my-app
+odac app delete --id my-app
 ```
 
-#### `odac web delete`
-Delete a website configuration.
-
-**Interactive:**
-```bash
-odac web delete
-```
-
-**Single-line:**
-```bash
-odac web delete -d example.com
-odac web delete --domain example.com
-```
-
-#### `odac web list`
-List all configured websites.
+#### `odac app list`
+List all configured applications.
 
 ```bash
-odac web list
+odac app list
 ```
 
 ### Domain Management
@@ -127,8 +101,8 @@ odac domain add
 
 **Single-line:**
 ```bash
-odac domain add -d example.com -i my-app
-odac domain add --domain example.com --id my-app
+odac domain add -d example.com -a my-app
+odac domain add --domain example.com --app my-app
 ```
 
 #### `odac domain delete`
@@ -155,8 +129,8 @@ odac domain list
 
 **Single-line:**
 ```bash
-odac domain list -i my-app
-odac domain list --id my-app
+odac domain list -a my-app
+odac domain list --app my-app
 ```
 
 
@@ -257,8 +231,8 @@ odac domain add -d api.example.com -i my-app
 You can mix interactive and single-line modes as needed:
 
 ```bash
-# Specify domain, but let the system prompt for other details
-odac web create -d example.com
+# Specify name, but let the system prompt for other details
+odac app create -n my-app
 ```
 
 #### Password Security

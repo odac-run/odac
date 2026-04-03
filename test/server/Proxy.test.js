@@ -27,15 +27,10 @@ const mockOs = {
   homedir: jest.fn().mockReturnValue('/home/user')
 }
 
-const mockAxios = {
-  post: jest.fn().mockResolvedValue({status: 200, data: {}})
-}
-
 // Apply mocks
 jest.mock('fs', () => mockFs)
 jest.mock('child_process', () => mockChildProcess)
 jest.mock('os', () => mockOs)
-jest.mock('axios', () => mockAxios)
 const {mockOdac} = require('./__mocks__/globalOdac')
 
 describe('Proxy', () => {
@@ -57,6 +52,11 @@ describe('Proxy', () => {
     }
 
     mockLog = jest.fn()
+    mockOdac.setMock('core', 'Http', {
+      delete: jest.fn().mockResolvedValue({status: 200, data: {}}),
+      get: jest.fn(),
+      post: jest.fn().mockResolvedValue({status: 200, data: {}})
+    })
     mockOdac.setMock('core', 'Log', {
       init: () => ({log: mockLog, error: mockLog})
     })
@@ -97,7 +97,7 @@ describe('Proxy', () => {
       ProxyService.spawnProxy()
 
       await ProxyService.syncConfig()
-      expect(mockAxios.post).toHaveBeenCalled()
+      expect(mockOdac.core('Http').post).toHaveBeenCalled()
     })
 
     test('should stop proxy process', () => {
