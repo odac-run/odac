@@ -30,7 +30,8 @@ const BUILD_STRATEGIES = {
     triggers: ['go.mod'],
     image: 'golang:alpine',
     installCmd: 'go mod download',
-    buildCmd: 'go build -o app .',
+    buildCmd:
+      'PKG=$(go list -f "{{.Name}} {{.ImportPath}}" ./... | grep "^main " | head -n 1 | cut -d" " -f2); if [ -z "$PKG" ]; then PKG="."; fi; go build -o app $PKG',
     cleanupCmd: null,
     package: {
       baseImage: 'alpine:latest',
@@ -107,7 +108,7 @@ const BUILD_STRATEGIES = {
     package: {
       baseImage: 'python:3.11-slim',
       user: 'nobody',
-      cmd: ['python', 'app.py'],
+      cmd: ['sh', '-c', 'if [ -f main.py ]; then python main.py; elif [ -f run.py ]; then python run.py; else python app.py; fi'],
       env: {PYTHONPATH: '/app/deps'}
     }
   },
@@ -116,7 +117,8 @@ const BUILD_STRATEGIES = {
     triggers: ['Cargo.toml', 'Cargo.lock'],
     image: 'rust:alpine',
     installCmd: 'apk add --no-cache musl-dev',
-    buildCmd: 'cargo build --release && cp target/release/$(basename $(pwd)) /app/app || cp target/release/app /app/app',
+    buildCmd:
+      'cargo build --release && find target/release -maxdepth 1 -type f -executable -not -name "*.*" | head -n 1 | xargs -I {} cp {} /app/app',
     cleanupCmd: 'rm -rf target src',
     package: {
       baseImage: 'alpine:latest',
