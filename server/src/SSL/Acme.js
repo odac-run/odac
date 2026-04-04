@@ -239,8 +239,22 @@ class Acme {
 
   /** Bootstraps account key, directory, nonce, and ACME account */
   async #init(directoryUrl) {
-    const {privateKey, publicKey} = generateKeyPairSync('ec', {namedCurve: 'P-256'})
-    this.#accountKey = privateKey
+    const fs = require('fs')
+    const os = require('os')
+    const crypto = require('crypto')
+    const accountKeyPath = os.homedir() + '/.odac/cert/ssl/acme_account.key'
+
+    if (fs.existsSync(accountKeyPath)) {
+      const pem = fs.readFileSync(accountKeyPath, 'utf8')
+      this.#accountKey = crypto.createPrivateKey(pem)
+    } else {
+      const {privateKey} = crypto.generateKeyPairSync('ec', {namedCurve: 'P-256'})
+      this.#accountKey = privateKey
+      if (!fs.existsSync(os.homedir() + '/.odac/cert/ssl')) fs.mkdirSync(os.homedir() + '/.odac/cert/ssl', {recursive: true})
+      fs.writeFileSync(accountKeyPath, privateKey.export({type: 'pkcs8', format: 'pem'}))
+    }
+
+    const publicKey = crypto.createPublicKey(this.#accountKey)
     this.#accountJwk = publicKey.export({format: 'jwk'})
 
     // JWK Thumbprint (RFC 7638) – lexicographically sorted EC members
@@ -271,6 +285,9 @@ class Acme {
 
     // Account registration (or retrieval if already exists)
     const acctRes = await this.#signedRequest(this.#directory.newAccount, {onlyReturnExisting: false, termsOfServiceAgreed: true}, true)
+    if (acctRes.status >= 400) {
+      throw new Error('ACME account registration failed (status ' + acctRes.status + '): ' + JSON.stringify(acctRes.body))
+    }
     this.#accountUrl = acctRes.headers.location
   }
 

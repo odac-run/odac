@@ -137,37 +137,45 @@ class Domain {
     }
 
     const isLocalOrIP = domain === 'localhost' || !!domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)
+    const isWildcard = domain.startsWith('*.')
 
     // Phase 4: Create DNS records for the domain (skip for localhost and IP addresses)
     let sslEnabled = false
     if (!isLocalOrIP) {
       try {
         // Build DNS records - A and AAAA without value, DNS will resolve dynamically via PTR matching
-        const dnsRecords = [
-          {name: domain, type: 'A'},
-          {name: domain, type: 'AAAA'},
-          {name: 'www.' + domain, type: 'CNAME', value: domain},
-          {name: 'mail.' + domain, type: 'A'},
-          {name: domain, type: 'MX', value: 'mail.' + domain},
-          {
-            name: '_dmarc.' + domain,
-            type: 'TXT',
-            value: 'v=DMARC1; p=reject; rua=mailto:postmaster@' + domain
-          }
-        ]
+        const dnsRecords = isWildcard
+          ? [
+              {name: domain, type: 'A'},
+              {name: domain, type: 'AAAA'}
+            ]
+          : [
+              {name: domain, type: 'A'},
+              {name: domain, type: 'AAAA'},
+              {name: 'www.' + domain, type: 'CNAME', value: domain},
+              {name: 'mail.' + domain, type: 'A'},
+              {name: domain, type: 'MX', value: 'mail.' + domain},
+              {
+                name: '_dmarc.' + domain,
+                type: 'TXT',
+                value: 'v=DMARC1; p=reject; rua=mailto:postmaster@' + domain
+              }
+            ]
 
-        // Build SPF record - needs explicit IPs for external validation
-        const publicIPv4 = Odac.server('DNS').ip
-        const publicIPv6 = Odac.server('DNS').ips?.ipv6?.find(i => i.public)
-        let spfValue = 'v=spf1 a mx'
-        if (publicIPv4 && publicIPv4 !== '127.0.0.1') {
-          spfValue += ' ip4:' + publicIPv4
+        if (!isWildcard) {
+          // Build SPF record - needs explicit IPs for external validation
+          const publicIPv4 = Odac.server('DNS').ip
+          const publicIPv6 = Odac.server('DNS').ips?.ipv6?.find(i => i.public)
+          let spfValue = 'v=spf1 a mx'
+          if (publicIPv4 && publicIPv4 !== '127.0.0.1') {
+            spfValue += ' ip4:' + publicIPv4
+          }
+          if (publicIPv6) {
+            spfValue += ' ip6:' + publicIPv6.address
+          }
+          spfValue += ' ~all'
+          dnsRecords.push({name: domain, type: 'TXT', value: spfValue})
         }
-        if (publicIPv6) {
-          spfValue += ' ip6:' + publicIPv6.address
-        }
-        spfValue += ' ~all'
-        dnsRecords.push({name: domain, type: 'TXT', value: spfValue})
 
         Odac.server('DNS').record(...dnsRecords)
         log('Created DNS records for domain %s', domain)
@@ -184,7 +192,7 @@ class Domain {
     const domainRecord = {
       appId: targetApp.name,
       created: Date.now(),
-      subdomain: isLocalOrIP ? [] : ['www', 'mail']
+      subdomain: isLocalOrIP || isWildcard ? [] : ['www', 'mail']
     }
 
     // Initialize SSL cert tracking if SSL is enabled
@@ -246,18 +254,24 @@ class Domain {
       if (domain !== 'localhost' && !domain.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
         try {
           const dkimSelector = domainRecord.cert?.dkim?.selector || 'default'
+          const isWildcard = domain.startsWith('*.')
 
           // Delete all DNS records associated with this domain
-          const recordsToDelete = [
-            {name: domain, type: 'A'},
-            {name: domain, type: 'AAAA'},
-            {name: 'www.' + domain, type: 'CNAME'},
-            {name: 'mail.' + domain, type: 'A'},
-            {name: domain, type: 'MX'},
-            {name: domain, type: 'TXT'},
-            {name: '_dmarc.' + domain, type: 'TXT'},
-            {name: `${dkimSelector}._domainkey.` + domain, type: 'TXT'}
-          ]
+          const recordsToDelete = isWildcard
+            ? [
+                {name: domain, type: 'A'},
+                {name: domain, type: 'AAAA'}
+              ]
+            : [
+                {name: domain, type: 'A'},
+                {name: domain, type: 'AAAA'},
+                {name: 'www.' + domain, type: 'CNAME'},
+                {name: 'mail.' + domain, type: 'A'},
+                {name: domain, type: 'MX'},
+                {name: domain, type: 'TXT'},
+                {name: '_dmarc.' + domain, type: 'TXT'},
+                {name: `${dkimSelector}._domainkey.` + domain, type: 'TXT'}
+              ]
 
           for (const record of recordsToDelete) {
             try {
