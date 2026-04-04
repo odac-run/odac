@@ -28,7 +28,7 @@ const BUILD_STRATEGIES = {
   GO: {
     name: 'Go',
     triggers: ['go.mod'],
-    image: 'golang:1.22-alpine',
+    image: 'golang:alpine',
     installCmd: 'go mod download',
     buildCmd: 'go build -o app .',
     cleanupCmd: null,
