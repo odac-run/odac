@@ -593,6 +593,7 @@ class App {
         if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
         this.#set(app.id, {status: 'running', started: Date.now()})
+        this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
         log('createFromGit: App started successfully')
 
         // Notify Hub
@@ -1128,6 +1129,8 @@ class App {
         if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
         this.#set(app.id, {status: 'running', started: Date.now()})
+
+        this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
 
         if (logCtrl) logCtrl.startPhase('proxy_propagation')
         Odac.server('Proxy').syncConfig()
@@ -1696,6 +1699,8 @@ class App {
 
       this.#set(id, {status: 'running', started: Date.now()})
 
+      this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
+
       // Trigger Proxy Sync after every successful start/restart.
       // Container IP changes on restart; without this, Proxy routes to the old (dead) IP -> 502
       Odac.server('Proxy').syncConfig()
@@ -2031,6 +2036,8 @@ class App {
     app.ip = greenIP
     this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
 
+    this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
+
     if (logCtrl) logCtrl.startPhase('proxy_propagation')
     await Odac.server('Proxy').syncConfig()
     if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
@@ -2116,6 +2123,67 @@ class App {
       }
     }
     return false
+  }
+
+  /**
+   * Scans container ports to detect if an HTTP server is running.
+   * Saves the detected port or 'false' to the app config for newly added apps.
+   * @param {object} app - The application record
+   */
+  async #scanAndSaveHttpStatus(app) {
+    if (app.http !== undefined && app.http !== false) return
+
+    let newHttp = false
+
+    try {
+      const container = Odac.server('Container')
+      const targetContainer = app.activeContainerId || app.name
+
+      // If docker is unavailable or app runs locally as script, skip container scanning
+      if (container && container.available && !app.pid) {
+        let attempts = 0
+        let listeningPorts = []
+
+        while (attempts < 60) {
+          try {
+            listeningPorts = await container.getListeningPorts(targetContainer)
+            if (listeningPorts.length > 0) break
+          } catch {
+            // Background scan polling silently ignores intermittent errors
+          }
+          await new Promise(resolve => setTimeout(resolve, 500))
+          attempts++
+        }
+
+        if (listeningPorts.length > 0) {
+          const containerIP = await container.getIP(targetContainer)
+          if (containerIP) {
+            let httpPort = null
+            let probeAttempts = 0
+
+            // Retry the HTTP probe up to 10 times (10 seconds) because some apps
+            // open their TCP ports early but take time to actually serve HTTP traffic.
+            while (probeAttempts < 10) {
+              httpPort = await this.#detectHttpPort(containerIP, listeningPorts, 2000)
+              if (httpPort !== null) break
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              probeAttempts++
+            }
+
+            if (httpPort !== null) {
+              newHttp = httpPort
+            }
+          }
+        }
+      }
+    } catch (e) {
+      log('HTTP scan failed for %s: %s', app.name, e.message)
+    }
+
+    if (app.http !== newHttp) {
+      this.#set(app.id, {http: newHttp})
+      Odac.server('Hub').trigger('app.list')
+    }
   }
 
   // Private: Helpers
