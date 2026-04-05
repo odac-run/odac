@@ -32,7 +32,7 @@
   "dependencies": {
     "dkim-signer": "^0.2.2",
     "dockerode": "^4.0.9",
-    "find-process": "^2.0.0",
+    "find-process": "^2.1.1",
     "mailparser": "^3.9.1",
     "selfsigned": "^2.4.1",
     "smtp-server": "^3.17.1",
