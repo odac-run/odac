@@ -29,6 +29,7 @@ class Domain {
 
   /**
    * Validates and sanitizes a domain name.
+   * Strips protocol prefixes but preserves subdomain structure (e.g., www.).
    * @param {string} domain - Raw domain input
    * @returns {{valid: boolean, domain?: string, error?: string}}
    */
@@ -37,9 +38,9 @@ class Domain {
       return {valid: false, error: __('Domain is required.')}
     }
 
-    // Sanitize domain input
+    // Sanitize domain input — only strip protocol prefixes, NOT subdomain prefixes like www.
     domain = domain.trim().toLowerCase()
-    for (const prefix of ['http://', 'https://', 'ftp://', 'www.']) {
+    for (const prefix of ['http://', 'https://', 'ftp://']) {
       if (domain.startsWith(prefix)) domain = domain.replace(prefix, '')
     }
 
@@ -72,6 +73,11 @@ class Domain {
       return Odac.server('Api').result(false, validation.error)
     }
     domain = validation.domain
+
+    // Strip www. prefix for add — www is treated as a subdomain, not a root domain
+    if (domain.startsWith('www.')) {
+      domain = domain.slice(4)
+    }
 
     if (!appId) {
       return Odac.server('Api').result(false, __('App ID is required.'))

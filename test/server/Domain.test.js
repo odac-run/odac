@@ -220,6 +220,24 @@ describe('Domain', () => {
       // Verify SSL renew for parent
       expect(Odac.server('SSL').renew).toHaveBeenCalledWith('example.com')
     })
+
+    test('should delete www subdomain without removing the parent domain', async () => {
+      // Setup parent with www subdomain (default state after domain add)
+      mockConfig.config.domains['example.com'] = {
+        appId: 'myapp',
+        created: Date.now(),
+        subdomain: ['www', 'mail']
+      }
+
+      const result = await Domain.delete('www.example.com')
+
+      expect(result.result).toBe(true)
+      expect(result.message).toContain('Subdomain www removed from example.com')
+
+      // Parent domain must still exist
+      expect(mockConfig.config.domains['example.com']).toBeDefined()
+      expect(mockConfig.config.domains['example.com'].subdomain).toStrictEqual(['mail'])
+    })
   })
 
   describe('list()', () => {
