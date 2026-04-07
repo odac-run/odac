@@ -972,23 +972,42 @@ class App {
     }
 
     // Standard Restart (No Domains or Script App)
-    log('Standard restart for %s (No Domains or Script App). Stopping old container first.', app.name)
-
-    // Stop the app first
-    await this.stop(app.id)
-
-    // Wait a brief moment to ensure resources are released (optional but often helpful in container envs)
-    await new Promise(resolve => setTimeout(resolve, 1000))
-
-    // Start it again
-    this.#set(id, {active: true})
-    if (await this.#run(app.id)) {
-      // Notify Hub
-      Odac.server('Hub').trigger('app.list')
-      return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
+    // Concurrency guard: prevent parallel operations on the same app
+    if (this.#processing.has(app.id)) {
+      return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
     }
 
-    return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
+    this.#processing.add(app.id)
+    log('Standard restart for %s (No Domains or Script App). Stopping old container first.', app.name)
+
+    try {
+      // Stop the app first
+      await this.stop(app.id)
+
+      // Wait a brief moment to ensure resources are released (optional but often helpful in container envs)
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Start it again
+      this.#set(id, {active: true})
+
+      // Release the lock before #run() so it can acquire its own processing lock.
+      // The outer guard already rejected concurrent callers at method entry.
+      this.#processing.delete(app.id)
+
+      if (await this.#run(app.id)) {
+        // Notify Hub
+        Odac.server('Hub').trigger('app.list')
+        return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
+      }
+
+      return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
+    } catch (e) {
+      error('Failed to restart app %s: %s', app.name, e.message)
+      this.#set(app.id, {status: 'errored', updated: Date.now()})
+      return Odac.server('Api').result(false, __('Failed to restart app %s: %s', app.name, e.message))
+    } finally {
+      this.#processing.delete(app.id)
+    }
   }
 
   async redeploy(payload) {
