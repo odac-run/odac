@@ -5,6 +5,7 @@ type Config struct {
 	Domains  map[string]Website `json:"domains"`
 	Firewall Firewall           `json:"firewall"`
 	SSL      *SSL               `json:"ssl"`
+	Tunnels  map[string]string  `json:"tunnels"` // domain -> auth token for remote tunnel clients
 }
 
 // Website represents a single site configuration
@@ -15,6 +16,7 @@ type Website struct {
 	ContainerIP string      `json:"containerIP"`   // Direct IP if available
 	Subdomains  []string    `json:"subdomain"`
 	Cert        Cert        `json:"cert"`
+	TunnelID    string      `json:"tunnelId,omitempty"` // Non-empty if site is served via remote tunnel
 }
 
 // Cert represents SSL certificate paths

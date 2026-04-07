@@ -27,6 +27,7 @@ class Config {
     firewall: ['firewall'],
     hub: ['hub'],
     mail: ['mail'],
+    proxy: ['tunnels'],
     server: ['server'],
     service: ['services'],
     ssl: ['ssl']

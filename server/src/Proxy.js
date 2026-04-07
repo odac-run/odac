@@ -13,6 +13,7 @@ class OdacProxy {
   #proxySocketPath = null
   #syncTimer = null
   #cleanupTimer = null
+  #tunnels = new Map()
 
   check() {
     if (!this.#active) return
@@ -271,8 +272,49 @@ class OdacProxy {
     }
   }
 
+  /**
+   * Replaces the entire tunnel configuration with the provided list.
+   * Hub always sends the full tunnel list — missing entries are treated as deleted,
+   * new entries are additions. This is a full-replace (reconciliation) operation.
+   * @param {Array<{domain: string, token: string}>} tunnels - Complete tunnel list from Hub
+   */
+  setTunnels(tunnels) {
+    if (!Array.isArray(tunnels)) return Odac.server('Api').result(false, 'Invalid tunnels payload')
+
+    const incoming = new Map()
+    for (const t of tunnels) {
+      if (t.domain && t.token) {
+        incoming.set(t.domain, t.token)
+      }
+    }
+
+    // Full replace — incoming list is the single source of truth
+    this.#tunnels = incoming
+
+    // Persist: overwrite entirely so removed tunnels are cleaned from disk
+    Odac.core('Config').config.tunnels = Object.fromEntries(this.#tunnels)
+
+    log('Tunnel config replaced: %d tunnel(s)', this.#tunnels.size)
+
+    // Sync immediately so Go proxy learns about tunnel domains
+    this.syncConfig()
+    return Odac.server('Api').result(true, __('%d tunnel(s) configured', this.#tunnels.size))
+  }
+
   start() {
     this.#active = true
+
+    // Restore persisted tunnel config from previous session
+    const saved = Odac.core('Config').config.tunnels
+    if (saved && typeof saved === 'object') {
+      for (const [domain, token] of Object.entries(saved)) {
+        this.#tunnels.set(domain, token)
+      }
+      if (this.#tunnels.size > 0) {
+        log('Restored %d tunnel(s) from config', this.#tunnels.size)
+      }
+    }
+
     this.spawnProxy()
   }
 
@@ -414,7 +456,8 @@ class OdacProxy {
     const config = {
       domains: proxyDomains,
       firewall: Odac.core('Config').config.firewall || {enabled: true},
-      ssl: Odac.core('Config').config.ssl || null
+      ssl: Odac.core('Config').config.ssl || null,
+      tunnels: Object.fromEntries(this.#tunnels)
     }
 
     try {

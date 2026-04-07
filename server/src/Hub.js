@@ -114,6 +114,9 @@ class Hub {
         interval: 30 * 60 * 1000,
         lastRun: 0
       },
+      'proxy.tunnel': {
+        fn: payload => Odac.server('Proxy').setTunnels(payload.tunnels)
+      },
       'system.info': {
         fn: () => Odac.server('Api').result(true, System.getSystemInfo()),
         interval: 60 * 60 * 1000,

@@ -85,9 +85,9 @@ func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Received config update: %d domains, firewall enabled: %v", len(cfg.Domains), cfg.Firewall.Enabled)
+	log.Printf("Received config update: %d domains, firewall enabled: %v, tunnels: %d", len(cfg.Domains), cfg.Firewall.Enabled, len(cfg.Tunnels))
 
-	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL)
+	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL, cfg.Tunnels)
 	s.firewall.UpdateConfig(cfg.Firewall)
 
 	w.WriteHeader(http.StatusOK)
