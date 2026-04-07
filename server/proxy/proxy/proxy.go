@@ -241,9 +241,13 @@ func (p *Proxy) director(req *http.Request) {
 
 	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err == nil {
+		req.Header.Set("X-Forwarded-For", remoteIP)
 		req.Header.Set("X-Odac-Connection-RemoteAddress", remoteIP)
 		req.Header.Set("X-Real-IP", remoteIP)
 	}
+
+	// Preserve original Host header for upstream apps
+	req.Header.Set("X-Forwarded-Host", req.Host)
 
 	if req.TLS != nil {
 		req.Header.Set("X-Odac-Connection-Ssl", "true")
