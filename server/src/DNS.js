@@ -69,9 +69,22 @@ class DNS {
       const zone = config.dns[domain]
 
       const initialLength = zone.records.length
-      zone.records = zone.records.filter(
-        record => !(record.type === type && record.name === obj.name && (!obj.value || record.value === obj.value))
-      )
+
+      zone.records = zone.records.filter(record => {
+        if (record.type !== type || record.name !== obj.name) return true
+
+        // Resolve dynamic IP for empty A/AAAA records (mirrors list() behavior)
+        let recordValue = record.value
+        if (!recordValue && record.type === 'A') {
+          recordValue = this.ip || '127.0.0.1'
+        } else if (!recordValue && record.type === 'AAAA') {
+          recordValue = this.ips?.ipv6?.find(i => i.public)?.address || this.ips?.ipv6?.[0]?.address
+        }
+
+        if (obj.value && recordValue !== obj.value) return true
+
+        return false
+      })
 
       if (zone.records.length !== initialLength) {
         changedDomains.add(domain)
