@@ -55,7 +55,12 @@ class SSL {
 
       const expected = [domain]
       if (record.subdomain) {
-        record.subdomain.forEach(sub => expected.push(sub + '.' + domain))
+        const hasWildcard = record.subdomain.includes('*')
+        for (const sub of record.subdomain) {
+          // Mirror #ssl() logic: wildcard covers single-level subdomains
+          if (hasWildcard && sub !== '*' && !sub.includes('.')) continue
+          expected.push(sub + '.' + domain)
+        }
       }
 
       // Check if every expected domain is in SANs
