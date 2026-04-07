@@ -2180,10 +2180,14 @@ class App {
             let httpPort = null
             let probeAttempts = 0
 
-            // Retry the HTTP probe up to 10 times (10 seconds) because some apps
-            // open their TCP ports early but take time to actually serve HTTP traffic.
+            // Retry the HTTP probe up to 10 times because some apps open their
+            // TCP ports early but take time to actually serve HTTP traffic.
+            // Re-fetch listening ports on each attempt so newly opened ports
+            // (e.g. the actual HTTP port appearing after an ephemeral/internal one)
+            // are included in the probe set.
             while (probeAttempts < 10) {
-              httpPort = await this.#detectHttpPort(containerIP, listeningPorts, 2000)
+              const currentPorts = await container.getListeningPorts(targetContainer).catch(() => listeningPorts)
+              httpPort = await this.#detectHttpPort(containerIP, currentPorts, 2000)
               if (httpPort !== null) break
               await new Promise(resolve => setTimeout(resolve, 1000))
               probeAttempts++
