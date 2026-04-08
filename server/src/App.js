@@ -688,7 +688,7 @@ class App {
   }
 
   async #pollForPort(app, expectedPort, attempts = 0) {
-    if (attempts >= 20) return // Give up after 20 seconds
+    if (attempts >= 60) return // Give up after 60 seconds (selfhosted apps may take longer to bind)
 
     try {
       const container = Odac.server('Container')
@@ -755,7 +755,7 @@ class App {
    * @param {number} [timeout=1500] - Per-port probe timeout in ms
    * @returns {Promise<number|null>} The detected HTTP port, or null if none found
    */
-  async #detectHttpPort(ip, ports, timeout = 1500) {
+  async #detectHttpPort(ip, ports, timeout = 2500) {
     const probes = ports.map(
       port =>
         new Promise(resolve => {
@@ -2163,7 +2163,7 @@ class App {
         let attempts = 0
         let listeningPorts = []
 
-        while (attempts < 60) {
+        while (attempts < 120) {
           try {
             listeningPorts = await container.getListeningPorts(targetContainer)
             if (listeningPorts.length > 0) break
@@ -2185,9 +2185,9 @@ class App {
             // Re-fetch listening ports on each attempt so newly opened ports
             // (e.g. the actual HTTP port appearing after an ephemeral/internal one)
             // are included in the probe set.
-            while (probeAttempts < 10) {
+            while (probeAttempts < 30) {
               const currentPorts = await container.getListeningPorts(targetContainer).catch(() => listeningPorts)
-              httpPort = await this.#detectHttpPort(containerIP, currentPorts, 2000)
+              httpPort = await this.#detectHttpPort(containerIP, currentPorts, 2500)
               if (httpPort !== null) break
               await new Promise(resolve => setTimeout(resolve, 1000))
               probeAttempts++
@@ -2569,7 +2569,7 @@ class App {
   }
 
   #resolveEnv(app, includeSystem = true) {
-    const finalEnv = includeSystem ? {ODAC_APP: 'true'} : {}
+    const finalEnv = includeSystem ? {HOST: '0.0.0.0', ODAC_APP: 'true'} : {}
     const envConfig = app.env || {}
 
     // Check if new structure (has manual or linked prop)
