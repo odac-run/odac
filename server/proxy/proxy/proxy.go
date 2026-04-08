@@ -130,10 +130,11 @@ func NewProxy() *Proxy {
 	}
 
 	p.reverseProxy = &httputil.ReverseProxy{
-		Director:     p.director,
-		Transport:    transport,
-		BufferPool:   bufferPool{}, // Zero-allocation: reuse buffers from pool
-		ErrorHandler: p.errorHandler,
+		Director:      p.director,
+		Transport:     transport,
+		BufferPool:    bufferPool{}, // Zero-allocation: reuse buffers from pool
+		FlushInterval: -1,           // Flush every chunk immediately — critical for streaming/large files
+		ErrorHandler:  p.errorHandler,
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
@@ -183,7 +184,7 @@ func (p *Proxy) SetACMEChallenge(token, keyAuthorization string) {
 	log.Printf("ACME HTTP-01 challenge token set: %.8s...", token)
 }
 
-func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL, tunnels map[string]string) {
+func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL, tunnels []config.Tunnel) {
 	p.mu.Lock()
 	p.domains = domains
 	p.globalSSL = globalSSL
@@ -193,7 +194,7 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 
 	// Update tunnel connections outside main lock (TunnelManager has its own mutex)
 	if tunnels != nil {
-		p.tunnel.UpdateConfig(tunnels, domains)
+		p.tunnel.UpdateConfig(tunnels)
 	}
 }
 

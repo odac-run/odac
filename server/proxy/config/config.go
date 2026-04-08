@@ -5,7 +5,15 @@ type Config struct {
 	Domains  map[string]Website `json:"domains"`
 	Firewall Firewall           `json:"firewall"`
 	SSL      *SSL               `json:"ssl"`
-	Tunnels  map[string]string  `json:"tunnels"` // domain -> auth token for remote tunnel clients
+	Tunnels  []Tunnel           `json:"tunnels"`
+}
+
+// Tunnel represents a single tunnel endpoint with resolved backend info
+type Tunnel struct {
+	Domain string `json:"domain"`
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	Token  string `json:"token"`
 }
 
 // Website represents a single site configuration

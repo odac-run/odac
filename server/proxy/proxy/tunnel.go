@@ -22,14 +22,17 @@ const (
 	// tunnelReconnectInterval is the delay between reconnection attempts.
 	tunnelReconnectInterval = 5 * time.Second
 
-	// tunnelPingInterval is the WebSocket-level keepalive interval.
-	tunnelPingInterval = 30 * time.Second
+	// tunnelCopyBufSize is the buffer size for bidirectional stream copying.
+	// 64KB reduces syscall frequency vs the default 32KB, improving throughput.
+	tunnelCopyBufSize = 64 * 1024
 )
 
 // tunnelConn represents a single active tunnel connection to ODAC Cloud
 // for one domain. Each tunnel has its own WebSocket + yamux session.
 type tunnelConn struct {
 	domain  string
+	host    string // Resolved backend IP/hostname
+	port    int    // Resolved backend port
 	token   string
 	session *yamux.Session
 	ws      *websocket.Conn
@@ -40,52 +43,64 @@ type tunnelConn struct {
 // This ODAC instance acts as the tunnel AGENT (client) — it connects
 // to the cloud tunnel proxy and forwards incoming streams to local apps.
 type TunnelManager struct {
-	conns   map[string]*tunnelConn // domain -> active connection
-	domains map[string]config.Website
-	mu      sync.RWMutex
+	conns map[string]*tunnelConn // domain -> active connection
+	mu    sync.RWMutex
 }
 
 // NewTunnelManager creates a tunnel manager for outbound cloud connections.
 func NewTunnelManager() *TunnelManager {
 	return &TunnelManager{
-		conns:   make(map[string]*tunnelConn),
-		domains: make(map[string]config.Website),
+		conns: make(map[string]*tunnelConn),
 	}
+}
+
+// tunnelBufPool reuses 64KB buffers for stream copying to reduce GC pressure.
+var tunnelBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, tunnelCopyBufSize)
+		return &buf
+	},
 }
 
 // UpdateConfig replaces the entire tunnel configuration (full-replace reconciliation).
 // New tunnels are connected, removed tunnels are disconnected, unchanged tunnels are kept.
-func (tm *TunnelManager) UpdateConfig(tunnels map[string]string, domains map[string]config.Website) {
+func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	tm.domains = domains
+	// Build incoming set for quick lookup
+	incoming := make(map[string]config.Tunnel, len(tunnels))
+	for _, t := range tunnels {
+		incoming[t.Domain] = t
+	}
 
 	// Disconnect tunnels that were removed from config
 	for domain, conn := range tm.conns {
-		if _, exists := tunnels[domain]; !exists {
+		if _, exists := incoming[domain]; !exists {
 			log.Printf("[Tunnel] Domain removed, disconnecting: %s", domain)
 			close(conn.stopCh)
 			delete(tm.conns, domain)
 		}
 	}
 
-	// Start new tunnels or update token for existing ones
-	for domain, token := range tunnels {
+	// Start new tunnels or update existing ones
+	for domain, t := range incoming {
 		if existing, ok := tm.conns[domain]; ok {
-			// Token changed — reconnect
-			if existing.token != token {
-				log.Printf("[Tunnel] Token changed, reconnecting: %s", domain)
+			// Token or backend changed — reconnect
+			if existing.token != t.Token || existing.host != t.Host || existing.port != t.Port {
+				log.Printf("[Tunnel] Config changed, reconnecting: %s", domain)
 				close(existing.stopCh)
 				delete(tm.conns, domain)
 			} else {
-				continue // Already connected with same token
+				continue // Already connected with same config
 			}
 		}
 
 		conn := &tunnelConn{
 			domain: domain,
-			token:  token,
+			host:   t.Host,
+			port:   t.Port,
+			token:  t.Token,
 			stopCh: make(chan struct{}),
 		}
 		tm.conns[domain] = conn
@@ -123,7 +138,10 @@ func (tm *TunnelManager) runTunnel(tc *tunnelConn) {
 // It blocks until the session closes or an error occurs.
 func (tm *TunnelManager) connect(tc *tunnelConn) error {
 	dialer := websocket.Dialer{
-		HandshakeTimeout: 15 * time.Second,
+		HandshakeTimeout:  15 * time.Second,
+		ReadBufferSize:    128 * 1024,
+		WriteBufferSize:   128 * 1024,
+		EnableCompression: false,
 	}
 
 	header := http.Header{}
@@ -149,6 +167,7 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 	yamuxCfg.EnableKeepAlive = true
 	yamuxCfg.KeepAliveInterval = 15 * time.Second
 	yamuxCfg.ConnectionWriteTimeout = 10 * time.Second
+	yamuxCfg.MaxStreamWindowSize = 4 * 1024 * 1024 // 4MB — must match server side
 	yamuxCfg.LogOutput = io.Discard
 
 	session, err := yamux.Client(conn, yamuxCfg)
@@ -187,50 +206,59 @@ func (tm *TunnelManager) acceptStreams(tc *tunnelConn) {
 			return
 		}
 
-		go tm.handleStream(tc.domain, stream)
+		go handleStream(tc, stream)
 	}
 }
 
 // handleStream pipes a single yamux stream to the local app backend.
 // The stream carries raw HTTP/WebSocket bytes — zero parsing, pure relay.
-func (tm *TunnelManager) handleStream(domain string, stream net.Conn) {
-	defer stream.Close()
+// Uses pooled buffers, TCP_NODELAY, and proper half-close to prevent data loss.
+func handleStream(tc *tunnelConn, stream net.Conn) {
+	target := net.JoinHostPort(tc.host, strconv.Itoa(tc.port))
 
-	// Resolve backend target for this domain
-	tm.mu.RLock()
-	website, exists := tm.domains[domain]
-	tm.mu.RUnlock()
-
-	if !exists || website.Port == 0 {
-		debugLog("[Tunnel] No backend configured for domain: %s", domain)
-		return
-	}
-
-	targetHost := "127.0.0.1"
-	if website.ContainerIP != "" {
-		targetHost = website.ContainerIP
-	} else if website.Container != "" {
-		targetHost = website.Container
-	}
-
-	target := net.JoinHostPort(targetHost, strconv.Itoa(website.Port))
-
-	// Connect to local app
 	backend, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
-		debugLog("[Tunnel] Failed to connect to backend %s for %s: %v", target, domain, err)
+		stream.Close()
+		debugLog("[Tunnel] Failed to connect to backend %s for %s: %v", target, tc.domain, err)
 		return
 	}
-	defer backend.Close()
 
-	// Bidirectional raw byte pipe: yamux stream <-> local app
-	done := make(chan struct{})
+	// Disable Nagle's algorithm for minimum latency on small writes
+	if conn, ok := backend.(*net.TCPConn); ok {
+		conn.SetNoDelay(true)
+	}
+
+	// Bidirectional raw byte pipe with proper half-close.
+	// When one direction finishes (EOF), we half-close that side
+	// so the other direction can finish flushing its remaining data.
+	// This prevents data loss on large binary transfers (png, mp4).
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Cloud → Backend (request direction)
 	go func() {
-		io.Copy(backend, stream)
-		close(done)
+		defer wg.Done()
+		bp := tunnelBufPool.Get().(*[]byte)
+		io.CopyBuffer(backend, stream, *bp)
+		tunnelBufPool.Put(bp)
+		// Half-close: signal backend that request is complete
+		if conn, ok := backend.(*net.TCPConn); ok {
+			conn.CloseWrite()
+		}
 	}()
-	io.Copy(stream, backend)
-	<-done
+
+	// Backend → Cloud (response direction)
+	go func() {
+		defer wg.Done()
+		bp := tunnelBufPool.Get().(*[]byte)
+		io.CopyBuffer(stream, backend, *bp)
+		tunnelBufPool.Put(bp)
+		// Half-close: signal cloud that response is complete
+		stream.Close()
+	}()
+
+	wg.Wait()
+	backend.Close()
 }
 
 // wsConn wraps gorilla/websocket.Conn to implement net.Conn for yamux.
@@ -271,15 +299,11 @@ func (c *wsConn) Read(p []byte) (int, error) {
 func (c *wsConn) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	err := c.ws.WriteMessage(websocket.BinaryMessage, p)
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
+	return len(p), c.ws.WriteMessage(websocket.BinaryMessage, p)
 }
 
-func (c *wsConn) Close() error                       { return c.ws.Close() }
-func (c *wsConn) LocalAddr() net.Addr                { return c.ws.LocalAddr() }
+func (c *wsConn) Close() error { return c.ws.Close() }
+func (c *wsConn) LocalAddr() net.Addr               { return c.ws.LocalAddr() }
 func (c *wsConn) RemoteAddr() net.Addr               { return c.ws.RemoteAddr() }
 func (c *wsConn) SetDeadline(t time.Time) error      { return nil }
 func (c *wsConn) SetReadDeadline(t time.Time) error  { return c.ws.SetReadDeadline(t) }

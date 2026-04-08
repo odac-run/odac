@@ -27,6 +27,83 @@ class OdacProxy {
     this.#proxyApiPort = null
   }
 
+  /**
+   * Resolves an app's backend target (IP + port) from its config.
+   * Single source of truth for port detection and container IP resolution.
+   * Used by both domain routing and tunnel routing to avoid duplication.
+   * @param {Object} app - App config object from apps array
+   * @returns {{host: string, port: number}|null} Resolved backend or null if unresolvable
+   */
+  async #resolveAppBackend(app) {
+    let port = 0
+    let host = '127.0.0.1'
+    let useInternal = false
+
+    if (app.ports && app.ports.length > 0) {
+      if (app.ports[0].host) {
+        port = parseInt(app.ports[0].host)
+      } else if (app.ports[0].container) {
+        port = parseInt(app.ports[0].container)
+        useInternal = true
+      }
+    } else if (app.port) {
+      port = parseInt(app.port)
+    }
+
+    if (!port) return null
+
+    if (useInternal) {
+      try {
+        const targetContainerName = app.activeContainerId || app.name
+        const containerIP = await Odac.server('Container').getIP(targetContainerName)
+
+        if (containerIP) {
+          app.ip = containerIP
+          host = containerIP
+        } else if (app.ip) {
+          host = app.ip
+        }
+      } catch {
+        if (app.ip) host = app.ip
+      }
+    }
+
+    return {host, port, useInternal}
+  }
+
+  /**
+   * Replaces the entire tunnel configuration with the provided list.
+   * Hub always sends the full tunnel list — missing entries are treated as deleted,
+   * new entries are additions. This is a full-replace (reconciliation) operation.
+   * @param {Array<{domain: string, token: string, container: string}>} tunnels - Complete tunnel list from Hub
+   */
+  setTunnels(tunnels) {
+    if (!Array.isArray(tunnels)) return Odac.server('Api').result(false, 'Invalid tunnels payload')
+
+    const incoming = new Map()
+    for (const t of tunnels) {
+      if (t.domain && t.token && t.container) {
+        incoming.set(t.domain, {container: t.container, token: t.token})
+      }
+    }
+
+    // Full replace — incoming list is the single source of truth
+    this.#tunnels = incoming
+
+    // Persist: overwrite entirely so removed tunnels are cleaned from disk
+    const persist = {}
+    for (const [domain, val] of this.#tunnels) {
+      persist[domain] = val
+    }
+    Odac.core('Config').config.tunnels = persist
+
+    log('Tunnel config replaced: %d tunnel(s)', this.#tunnels.size)
+
+    // Sync immediately so Go proxy learns about tunnel domains
+    this.syncConfig()
+    return Odac.server('Api').result(true, __('%d tunnel(s) configured', this.#tunnels.size))
+  }
+
   spawnProxy() {
     if (this.#proxyProcess) return
 
@@ -272,43 +349,16 @@ class OdacProxy {
     }
   }
 
-  /**
-   * Replaces the entire tunnel configuration with the provided list.
-   * Hub always sends the full tunnel list — missing entries are treated as deleted,
-   * new entries are additions. This is a full-replace (reconciliation) operation.
-   * @param {Array<{domain: string, token: string}>} tunnels - Complete tunnel list from Hub
-   */
-  setTunnels(tunnels) {
-    if (!Array.isArray(tunnels)) return Odac.server('Api').result(false, 'Invalid tunnels payload')
-
-    const incoming = new Map()
-    for (const t of tunnels) {
-      if (t.domain && t.token) {
-        incoming.set(t.domain, t.token)
-      }
-    }
-
-    // Full replace — incoming list is the single source of truth
-    this.#tunnels = incoming
-
-    // Persist: overwrite entirely so removed tunnels are cleaned from disk
-    Odac.core('Config').config.tunnels = Object.fromEntries(this.#tunnels)
-
-    log('Tunnel config replaced: %d tunnel(s)', this.#tunnels.size)
-
-    // Sync immediately so Go proxy learns about tunnel domains
-    this.syncConfig()
-    return Odac.server('Api').result(true, __('%d tunnel(s) configured', this.#tunnels.size))
-  }
-
   start() {
     this.#active = true
 
     // Restore persisted tunnel config from previous session
     const saved = Odac.core('Config').config.tunnels
     if (saved && typeof saved === 'object') {
-      for (const [domain, token] of Object.entries(saved)) {
-        this.#tunnels.set(domain, token)
+      for (const [domain, val] of Object.entries(saved)) {
+        if (val && val.token && val.container) {
+          this.#tunnels.set(domain, val)
+        }
       }
       if (this.#tunnels.size > 0) {
         log('Restored %d tunnel(s) from config', this.#tunnels.size)
@@ -385,79 +435,53 @@ class OdacProxy {
           return
         }
 
-        let port = 0
-        let containerIP = ''
-        let useInternal = false
-
-        // Determine Port
-        if (app.ports && app.ports.length > 0) {
-          if (app.ports[0].host) {
-            port = parseInt(app.ports[0].host)
-          } else if (app.ports[0].container) {
-            port = parseInt(app.ports[0].container)
-            useInternal = true
-          }
-        } else if (app.port) {
-          port = parseInt(app.port)
-        }
-
-        if (!port) {
+        const backend = await this.#resolveAppBackend(app)
+        if (!backend) {
           if (typeof log !== 'undefined') log('Proxy: No port found for app %s (domain: %s)', app.name, domainName)
           return
         }
 
-        // IP Resolution & Caching
-        if (useInternal) {
-          try {
-            // Check if there's an active ZDD transition happening via activeContainerId
-            const targetContainerName = app.activeContainerId || app.name
-
-            // Priority 1: Runtime discovery
-            containerIP = await Odac.server('Container').getIP(targetContainerName)
-
-            if (containerIP) {
-              // Update cache if changed
-              if (app.ip !== containerIP) {
-                app.ip = containerIP
-              }
-            } else if (app.ip) {
-              // Priority 2: Cache (for zero-downtime restarts)
-              containerIP = app.ip
-              if (typeof log !== 'undefined') log('Proxy: Using cached IP for %s: %s', app.name, containerIP)
-            } else {
-              // Priority 3: Fallback (Bad Gateway)
-              containerIP = '127.0.0.1'
-            }
-          } catch {
-            // Fallback to cache on error
-            containerIP = app.ip || '127.0.0.1'
-          }
-        }
-
         if (typeof log !== 'undefined') {
-          const targetType = useInternal ? 'Container Network' : 'Host Network'
-          const targetIP = containerIP || '127.0.0.1'
-          log('Proxy: Routing domain [%s] -> App [%s] via %s (%s:%d)', domainName, app.name, targetType, targetIP, port)
+          const targetType = backend.useInternal ? 'Container Network' : 'Host Network'
+          log('Proxy: Routing domain [%s] -> App [%s] via %s (%s:%d)', domainName, app.name, targetType, backend.host, backend.port)
         }
 
         proxyDomains[domainName] = {
           domain: domainName,
-          port: port,
+          port: backend.port,
           subdomain: record.subdomain || [],
           cert: record.cert || {},
-          container: useInternal ? containerIP : undefined,
-          containerIP: containerIP
+          container: backend.useInternal ? backend.host : undefined,
+          containerIP: backend.host
         }
       })
     )
 
-    if (typeof log !== 'undefined') log('Proxy: Syncing %d domains', Object.keys(proxyDomains).length)
+    // Resolve tunnel backends using the same shared helper
+    const tunnelList = []
+    for (const [domain, val] of this.#tunnels) {
+      const app = apps.find(a => a.name === val.container)
+      if (!app) {
+        log('Tunnel: App not found for container %s (domain: %s)', val.container, domain)
+        continue
+      }
+
+      const backend = await this.#resolveAppBackend(app)
+      if (!backend) {
+        log('Tunnel: No port found for %s (domain: %s)', val.container, domain)
+        continue
+      }
+
+      tunnelList.push({domain, host: backend.host, port: backend.port, token: val.token})
+    }
+
+    if (typeof log !== 'undefined') log('Proxy: Syncing %d domains, %d tunnels', Object.keys(proxyDomains).length, tunnelList.length)
 
     const config = {
       domains: proxyDomains,
       firewall: Odac.core('Config').config.firewall || {enabled: true},
       ssl: Odac.core('Config').config.ssl || null,
-      tunnels: Object.fromEntries(this.#tunnels)
+      tunnels: tunnelList
     }
 
     try {
