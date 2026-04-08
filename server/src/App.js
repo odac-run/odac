@@ -216,8 +216,9 @@ class App {
         name,
         type: 'container',
         image: recipe.image,
+        cmd: this.#normalizeCmd(recipe.cmd),
         ports: await this.#preparePorts(recipe.ports),
-        volumes: this.#prepareVolumes(recipe.volumes, appDir),
+        volumes: [...this.#prepareVolumes(recipe.volumes, appDir), ...(await this.#writeConfigFiles(recipe.configs, appDir))],
         env: this.#mergeRecipeEnv(recipe, config.env, name),
         active: true,
         created: Date.now(),
@@ -383,8 +384,9 @@ class App {
           name: containerName,
           type: 'container',
           image: appDef.image,
+          cmd: this.#normalizeCmd(appDef.cmd),
           ports: await this.#preparePorts(appDef.ports),
-          volumes: this.#prepareVolumes(appDef.volumes, appDir),
+          volumes: [...this.#prepareVolumes(appDef.volumes, appDir), ...(await this.#writeConfigFiles(appDef.configs, appDir))],
           env: {
             manual: envMap[key],
             linked: linkedNames
@@ -661,6 +663,8 @@ class App {
       volumes,
       env
     }
+
+    if (app.cmd) runOptions.cmd = app.cmd
 
     // Enterprise Security Exception:
     // In Dev Mode, we mount the host directory which is owned by the host user/root.
@@ -1861,18 +1865,18 @@ class App {
     // non-root (e.g., node:1000). chmod 0777 ensures any container user can write.
     await this.#fixVolumePermissions(volumes)
 
-    await container.runApp(
-      app.name,
-      {
-        image: app.image,
-        // Only pass ports with host binding to Docker. Internal-only ports (container-only)
-        // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
-        ports: (app.ports || []).filter(p => p.host),
-        volumes,
-        env
-      },
-      logCtrl
-    )
+    const runOptions = {
+      image: app.image,
+      // Only pass ports with host binding to Docker. Internal-only ports (container-only)
+      // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
+      ports: (app.ports || []).filter(p => p.host),
+      volumes,
+      env
+    }
+
+    if (app.cmd) runOptions.cmd = app.cmd
+
+    await container.runApp(app.name, runOptions, logCtrl)
 
     await this.#attachLogger(app)
 
@@ -2501,6 +2505,24 @@ class App {
   }
 
   /**
+   * Normalizes a command input into an array suitable for Docker Cmd.
+   * Accepts both string ("node app.js --port 3000") and array (["node", "app.js"]) formats.
+   * Returns null if no command is provided, preserving the image default CMD/ENTRYPOINT.
+   *
+   * @param {string|string[]|null|undefined} cmd - Raw command from recipe or config
+   * @returns {string[]|null} Normalized command array or null
+   */
+  #normalizeCmd(cmd) {
+    if (!cmd) return null
+    if (Array.isArray(cmd)) return cmd.length > 0 ? cmd : null
+    if (typeof cmd === 'string') {
+      const parts = cmd.trim().split(/\s+/)
+      return parts.length > 0 ? parts : null
+    }
+    return null
+  }
+
+  /**
    * Masks sensitive values in an env object based on SENSITIVE_KEY_PATTERN.
    * @param {object} env - Raw key-value env pairs
    * @returns {object} Sanitized env with sensitive values replaced by '***'
@@ -2591,6 +2613,46 @@ class App {
     Object.assign(finalEnv, this.#getManualEnv(envConfig))
 
     return finalEnv
+  }
+
+  /**
+   * Writes recipe-defined config files to the app directory and returns
+   * corresponding volume mappings for container mount.
+   * Supports JSON objects (serialized) and raw strings (YAML, TOML, INI, etc.).
+   * Files are stored under appDir/configs/ mirroring the container path structure.
+   *
+   * @param {Array<{path: string, content: object|string}>} configs - Config file definitions from recipe
+   * @param {string} appDir - Application directory on host
+   * @returns {Promise<Array<{host: string, container: string}>>} Volume mappings for the written files
+   */
+  async #writeConfigFiles(configs, appDir) {
+    if (!Array.isArray(configs) || configs.length === 0) return []
+
+    const volumes = []
+    const configBase = path.join(appDir, 'configs')
+
+    for (const cfg of configs) {
+      if (!cfg.path || cfg.content === undefined || cfg.content === null) continue
+
+      // Sanitize: prevent path traversal in container path
+      const normalized = path.normalize(cfg.path)
+      if (normalized.includes('..')) {
+        error('writeConfigFiles: Skipping config with path traversal: %s', cfg.path)
+        continue
+      }
+
+      // Mirror container path structure under appDir/configs/
+      const hostFile = path.join(configBase, normalized)
+      await fs.promises.mkdir(path.dirname(hostFile), {recursive: true})
+
+      const data = typeof cfg.content === 'string' ? cfg.content : JSON.stringify(cfg.content, null, 2)
+      await fs.promises.writeFile(hostFile, data, 'utf8')
+
+      volumes.push({host: hostFile, container: cfg.path})
+      log('writeConfigFiles: Wrote %s (%d bytes)', cfg.path, Buffer.byteLength(data))
+    }
+
+    return volumes
   }
 }
 
