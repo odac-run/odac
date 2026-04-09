@@ -235,8 +235,8 @@ class Hub {
           return {success: true, message: 'Unsubscribed from build logs'}
         }
       },
-      'updater.start': {
-        fn: () => Odac.server('Updater').start()
+      'system.update': {
+        fn: () => Odac.server('System').update()
       }
     }
 

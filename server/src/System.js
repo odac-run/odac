@@ -1,4 +1,6 @@
-class Server {
+const Updater = require('./System/Updater')
+
+class System {
   #checkInterval = null
 
   async init() {
@@ -12,7 +14,9 @@ class Server {
     Odac.server('Hub')
     Odac.server('Container')
 
-    Odac.server('Updater').onReady(() => {
+    await Updater.init()
+
+    Updater.onReady(() => {
       Odac.server('Proxy').start()
       Odac.server('DNS').start()
       Odac.server('Hub').start()
@@ -51,6 +55,14 @@ class Server {
       Odac.server('Proxy').stop()
     }
   }
+
+  /**
+   * Triggers the system update process via the internal Updater sub-module.
+   * Delegates to Updater.start() which handles image pull, build, and zero-downtime deployment.
+   */
+  async update() {
+    return Updater.start()
+  }
 }
 
-module.exports = new Server()
+module.exports = new System()

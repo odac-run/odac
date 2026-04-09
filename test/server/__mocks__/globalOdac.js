@@ -124,6 +124,11 @@ class MockOdac {
         start: jest.fn(),
         stop: jest.fn()
       },
+      System: {
+        init: jest.fn(),
+        stop: jest.fn(),
+        update: jest.fn()
+      },
       App: {
         init: jest.fn(),
         add: jest.fn(),
