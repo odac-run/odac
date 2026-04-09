@@ -127,7 +127,7 @@ describe('Builder', () => {
         throw new Error('ENOENT')
       })
       await builder.build(mockContext, 'go-image')
-      expect(mockDocker.run).toHaveBeenCalledWith('golang:1.22-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+      expect(mockDocker.run).toHaveBeenCalledWith('golang:alpine', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Static Web project if index.html exists', async () => {
