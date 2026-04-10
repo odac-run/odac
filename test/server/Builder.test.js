@@ -53,6 +53,8 @@ describe('Builder', () => {
     fsPromises.writeFile.mockResolvedValue()
     fsPromises.unlink.mockResolvedValue()
     fsPromises.access.mockResolvedValue()
+    // Default: readFile rejects (no version file found → fallback image)
+    fsPromises.readFile.mockRejectedValue(new Error('ENOENT'))
 
     builder = new Builder(mockDocker)
   })
@@ -118,7 +120,7 @@ describe('Builder', () => {
         throw new Error('ENOENT')
       })
       await builder.build(mockContext, 'python-image')
-      expect(mockDocker.run).toHaveBeenCalledWith('python:3.11-slim', expect.any(Array), expect.any(Object), expect.any(Object))
+      expect(mockDocker.run).toHaveBeenCalledWith('python:3-slim', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Go project if go.mod exists', async () => {
@@ -127,7 +129,7 @@ describe('Builder', () => {
         throw new Error('ENOENT')
       })
       await builder.build(mockContext, 'go-image')
-      expect(mockDocker.run).toHaveBeenCalledWith('golang:1.22-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+      expect(mockDocker.run).toHaveBeenCalledWith('golang:alpine', expect.any(Array), expect.any(Object), expect.any(Object))
     })
 
     test('should detect Static Web project if index.html exists', async () => {
@@ -145,6 +147,109 @@ describe('Builder', () => {
     test('should throw if no project type detected', async () => {
       fsPromises.access.mockRejectedValue(new Error('ENOENT'))
       await expect(builder.build(mockContext, 'test-image')).rejects.toThrow('Could not detect project type')
+    })
+  })
+
+  describe('version resolution', () => {
+    test('should resolve Go version from go.mod', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('go.mod')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('go.mod')) return 'module example.com/app\n\ngo 1.23.2\n'
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'go-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('golang:1.23-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should resolve Node version from package.json engines', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('package.json')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('package.json')) return JSON.stringify({engines: {node: '>=20.0.0'}})
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'node-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('node:20-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should resolve Python version from pyproject.toml', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('requirements.txt')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('pyproject.toml')) return 'requires-python = ">=3.12"\n'
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'py-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('python:3.12-slim', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should resolve Python version from runtime.txt fallback', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('requirements.txt')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('runtime.txt')) return 'python-3.11.8\n'
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'py-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('python:3.11-slim', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should resolve Rust version from rust-toolchain.toml', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('Cargo.toml')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('rust-toolchain.toml')) return '[toolchain]\nchannel = "1.78.0"\n'
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'rust-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('rust:1.78-alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should resolve PHP version from composer.json', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('composer.json')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('composer.json')) return JSON.stringify({require: {php: '>=8.3'}})
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'php-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('composer:8.3', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should fallback to default image when version file is missing', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('go.mod')) return
+        throw new Error('ENOENT')
+      })
+      // readFile rejects for all files (default mock)
+      await builder.build(mockContext, 'go-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('golang:alpine', expect.any(Array), expect.any(Object), expect.any(Object))
+    })
+
+    test('should fallback to default image when version is unparseable', async () => {
+      fsPromises.access.mockImplementation(async p => {
+        if (p.endsWith('go.mod')) return
+        throw new Error('ENOENT')
+      })
+      fsPromises.readFile.mockImplementation(async p => {
+        if (p.endsWith('go.mod')) return 'module example.com/app\n'
+        throw new Error('ENOENT')
+      })
+      await builder.build(mockContext, 'go-image')
+      expect(mockDocker.run).toHaveBeenCalledWith('golang:alpine', expect.any(Array), expect.any(Object), expect.any(Object))
     })
   })
 

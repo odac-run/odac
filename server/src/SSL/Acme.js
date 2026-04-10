@@ -6,8 +6,10 @@
  * to RSA-3072 with significantly faster TLS handshakes and smaller payloads.
  */
 
+const {createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign} = require('crypto')
+const fs = require('fs')
 const https = require('https')
-const {createHash, createPublicKey, generateKeyPairSync, sign} = require('crypto')
+const os = require('os')
 
 // ─── Base64url (RFC 4648 §5) ────────────────────────────────────────────────
 
@@ -239,8 +241,27 @@ class Acme {
 
   /** Bootstraps account key, directory, nonce, and ACME account */
   async #init(directoryUrl) {
-    const {privateKey, publicKey} = generateKeyPairSync('ec', {namedCurve: 'P-256'})
-    this.#accountKey = privateKey
+    const accountKeyDir = os.homedir() + '/.odac/cert/ssl'
+    const accountKeyPath = accountKeyDir + '/acme_account.key'
+
+    let needsNewKey = false
+
+    try {
+      const pem = await fs.promises.readFile(accountKeyPath, 'utf8')
+      this.#accountKey = createPrivateKey(pem)
+    } catch {
+      // Key file missing or corrupted — regenerate
+      needsNewKey = true
+    }
+
+    if (needsNewKey) {
+      const {privateKey} = generateKeyPairSync('ec', {namedCurve: 'P-256'})
+      this.#accountKey = privateKey
+      await fs.promises.mkdir(accountKeyDir, {recursive: true})
+      await fs.promises.writeFile(accountKeyPath, privateKey.export({type: 'pkcs8', format: 'pem'}), {mode: 0o600})
+    }
+
+    const publicKey = createPublicKey(this.#accountKey)
     this.#accountJwk = publicKey.export({format: 'jwk'})
 
     // JWK Thumbprint (RFC 7638) – lexicographically sorted EC members
@@ -271,6 +292,9 @@ class Acme {
 
     // Account registration (or retrieval if already exists)
     const acctRes = await this.#signedRequest(this.#directory.newAccount, {onlyReturnExisting: false, termsOfServiceAgreed: true}, true)
+    if (acctRes.status >= 400) {
+      throw new Error('ACME account registration failed (status ' + acctRes.status + '): ' + JSON.stringify(acctRes.body))
+    }
     this.#accountUrl = acctRes.headers.location
   }
 

@@ -458,7 +458,7 @@ class Updater {
             if (!servicesRestarted) {
               log('Restarting services for rollback...')
               servicesRestarted = true
-              Odac.server('Server').init() // Restart all services
+              Odac.server('System').init() // Restart all services
               log('Services restarted successfully')
             }
 
@@ -504,7 +504,7 @@ class Updater {
           // Stop all services EXCEPT Web and DNS (Mail, Api, Hub)
           // Web and DNS continue running due to SO_REUSEPORT - new container will overlap
           try {
-            Odac.server('Server').stop(true) // exceptWeb = true (also keeps DNS alive)
+            Odac.server('System').stop(true) // exceptWeb = true (also keeps DNS alive)
             log('Non-overlap services stopped. Ports released. Web & DNS still running via SO_REUSEPORT.')
           } catch (e) {
             error('Failed to stop services: %s', e.message)

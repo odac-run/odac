@@ -411,7 +411,7 @@ describe('Api', () => {
         return
       }
 
-      const mockServerService = global.Odac.server('Server')
+      const mockServerService = global.Odac.server('System')
       mockServerService.stop.mockResolvedValue(Api.result(true, 'Server stopped'))
 
       const payload = JSON.stringify({

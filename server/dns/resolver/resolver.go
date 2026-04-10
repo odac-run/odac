@@ -24,10 +24,13 @@ type Resolver struct {
 
 // zoneData is the pre-processed zone optimized for query-time performance.
 // Records are indexed by (lowercase name, type) for O(1) lookup per query.
+// Name existence and wildcard matching are also pre-indexed for O(1) lookups.
 type zoneData struct {
-	domain  string
-	records map[recordKey][]config.Record // (name, type) -> records
-	soa     config.SOARecord
+	domain    string
+	names     map[string]struct{}           // unique record names for O(1) existence check
+	records   map[recordKey][]config.Record // (name, type) -> records
+	soa       config.SOARecord
+	wildcards map[string]string             // parent domain -> wildcard name (e.g. "b.com" -> "*.b.com")
 }
 
 // recordKey is the composite key for record indexing.
@@ -51,18 +54,28 @@ func (r *Resolver) UpdateConfig(cfg config.Config) {
 
 	for domain, zone := range cfg.Zones {
 		zd := &zoneData{
-			domain:  strings.ToLower(domain),
-			records: make(map[recordKey][]config.Record),
-			soa:     zone.SOA,
+			domain:    strings.ToLower(domain),
+			names:     make(map[string]struct{}),
+			records:   make(map[recordKey][]config.Record),
+			soa:       zone.SOA,
+			wildcards: make(map[string]string),
 		}
 
 		// Build record index: group by (lowercase name, uppercase type)
+		// Simultaneously build name existence set and wildcard index
 		for _, rec := range zone.Records {
+			name := strings.ToLower(rec.Name)
 			key := recordKey{
-				name:  strings.ToLower(rec.Name),
+				name:  name,
 				rtype: strings.ToUpper(rec.Type),
 			}
 			zd.records[key] = append(zd.records[key], rec)
+			zd.names[name] = struct{}{}
+
+			// Index wildcards: "*.example.com" -> parent "example.com"
+			if strings.HasPrefix(name, "*.") {
+				zd.wildcards[name[2:]] = name
+			}
 		}
 
 		newZones[zd.domain] = zd
@@ -108,56 +121,57 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// Check if the queried name exists in the zone at all (any type)
-	if !r.nameExists(zone, qName, domain) {
-		// Name does not exist → NXDOMAIN with SOA in authority (RFC 2308)
-		msg.Rcode = dns.RcodeNameError
-		r.addSOAAuthority(msg, zone, domain)
-		w.WriteMsg(msg)
-		return
-	}
+// Determine the matched name (exact or wildcard fallback)
+        exists, matchName := r.matchName(zone, qName, domain)
+        if !exists {
+                // Name does not exist → NXDOMAIN with SOA in authority (RFC 2308)
+                msg.Rcode = dns.RcodeNameError
+                r.addSOAAuthority(msg, zone, domain)
+                w.WriteMsg(msg)
+                return
+        }
 
-	// RFC 8482: Refuse ANY queries to prevent amplification attacks.
-	// Return only SOA to minimize response size.
-	if qType == dns.TypeANY {
-		r.processSOA(msg, zone, domain)
-		w.WriteMsg(msg)
-		return
-	}
+        // RFC 8482: Refuse ANY queries to prevent amplification attacks.
+        // Return only SOA to minimize response size.
+        if qType == dns.TypeANY {
+                r.processSOA(msg, zone, domain)
+                w.WriteMsg(msg)
+                return
+        }
 
-	// RFC 1034: CNAME takes precedence. If a CNAME exists for this name,
-	// return the CNAME first, then chase in-zone targets to include their
-	// A/AAAA records in the same response. This prevents resolution failures
-	// with recursive resolvers that fail to chase CNAMEs independently
-	// (common with certain ISP resolvers).
-	cnameKey := recordKey{name: qName, rtype: "CNAME"}
-	if cnameRecords, ok := zone.records[cnameKey]; ok && len(cnameRecords) > 0 {
-		r.processCNAME(msg, cnameRecords, qName)
-		r.chaseCNAME(msg, zone, cnameRecords, qType, ips)
-		w.WriteMsg(msg)
-		return
-	}
+        // RFC 1034: CNAME takes precedence. If a CNAME exists for this name,
+        // return the CNAME first, then chase in-zone targets to include their
+        // A/AAAA records in the same response. This prevents resolution failures
+        // with recursive resolvers that fail to chase CNAMEs independently
+        // (common with certain ISP resolvers).
+        cnameKey := recordKey{name: matchName, rtype: "CNAME"}
+        if cnameRecords, ok := zone.records[cnameKey]; ok && len(cnameRecords) > 0 {
+                r.processCNAME(msg, cnameRecords, qName)
+                r.chaseCNAME(msg, zone, cnameRecords, qType, ips)
+                w.WriteMsg(msg)
+                return
+        }
 
-	// Dispatch to the appropriate record type handler
-	fqdn := dns.Fqdn(qName)
+        // Dispatch to the appropriate record type handler
+        fqdn := dns.Fqdn(qName)
 
-	switch qType {
-	case dns.TypeA:
-		r.processA(msg, zone, qName, fqdn, ips)
-	case dns.TypeAAAA:
-		r.processAAAA(msg, zone, qName, fqdn, ips)
-	case dns.TypeCNAME:
-		r.processCNAME(msg, zone.records[cnameKey], qName)
-	case dns.TypeMX:
-		r.processMX(msg, zone, qName, fqdn)
-	case dns.TypeTXT:
-		r.processTXT(msg, zone, qName, fqdn)
-	case dns.TypeNS:
-		r.processNS(msg, zone, qName, fqdn, domain)
-	case dns.TypeSOA:
-		r.processSOA(msg, zone, domain)
-	case dns.TypeCAA:
-		r.processCAA(msg, zone, qName, fqdn)
+        switch qType {
+        case dns.TypeA:
+                r.processA(msg, zone, matchName, fqdn, ips)
+        case dns.TypeAAAA:
+                r.processAAAA(msg, zone, matchName, fqdn, ips)
+        case dns.TypeCNAME:
+                r.processCNAME(msg, zone.records[cnameKey], qName)
+        case dns.TypeMX:
+                r.processMX(msg, zone, matchName, fqdn)
+        case dns.TypeTXT:
+                r.processTXT(msg, zone, matchName, fqdn)
+        case dns.TypeNS:
+                r.processNS(msg, zone, matchName, fqdn, domain)
+        case dns.TypeSOA:
+                r.processSOA(msg, zone, domain)
+        case dns.TypeCAA:
+                r.processCAA(msg, zone, matchName, fqdn)
 	default:
 		// Unknown type → NODATA (empty answer, no error)
 	}
@@ -183,19 +197,33 @@ func (r *Resolver) resolveZone(qName string) (*zoneData, string) {
 	return nil, ""
 }
 
-// nameExists checks if a given name has any records in the zone.
-// The zone apex (domain itself) always "exists" because it has SOA.
-func (r *Resolver) nameExists(zone *zoneData, qName, domain string) bool {
-	if qName == domain {
-		return true
-	}
-	// Scan all record keys for a name match — O(k) where k = unique (name,type) pairs
-	for key := range zone.records {
-		if key.name == qName {
-			return true
-		}
-	}
-	return false
+// matchName checks if a name exists exactly, or via a wildcard fallback (*.parent).
+// Uses pre-built indices for O(1) exact match and O(d) wildcard search where d is
+// the domain depth (typically 2-4). No linear record scanning.
+// Returns (bool exists, string matchedName).
+func (r *Resolver) matchName(zone *zoneData, qName, domain string) (bool, string) {
+        if qName == domain {
+                return true, qName
+        }
+
+        // O(1) exact name lookup via pre-built name set
+        if _, ok := zone.names[qName]; ok {
+                return true, qName
+        }
+
+        // O(d) wildcard fallback with O(1) per level via pre-built wildcard index
+        parts := strings.Split(qName, ".")
+        for i := 1; i < len(parts); i++ {
+                sub := strings.Join(parts[i:], ".")
+                if wildcard, ok := zone.wildcards[sub]; ok {
+                        return true, wildcard
+                }
+                if sub == domain {
+                        break
+                }
+        }
+
+        return false, ""
 }
 
 // addSOAAuthority appends the zone's SOA record to the Authority section.

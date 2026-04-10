@@ -216,8 +216,9 @@ class App {
         name,
         type: 'container',
         image: recipe.image,
+        cmd: this.#normalizeCmd(recipe.cmd),
         ports: await this.#preparePorts(recipe.ports),
-        volumes: this.#prepareVolumes(recipe.volumes, appDir),
+        volumes: [...this.#prepareVolumes(recipe.volumes, appDir), ...(await this.#writeConfigFiles(recipe.configs, appDir))],
         env: this.#mergeRecipeEnv(recipe, config.env, name),
         active: true,
         created: Date.now(),
@@ -383,8 +384,9 @@ class App {
           name: containerName,
           type: 'container',
           image: appDef.image,
+          cmd: this.#normalizeCmd(appDef.cmd),
           ports: await this.#preparePorts(appDef.ports),
-          volumes: this.#prepareVolumes(appDef.volumes, appDir),
+          volumes: [...this.#prepareVolumes(appDef.volumes, appDir), ...(await this.#writeConfigFiles(appDef.configs, appDir))],
           env: {
             manual: envMap[key],
             linked: linkedNames
@@ -593,6 +595,7 @@ class App {
         if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
         this.#set(app.id, {status: 'running', started: Date.now()})
+        this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
         log('createFromGit: App started successfully')
 
         // Notify Hub
@@ -661,6 +664,8 @@ class App {
       env
     }
 
+    if (app.cmd) runOptions.cmd = app.cmd
+
     // Enterprise Security Exception:
     // In Dev Mode, we mount the host directory which is owned by the host user/root.
     // To prevent 'EACCES: permission denied' when the container tries to write (npm install, logs),
@@ -687,7 +692,7 @@ class App {
   }
 
   async #pollForPort(app, expectedPort, attempts = 0) {
-    if (attempts >= 20) return // Give up after 20 seconds
+    if (attempts >= 60) return // Give up after 60 seconds (selfhosted apps may take longer to bind)
 
     try {
       const container = Odac.server('Container')
@@ -754,7 +759,7 @@ class App {
    * @param {number} [timeout=1500] - Per-port probe timeout in ms
    * @returns {Promise<number|null>} The detected HTTP port, or null if none found
    */
-  async #detectHttpPort(ip, ports, timeout = 1500) {
+  async #detectHttpPort(ip, ports, timeout = 2500) {
     const probes = ports.map(
       port =>
         new Promise(resolve => {
@@ -971,23 +976,42 @@ class App {
     }
 
     // Standard Restart (No Domains or Script App)
-    log('Standard restart for %s (No Domains or Script App). Stopping old container first.', app.name)
-
-    // Stop the app first
-    await this.stop(app.id)
-
-    // Wait a brief moment to ensure resources are released (optional but often helpful in container envs)
-    await new Promise(resolve => setTimeout(resolve, 1000))
-
-    // Start it again
-    this.#set(id, {active: true})
-    if (await this.#run(app.id)) {
-      // Notify Hub
-      Odac.server('Hub').trigger('app.list')
-      return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
+    // Concurrency guard: prevent parallel operations on the same app
+    if (this.#processing.has(app.id)) {
+      return Odac.server('Api').result(false, __('App %s is already being processed.', app.name))
     }
 
-    return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
+    this.#processing.add(app.id)
+    log('Standard restart for %s (No Domains or Script App). Stopping old container first.', app.name)
+
+    try {
+      // Stop the app first
+      await this.stop(app.id)
+
+      // Wait a brief moment to ensure resources are released (optional but often helpful in container envs)
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Start it again
+      this.#set(id, {active: true})
+
+      // Release the lock before #run() so it can acquire its own processing lock.
+      // The outer guard already rejected concurrent callers at method entry.
+      this.#processing.delete(app.id)
+
+      if (await this.#run(app.id)) {
+        // Notify Hub
+        Odac.server('Hub').trigger('app.list')
+        return Odac.server('Api').result(true, __('App %s restarted successfully.', app.name))
+      }
+
+      return Odac.server('Api').result(false, __('Failed to restart app %s.', app.name))
+    } catch (e) {
+      error('Failed to restart app %s: %s', app.name, e.message)
+      this.#set(app.id, {status: 'errored', updated: Date.now()})
+      return Odac.server('Api').result(false, __('Failed to restart app %s: %s', app.name, e.message))
+    } finally {
+      this.#processing.delete(app.id)
+    }
   }
 
   async redeploy(payload) {
@@ -1128,6 +1152,8 @@ class App {
         if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
         this.#set(app.id, {status: 'running', started: Date.now()})
+
+        this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
 
         if (logCtrl) logCtrl.startPhase('proxy_propagation')
         Odac.server('Proxy').syncConfig()
@@ -1696,6 +1722,8 @@ class App {
 
       this.#set(id, {status: 'running', started: Date.now()})
 
+      this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
+
       // Trigger Proxy Sync after every successful start/restart.
       // Container IP changes on restart; without this, Proxy routes to the old (dead) IP -> 502
       Odac.server('Proxy').syncConfig()
@@ -1837,18 +1865,18 @@ class App {
     // non-root (e.g., node:1000). chmod 0777 ensures any container user can write.
     await this.#fixVolumePermissions(volumes)
 
-    await container.runApp(
-      app.name,
-      {
-        image: app.image,
-        // Only pass ports with host binding to Docker. Internal-only ports (container-only)
-        // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
-        ports: (app.ports || []).filter(p => p.host),
-        volumes,
-        env
-      },
-      logCtrl
-    )
+    const runOptions = {
+      image: app.image,
+      // Only pass ports with host binding to Docker. Internal-only ports (container-only)
+      // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
+      ports: (app.ports || []).filter(p => p.host),
+      volumes,
+      env
+    }
+
+    if (app.cmd) runOptions.cmd = app.cmd
+
+    await container.runApp(app.name, runOptions, logCtrl)
 
     await this.#attachLogger(app)
 
@@ -2031,6 +2059,8 @@ class App {
     app.ip = greenIP
     this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
 
+    this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
+
     if (logCtrl) logCtrl.startPhase('proxy_propagation')
     await Odac.server('Proxy').syncConfig()
     if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
@@ -2116,6 +2146,71 @@ class App {
       }
     }
     return false
+  }
+
+  /**
+   * Scans container ports to detect if an HTTP server is running.
+   * Saves the detected port or 'false' to the app config for newly added apps.
+   * @param {object} app - The application record
+   */
+  async #scanAndSaveHttpStatus(app) {
+    if (app.http !== undefined && app.http !== false) return
+
+    let newHttp = false
+
+    try {
+      const container = Odac.server('Container')
+      const targetContainer = app.activeContainerId || app.name
+
+      // If docker is unavailable or app runs locally as script, skip container scanning
+      if (container && container.available && !app.pid) {
+        let attempts = 0
+        let listeningPorts = []
+
+        while (attempts < 120) {
+          try {
+            listeningPorts = await container.getListeningPorts(targetContainer)
+            if (listeningPorts.length > 0) break
+          } catch {
+            // Background scan polling silently ignores intermittent errors
+          }
+          await new Promise(resolve => setTimeout(resolve, 500))
+          attempts++
+        }
+
+        if (listeningPorts.length > 0) {
+          const containerIP = await container.getIP(targetContainer)
+          if (containerIP) {
+            let httpPort = null
+            let probeAttempts = 0
+
+            // Retry the HTTP probe up to 10 times because some apps open their
+            // TCP ports early but take time to actually serve HTTP traffic.
+            // Re-fetch listening ports on each attempt so newly opened ports
+            // (e.g. the actual HTTP port appearing after an ephemeral/internal one)
+            // are included in the probe set.
+            while (probeAttempts < 30) {
+              const currentPorts = await container.getListeningPorts(targetContainer).catch(() => listeningPorts)
+              httpPort = await this.#detectHttpPort(containerIP, currentPorts, 2500)
+              if (httpPort !== null) break
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              probeAttempts++
+            }
+
+            if (httpPort !== null) {
+              newHttp = httpPort
+            }
+          }
+        }
+      }
+    } catch (e) {
+      log('HTTP scan failed for %s: %s', app.name, e.message)
+    }
+
+    if (app.http !== newHttp) {
+      this.#set(app.id, {http: newHttp})
+      Odac.server('Hub').trigger('app.list')
+    }
   }
 
   // Private: Helpers
@@ -2410,6 +2505,24 @@ class App {
   }
 
   /**
+   * Normalizes a command input into an array suitable for Docker Cmd.
+   * Accepts both string ("node app.js --port 3000") and array (["node", "app.js"]) formats.
+   * Returns null if no command is provided, preserving the image default CMD/ENTRYPOINT.
+   *
+   * @param {string|string[]|null|undefined} cmd - Raw command from recipe or config
+   * @returns {string[]|null} Normalized command array or null
+   */
+  #normalizeCmd(cmd) {
+    if (!cmd) return null
+    if (Array.isArray(cmd)) return cmd.length > 0 ? cmd : null
+    if (typeof cmd === 'string') {
+      const parts = cmd.trim().split(/\s+/)
+      return parts.length > 0 ? parts : null
+    }
+    return null
+  }
+
+  /**
    * Masks sensitive values in an env object based on SENSITIVE_KEY_PATTERN.
    * @param {object} env - Raw key-value env pairs
    * @returns {object} Sanitized env with sensitive values replaced by '***'
@@ -2478,7 +2591,7 @@ class App {
   }
 
   #resolveEnv(app, includeSystem = true) {
-    const finalEnv = includeSystem ? {ODAC_APP: 'true'} : {}
+    const finalEnv = includeSystem ? {HOST: '0.0.0.0', ODAC_APP: 'true'} : {}
     const envConfig = app.env || {}
 
     // Check if new structure (has manual or linked prop)
@@ -2500,6 +2613,52 @@ class App {
     Object.assign(finalEnv, this.#getManualEnv(envConfig))
 
     return finalEnv
+  }
+
+  /**
+   * Writes recipe-defined config files to the app directory and returns
+   * corresponding volume mappings for container mount.
+   * Supports JSON objects (serialized) and raw strings (YAML, TOML, INI, etc.).
+   * Files are stored under appDir/configs/ mirroring the container path structure.
+   *
+   * @param {Array<{path: string, content: object|string}>} configs - Config file definitions from recipe
+   * @param {string} appDir - Application directory on host
+   * @returns {Promise<Array<{host: string, container: string}>>} Volume mappings for the written files
+   */
+  async #writeConfigFiles(configs, appDir) {
+    if (!Array.isArray(configs) || configs.length === 0) return []
+
+    const volumes = []
+    const configBase = path.join(appDir, 'configs')
+
+    for (const cfg of configs) {
+      if (!cfg.path || cfg.content === undefined || cfg.content === null) continue
+
+      // Sanitize: prevent path traversal and absolute path escape
+      const normalized = path.normalize(cfg.path)
+      if (normalized.includes('..') || path.isAbsolute(normalized)) {
+        error('writeConfigFiles: Skipping unsafe config path: %s', cfg.path)
+        continue
+      }
+
+      // Mirror container path structure under appDir/configs/
+      const hostFile = path.join(configBase, normalized)
+
+      // Defense-in-depth: verify resolved path stays within configBase sandbox
+      if (!path.resolve(hostFile).startsWith(path.resolve(configBase))) {
+        error('writeConfigFiles: Resolved path escapes sandbox: %s → %s', cfg.path, hostFile)
+        continue
+      }
+      await fs.promises.mkdir(path.dirname(hostFile), {recursive: true})
+
+      const data = typeof cfg.content === 'string' ? cfg.content : JSON.stringify(cfg.content, null, 2)
+      await fs.promises.writeFile(hostFile, data, 'utf8')
+
+      volumes.push({host: hostFile, container: cfg.path})
+      log('writeConfigFiles: Wrote %s (%d bytes)', cfg.path, Buffer.byteLength(data))
+    }
+
+    return volumes
   }
 }
 

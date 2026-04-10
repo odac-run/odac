@@ -8,14 +8,122 @@ const {log, error} = Odac.core('Log').init('Container', 'Builder')
 const Logger = require('./Logger')
 
 /**
+ * Parses a semver-like major.minor version from raw content.
+ * Returns only the major.minor portion (e.g. "1.22" from "1.22.5").
+ * @param {string} raw - Raw version string (e.g. "1.22.5", "^3.11", ">=20.0")
+ * @returns {string|null} Major.minor version or null if unparseable
+ */
+function parseMajorMinor(raw) {
+  const match = raw.match(/(\d+\.\d+)/)
+  return match ? match[1] : null
+}
+
+/**
+ * Version resolver definitions for each language ecosystem.
+ * Each resolver specifies which file to read and how to extract the version.
+ * Resolvers return a Docker image tag suffix (e.g. "1.22-alpine") or null for default.
+ */
+const VERSION_RESOLVERS = {
+  /**
+   * Reads `go.mod` directive: `go 1.22` or `go 1.22.5`
+   * Produces tag suffix: `1.22-alpine`
+   */
+  GO: {
+    file: 'go.mod',
+    parse(content) {
+      const match = content.match(/^go\s+(\d+\.\d+)/m)
+      return match ? `${match[1]}-alpine` : null
+    }
+  },
+  /**
+   * Reads `package.json` engines.node field: `">=18"`, `"^20.0"`, `"20.11.0"`
+   * Produces tag suffix: `18-alpine`, `20-alpine` (major only for Node LTS alignment)
+   */
+  NODE: {
+    file: 'package.json',
+    parse(content) {
+      try {
+        const pkg = JSON.parse(content)
+        const constraint = pkg.engines && pkg.engines.node
+        if (!constraint) return null
+        const match = constraint.match(/(\d+)/)
+        return match ? `${match[1]}-alpine` : null
+      } catch {
+        return null
+      }
+    }
+  },
+  /**
+   * Reads `composer.json` require.php field: `">=8.1"`, `"^8.2"`, `"8.3.*"`
+   * Produces tag suffix for build image: `lts` (composer), runtime: `8.2-apache`
+   */
+  PHP: {
+    file: 'composer.json',
+    parse(content) {
+      try {
+        const composer = JSON.parse(content)
+        const constraint = composer.require && composer.require.php
+        if (!constraint) return null
+        const version = parseMajorMinor(constraint)
+        return version || null
+      } catch {
+        return null
+      }
+    }
+  },
+  /**
+   * Reads `pyproject.toml` requires-python or `runtime.txt` for Python version.
+   * Falls back to `runtime.txt` (Heroku-style: `python-3.12.1`).
+   * Produces tag suffix: `3.12-slim`
+   */
+  PYTHON: {
+    file: 'pyproject.toml',
+    fallbackFile: 'runtime.txt',
+    parse(content, filename) {
+      if (filename === 'runtime.txt') {
+        const match = content.match(/python-(\d+\.\d+)/)
+        return match ? `${match[1]}-slim` : null
+      }
+      const match = content.match(/requires-python\s*=\s*["']([^"']+)["']/)
+      if (!match) return null
+      const version = parseMajorMinor(match[1])
+      return version ? `${version}-slim` : null
+    }
+  },
+  /**
+   * Reads `rust-toolchain.toml` or `rust-toolchain` for Rust channel.
+   * Produces tag suffix: `1.78-alpine`
+   */
+  RUST: {
+    file: 'rust-toolchain.toml',
+    fallbackFile: 'rust-toolchain',
+    parse(content, filename) {
+      if (filename === 'rust-toolchain') {
+        const version = parseMajorMinor(content.trim())
+        return version ? `${version}-alpine` : null
+      }
+      const match = content.match(/channel\s*=\s*["']([^"']+)["']/)
+      if (!match) return null
+      const version = parseMajorMinor(match[1])
+      return version ? `${version}-alpine` : null
+    }
+  }
+}
+
+/**
  * Configuration for Build Strategies.
  * Centralized to avoid magic strings and allow easy updates.
+ *
+ * `imageBase` defines the registry/repo prefix (e.g. "golang").
+ * `imageDefault` is the fallback tag when version auto-detection fails.
+ * `versionResolver` references a key in VERSION_RESOLVERS for dynamic tag resolution.
  */
 const BUILD_STRATEGIES = {
   BUN: {
     name: 'Bun',
     triggers: ['bun.lock', 'bun.lockb'],
-    image: 'oven/bun:alpine',
+    imageBase: 'oven/bun',
+    imageDefault: 'alpine',
     installCmd: 'bun install --frozen-lockfile',
     buildCmd: 'bun run build --if-present',
     cleanupCmd: 'bun install --production && rm -rf test tests',
@@ -28,9 +136,12 @@ const BUILD_STRATEGIES = {
   GO: {
     name: 'Go',
     triggers: ['go.mod'],
-    image: 'golang:1.22-alpine',
+    imageBase: 'golang',
+    imageDefault: 'alpine',
+    versionResolver: 'GO',
     installCmd: 'go mod download',
-    buildCmd: 'go build -o app .',
+    buildCmd:
+      'PKG=$(go list -f "{{.Name}} {{.ImportPath}}" ./... | grep "^main " | head -n 1 | cut -d" " -f2); if [ -z "$PKG" ]; then PKG="."; fi; go build -o app $PKG',
     cleanupCmd: null,
     package: {
       baseImage: 'alpine:latest',
@@ -41,7 +152,9 @@ const BUILD_STRATEGIES = {
   NODE_NPM: {
     name: 'Node.js (npm)',
     triggers: ['package-lock.json'],
-    image: 'node:lts-alpine',
+    imageBase: 'node',
+    imageDefault: 'lts-alpine',
+    versionResolver: 'NODE',
     installCmd: 'if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi',
     buildCmd: 'npm run build --if-present',
     cleanupCmd: 'npm prune --production && rm -rf test tests',
@@ -54,7 +167,9 @@ const BUILD_STRATEGIES = {
   NODE_PNPM: {
     name: 'Node.js (pnpm)',
     triggers: ['pnpm-lock.yaml'],
-    image: 'node:lts-alpine',
+    imageBase: 'node',
+    imageDefault: 'lts-alpine',
+    versionResolver: 'NODE',
     installCmd: 'corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile',
     buildCmd: 'pnpm run build --if-present',
     cleanupCmd: 'pnpm prune --prod && rm -rf test tests',
@@ -67,7 +182,9 @@ const BUILD_STRATEGIES = {
   NODE_YARN: {
     name: 'Node.js (yarn)',
     triggers: ['yarn.lock'],
-    image: 'node:lts-alpine',
+    imageBase: 'node',
+    imageDefault: 'lts-alpine',
+    versionResolver: 'NODE',
     installCmd: 'corepack enable && yarn install --frozen-lockfile',
     buildCmd: 'yarn run build --if-present',
     cleanupCmd: 'yarn install --production --frozen-lockfile && rm -rf test tests',
@@ -80,7 +197,9 @@ const BUILD_STRATEGIES = {
   PHP: {
     name: 'PHP',
     triggers: ['composer.json', 'index.php'],
-    image: 'composer:lts',
+    imageBase: 'composer',
+    imageDefault: 'lts',
+    versionResolver: 'PHP',
     installCmd: 'if [ -f composer.json ]; then composer install --no-dev --ignore-platform-reqs; fi',
     buildCmd: 'true',
     cleanupCmd: null,
@@ -100,23 +219,28 @@ const BUILD_STRATEGIES = {
   PYTHON: {
     name: 'Python',
     triggers: ['requirements.txt', 'pyproject.toml'],
-    image: 'python:3.11-slim',
+    imageBase: 'python',
+    imageDefault: '3-slim',
+    versionResolver: 'PYTHON',
     installCmd: '[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps',
     buildCmd: 'rm -rf __pycache__',
     cleanupCmd: null,
     package: {
-      baseImage: 'python:3.11-slim',
+      baseImage: 'python:3-slim',
       user: 'nobody',
-      cmd: ['python', 'app.py'],
+      cmd: ['sh', '-c', 'if [ -f main.py ]; then python main.py; elif [ -f run.py ]; then python run.py; else python app.py; fi'],
       env: {PYTHONPATH: '/app/deps'}
     }
   },
   RUST: {
     name: 'Rust',
     triggers: ['Cargo.toml', 'Cargo.lock'],
-    image: 'rust:alpine',
+    imageBase: 'rust',
+    imageDefault: 'alpine',
+    versionResolver: 'RUST',
     installCmd: 'apk add --no-cache musl-dev',
-    buildCmd: 'cargo build --release && cp target/release/$(basename $(pwd)) /app/app || cp target/release/app /app/app',
+    buildCmd:
+      'cargo build --release && find target/release -maxdepth 1 -type f -executable -not -name "*.*" | head -n 1 | xargs -I {} cp {} /app/app',
     cleanupCmd: 'rm -rf target src',
     package: {
       baseImage: 'alpine:latest',
@@ -127,7 +251,8 @@ const BUILD_STRATEGIES = {
   STATIC: {
     name: 'Static Web',
     triggers: ['index.html'],
-    image: 'alpine:latest',
+    imageBase: 'alpine',
+    imageDefault: 'latest',
     installCmd: 'true',
     buildCmd: 'true',
     cleanupCmd: null,
@@ -293,8 +418,9 @@ class Builder {
 
   /**
    * Detects project language/framework using non-blocking I/O
+   * and resolves the optimal compiler image version from project files.
    * @param {string} internalPath
-   * @returns {Promise<Object>} Strategy object
+   * @returns {Promise<Object>} Strategy object with resolved `image` property
    */
   async #detect(internalPath) {
     // 0. CUSTOM DOCKERFILE Strategy (Highest Priority)
@@ -310,25 +436,25 @@ class Builder {
       }
     }
 
-    // Check all strategies defined in order (Priority implicitly defined by insertion order in constant if iterated)
-    // But we manually order them for safety: Python, Go, Node, PHP, Static
+    let strategy = null
 
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PYTHON)) return BUILD_STRATEGIES.PYTHON
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.GO)) return BUILD_STRATEGIES.GO
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.RUST)) return BUILD_STRATEGIES.RUST
+    // Check all strategies in priority order
+    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PYTHON)) strategy = BUILD_STRATEGIES.PYTHON
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.GO)) strategy = BUILD_STRATEGIES.GO
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.RUST)) strategy = BUILD_STRATEGIES.RUST
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.BUN)) strategy = BUILD_STRATEGIES.BUN
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_PNPM)) strategy = BUILD_STRATEGIES.NODE_PNPM
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_YARN)) strategy = BUILD_STRATEGIES.NODE_YARN
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_NPM)) strategy = BUILD_STRATEGIES.NODE_NPM
+    else if (await this.#exists(path.join(internalPath, 'package.json'))) strategy = BUILD_STRATEGIES.NODE_NPM
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PHP)) strategy = BUILD_STRATEGIES.PHP
+    else if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.STATIC)) strategy = BUILD_STRATEGIES.STATIC
 
-    // Node.js / Bun: Lock file takes priority to select the correct runtime
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.BUN)) return BUILD_STRATEGIES.BUN
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_PNPM)) return BUILD_STRATEGIES.NODE_PNPM
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_YARN)) return BUILD_STRATEGIES.NODE_YARN
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.NODE_NPM)) return BUILD_STRATEGIES.NODE_NPM
-    // Fallback: package.json exists but no lock file
-    if (await this.#exists(path.join(internalPath, 'package.json'))) return BUILD_STRATEGIES.NODE_NPM
+    if (!strategy) return null
 
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.PHP)) return BUILD_STRATEGIES.PHP
-    if (await this.#checkStrategyTriggers(internalPath, BUILD_STRATEGIES.STATIC)) return BUILD_STRATEGIES.STATIC
-
-    return null
+    // Resolve the optimal image tag from project version files
+    const image = await this.#resolveImage(internalPath, strategy)
+    return {...strategy, image}
   }
 
   /**
@@ -353,6 +479,40 @@ class Builder {
     } catch {
       return false
     }
+  }
+
+  /**
+   * Resolves the optimal Docker image tag by reading project version files.
+   * Falls back to the strategy default when version cannot be determined.
+   * @param {string} internalPath - Project root inside ODAC container
+   * @param {Object} strategy - Build strategy with imageBase, imageDefault, versionResolver
+   * @returns {Promise<string>} Full image reference (e.g. "golang:1.22-alpine")
+   */
+  async #resolveImage(internalPath, strategy) {
+    const fallback = `${strategy.imageBase}:${strategy.imageDefault}`
+
+    if (!strategy.versionResolver) return fallback
+
+    const resolver = VERSION_RESOLVERS[strategy.versionResolver]
+    if (!resolver) return fallback
+
+    // Try primary version file, then fallback file
+    const files = [resolver.file, resolver.fallbackFile].filter(Boolean)
+
+    for (const file of files) {
+      try {
+        const content = await fs.readFile(path.join(internalPath, file), 'utf8')
+        const tag = resolver.parse(content, file)
+        if (tag) {
+          log(`[Builder] Resolved ${strategy.name} image version: ${strategy.imageBase}:${tag} (from ${file})`)
+          return `${strategy.imageBase}:${tag}`
+        }
+      } catch {
+        // File not found or unreadable — try next
+      }
+    }
+
+    return fallback
   }
 
   /**

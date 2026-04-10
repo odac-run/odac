@@ -71,7 +71,7 @@ describe('Hub', () => {
 
     // Clear specific module cache to prevent pollution between runs in the same process
     const hubPath = require.resolve('../../server/src/Hub')
-    const systemPath = require.resolve('../../server/src/Hub/System')
+    const systemPath = require.resolve('../../server/src/System/Info')
     const wsPath = require.resolve('../../server/src/Hub/WebSocket')
     delete require.cache[hubPath]
     delete require.cache[systemPath]
@@ -81,7 +81,7 @@ describe('Hub', () => {
       Hub = require('../../server/src/Hub')
       Hub.start()
       for (const cmd of Object.values(Hub.commands)) if (cmd.interval) cmd.lastRun = Date.now()
-      System = require('../../server/src/Hub/System')
+      System = require('../../server/src/System/Info')
       const WS = require('../../server/src/Hub/WebSocket')
       MessageSigner = WS.MessageSigner
     })

@@ -1,10 +1,7 @@
 const {log, error} = Odac.core('Log', false).init('Hub')
 
 const nodeCrypto = require('crypto')
-const os = require('os')
-const packageJson = require('../../package.json')
 
-const System = require('./Hub/System')
 const {WebSocketClient, MessageSigner} = require('./Hub/WebSocket')
 
 const HUB_URL = process.env.ODAC_HUB_URL || 'https://hub.odac.run'
@@ -114,8 +111,11 @@ class Hub {
         interval: 30 * 60 * 1000,
         lastRun: 0
       },
+      'proxy.tunnel': {
+        fn: payload => Odac.server('Proxy').setTunnels(payload.tunnels)
+      },
       'system.info': {
-        fn: () => Odac.server('Api').result(true, System.getSystemInfo()),
+        fn: () => Odac.server('Api').result(true, Odac.server('System').info()),
         interval: 60 * 60 * 1000,
         lastRun: 0
       },
@@ -232,8 +232,8 @@ class Hub {
           return {success: true, message: 'Unsubscribed from build logs'}
         }
       },
-      'updater.start': {
-        fn: () => Odac.server('Updater').start()
+      'system.update': {
+        fn: () => Odac.server('System').update()
       }
     }
 
@@ -313,14 +313,6 @@ class Hub {
     }
   }
 
-  getSystemStatus() {
-    return System.getStatus()
-  }
-
-  getLinuxDistro() {
-    return System.getLinuxDistro()
-  }
-
   async getAppStats() {
     const res = await Odac.server('App').list(true)
     const apps = res.result ? res.data : []
@@ -343,18 +335,8 @@ class Hub {
     log('Odac authenticating...')
     log('Auth code received: %s', code ? code.substring(0, 8) + '...' : 'none')
 
-    const distro = this.getLinuxDistro()
-
-    const data = {
-      code,
-      os: os.platform(),
-      arch: os.arch(),
-      hostname: os.hostname(),
-      version: packageJson.version,
-      node: process.version
-    }
-
-    if (distro) data.distro = distro
+    const info = Odac.server('System').info()
+    const data = {code, ...info}
 
     try {
       const response = await this.call('auth', data)

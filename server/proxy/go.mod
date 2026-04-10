@@ -12,6 +12,8 @@ require (
 )
 
 require (
+	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/text v0.31.0 // indirect

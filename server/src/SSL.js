@@ -55,7 +55,12 @@ class SSL {
 
       const expected = [domain]
       if (record.subdomain) {
-        record.subdomain.forEach(sub => expected.push(sub + '.' + domain))
+        const hasWildcard = record.subdomain.includes('*')
+        for (const sub of record.subdomain) {
+          // Mirror #ssl() logic: wildcard covers single-level subdomains
+          if (hasWildcard && sub !== '*' && !sub.includes('.')) continue
+          expected.push(sub + '.' + domain)
+        }
       }
 
       // Check if every expected domain is in SANs
@@ -103,13 +108,19 @@ class SSL {
    * @returns {Promise<string|null>} PEM certificate or null
    */
   async #requestCertificate(client, csr, domains, context) {
+    const hasWildcard = domains.some(d => d.startsWith('*.'))
+
     // Phase 1: Try HTTP-01 (fast, no DNS delegation needed)
-    try {
-      log('Attempting SSL via HTTP-01 challenge...')
-      return await this.#acmeOrder(client, csr, domains, 'http-01', context)
-    } catch (err) {
-      if (context.cancelled) throw err // Propagate cancellation, don't fallback
-      log('HTTP-01 challenge failed: %s. Falling back to DNS-01...', err.message)
+    if (!hasWildcard) {
+      try {
+        log('Attempting SSL via HTTP-01 challenge...')
+        return await this.#acmeOrder(client, csr, domains, 'http-01', context)
+      } catch (err) {
+        if (context.cancelled) throw err // Propagate cancellation, don't fallback
+        log('HTTP-01 challenge failed: %s. Falling back to DNS-01...', err.message)
+      }
+    } else {
+      log('Wildcard domain detected. Skipping HTTP-01 and using DNS-01 exclusively.')
     }
 
     // Phase 2: Fallback to DNS-01 (requires nameserver delegation)
@@ -137,9 +148,10 @@ class SSL {
           log('Creating HTTP-01 challenge for %s (token: %s...)', authz.identifier.value, challenge.token.substring(0, 8))
           await Odac.server('Proxy').setACMEChallenge(challenge.token, keyAuthorization)
         } else if (challenge.type === 'dns-01') {
-          log('Creating DNS-01 challenge for %s', authz.identifier.value)
+          const authzName = authz.identifier.value.replace(/^\*\./, '')
+          log('Creating DNS-01 challenge for %s', authzName)
           Odac.server('DNS').record({
-            name: '_acme-challenge.' + authz.identifier.value,
+            name: '_acme-challenge.' + authzName,
             type: 'TXT',
             value: keyAuthorization,
             ttl: 100,
@@ -156,9 +168,10 @@ class SSL {
             /* best-effort cleanup */
           }
         } else if (challenge.type === 'dns-01') {
-          log('Removing DNS-01 challenge for %s', authz.identifier.value)
+          const authzName = authz.identifier.value.replace(/^\*\./, '')
+          log('Removing DNS-01 challenge for %s', authzName)
           Odac.server('DNS').delete({
-            name: '_acme-challenge.' + authz.identifier.value,
+            name: '_acme-challenge.' + authzName,
             type: 'TXT',
             value: keyAuthorization
           })
@@ -203,7 +216,13 @@ class SSL {
       const domainRecord = Odac.core('Config').config.domains[domain]
       let subdomains = [domain]
       if (domainRecord && domainRecord.subdomain) {
+        const hasWildcard = domainRecord.subdomain.includes('*')
         for (const subdomain of domainRecord.subdomain) {
+          // Let's Encrypt wildcard (*.domain.com) covers exactly one subdomain level.
+          // Therefore, if we have '*', skip redundant single-level subdomains (like www, mail).
+          if (hasWildcard && subdomain !== '*' && !subdomain.includes('.')) {
+            continue
+          }
           subdomains.push(subdomain + '.' + domain)
         }
       }

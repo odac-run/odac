@@ -1,4 +1,7 @@
-class Server {
+const Info = require('./System/Info')
+const Updater = require('./System/Updater')
+
+class System {
   #checkInterval = null
 
   async init() {
@@ -12,7 +15,9 @@ class Server {
     Odac.server('Hub')
     Odac.server('Container')
 
-    Odac.server('Updater').onReady(() => {
+    await Updater.init()
+
+    Updater.onReady(() => {
       Odac.server('Proxy').start()
       Odac.server('DNS').start()
       Odac.server('Hub').start()
@@ -51,6 +56,38 @@ class Server {
       Odac.server('Proxy').stop()
     }
   }
+
+  /**
+   * Triggers the system update process via the internal Updater sub-module.
+   * Delegates to Updater.start() which handles image pull, build, and zero-downtime deployment.
+   */
+  async update() {
+    return Updater.start()
+  }
+
+  /**
+   * Returns detailed system information (hostname, platform, arch, CPU, memory, container engine).
+   * Used by Hub to broadcast hardware/software inventory to the dashboard.
+   */
+  info() {
+    return Info.getSystemInfo()
+  }
+
+  /**
+   * Returns current system status snapshot (CPU, memory, disk, network, services, uptime).
+   * Used by Hub to report real-time system health metrics.
+   */
+  status() {
+    return Info.getStatus()
+  }
+
+  /**
+   * Returns Linux distribution details (name, version, id) or null on non-Linux platforms.
+   * Used by Hub during authentication to report the host OS identity.
+   */
+  distro() {
+    return Info.getLinuxDistro()
+  }
 }
 
-module.exports = new Server()
+module.exports = new System()

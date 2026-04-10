@@ -91,6 +91,7 @@ type Proxy struct {
 	globalSSL      *config.SSL
 	mu             sync.RWMutex
 	reverseProxy   *httputil.ReverseProxy
+	tunnel         *TunnelManager
 	httpClient     *http.Client // For OCSP requests
 }
 
@@ -106,6 +107,7 @@ func NewProxy() *Proxy {
 		domains:        make(map[string]config.Website),
 		sslCache:       make(map[string]*tls.Certificate),
 		ocspCache:      make(map[string]*ocspCacheEntry),
+		tunnel:         NewTunnelManager(),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // OCSP requests should be fast
 		},
@@ -128,10 +130,11 @@ func NewProxy() *Proxy {
 	}
 
 	p.reverseProxy = &httputil.ReverseProxy{
-		Director:     p.director,
-		Transport:    transport,
-		BufferPool:   bufferPool{}, // Zero-allocation: reuse buffers from pool
-		ErrorHandler: p.errorHandler,
+		Director:      p.director,
+		Transport:     transport,
+		BufferPool:    bufferPool{}, // Zero-allocation: reuse buffers from pool
+		FlushInterval: -1,           // Flush every chunk immediately — critical for streaming/large files
+		ErrorHandler:  p.errorHandler,
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
@@ -181,13 +184,18 @@ func (p *Proxy) SetACMEChallenge(token, keyAuthorization string) {
 	log.Printf("ACME HTTP-01 challenge token set: %.8s...", token)
 }
 
-func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL) {
+func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL, tunnels []config.Tunnel) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.domains = domains
 	p.globalSSL = globalSSL
 	p.sslCache = make(map[string]*tls.Certificate)
 	p.ocspCache = make(map[string]*ocspCacheEntry) // Clear OCSP cache on config update
+	p.mu.Unlock()
+
+	// Update tunnel connections outside main lock (TunnelManager has its own mutex)
+	if tunnels != nil {
+		p.tunnel.UpdateConfig(tunnels)
+	}
 }
 
 func (p *Proxy) director(req *http.Request) {
@@ -241,9 +249,13 @@ func (p *Proxy) director(req *http.Request) {
 
 	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err == nil {
+		req.Header.Set("X-Forwarded-For", remoteIP)
 		req.Header.Set("X-Odac-Connection-RemoteAddress", remoteIP)
 		req.Header.Set("X-Real-IP", remoteIP)
 	}
+
+	// Preserve original Host header for upstream apps
+	req.Header.Set("X-Forwarded-Host", req.Host)
 
 	if req.TLS != nil {
 		req.Header.Set("X-Odac-Connection-Ssl", "true")
@@ -285,6 +297,11 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	log.Printf("Proxy error for %s: %v", r.Host, err)
 	w.WriteHeader(http.StatusBadGateway)
 	w.Write([]byte("Bad Gateway"))
+}
+
+// Tunnel returns the tunnel manager for lifecycle management.
+func (p *Proxy) Tunnel() *TunnelManager {
+	return p.tunnel
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
