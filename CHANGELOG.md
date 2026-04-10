@@ -1,5 +1,39 @@
 ### ⚙️ Engine Tuning
 
+- implement asynchronous ACME key management and optimize DNS resolution with O(1) name and wildcard indexing
+- **server:** restructure Server into System module with Updater sub-module
+- **system:** move system info utilities from Hub to System module
+
+### ✨ What's New
+
+- **app:** add command normalization and config file support
+- **app:** add HTTP status scanning for containers and handle errors
+- **builder:** add dynamic version resolution for container images
+- **dns:** implement wildcard domain handling and improve DNS record creation
+- **proxy:** add tunnel support for remote domain proxying
+- **tunnel:** restructure tunnel config and optimize stream handling
+
+### 🛠️ Fixes & Improvements
+
+- **app:** add concurrency guard and error handling to restart operation
+- **app:** increase port detection timeouts and add HOST environment variable
+- **build:** enhance build commands for Go, Python, and Rust strategies
+- **build:** update Go image tag to use latest alpine version
+- **dns:** resolve dynamic IPs in delete operation to match list behavior
+- **domain:** preserve www subdomain in validation and add explicit stripping in add operation
+- **proxy:** add X-Forwarded-For and X-Forwarded-Host headers
+- Refetch listening ports during HTTP probe
+- **ssl:** skip single-level subdomains when wildcard present
+- **tunnel:** close yamux session and websocket on config removal to prevent goroutine leaks
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - implement native ACME client with ECDSA-P256 support to replace acme-client dependency
 - replace bcrypt dependency with native crypto scrypt implementation
 - replace website and service terminology with applications throughout documentation and CLI references
