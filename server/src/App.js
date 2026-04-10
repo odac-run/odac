@@ -2634,15 +2634,21 @@ class App {
     for (const cfg of configs) {
       if (!cfg.path || cfg.content === undefined || cfg.content === null) continue
 
-      // Sanitize: prevent path traversal in container path
+      // Sanitize: prevent path traversal and absolute path escape
       const normalized = path.normalize(cfg.path)
-      if (normalized.includes('..')) {
-        error('writeConfigFiles: Skipping config with path traversal: %s', cfg.path)
+      if (normalized.includes('..') || path.isAbsolute(normalized)) {
+        error('writeConfigFiles: Skipping unsafe config path: %s', cfg.path)
         continue
       }
 
       // Mirror container path structure under appDir/configs/
       const hostFile = path.join(configBase, normalized)
+
+      // Defense-in-depth: verify resolved path stays within configBase sandbox
+      if (!path.resolve(hostFile).startsWith(path.resolve(configBase))) {
+        error('writeConfigFiles: Resolved path escapes sandbox: %s → %s', cfg.path, hostFile)
+        continue
+      }
       await fs.promises.mkdir(path.dirname(hostFile), {recursive: true})
 
       const data = typeof cfg.content === 'string' ? cfg.content : JSON.stringify(cfg.content, null, 2)

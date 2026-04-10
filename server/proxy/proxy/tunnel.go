@@ -78,7 +78,7 @@ func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 	for domain, conn := range tm.conns {
 		if _, exists := incoming[domain]; !exists {
 			log.Printf("[Tunnel] Domain removed, disconnecting: %s", domain)
-			close(conn.stopCh)
+			tm.closeTunnel(conn)
 			delete(tm.conns, domain)
 		}
 	}
@@ -89,7 +89,7 @@ func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 			// Token or backend changed — reconnect
 			if existing.token != t.Token || existing.host != t.Host || existing.port != t.Port {
 				log.Printf("[Tunnel] Config changed, reconnecting: %s", domain)
-				close(existing.stopCh)
+				tm.closeTunnel(existing)
 				delete(tm.conns, domain)
 			} else {
 				continue // Already connected with same config
@@ -299,15 +299,38 @@ func (c *wsConn) Read(p []byte) (int, error) {
 func (c *wsConn) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(p), c.ws.WriteMessage(websocket.BinaryMessage, p)
+	err := c.ws.WriteMessage(websocket.BinaryMessage, p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func (c *wsConn) Close() error { return c.ws.Close() }
 func (c *wsConn) LocalAddr() net.Addr               { return c.ws.LocalAddr() }
 func (c *wsConn) RemoteAddr() net.Addr               { return c.ws.RemoteAddr() }
-func (c *wsConn) SetDeadline(t time.Time) error      { return nil }
+func (c *wsConn) SetDeadline(t time.Time) error {
+	if err := c.ws.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.ws.SetWriteDeadline(t)
+}
 func (c *wsConn) SetReadDeadline(t time.Time) error  { return c.ws.SetReadDeadline(t) }
 func (c *wsConn) SetWriteDeadline(t time.Time) error { return c.ws.SetWriteDeadline(t) }
+
+// closeTunnel signals a tunnel goroutine to stop and forcefully closes
+// the underlying yamux session and WebSocket connection. This ensures
+// AcceptStream unblocks immediately instead of hanging until the remote
+// side closes — preventing goroutine and connection leaks.
+func (tm *TunnelManager) closeTunnel(tc *tunnelConn) {
+	close(tc.stopCh)
+	if tc.session != nil {
+		tc.session.Close()
+	}
+	if tc.ws != nil {
+		tc.ws.Close()
+	}
+}
 
 // Stop gracefully shuts down all active tunnel connections.
 func (tm *TunnelManager) Stop() {
@@ -316,7 +339,7 @@ func (tm *TunnelManager) Stop() {
 
 	for domain, conn := range tm.conns {
 		log.Printf("[Tunnel] Stopping tunnel: %s", domain)
-		close(conn.stopCh)
+		tm.closeTunnel(conn)
 	}
 	tm.conns = make(map[string]*tunnelConn)
 }
