@@ -112,6 +112,15 @@ func main() {
 		log.Printf("[Mail] SSL/DKIM cache cleared for: %s", domain)
 	})
 
+	// Wire outbound send to SMTP client
+	apiSrv.SetSendCallback(func(from, to string, body []byte) error {
+		client := smtpserver.GetClient()
+		if client == nil {
+			return fmt.Errorf("SMTP client not initialized")
+		}
+		return client.Send(from, to, body)
+	})
+
 	log.Println("[Mail] All servers started (SMTP: 25/465, IMAP: 143/993).")
 
 	// Wait for termination signal

@@ -177,14 +177,42 @@ class Mail {
   }
 
   /**
-   * Sends an email via the Go binary (outbound SMTP client).
+   * Sends an email via the Go binary's outbound SMTP client.
+   * Constructs the email payload and delegates to the Go API for delivery.
    * @param {Object} data - Email data with from, to, header, html, text, attachments
    */
   async send(data) {
     if (!data || !data.from || !data.to || !data.header) return Odac.server('Api').result(false, await __('All fields are required.'))
-    // Outbound delivery is handled by the Go binary's SMTP client
-    // For now, delegate to the API
-    return Odac.server('Api').result(true, await __('Mail sent successfully.'))
+    if (!data.from.value?.[0]?.address) return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!data.to.value?.[0]?.address) return Odac.server('Api').result(false, await __('Invalid email address.'))
+
+    let domain = data.from.value[0].address.split('@')[1].split('.')
+    while (domain.length > 2 && !Odac.core('Config').config.domains?.[domain.join('.')]) domain.shift()
+    domain = domain.join('.')
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+
+    // Build RFC 2822 message from structured data
+    let headers = ''
+    for (let key in data.header) headers += `${key}: ${data.header[key]}\r\n`
+    if (!headers.toLowerCase().includes('from:')) headers += `From: ${data.from.value[0].address}\r\n`
+    if (!headers.toLowerCase().includes('to:')) headers += `To: ${data.to.value[0].address}\r\n`
+    if (!headers.toLowerCase().includes('subject:')) headers += `Subject: ${data.subject ?? ''}\r\n`
+
+    let body = headers + '\r\n'
+    if (data.html) body += data.html
+    else if (data.text) body += data.text
+
+    try {
+      const res = await this.#apiRequest('POST', '/send', {
+        body: body,
+        from: data.from.value[0].address,
+        to: data.to.value[0].address
+      })
+      if (res?.success) return Odac.server('Api').result(true, await __('Mail sent successfully.'))
+      return Odac.server('Api').result(false, res?.message || (await __('Mail sending failed.')))
+    } catch {
+      return Odac.server('Api').result(false, await __('Mail sending failed.'))
+    }
   }
 
   /**

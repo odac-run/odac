@@ -51,16 +51,18 @@ func (s *Server) Start() {
 	InitClient(s.getConfig, s.dkimSigner)
 
 	// Port 25 — Plaintext with STARTTLS
+	// AllowInsecureAuth=false: Auth credentials only accepted after STARTTLS upgrade.
+	// Unauthenticated inbound mail delivery still works (no auth required for receiving).
 	s.insecure = gosmtp.NewServer(s.backend)
 	s.insecure.Addr = ":25"
+	s.insecure.AllowInsecureAuth = false
 	s.insecure.Domain = "ODAC"
-	s.insecure.AllowInsecureAuth = true
 	s.insecure.MaxMessageBytes = 10 * 1024 * 1024 // 10MB
 	s.insecure.MaxRecipients = 100
 	s.insecure.ReadTimeout = 60 * time.Second
 	s.insecure.WriteTimeout = 60 * time.Second
 
-	// Port 465 — Implicit TLS
+	// Port 465 — Implicit TLS (auth always over TLS)
 	s.secure = gosmtp.NewServer(s.backend)
 	s.secure.Addr = ":465"
 	s.secure.Domain = "ODAC"

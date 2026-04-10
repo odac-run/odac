@@ -21,7 +21,8 @@ type Server struct {
 	firewall   *auth.Firewall
 	store      *storage.Store
 	onConfig   func(config.Config)
-	onSSLClear func(string) // Callback to clear SSL cache on SMTP/IMAP servers
+	onSend     func(from, to string, body []byte) error // Callback for outbound delivery
+	onSSLClear func(string)
 }
 
 // NewServer creates a new API server with the given dependencies.
@@ -36,6 +37,11 @@ func NewServer(store *storage.Store, fw *auth.Firewall, onConfig func(config.Con
 // SetSSLClearCallback sets the callback for SSL cache clearing.
 func (s *Server) SetSSLClearCallback(cb func(string)) {
 	s.onSSLClear = cb
+}
+
+// SetSendCallback sets the callback for outbound email delivery.
+func (s *Server) SetSendCallback(cb func(from, to string, body []byte) error) {
+	s.onSend = cb
 }
 
 // HandleConfig processes full configuration syncs from Node.js.
@@ -264,6 +270,43 @@ func (s *Server) HandleAccountList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleSend triggers outbound email delivery via the SMTP client.
+// Endpoint: POST /send
+func (s *Server) HandleSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Body string `json:"body"`
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.From == "" || req.To == "" || req.Body == "" {
+		jsonError(w, "from, to, and body are required", http.StatusBadRequest)
+		return
+	}
+
+	if s.onSend == nil {
+		jsonError(w, "Send not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := s.onSend(req.From, req.To, []byte(req.Body)); err != nil {
+		log.Printf("[Mail-API] Send failed: %v", err)
+		jsonError(w, "Delivery failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	jsonSuccess(w, "Mail sent successfully")
+}
+
 // HandleSSLClear clears the TLS context cache for a domain or all domains.
 // Endpoint: POST /ssl/clear
 func (s *Server) HandleSSLClear(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +348,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.HandleConfig(w, r)
 	case "/health":
 		s.HandleHealth(w, r)
+	case "/send":
+		s.HandleSend(w, r)
 	case "/ssl/clear":
 		s.HandleSSLClear(w, r)
 	default:
