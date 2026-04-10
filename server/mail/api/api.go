@@ -18,9 +18,10 @@ import (
 
 // Server is the HTTP API server that receives commands from Node.js.
 type Server struct {
-	firewall *auth.Firewall
-	store    *storage.Store
-	onConfig func(config.Config)
+	firewall   *auth.Firewall
+	store      *storage.Store
+	onConfig   func(config.Config)
+	onSSLClear func(string) // Callback to clear SSL cache on SMTP/IMAP servers
 }
 
 // NewServer creates a new API server with the given dependencies.
@@ -30,6 +31,11 @@ func NewServer(store *storage.Store, fw *auth.Firewall, onConfig func(config.Con
 		onConfig: onConfig,
 		store:    store,
 	}
+}
+
+// SetSSLClearCallback sets the callback for SSL cache clearing.
+func (s *Server) SetSSLClearCallback(cb func(string)) {
+	s.onSSLClear = cb
 }
 
 // HandleConfig processes full configuration syncs from Node.js.
@@ -266,7 +272,15 @@ func (s *Server) HandleSSLClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SSL cache clearing will be implemented when SMTP/IMAP servers are added in Phase 2/3
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	if s.onSSLClear != nil {
+		s.onSSLClear(req.Domain)
+	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }

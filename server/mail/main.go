@@ -37,6 +37,7 @@ import (
 	"odac-mail/api"
 	"odac-mail/auth"
 	"odac-mail/config"
+	imapserver "odac-mail/imap"
 	smtpserver "odac-mail/smtp"
 	"odac-mail/storage"
 )
@@ -85,7 +86,8 @@ func main() {
 	}
 
 	// Start Control API
-	apiListener := startControlAPI(store, fw, onConfig)
+	apiSrv := api.NewServer(store, fw, onConfig)
+	apiListener := startControlAPI(apiSrv)
 	defer apiListener.Close()
 
 	// Start SMTP Server (ports 25 and 465)
@@ -93,11 +95,19 @@ func main() {
 	smtpSrv.Start()
 	defer smtpSrv.Stop()
 
-	// IMAP server will be started here in Phase 3.
-	// Port reservations:
-	//   143 — IMAP plaintext (STARTTLS)
-	//   993 — IMAP implicit TLS
-	log.Println("[Mail] SMTP servers started. IMAP server pending Phase 3 implementation.")
+	// Start IMAP Server (ports 143 and 993)
+	imapSrv := imapserver.NewServer(store, fw, getConfig)
+	imapSrv.Start()
+	defer imapSrv.Stop()
+
+	// Wire SSL cache clearing to both servers
+	apiSrv.SetSSLClearCallback(func(domain string) {
+		smtpSrv.ClearSSLCache(domain)
+		imapSrv.ClearSSLCache(domain)
+		log.Printf("[Mail] SSL cache cleared for: %s", domain)
+	})
+
+	log.Println("[Mail] All servers started (SMTP: 25/465, IMAP: 143/993).")
 
 	// Wait for termination signal
 	sigChan := make(chan os.Signal, 1)
@@ -112,14 +122,17 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Shutdown SMTP servers
-	wg.Add(1)
+	// Shutdown SMTP and IMAP servers
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		smtpSrv.Stop()
 	}()
+	go func() {
+		defer wg.Done()
+		imapSrv.Stop()
+	}()
 
-	// Future: Add IMAP server shutdown to WaitGroup here
 	_ = ctx
 
 	wg.Wait()
@@ -128,9 +141,8 @@ func main() {
 
 // startControlAPI starts the HTTP control API on a Unix socket or TCP fallback.
 // Mirrors the proxy and DNS API listener setup for architectural consistency.
-func startControlAPI(store *storage.Store, fw *auth.Firewall, onConfig func(config.Config)) net.Listener {
+func startControlAPI(apiServer *api.Server) net.Listener {
 	socketPath := os.Getenv("ODAC_MAIL_SOCKET_PATH")
-	apiServer := api.NewServer(store, fw, onConfig)
 
 	var listener net.Listener
 	var err error
