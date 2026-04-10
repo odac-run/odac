@@ -1,3 +1,4 @@
+const Info = require('./System/Info')
 const Updater = require('./System/Updater')
 
 class System {
@@ -62,6 +63,30 @@ class System {
    */
   async update() {
     return Updater.start()
+  }
+
+  /**
+   * Returns detailed system information (hostname, platform, arch, CPU, memory, container engine).
+   * Used by Hub to broadcast hardware/software inventory to the dashboard.
+   */
+  info() {
+    return Info.getSystemInfo()
+  }
+
+  /**
+   * Returns current system status snapshot (CPU, memory, disk, network, services, uptime).
+   * Used by Hub to report real-time system health metrics.
+   */
+  status() {
+    return Info.getStatus()
+  }
+
+  /**
+   * Returns Linux distribution details (name, version, id) or null on non-Linux platforms.
+   * Used by Hub during authentication to report the host OS identity.
+   */
+  distro() {
+    return Info.getLinuxDistro()
   }
 }
 

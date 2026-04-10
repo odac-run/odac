@@ -125,7 +125,10 @@ class MockOdac {
         stop: jest.fn()
       },
       System: {
+        distro: jest.fn(),
+        info: jest.fn(),
         init: jest.fn(),
+        status: jest.fn(),
         stop: jest.fn(),
         update: jest.fn()
       },

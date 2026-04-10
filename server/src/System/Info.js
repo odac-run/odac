@@ -1,9 +1,9 @@
 const os = require('os')
 const fs = require('fs')
 
-const {error} = Odac.core('Log', false).init('Hub', 'System')
+const {error} = Odac.core('Log', false).init('System', 'Info')
 
-class System {
+class Info {
   #lastNetworkStats = null
   #lastNetworkTime = null
   #lastCpuStats = null
@@ -263,33 +263,36 @@ class System {
 
   getSystemInfo() {
     const cpus = os.cpus()
+    const packageJson = require('../../package.json')
+    const distro = this.getLinuxDistro()
+
     const info = {
-      hostname: os.hostname(),
-      platform: os.platform(),
       arch: os.arch(),
-      release: os.release(),
-      uptime: os.uptime(),
+      container_engine: Odac.server('Container').available,
+      cpu: {
+        count: cpus.length,
+        model: cpus.length > 0 ? cpus[0].model : 'unknown'
+      },
+      hostname: os.hostname(),
       load: os.loadavg(),
       memory: {
         total: Math.floor(os.totalmem() / 1024),
         free: Math.floor(os.freemem() / 1024)
       },
-      cpu: {
-        count: cpus.length,
-        model: cpus.length > 0 ? cpus[0].model : 'unknown'
-      },
-      container_engine: Odac.server('Container').available
+      node: process.version,
+      platform: os.platform(),
+      release: os.release(),
+      uptime: os.uptime(),
+      version: packageJson.version
     }
 
-    if (os.platform() === 'linux') {
-      const distro = this.getLinuxDistro()
-      if (distro?.name) {
-        info.release = `${distro.name} ${distro.version}`
-      }
+    if (distro?.name) {
+      info.distro = distro
+      info.release = `${distro.name} ${distro.version}`
     }
 
     return info
   }
 }
 
-module.exports = new System()
+module.exports = new Info()
