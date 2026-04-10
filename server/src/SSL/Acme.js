@@ -6,8 +6,10 @@
  * to RSA-3072 with significantly faster TLS handshakes and smaller payloads.
  */
 
+const {createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign} = require('crypto')
+const fs = require('fs')
 const https = require('https')
-const {createHash, createPublicKey, generateKeyPairSync, sign} = require('crypto')
+const os = require('os')
 
 // ─── Base64url (RFC 4648 §5) ────────────────────────────────────────────────
 
@@ -239,22 +241,27 @@ class Acme {
 
   /** Bootstraps account key, directory, nonce, and ACME account */
   async #init(directoryUrl) {
-    const fs = require('fs')
-    const os = require('os')
-    const crypto = require('crypto')
-    const accountKeyPath = os.homedir() + '/.odac/cert/ssl/acme_account.key'
+    const accountKeyDir = os.homedir() + '/.odac/cert/ssl'
+    const accountKeyPath = accountKeyDir + '/acme_account.key'
 
-    if (fs.existsSync(accountKeyPath)) {
-      const pem = fs.readFileSync(accountKeyPath, 'utf8')
-      this.#accountKey = crypto.createPrivateKey(pem)
-    } else {
-      const {privateKey} = crypto.generateKeyPairSync('ec', {namedCurve: 'P-256'})
-      this.#accountKey = privateKey
-      if (!fs.existsSync(os.homedir() + '/.odac/cert/ssl')) fs.mkdirSync(os.homedir() + '/.odac/cert/ssl', {recursive: true})
-      fs.writeFileSync(accountKeyPath, privateKey.export({type: 'pkcs8', format: 'pem'}))
+    let needsNewKey = false
+
+    try {
+      const pem = await fs.promises.readFile(accountKeyPath, 'utf8')
+      this.#accountKey = createPrivateKey(pem)
+    } catch {
+      // Key file missing or corrupted — regenerate
+      needsNewKey = true
     }
 
-    const publicKey = crypto.createPublicKey(this.#accountKey)
+    if (needsNewKey) {
+      const {privateKey} = generateKeyPairSync('ec', {namedCurve: 'P-256'})
+      this.#accountKey = privateKey
+      await fs.promises.mkdir(accountKeyDir, {recursive: true})
+      await fs.promises.writeFile(accountKeyPath, privateKey.export({type: 'pkcs8', format: 'pem'}), {mode: 0o600})
+    }
+
+    const publicKey = createPublicKey(this.#accountKey)
     this.#accountJwk = publicKey.export({format: 'jwk'})
 
     // JWK Thumbprint (RFC 7638) – lexicographically sorted EC members

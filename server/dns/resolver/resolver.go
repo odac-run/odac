@@ -24,10 +24,13 @@ type Resolver struct {
 
 // zoneData is the pre-processed zone optimized for query-time performance.
 // Records are indexed by (lowercase name, type) for O(1) lookup per query.
+// Name existence and wildcard matching are also pre-indexed for O(1) lookups.
 type zoneData struct {
-	domain  string
-	records map[recordKey][]config.Record // (name, type) -> records
-	soa     config.SOARecord
+	domain    string
+	names     map[string]struct{}           // unique record names for O(1) existence check
+	records   map[recordKey][]config.Record // (name, type) -> records
+	soa       config.SOARecord
+	wildcards map[string]string             // parent domain -> wildcard name (e.g. "b.com" -> "*.b.com")
 }
 
 // recordKey is the composite key for record indexing.
@@ -51,18 +54,28 @@ func (r *Resolver) UpdateConfig(cfg config.Config) {
 
 	for domain, zone := range cfg.Zones {
 		zd := &zoneData{
-			domain:  strings.ToLower(domain),
-			records: make(map[recordKey][]config.Record),
-			soa:     zone.SOA,
+			domain:    strings.ToLower(domain),
+			names:     make(map[string]struct{}),
+			records:   make(map[recordKey][]config.Record),
+			soa:       zone.SOA,
+			wildcards: make(map[string]string),
 		}
 
 		// Build record index: group by (lowercase name, uppercase type)
+		// Simultaneously build name existence set and wildcard index
 		for _, rec := range zone.Records {
+			name := strings.ToLower(rec.Name)
 			key := recordKey{
-				name:  strings.ToLower(rec.Name),
+				name:  name,
 				rtype: strings.ToUpper(rec.Type),
 			}
 			zd.records[key] = append(zd.records[key], rec)
+			zd.names[name] = struct{}{}
+
+			// Index wildcards: "*.example.com" -> parent "example.com"
+			if strings.HasPrefix(name, "*.") {
+				zd.wildcards[name[2:]] = name
+			}
 		}
 
 		newZones[zd.domain] = zd
@@ -184,32 +197,27 @@ func (r *Resolver) resolveZone(qName string) (*zoneData, string) {
 	return nil, ""
 }
 
-// matchName checks if a name exists exactly, or via a wildcard fallback (*.<domain>).
+// matchName checks if a name exists exactly, or via a wildcard fallback (*.parent).
+// Uses pre-built indices for O(1) exact match and O(d) wildcard search where d is
+// the domain depth (typically 2-4). No linear record scanning.
 // Returns (bool exists, string matchedName).
 func (r *Resolver) matchName(zone *zoneData, qName, domain string) (bool, string) {
         if qName == domain {
                 return true, qName
         }
 
-        // Phase 1: Exact match scan
-        for key := range zone.records {
-                if key.name == qName {
-                        return true, qName
-                }
+        // O(1) exact name lookup via pre-built name set
+        if _, ok := zone.names[qName]; ok {
+                return true, qName
         }
 
-        // Phase 2: Wildcard fallback search  (e.g., a.b.com → *.b.com → *.com)
+        // O(d) wildcard fallback with O(1) per level via pre-built wildcard index
         parts := strings.Split(qName, ".")
         for i := 1; i < len(parts); i++ {
                 sub := strings.Join(parts[i:], ".")
-                wildcard := "*." + sub
-                for key := range zone.records {
-                        if key.name == wildcard {
-                                return true, wildcard
-                        }
+                if wildcard, ok := zone.wildcards[sub]; ok {
+                        return true, wildcard
                 }
-                
-                // Stop at the logical boundary of the zone
                 if sub == domain {
                         break
                 }
