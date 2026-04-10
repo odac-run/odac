@@ -37,6 +37,7 @@ import (
 	"odac-mail/api"
 	"odac-mail/auth"
 	"odac-mail/config"
+	"odac-mail/dkim"
 	imapserver "odac-mail/imap"
 	smtpserver "odac-mail/smtp"
 	"odac-mail/storage"
@@ -90,8 +91,11 @@ func main() {
 	apiListener := startControlAPI(apiSrv)
 	defer apiListener.Close()
 
+	// Initialize DKIM signer
+	dkimSigner := dkim.NewSigner(getConfig)
+
 	// Start SMTP Server (ports 25 and 465)
-	smtpSrv := smtpserver.NewServer(store, fw, getConfig)
+	smtpSrv := smtpserver.NewServer(store, fw, getConfig, dkimSigner)
 	smtpSrv.Start()
 	defer smtpSrv.Stop()
 
@@ -100,11 +104,12 @@ func main() {
 	imapSrv.Start()
 	defer imapSrv.Stop()
 
-	// Wire SSL cache clearing to both servers
+	// Wire SSL cache clearing to both servers + DKIM key cache
 	apiSrv.SetSSLClearCallback(func(domain string) {
 		smtpSrv.ClearSSLCache(domain)
 		imapSrv.ClearSSLCache(domain)
-		log.Printf("[Mail] SSL cache cleared for: %s", domain)
+		dkimSigner.ClearCache(domain)
+		log.Printf("[Mail] SSL/DKIM cache cleared for: %s", domain)
 	})
 
 	log.Println("[Mail] All servers started (SMTP: 25/465, IMAP: 143/993).")

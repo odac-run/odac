@@ -22,6 +22,7 @@ const clientTimeout = 30 * time.Second
 // and DKIM signing. Mirrors the Node.js smtp.js architecture exactly.
 type Client struct {
 	connPool   sync.Map // map[string]*pooledConn
+	dkimSigner interface{ Sign(string, []byte) ([]byte, error) }
 	getConfig  func() config.Config
 	maxRetries int
 	mxCache    sync.Map // map[string]*mxCacheEntry
@@ -57,9 +58,10 @@ var (
 )
 
 // InitClient initializes the singleton SMTP client with the config provider.
-func InitClient(getConfig func() config.Config) {
+func InitClient(getConfig func() config.Config, dkimSigner interface{ Sign(string, []byte) ([]byte, error) }) {
 	clientOnce.Do(func() {
 		clientInstance = &Client{
+			dkimSigner: dkimSigner,
 			getConfig:  getConfig,
 			maxRetries: 3,
 			ports:      []int{25, 587, 465, 2525},
@@ -82,6 +84,14 @@ func (c *Client) Send(from, to string, body []byte) error {
 	// Rate limiting per domain
 	if err := c.checkRateLimit(domain); err != nil {
 		return err
+	}
+
+	// DKIM sign the message before delivery
+	if c.dkimSigner != nil {
+		signed, err := c.dkimSigner.Sign(from, body)
+		if err == nil && len(signed) > 0 {
+			body = signed
+		}
 	}
 
 	// Resolve MX host

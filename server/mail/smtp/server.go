@@ -19,20 +19,22 @@ import (
 // Server manages the inbound SMTP listeners (port 25 plaintext, port 465 implicit TLS).
 // Uses go-smtp library with a custom Backend for authentication and delivery.
 type Server struct {
-	backend   *Backend
-	getConfig func() config.Config
-	mu        sync.Mutex
-	secure    *gosmtp.Server // Port 465 (implicit TLS)
-	insecure  *gosmtp.Server // Port 25 (STARTTLS)
-	sslCache  sync.Map       // map[string]*tls.Certificate
+	backend    *Backend
+	dkimSigner interface{ Sign(string, []byte) ([]byte, error) }
+	getConfig  func() config.Config
+	mu         sync.Mutex
+	secure     *gosmtp.Server // Port 465 (implicit TLS)
+	insecure   *gosmtp.Server // Port 25 (STARTTLS)
+	sslCache   sync.Map       // map[string]*tls.Certificate
 }
 
 // NewServer creates a new SMTP server with the given dependencies.
-func NewServer(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Server {
+func NewServer(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config, dkimSigner interface{ Sign(string, []byte) ([]byte, error) }) *Server {
 	backend := NewBackend(store, fw, getConfig)
 	return &Server{
-		backend:   backend,
-		getConfig: getConfig,
+		backend:    backend,
+		dkimSigner: dkimSigner,
+		getConfig:  getConfig,
 	}
 }
 
@@ -45,8 +47,8 @@ func (s *Server) Start() {
 		return // Already started
 	}
 
-	// Initialize outbound client
-	InitClient(s.getConfig)
+	// Initialize outbound client with DKIM signer
+	InitClient(s.getConfig, s.dkimSigner)
 
 	// Port 25 — Plaintext with STARTTLS
 	s.insecure = gosmtp.NewServer(s.backend)
