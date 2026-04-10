@@ -464,3 +464,59 @@ type MailboxStats struct {
 	UIDValidity int64
 	Unseen      int64
 }
+
+// MessageCopy copies messages from one mailbox to another by UID range.
+func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax int64, sourceMailbox, targetMailbox string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("cannot begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Get next UID for target
+	var nextUID int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(uid), 0) + 1 FROM mail_received WHERE email = ?",
+		email).Scan(&nextUID)
+	if err != nil {
+		return fmt.Errorf("UID query failed: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT email, flags, attachments, headers, headerLines, html, text,
+			textAsHtml, subject, "to", "from", messageId
+		FROM mail_received WHERE email = ? AND mailbox = ? AND uid BETWEEN ? AND ?`,
+		email, sourceMailbox, uidMin, uidMax)
+	if err != nil {
+		return fmt.Errorf("copy source query failed: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var m MessageRow
+		err := rows.Scan(&m.Email, &m.Flags, &m.Attachments, &m.Headers,
+			&m.HeaderLines, &m.HTML, &m.Text, &m.TextAsHTML, &m.Subject,
+			&m.To, &m.From, &m.MessageID)
+		if err != nil {
+			return fmt.Errorf("row scan failed: %w", err)
+		}
+
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO mail_received
+				(uid, email, mailbox, attachments, headers, headerLines,
+				 html, text, textAsHtml, subject, "to", "from", messageId, flags)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			nextUID, m.Email, targetMailbox, m.Attachments, m.Headers,
+			m.HeaderLines, m.HTML, m.Text, m.TextAsHTML, m.Subject,
+			m.To, m.From, m.MessageID, m.Flags)
+		if err != nil {
+			return fmt.Errorf("copy insert failed: %w", err)
+		}
+		nextUID++
+	}
+
+	return tx.Commit()
+}

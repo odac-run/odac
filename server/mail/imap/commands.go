@@ -601,6 +601,101 @@ func (c *Connection) cmdIdle(tag string) {
 	}
 }
 
+func (c *Connection) cmdCopy(tag, args string) {
+	if !c.requireMailbox(tag) {
+		return
+	}
+
+	parts := splitArgs(args)
+	if len(parts) < 2 {
+		c.write(fmt.Sprintf("%s NO Invalid COPY arguments\r\n", tag))
+		return
+	}
+
+	seqSet := parts[0]
+	targetMailbox := unquote(parts[1])
+
+	var uidMin, uidMax int64
+	if strings.Contains(seqSet, ":") {
+		rangeParts := strings.SplitN(seqSet, ":", 2)
+		uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
+		if rangeParts[1] != "*" {
+			uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
+		}
+	} else {
+		uid, _ := strconv.ParseInt(seqSet, 10, 64)
+		uidMin = uid
+		uidMax = uid
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := c.store.MessageCopy(ctx, c.auth, uidMin, uidMax, c.mailbox, targetMailbox); err != nil {
+		c.write(fmt.Sprintf("%s NO COPY failed\r\n", tag))
+		return
+	}
+	c.write(fmt.Sprintf("%s OK COPY completed\r\n", tag))
+}
+
+func (c *Connection) cmdAppend(tag, args string) {
+	if !c.requireAuth(tag) {
+		return
+	}
+
+	parts := splitArgs(args)
+	if len(parts) < 2 {
+		c.write(fmt.Sprintf("%s NO Invalid APPEND arguments\r\n", tag))
+		return
+	}
+
+	mailbox := unquote(parts[0])
+
+	// Parse optional flags and literal size
+	flags := "[]"
+	var literalSize int64
+	for _, p := range parts[1:] {
+		if strings.HasPrefix(p, "(") {
+			flags = "[" + strings.Trim(p, "()") + "]"
+		}
+		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
+			literalSize, _ = strconv.ParseInt(p[1:len(p)-1], 10, 64)
+		}
+	}
+
+	if literalSize <= 0 {
+		literalSize = 10 * 1024 * 1024 // Default 10MB max
+	}
+
+	// Send continuation request
+	c.write("+ Ready for literal data\r\n")
+
+	// Read literal data
+	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	buf := make([]byte, literalSize)
+	n, err := c.reader.Read(buf)
+	if err != nil {
+		c.write(fmt.Sprintf("%s NO APPEND failed\r\n", tag))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	msg := &storage.MessageRow{
+		Email:   c.auth,
+		Flags:   toNullString(flags),
+		HTML:    toNullString(string(buf[:n])),
+		Mailbox: mailbox,
+	}
+
+	if err := c.store.MessageStore(ctx, msg); err != nil {
+		c.write(fmt.Sprintf("%s NO APPEND failed\r\n", tag))
+		return
+	}
+	c.write(fmt.Sprintf("%s OK APPEND completed\r\n", tag))
+}
+
 func (c *Connection) write(data string) {
 	c.conn.SetWriteDeadline(time.Now().Add(commandTimeout))
 	c.conn.Write([]byte(data))
