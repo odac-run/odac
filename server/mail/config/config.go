@@ -10,7 +10,23 @@ type Config struct {
 	Accounts []Account         `json:"accounts"`
 	Domains  map[string]Domain `json:"domains"`
 	Hostname string            `json:"hostname"`
+	IPs      IPConfig          `json:"ips"`
 	SSL      SSL               `json:"ssl"`
+}
+
+// IPConfig holds the server's detected IP addresses for PTR-based
+// outbound source selection. Synced from Node.js DNS module.
+type IPConfig struct {
+	IPv4    []IPEntry `json:"ipv4"`
+	IPv6    []IPEntry `json:"ipv6"`
+	Primary string    `json:"primary"`
+}
+
+// IPEntry represents a single detected IP address with optional PTR record.
+type IPEntry struct {
+	Address string `json:"address"`
+	PTR     string `json:"ptr"`
+	Public  bool   `json:"public"`
 }
 
 // Domain represents a mail-enabled domain with its TLS and DKIM configuration.

@@ -37,6 +37,7 @@ import (
 	"odac-mail/api"
 	"odac-mail/auth"
 	"odac-mail/config"
+	smtpserver "odac-mail/smtp"
 	"odac-mail/storage"
 )
 
@@ -76,8 +77,8 @@ func main() {
 		log.Printf("[Mail] Configuration updated: %d domains", len(cfg.Domains))
 	}
 
-	// Expose config getter for future SMTP/IMAP server phases
-	_ = func() config.Config {
+	// Expose config getter for SMTP/IMAP servers
+	getConfig := func() config.Config {
 		configMu.RLock()
 		defer configMu.RUnlock()
 		return currentConfig
@@ -87,13 +88,16 @@ func main() {
 	apiListener := startControlAPI(store, fw, onConfig)
 	defer apiListener.Close()
 
-	// SMTP and IMAP servers will be started here in Phase 2 and Phase 3.
+	// Start SMTP Server (ports 25 and 465)
+	smtpSrv := smtpserver.NewServer(store, fw, getConfig)
+	smtpSrv.Start()
+	defer smtpSrv.Stop()
+
+	// IMAP server will be started here in Phase 3.
 	// Port reservations:
-	//   25  — SMTP plaintext (STARTTLS)
 	//   143 — IMAP plaintext (STARTTLS)
-	//   465 — SMTP implicit TLS
 	//   993 — IMAP implicit TLS
-	log.Println("[Mail] Control API ready. SMTP/IMAP servers pending Phase 2/3 implementation.")
+	log.Println("[Mail] SMTP servers started. IMAP server pending Phase 3 implementation.")
 
 	// Wait for termination signal
 	sigChan := make(chan os.Signal, 1)
@@ -108,7 +112,14 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Future: Add SMTP/IMAP server shutdown to WaitGroup here
+	// Shutdown SMTP servers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		smtpSrv.Stop()
+	}()
+
+	// Future: Add IMAP server shutdown to WaitGroup here
 	_ = ctx
 
 	wg.Wait()
