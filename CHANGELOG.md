@@ -1,3 +1,25 @@
+### ✨ What's New
+
+- migrate mail server to Go (SMTP/IMAP/DKIM)
+
+### 📚 Documentation
+
+- add private cloud tunnels feature to README
+
+### 🛠️ Fixes & Improvements
+
+- **mail:** add Content-Transfer-Encoding support for SMTP message bodies
+- **mail:** add recursion depth limit to MIME parser to prevent stack overflow
+- **mail:** improve SMTP TLS validation and RFC 2822 MIME compliance
+- resolve incorrect package.json path resolution in system info module
+- update DNS record uniqueness logic to support multi-value types by default
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ⚙️ Engine Tuning
 
 - implement asynchronous ACME key management and optimize DNS resolution with O(1) name and wildcard indexing
