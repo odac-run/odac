@@ -192,8 +192,20 @@ func extractHeader(headerBlock, name string) string {
 	return ""
 }
 
+// maxMIMEDepth caps recursion to prevent stack overflow from malicious nested MIME.
+const maxMIMEDepth = 10
+
 // parseMIMEBody extracts text/plain and text/html parts from a multipart message.
 func parseMIMEBody(contentType, body string) (html, text string) {
+	return parseMIMEBodyDepth(contentType, body, 0)
+}
+
+// parseMIMEBodyDepth is the depth-limited recursive MIME parser.
+func parseMIMEBodyDepth(contentType, body string, depth int) (html, text string) {
+	if depth >= maxMIMEDepth {
+		return "", body
+	}
+
 	// Extract boundary from Content-Type header
 	boundary := ""
 	for _, param := range strings.Split(contentType, ";") {
@@ -239,7 +251,7 @@ func parseMIMEBody(contentType, body string) (html, text string) {
 			for _, line := range strings.Split(rawPartHeaders, "\n") {
 				line = strings.TrimSpace(strings.ToLower(line))
 				if strings.HasPrefix(line, "content-type:") {
-					subHTML, subText := parseMIMEBody(line[13:], partBody)
+					subHTML, subText := parseMIMEBodyDepth(line[13:], partBody, depth+1)
 					if subHTML != "" {
 						html = subHTML
 					}
