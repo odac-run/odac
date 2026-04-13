@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strconv"
 	"strings"
@@ -383,28 +384,35 @@ func (c *Connection) cmdFetch(tag, args string, isUID bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Always fetch ALL messages to compute correct sequence numbers.
-	// Sequence number = position in the full mailbox (1-based, UID ASC order).
-	allMessages, err := c.store.MessageFetch(ctx, c.auth, c.mailbox, 0, 0)
+	// Step 1: Fetch only UIDs to build sequence number map (lightweight)
+	allUIDs, err := c.store.MessageUIDs(ctx, c.auth, c.mailbox)
 	if err != nil {
 		c.write(fmt.Sprintf("%s NO FETCH failed\r\n", tag))
 		return
 	}
 
-	// Build UID → sequence number map
-	for i, msg := range allMessages {
-		seqNum := i + 1 // 1-based
-
-		// Filter by requested range
-		if uidMin > 0 && msg.UID < uidMin {
+	// Step 2: Determine which UIDs to fetch based on requested range
+	var targetUIDs []int64
+	seqMap := make(map[int64]int) // UID → sequence number
+	for i, uid := range allUIDs {
+		seqMap[uid] = i + 1
+		if uidMin > 0 && uid < uidMin {
 			continue
 		}
-		if uidMax > 0 && msg.UID > uidMax {
+		if uidMax > 0 && uid > uidMax {
 			continue
 		}
+		targetUIDs = append(targetUIDs, uid)
+	}
 
-		c.write(fmt.Sprintf("* %d FETCH (", seqNum))
-		c.writeFetchItems(dataItems, &msg, isUID)
+	// Step 3: Fetch only the requested messages with full body
+	for _, uid := range targetUIDs {
+		messages, err := c.store.MessageFetch(ctx, c.auth, c.mailbox, uid, uid)
+		if err != nil || len(messages) == 0 {
+			continue
+		}
+		c.write(fmt.Sprintf("* %d FETCH (", seqMap[uid]))
+		c.writeFetchItems(dataItems, &messages[0], isUID)
 		c.write(")\r\n")
 	}
 	c.write(fmt.Sprintf("%s OK FETCH completed\r\n", tag))
@@ -910,7 +918,8 @@ func (c *Connection) cmdAppend(tag, args string) {
 
 	mailbox := unquote(parts[0])
 
-	// Parse optional flags and literal size
+	const maxLiteralSize = 10 * 1024 * 1024 // 10MB hard limit
+
 	flags := "[]"
 	var literalSize int64
 	for _, p := range parts[1:] {
@@ -922,17 +931,16 @@ func (c *Connection) cmdAppend(tag, args string) {
 		}
 	}
 
-	if literalSize <= 0 {
-		literalSize = 10 * 1024 * 1024 // Default 10MB max
+	if literalSize <= 0 || literalSize > maxLiteralSize {
+		c.write(fmt.Sprintf("%s NO APPEND literal size invalid or exceeds %d bytes\r\n", tag, maxLiteralSize))
+		return
 	}
 
-	// Send continuation request
 	c.write("+ Ready for literal data\r\n")
 
-	// Read literal data
 	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	buf := make([]byte, literalSize)
-	n, err := c.reader.Read(buf)
+	n, err := io.ReadFull(c.reader, buf)
 	if err != nil {
 		c.write(fmt.Sprintf("%s NO APPEND failed\r\n", tag))
 		return

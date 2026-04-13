@@ -276,7 +276,8 @@ func (s *Store) MessageExpunge(ctx context.Context, email, mailbox string) ([]in
 	defer tx.Rollback()
 
 	rows, err := tx.QueryContext(ctx,
-		`SELECT uid FROM mail_received WHERE email = ? AND mailbox = ? AND flags LIKE '%deleted%'`,
+		`SELECT uid FROM mail_received WHERE email = ? AND mailbox = ?
+		AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'deleted')`,
 		email, mailbox)
 	if err != nil {
 		return nil, fmt.Errorf("expunge query failed: %w", err)
@@ -295,7 +296,8 @@ func (s *Store) MessageExpunge(ctx context.Context, email, mailbox string) ([]in
 
 	if len(uids) > 0 {
 		_, err = tx.ExecContext(ctx,
-			`DELETE FROM mail_received WHERE email = ? AND mailbox = ? AND flags LIKE '%deleted%'`,
+			`DELETE FROM mail_received WHERE email = ? AND mailbox = ?
+			AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'deleted')`,
 			email, mailbox)
 		if err != nil {
 			return nil, fmt.Errorf("expunge delete failed: %w", err)
@@ -312,7 +314,7 @@ func (s *Store) MailboxSelect(ctx context.Context, email, mailbox string) (*Mail
 
 	row := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) AS "exists",
-			COALESCE(SUM(IIF(flags LIKE '%seen%', 0, 1)), 0) AS unseen,
+			COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'seen') THEN 0 ELSE 1 END), 0) AS unseen,
 			COALESCE(MAX(uid) + 1, 1) AS uidnext,
 			COALESCE(MAX(uid), 0) AS uidvalidity
 		FROM mail_received WHERE email = ? AND mailbox = ?`,
@@ -402,17 +404,19 @@ func (s *Store) MessageStoreFlags(ctx context.Context, email string, uidMin, uid
 			_, err := s.db.ExecContext(ctx,
 				`UPDATE mail_received
 				SET flags = JSON_INSERT(flags, '$[#]', ?)
-				WHERE email = ? AND uid BETWEEN ? AND ? AND flags NOT LIKE ?`,
-				flag, email, uidMin, uidMax, "%"+flag+"%")
+				WHERE email = ? AND uid BETWEEN ? AND ?
+				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`,
+				flag, email, uidMin, uidMax, flag)
 			if err != nil {
 				return fmt.Errorf("flag add failed: %w", err)
 			}
 		case "remove":
 			_, err := s.db.ExecContext(ctx,
 				`UPDATE mail_received
-				SET flags = JSON_REMOVE(flags, (SELECT value FROM JSON_EACH(flags) WHERE value = ?))
-				WHERE email = ? AND uid BETWEEN ? AND ? AND flags LIKE ?`,
-				flag, email, uidMin, uidMax, "%"+flag+"%")
+				SET flags = (SELECT JSON_GROUP_ARRAY(value) FROM JSON_EACH(flags) WHERE value != ?)
+				WHERE email = ? AND uid BETWEEN ? AND ?
+				AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`,
+				flag, email, uidMin, uidMax, flag)
 			if err != nil {
 				return fmt.Errorf("flag remove failed: %w", err)
 			}
@@ -519,4 +523,29 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 	}
 
 	return tx.Commit()
+}
+
+// MessageUIDs returns all UIDs for a given email and mailbox in ASC order.
+// Used for computing IMAP sequence numbers without loading full message bodies.
+func (s *Store) MessageUIDs(ctx context.Context, email, mailbox string) ([]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT uid FROM mail_received WHERE email = ? AND mailbox = ? ORDER BY uid ASC",
+		email, mailbox)
+	if err != nil {
+		return nil, fmt.Errorf("UID list query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var uids []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			return nil, fmt.Errorf("row scan failed: %w", err)
+		}
+		uids = append(uids, uid)
+	}
+	return uids, rows.Err()
 }
