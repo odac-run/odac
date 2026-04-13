@@ -55,6 +55,22 @@ func (c *Connection) cmdLogin(tag, args string) {
 	c.firewall.ClearAttempts(ip)
 	c.auth = username
 	log.Printf("[IMAP] User authenticated: %s from %s", username, ip)
+
+	// Transparent password upgrade: rehash legacy N=16384 → current N=32768
+	if auth.NeedsRehash(account.Password) {
+		go func() {
+			newHash, err := auth.HashPassword(password)
+			if err != nil {
+				return
+			}
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel2()
+			if err := c.store.AccountUpdatePassword(ctx2, username, newHash); err == nil {
+				log.Printf("[IMAP] Password rehashed for %s (scrypt N upgraded)", username)
+			}
+		}()
+	}
+
 	c.write(fmt.Sprintf("%s OK Authentication successful\r\n", tag))
 }
 

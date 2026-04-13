@@ -94,6 +94,22 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 		s.backend.firewall.ClearAttempts(s.ip)
 		s.user = username
 		log.Printf("[SMTP] User authenticated: %s from %s", username, s.ip)
+
+		// Transparent password upgrade: rehash legacy N=16384 → current N=32768
+		if auth.NeedsRehash(account.Password) {
+			go func() {
+				newHash, err := auth.HashPassword(password)
+				if err != nil {
+					return
+				}
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel2()
+				if err := s.backend.store.AccountUpdatePassword(ctx2, username, newHash); err == nil {
+					log.Printf("[SMTP] Password rehashed for %s (scrypt N upgraded)", username)
+				}
+			}()
+		}
+
 		return nil
 	}), nil
 }
