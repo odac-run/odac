@@ -56,3 +56,5 @@ bin/odac-dns
 .odac/
 docker-compose.dev.yml
 
+bin/odac-mail
+.kiro/hooks
