@@ -123,18 +123,46 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	return nil
 }
 
-// Rcpt is called for RCPT TO command. Validates recipient address format.
+// Rcpt is called for RCPT TO command.
+// Enforces anti-relay: unauthenticated sessions can only deliver to local accounts.
+// Authenticated users can send to any address (outbound delivery).
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	if !isValidEmail(to) {
 		return errors.New("invalid email address")
 	}
+
+	// Authenticated users can send anywhere
+	if s.user != "" {
+		s.recipients = append(s.recipients, to)
+		return nil
+	}
+
+	// Unauthenticated: only allow delivery to local accounts or postmaster/hostmaster
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	localPart := to
+	if idx := strings.Index(to, "@"); idx >= 0 {
+		localPart = to[:idx]
+	}
+
+	if localPart == "postmaster" || localPart == "hostmaster" {
+		s.recipients = append(s.recipients, to)
+		return nil
+	}
+
+	account, _ := s.backend.store.AccountExists(ctx, to)
+	if account == nil {
+		return errors.New("relay access denied")
+	}
+
 	s.recipients = append(s.recipients, to)
 	return nil
 }
 
 // Data is called when the message body is received.
-// Stores the message locally for known recipients and triggers
-// outbound delivery for authenticated senders.
+// Parses the RFC 2822 message, stores locally for known recipients,
+// and triggers outbound delivery for authenticated senders.
 func (s *Session) Data(r io.Reader) error {
 	body, err := io.ReadAll(io.LimitReader(r, 10*1024*1024)) // 10MB limit
 	if err != nil {
@@ -143,6 +171,9 @@ func (s *Session) Data(r io.Reader) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// Parse RFC 2822 message into headers and body parts
+	parsed := parseMessage(body)
 
 	for _, rcpt := range s.recipients {
 		// Check if sender is a local authenticated user
@@ -175,11 +206,17 @@ func (s *Session) Data(r io.Reader) error {
 			}
 
 			msg := &storage.MessageRow{
-				Email:   rcpt,
-				Flags:   toNullString(flags),
-				HTML:    toNullString(string(body)),
-				Mailbox: mailbox,
-				Subject: toNullString(extractSubject(body)),
+				Email:       rcpt,
+				Flags:       toNullString(flags),
+				From:        toNullString(parsed.from),
+				Headers:     toNullString(parsed.headersJSON),
+				HeaderLines: toNullString(parsed.headerLinesJSON),
+				HTML:        toNullString(parsed.html),
+				Mailbox:     mailbox,
+				MessageID:   toNullString(parsed.messageID),
+				Subject:     toNullString(parsed.subject),
+				Text:        toNullString(parsed.text),
+				To:          toNullString(parsed.to),
 			}
 			if err := s.backend.store.MessageStore(ctx, msg); err != nil {
 				log.Printf("[SMTP] Failed to store message for %s: %v", rcpt, err)
@@ -188,7 +225,6 @@ func (s *Session) Data(r io.Reader) error {
 
 		// Outbound delivery for authenticated local senders
 		if senderIsLocal && !rcptIsLocal {
-			// Outbound delivery will be handled by the Client in a goroutine
 			go func(recipient string, data []byte) {
 				if err := GetClient().Send(s.from, recipient, data); err != nil {
 					log.Printf("[SMTP] Outbound delivery failed: %s -> %s: %v", s.from, recipient, err)
@@ -237,15 +273,3 @@ func isValidEmail(email string) bool {
 	return len(domain) >= 3 && strings.Contains(domain, ".")
 }
 
-func extractSubject(body []byte) string {
-	// Simple header extraction — full MIME parsing deferred to Phase 3
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.HasPrefix(strings.ToLower(line), "subject:") {
-			return strings.TrimSpace(line[8:])
-		}
-		if line == "" || line == "\r" {
-			break // End of headers
-		}
-	}
-	return ""
-}

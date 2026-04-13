@@ -67,6 +67,10 @@ func main() {
 
 	// Initialize firewall
 	fw := auth.NewFirewall()
+	if os.Getenv("ODAC_MAIL_FIREWALL") == "false" {
+		fw.Enabled = false
+		log.Println("[Mail] WARNING: Firewall disabled via ODAC_MAIL_FIREWALL=false")
+	}
 
 	// Configuration state — updated atomically via control API
 	var currentConfig config.Config

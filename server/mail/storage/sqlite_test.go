@@ -248,8 +248,8 @@ func TestMessageStore_AutoIncrementUID(t *testing.T) {
 		t.Fatalf("expected 3 messages, got %d", len(messages))
 	}
 
-	// Messages are ordered DESC by id, so UIDs should be 3, 2, 1
-	expectedUIDs := []int64{3, 2, 1}
+	// Messages are ordered ASC by uid, so UIDs should be 1, 2, 3
+	expectedUIDs := []int64{1, 2, 3}
 	for i, m := range messages {
 		if m.UID != expectedUIDs[i] {
 			t.Errorf("message %d: expected UID %d, got %d", i, expectedUIDs[i], m.UID)

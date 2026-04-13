@@ -54,11 +54,25 @@ func (c *Connection) Serve() {
 
 		line, err := c.reader.ReadString('\n')
 		if err != nil {
-			return // Connection closed or timeout
+			return
+		}
+
+		// Guard against oversized lines that didn't hit maxLineSize
+		if len(line) > maxLineSize {
+			c.write("* BAD Line too long\r\n")
+			return
 		}
 
 		line = strings.TrimRight(line, "\r\n")
-		if line == "" || len(line) > maxCommandSize {
+		if line == "" {
+			continue
+		}
+		if len(line) > maxCommandSize {
+			if idx := strings.Index(line, " "); idx > 0 && idx < 20 {
+				c.write(fmt.Sprintf("%s BAD Command too long\r\n", line[:idx]))
+			} else {
+				c.write("* BAD Command too long\r\n")
+			}
 			continue
 		}
 
@@ -91,9 +105,9 @@ func (c *Connection) Serve() {
 		case "EXAMINE":
 			c.cmdExamine(tag, args)
 		case "LIST":
-			c.cmdList(tag)
+			c.cmdList(tag, args)
 		case "LSUB":
-			c.cmdLsub(tag)
+			c.cmdLsub(tag, args)
 		case "STATUS":
 			c.cmdStatus(tag, args)
 		case "CREATE":
@@ -102,8 +116,8 @@ func (c *Connection) Serve() {
 			c.cmdDelete(tag, args)
 		case "RENAME":
 			c.cmdRename(tag, args)
-		case "FETCH", "UID":
-			c.cmdFetch(tag, cmd, args)
+		case "FETCH":
+			c.cmdFetch(tag, args, false)
 		case "STORE":
 			c.cmdStore(tag, args)
 		case "COPY":
@@ -116,8 +130,13 @@ func (c *Connection) Serve() {
 			c.cmdClose(tag)
 		case "SEARCH":
 			c.cmdSearch(tag, args)
+		case "UID":
+			c.cmdUID(tag, args)
 		case "IDLE":
 			c.cmdIdle(tag)
+		case "NAMESPACE":
+			c.write(fmt.Sprintf("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n"))
+			c.write(fmt.Sprintf("%s OK NAMESPACE completed\r\n", tag))
 		case "STARTTLS":
 			c.write(fmt.Sprintf("%s NO STARTTLS not available on this connection\r\n", tag))
 		default:

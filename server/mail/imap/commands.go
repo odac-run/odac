@@ -181,8 +181,17 @@ func (c *Connection) cmdExamine(tag, args string) {
 	c.write(fmt.Sprintf("%s OK [READ-ONLY] EXAMINE completed\r\n", tag))
 }
 
-func (c *Connection) cmdList(tag string) {
+func (c *Connection) cmdList(tag, args string) {
 	if !c.requireAuth(tag) {
+		return
+	}
+
+	// Parse LIST arguments: LIST <reference> <mailbox pattern>
+	// LIST "" "" → return hierarchy delimiter only
+	listArgs := splitArgs(args)
+	if len(listArgs) >= 2 && unquote(listArgs[1]) == "" {
+		c.write("* LIST (\\Noselect) \"/\" \"\"\r\n")
+		c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
 		return
 	}
 
@@ -196,12 +205,12 @@ func (c *Connection) cmdList(tag string) {
 	}
 
 	for _, box := range boxes {
-		c.write(fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" %s\r\n", box))
+		c.write(fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" \"%s\"\r\n", box))
 	}
 	c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
 }
 
-func (c *Connection) cmdLsub(tag string) {
+func (c *Connection) cmdLsub(tag, args string) {
 	if !c.requireAuth(tag) {
 		return
 	}
@@ -318,33 +327,44 @@ func (c *Connection) cmdRename(tag, args string) {
 	c.write(fmt.Sprintf("%s OK RENAME completed\r\n", tag))
 }
 
-func (c *Connection) cmdFetch(tag, cmd, args string) {
+func (c *Connection) cmdUID(tag, args string) {
+	parts := strings.SplitN(args, " ", 2)
+	if len(parts) < 2 {
+		c.write(fmt.Sprintf("%s BAD Invalid UID command\r\n", tag))
+		return
+	}
+
+	subCmd := strings.ToUpper(parts[0])
+	subArgs := parts[1]
+
+	switch subCmd {
+	case "FETCH":
+		c.cmdFetch(tag, subArgs, true)
+	case "STORE":
+		c.cmdStore(tag, subArgs)
+	case "SEARCH":
+		c.cmdSearch(tag, subArgs)
+	case "COPY":
+		c.cmdCopy(tag, subArgs)
+	default:
+		c.write(fmt.Sprintf("%s BAD Unknown UID command\r\n", tag))
+	}
+}
+
+func (c *Connection) cmdFetch(tag, args string, isUID bool) {
 	if !c.requireMailbox(tag) {
 		return
 	}
 
-	// Handle "UID FETCH" prefix
-	fetchArgs := args
-	if cmd == "UID" {
-		parts := strings.SplitN(args, " ", 2)
-		if len(parts) < 2 || strings.ToUpper(parts[0]) != "FETCH" {
-			c.write(fmt.Sprintf("%s BAD Unknown UID command\r\n", tag))
-			return
-		}
-		fetchArgs = parts[1]
-	}
-
-	// Parse sequence set and data items
-	parts := strings.SplitN(fetchArgs, " ", 2)
+	parts := strings.SplitN(args, " ", 2)
 	if len(parts) < 2 {
 		c.write(fmt.Sprintf("%s NO Invalid FETCH arguments\r\n", tag))
 		return
 	}
 
 	seqSet := parts[0]
-	dataItems := strings.ToUpper(parts[1])
+	dataItems := parts[1]
 
-	// Parse UID range
 	var uidMin, uidMax int64
 	if seqSet != "ALL" && seqSet != "*" {
 		if strings.Contains(seqSet, ":") {
@@ -363,91 +383,314 @@ func (c *Connection) cmdFetch(tag, cmd, args string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	messages, err := c.store.MessageFetch(ctx, c.auth, c.mailbox, uidMin, uidMax)
+	// Always fetch ALL messages to compute correct sequence numbers.
+	// Sequence number = position in the full mailbox (1-based, UID ASC order).
+	allMessages, err := c.store.MessageFetch(ctx, c.auth, c.mailbox, 0, 0)
 	if err != nil {
 		c.write(fmt.Sprintf("%s NO FETCH failed\r\n", tag))
 		return
 	}
 
-	for _, msg := range messages {
-		c.write(fmt.Sprintf("* %d FETCH (", msg.UID))
-		c.writeFetchItems(dataItems, &msg)
+	// Build UID → sequence number map
+	for i, msg := range allMessages {
+		seqNum := i + 1 // 1-based
+
+		// Filter by requested range
+		if uidMin > 0 && msg.UID < uidMin {
+			continue
+		}
+		if uidMax > 0 && msg.UID > uidMax {
+			continue
+		}
+
+		c.write(fmt.Sprintf("* %d FETCH (", seqNum))
+		c.writeFetchItems(dataItems, &msg, isUID)
 		c.write(")\r\n")
 	}
 	c.write(fmt.Sprintf("%s OK FETCH completed\r\n", tag))
 }
 
-func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow) {
-	if strings.Contains(items, "UID") {
+func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUID bool) {
+	upper := strings.ToUpper(items)
+
+	if isUID || strings.Contains(upper, "UID") {
 		c.write(fmt.Sprintf("UID %d ", msg.UID))
 	}
-	if strings.Contains(items, "FLAGS") {
+	if strings.Contains(upper, "FLAGS") {
 		flags := parseJSONFlags(msg.Flags.String)
 		c.write(fmt.Sprintf("FLAGS (%s) ", strings.Join(flags, " ")))
 	}
-	if strings.Contains(items, "INTERNALDATE") {
+	if strings.Contains(upper, "INTERNALDATE") {
 		date := msg.Date.String
-		if date != "" {
-			c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", date))
+		if date == "" {
+			date = time.Now().Format("02-Jan-2006 15:04:05 -0700")
 		}
+		c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", date))
 	}
-	if strings.Contains(items, "RFC822.SIZE") {
-		size := len(msg.HTML.String) + len(msg.Text.String)
-		c.write(fmt.Sprintf("RFC822.SIZE %d ", size))
+	if strings.Contains(upper, "RFC822.SIZE") || strings.Contains(upper, "RFC822") {
+		body := buildFullBody(msg)
+		c.write(fmt.Sprintf("RFC822.SIZE %d ", len(body)))
 	}
-	if strings.Contains(items, "ENVELOPE") {
+	if strings.Contains(upper, "ENVELOPE") {
 		c.writeEnvelope(msg)
 	}
-	if strings.Contains(items, "BODYSTRUCTURE") {
+	if strings.Contains(upper, "BODYSTRUCTURE") {
 		c.writeBodyStructure(msg)
 	}
-	if strings.Contains(items, "BODY") && !strings.Contains(items, "BODYSTRUCTURE") {
-		c.writeBody(items, msg)
+
+	// RFC822 full message fetch (not just SIZE)
+	if strings.Contains(upper, "RFC822") && !strings.Contains(upper, "RFC822.SIZE") && !strings.Contains(upper, "RFC822.HEADER") {
+		body := buildFullBody(msg)
+		c.write(fmt.Sprintf("RFC822 {%d}\r\n%s", len(body), body))
 	}
+
+	// BODY / BODY.PEEK handling — check for BODY[ or BODY.PEEK[ pattern
+	// to avoid conflict with BODYSTRUCTURE keyword
+	if strings.Contains(upper, "BODY[") || strings.Contains(upper, "BODY.PEEK[") {
+		c.writeBodySection(items, msg)
+	}
+}
+
+// writeBodySection handles BODY[section] and BODY.PEEK[section] requests.
+func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
+	// Parse partial range: BODY[section]<origin.count>
+	// RFC 3501 §6.4.5: partial fetch returns a substring of the section
+	var partialOrigin, partialCount int64
+	hasPartial := false
+	partialStr := ""
+
+	// Find <origin.count> after the closing ]
+	closeBracket := strings.LastIndex(items, "]")
+	if closeBracket >= 0 && closeBracket < len(items)-1 {
+		rest := items[closeBracket+1:]
+		if strings.HasPrefix(rest, "<") && strings.HasSuffix(rest, ">") {
+			partialStr = rest[1 : len(rest)-1]
+			dotIdx := strings.Index(partialStr, ".")
+			if dotIdx >= 0 {
+				partialOrigin, _ = strconv.ParseInt(partialStr[:dotIdx], 10, 64)
+				partialCount, _ = strconv.ParseInt(partialStr[dotIdx+1:], 10, 64)
+				hasPartial = true
+			}
+		}
+	}
+
+	// Extract section specifier from between [ and ]
+	sectionStart := strings.Index(items, "[")
+	sectionEnd := strings.LastIndex(items, "]")
+	section := ""
+	if sectionStart >= 0 && sectionEnd > sectionStart {
+		section = items[sectionStart+1 : sectionEnd]
+	}
+
+	// Build full content for the requested section
+	var content string
+	upperSection := strings.ToUpper(section)
+
+	switch {
+	case strings.HasPrefix(upperSection, "HEADER.FIELDS"):
+		pStart := strings.Index(upperSection, "(")
+		pEnd := strings.Index(upperSection, ")")
+		var wantFields []string
+		if pStart >= 0 && pEnd > pStart {
+			wantFields = strings.Fields(upperSection[pStart+1 : pEnd])
+		}
+		content = buildFilteredHeaders(msg, wantFields) + "\r\n"
+
+	case upperSection == "HEADER":
+		hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+		hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+		rawHeaders := buildRawHeaders(msg)
+		var sb strings.Builder
+		if hasHTML && hasText {
+			writeHeadersWithContentType(&sb, rawHeaders, fmt.Sprintf("multipart/alternative; boundary=\"----=_ODAC_%d\"", msg.UID))
+		} else if hasHTML {
+			writeHeadersWithContentType(&sb, rawHeaders, "text/html; charset=\"UTF-8\"")
+		} else {
+			writeHeadersWithContentType(&sb, rawHeaders, "text/plain; charset=\"UTF-8\"")
+		}
+		content = sb.String() + "\r\n"
+
+	case upperSection == "TEXT":
+		if msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0" {
+			content = msg.HTML.String
+		} else if msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0" {
+			content = msg.Text.String
+		}
+
+	default:
+		content = buildFullBody(msg)
+	}
+
+	// Apply partial range if requested
+	if hasPartial {
+		contentBytes := []byte(content)
+		origin := int(partialOrigin)
+		count := int(partialCount)
+
+		if origin >= len(contentBytes) {
+			content = ""
+		} else {
+			end := origin + count
+			if end > len(contentBytes) {
+				end = len(contentBytes)
+			}
+			content = string(contentBytes[origin:end])
+		}
+
+		// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
+		key := fmt.Sprintf("BODY[%s]<%d>", section, origin)
+		c.write(fmt.Sprintf("%s {%d}\r\n%s", key, len(content), content))
+	} else {
+		key := "BODY[" + section + "]"
+		c.write(fmt.Sprintf("%s {%d}\r\n%s", key, len(content), content))
+	}
+}
+
+// buildFilteredHeaders returns only the requested header fields from the message.
+func buildFilteredHeaders(msg *storage.MessageRow, wantFields []string) string {
+	if !msg.HeaderLines.Valid || msg.HeaderLines.String == "" {
+		return ""
+	}
+	var lines []struct {
+		Key  string `json:"key"`
+		Line string `json:"line"`
+	}
+	if err := json.Unmarshal([]byte(msg.HeaderLines.String), &lines); err != nil {
+		return ""
+	}
+
+	// Build a set of wanted field names (lowercase)
+	want := make(map[string]bool, len(wantFields))
+	for _, f := range wantFields {
+		want[strings.ToLower(f)] = true
+	}
+
+	// For Content-Type, we need to return the corrected version
+	needsCT := want["content-type"]
+
+	var sb strings.Builder
+	skipContinuation := false
+	for _, l := range lines {
+		lower := strings.ToLower(l.Key)
+
+		// Skip content-type — we'll add corrected version below
+		if lower == "content-type" || lower == "content-transfer-encoding" {
+			skipContinuation = true
+			continue
+		}
+
+		if skipContinuation && (strings.HasPrefix(l.Line, " ") || strings.HasPrefix(l.Line, "\t")) {
+			continue
+		}
+		skipContinuation = false
+
+		if want[lower] {
+			sb.WriteString(l.Line)
+			sb.WriteString("\r\n")
+		}
+	}
+
+	// Add corrected Content-Type if requested
+	if needsCT {
+		hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+		hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+		if hasHTML && hasText {
+			sb.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"----=_ODAC_%d\"\r\n", msg.UID))
+		} else if hasHTML {
+			sb.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+		} else {
+			sb.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+		}
+	}
+
+	return sb.String()
 }
 
 func (c *Connection) writeEnvelope(msg *storage.MessageRow) {
 	date := msg.Date.String
-	subject := msg.Subject.String
-	from := ""
-	if msg.From.Valid {
-		from = msg.From.String
+	subject := escapeIMAPString(msg.Subject.String)
+
+	fromAddrs := parseMailboxJSON(msg.From.String)
+	toAddrs := parseMailboxJSON(msg.To.String)
+
+	// RFC 3501 ENVELOPE: (date subject from sender reply-to to cc bcc in-reply-to message-id)
+	// sender and reply-to default to from if not present
+	c.write(fmt.Sprintf("ENVELOPE (\"%s\" \"%s\" %s %s %s %s NIL NIL NIL \"%s\") ",
+		date, subject, fromAddrs, fromAddrs, fromAddrs, toAddrs, escapeIMAPString(msg.MessageID.String)))
+}
+
+// parseMailboxJSON converts the Node.js mailparser JSON format
+// {"value":[{"address":"user@example.com","name":"User Name"}]}
+// into RFC 3501 IMAP address format: ((name NIL user host))
+func parseMailboxJSON(jsonStr string) string {
+	if jsonStr == "" {
+		return "NIL"
 	}
-	c.write(fmt.Sprintf("ENVELOPE (\"%s\" \"%s\" \"%s\") ", date, subject, from))
+
+	type addrEntry struct {
+		Address string `json:"address"`
+		Name    string `json:"name"`
+	}
+	type addrWrapper struct {
+		Value []addrEntry `json:"value"`
+	}
+
+	var wrapper addrWrapper
+	if err := json.Unmarshal([]byte(jsonStr), &wrapper); err != nil {
+		// Try as raw address string
+		if strings.Contains(jsonStr, "@") {
+			parts := strings.SplitN(jsonStr, "@", 2)
+			return fmt.Sprintf("((\"%s\" NIL \"%s\" \"%s\"))", "", parts[0], parts[1])
+		}
+		return "NIL"
+	}
+
+	if len(wrapper.Value) == 0 {
+		return "NIL"
+	}
+
+	var addrs []string
+	for _, entry := range wrapper.Value {
+		name := escapeIMAPString(entry.Name)
+		parts := strings.SplitN(entry.Address, "@", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		addrs = append(addrs, fmt.Sprintf("(\"%s\" NIL \"%s\" \"%s\")", name, parts[0], parts[1]))
+	}
+
+	if len(addrs) == 0 {
+		return "NIL"
+	}
+
+	return "(" + strings.Join(addrs, "") + ")"
+}
+
+func escapeIMAPString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return s
 }
 
 func (c *Connection) writeBodyStructure(msg *storage.MessageRow) {
-	hasText := msg.Text.Valid && msg.Text.String != ""
-	hasHTML := msg.HTML.Valid && msg.HTML.String != ""
+	hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+	hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
 
+	// RFC 3501 body structure: (type subtype (params) id description encoding size [lines] [md5] [disposition] [language] [location])
+	// Encoding must match actual content — we serve raw UTF-8, so "8BIT" or "7BIT"
 	if hasText && hasHTML {
 		textSize := len(msg.Text.String)
 		htmlSize := len(msg.HTML.String)
-		c.write(fmt.Sprintf("BODYSTRUCTURE ((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"BASE64\" %d NIL NIL NIL NIL)(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"BASE64\" %d) \"ALTERNATIVE\" NIL NIL NIL) ", textSize, htmlSize))
+		c.write(fmt.Sprintf("BODYSTRUCTURE ((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL)(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) \"ALTERNATIVE\" NIL NIL NIL) ", textSize, htmlSize))
 	} else if hasHTML {
-		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"BASE64\" %d) ", len(msg.HTML.String)))
+		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) ", len(msg.HTML.String)))
 	} else {
 		size := 0
 		if hasText {
 			size = len(msg.Text.String)
 		}
-		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"BASE64\" %d) ", size))
+		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) ", size))
 	}
-}
-
-func (c *Connection) writeBody(items string, msg *storage.MessageRow) {
-	// Determine what body section is requested
-	var content string
-	if strings.Contains(items, "BODY[HEADER") {
-		// Build headers from headerLines
-		content = buildHeaders(msg)
-	} else if strings.Contains(items, "BODY[TEXT]") || strings.Contains(items, "BODY[]") {
-		content = buildFullBody(msg)
-	} else {
-		content = buildFullBody(msg)
-	}
-
-	c.write(fmt.Sprintf("BODY[] {%d}\r\n%s", len(content), content))
 }
 
 func (c *Connection) cmdStore(tag, args string) {
@@ -766,7 +1009,79 @@ func parseJSONFlags(flagsJSON string) []string {
 	return flags
 }
 
-func buildHeaders(msg *storage.MessageRow) string {
+// reassemble them into a properly formatted MIME message that mail clients can render.
+func buildFullBody(msg *storage.MessageRow) string {
+	hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+	hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+
+	// Detect if html/text field contains a raw RFC 2822 message (legacy/broken storage).
+	// If the content starts with RFC 2822 headers (e.g., "Received:", "From:", "To:"),
+	// it was stored as raw message data — return it as-is since it's already a valid message.
+	if hasHTML && !hasText && isRawMessage(msg.HTML.String) {
+		return msg.HTML.String
+	}
+	if hasText && !hasHTML && isRawMessage(msg.Text.String) {
+		return msg.Text.String
+	}
+
+	rawHeaders := buildRawHeaders(msg)
+
+	var sb strings.Builder
+
+	if hasHTML && hasText {
+		boundary := fmt.Sprintf("----=_ODAC_%d", msg.UID)
+		writeHeadersWithContentType(&sb, rawHeaders, "multipart/alternative; boundary=\""+boundary+"\"")
+		sb.WriteString("\r\n")
+		sb.WriteString("--" + boundary + "\r\n")
+		sb.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+		sb.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		sb.WriteString(msg.Text.String)
+		sb.WriteString("\r\n--" + boundary + "\r\n")
+		sb.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+		sb.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		sb.WriteString(msg.HTML.String)
+		sb.WriteString("\r\n--" + boundary + "--\r\n")
+	} else if hasHTML {
+		writeHeadersWithContentType(&sb, rawHeaders, "text/html; charset=\"UTF-8\"")
+		sb.WriteString("\r\n")
+		sb.WriteString(msg.HTML.String)
+	} else if hasText {
+		writeHeadersWithContentType(&sb, rawHeaders, "text/plain; charset=\"UTF-8\"")
+		sb.WriteString("\r\n")
+		sb.WriteString(msg.Text.String)
+	} else {
+		sb.WriteString(rawHeaders)
+		sb.WriteString("\r\n")
+	}
+
+	return sb.String()
+}
+
+// isRawMessage detects if content is a raw RFC 2822 message (has headers at the start).
+func isRawMessage(content string) bool {
+	// Check first few lines for common RFC 2822 header patterns
+	firstLine := content
+	if idx := strings.Index(content, "\n"); idx > 0 {
+		firstLine = content[:idx]
+	}
+	firstLine = strings.TrimSpace(firstLine)
+
+	headerPrefixes := []string{
+		"received:", "from:", "to:", "subject:", "date:",
+		"mime-version:", "content-type:", "dkim-signature:",
+		"message-id:", "return-path:", "delivered-to:",
+	}
+	lower := strings.ToLower(firstLine)
+	for _, prefix := range headerPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildRawHeaders extracts raw header lines from the DB JSON, excluding Content-Type.
+func buildRawHeaders(msg *storage.MessageRow) string {
 	if !msg.HeaderLines.Valid || msg.HeaderLines.String == "" {
 		return ""
 	}
@@ -785,24 +1100,36 @@ func buildHeaders(msg *storage.MessageRow) string {
 	return sb.String()
 }
 
-func buildFullBody(msg *storage.MessageRow) string {
-	var sb strings.Builder
+// writeHeadersWithContentType writes headers, replacing the original Content-Type
+// with the correct one for the reconstructed body. Also strips Content-Transfer-Encoding
+// since DB content is already decoded.
+func writeHeadersWithContentType(sb *strings.Builder, rawHeaders, contentType string) {
+	skipContinuation := false
+	for _, line := range strings.Split(rawHeaders, "\r\n") {
+		if line == "" {
+			continue
+		}
 
-	// Headers
-	headers := buildHeaders(msg)
-	if headers != "" {
-		sb.WriteString(headers)
+		lower := strings.ToLower(line)
+
+		// Skip Content-Type and Content-Transfer-Encoding headers (we replace them)
+		if strings.HasPrefix(lower, "content-type:") || strings.HasPrefix(lower, "content-transfer-encoding:") {
+			skipContinuation = true
+			continue
+		}
+
+		// Skip continuation lines (start with whitespace) of skipped headers
+		if skipContinuation && (line[0] == ' ' || line[0] == '\t') {
+			continue
+		}
+		skipContinuation = false
+
+		sb.WriteString(line)
 		sb.WriteString("\r\n")
 	}
 
-	// Body content
-	if msg.HTML.Valid && msg.HTML.String != "" {
-		sb.WriteString(msg.HTML.String)
-	} else if msg.Text.Valid && msg.Text.String != "" {
-		sb.WriteString(msg.Text.String)
-	}
-
-	return sb.String()
+	// Add our correct Content-Type
+	sb.WriteString("Content-Type: " + contentType + "\r\n")
 }
 
 // authComparePassword wraps the auth package to avoid circular imports.

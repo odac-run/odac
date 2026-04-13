@@ -241,7 +241,7 @@ func (s *Store) MessageFetch(ctx context.Context, email, mailbox string, uidMin,
 		query += " AND uid <= ?"
 		args = append(args, uidMax)
 	}
-	query += " ORDER BY id DESC"
+	query += " ORDER BY uid ASC"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

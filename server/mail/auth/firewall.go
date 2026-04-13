@@ -26,17 +26,21 @@ type attemptRecord struct {
 type Firewall struct {
 	blocked  sync.Map // map[string]time.Time (IP → unblock time)
 	attempts sync.Map // map[string]*attemptRecord
+	Enabled  bool     // Set to false to disable blocking (testing)
 	mu       sync.Mutex
 }
 
-// NewFirewall creates a new Firewall instance.
+// NewFirewall creates a new Firewall instance with blocking enabled.
 func NewFirewall() *Firewall {
-	return &Firewall{}
+	return &Firewall{Enabled: true}
 }
 
 // HandleFailedAuth records a failed authentication attempt for the given IP.
 // Blocks the IP after maxFailedAttempts consecutive failures within attemptResetAfter.
 func (f *Firewall) HandleFailedAuth(ip string) {
+	if !f.Enabled {
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -72,6 +76,9 @@ func (f *Firewall) Block(ip, reason string) {
 // IsBlocked checks if an IP is currently blocked.
 // Automatically removes expired blocks (lazy cleanup).
 func (f *Firewall) IsBlocked(ip string) bool {
+	if !f.Enabled {
+		return false
+	}
 	val, ok := f.blocked.Load(ip)
 	if !ok {
 		return false
