@@ -69,7 +69,7 @@ Connect your servers to **ODAC Cloud** for a unified dashboard experience. Manag
 *   **Secure Tunnels:** No public IP? No problem. Access self-hosted apps behind NAT, firewalls, or private networks through ODAC Cloud without port forwarding. Tunnels are private by default — only you can access your own apps. ODAC maintains a persistent, multiplexed connection to the cloud and relays traffic directly to your local apps with minimal latency.
 ## 📚 Documentation
 
-For more detailed information and API reference, please check out our [official documentation website](https://docs.odac.run).
+For more detailed information and API reference, please check out our [official documentation website](https://odac.run/docs).
 
 ## 📄 License
 
