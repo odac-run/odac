@@ -17,6 +17,7 @@
 *   🐳 **Secure Isolation:** Applications run in isolated lightweight containers, preventing "noisy neighbor" issues.
 *   🔒 **Autopilot Security:** Zero-touch SSL generation, auto-renewal, and strict traffic analysis (Replay Attack protection).
 *   📬 **Built-in Mail Server:** A production-ready SMTP/IMAP server included. No need for external email services.
+*   🌐 **Private Cloud Tunnels:** No public IP? No problem. Securely access self-hosted apps behind NAT or firewalls through ODAC Cloud — no port forwarding needed. Tunnels are private by default; only you can access your own apps.
 
 
 ## 🚀 Quick Start
@@ -65,9 +66,10 @@ Connect your servers to **ODAC Cloud** for a unified dashboard experience. Manag
 *   **Remote Management:** Control your servers from anywhere.
 *   **Real-Time Metrics:** Visualize detailed performance data.
 *   **Multi-Server Aggregation:** Manage your entire fleet in one place.
+*   **Secure Tunnels:** No public IP? No problem. Access self-hosted apps behind NAT, firewalls, or private networks through ODAC Cloud without port forwarding. Tunnels are private by default — only you can access your own apps. ODAC maintains a persistent, multiplexed connection to the cloud and relays traffic directly to your local apps with minimal latency.
 ## 📚 Documentation
 
-For more detailed information and API reference, please check out our [official documentation website](https://docs.odac.run).
+For more detailed information and API reference, please check out our [official documentation website](https://odac.run/docs).
 
 ## 📄 License
 

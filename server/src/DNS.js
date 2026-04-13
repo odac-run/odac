@@ -220,7 +220,12 @@ class DNS {
       const validTypes = ['A', 'AAAA', 'CAA', 'CNAME', 'MX', 'NS', 'TXT']
       if (!validTypes.includes(type)) continue
 
-      if (obj.unique !== false) {
+      // Multi-value types (CAA, MX, NS, TXT) allow multiple records per name.
+      // Single-value types (A, AAAA, CNAME) default to unique unless explicitly overridden.
+      const multiValueTypes = ['CAA', 'MX', 'NS', 'TXT']
+      const isUnique = obj.unique !== undefined ? obj.unique : !multiValueTypes.includes(type)
+
+      if (isUnique) {
         zone.records = zone.records.filter(r => !(r.type === type && r.name === obj.name))
       }
 

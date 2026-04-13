@@ -1,5 +1,6 @@
 const os = require('os')
 const fs = require('fs')
+const path = require('path')
 
 const {error} = Odac.core('Log', false).init('System', 'Info')
 
@@ -263,7 +264,7 @@ class Info {
 
   getSystemInfo() {
     const cpus = os.cpus()
-    const packageJson = require('../../package.json')
+    const packageJson = require(path.join(__dirname, '../../../package.json'))
     const distro = this.getLinuxDistro()
 
     const info = {

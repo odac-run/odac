@@ -30,13 +30,9 @@
     "odac": "bin/odac"
   },
   "dependencies": {
-    "dkim-signer": "^0.2.2",
     "dockerode": "^4.0.9",
     "find-process": "^2.0.0",
-    "mailparser": "^3.9.1",
     "selfsigned": "^2.4.1",
-    "smtp-server": "^3.17.1",
-    "sqlite3": "^6.0.1",
     "ssh2": "^1.15.0",
     "ws": "^8.18.0"
   },
@@ -62,9 +58,9 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "lint:go": "cd server/proxy && go fmt ./... && go vet ./... && cd ../dns && go fmt ./... && go vet ./...",
+    "lint:go": "cd server/proxy && go fmt ./... && go vet ./... && cd ../dns && go fmt ./... && go vet ./... && cd ../mail && go fmt ./... && go vet ./...",
     "prepare": "husky || true",
-    "test:go": "cd server/proxy && go test ./... && cd ../dns && go test ./...",
+    "test:go": "cd server/proxy && go test ./... && cd ../dns && go test ./... && cd ../mail && go test ./...",
     "test": "npm run test:go && jest --coverage",
     "test:watch": "jest --watch",
     "release": "semantic-release",
@@ -74,9 +70,12 @@
     "build:dns": "cd server/dns && go build -buildvcs=false -o ../../bin/odac-dns",
     "build:dns:linux": "cd server/dns && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o ../../bin/odac-dns",
     "build:dns:linux:arm": "cd server/dns && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -o ../../bin/odac-dns",
-    "build:all": "npm run build:proxy && npm run build:dns",
-    "build:all:linux": "npm run build:proxy:linux && npm run build:dns:linux",
-    "build:all:linux:arm": "npm run build:proxy:linux:arm && npm run build:dns:linux:arm"
+    "build:mail": "cd server/mail && go build -buildvcs=false -o ../../bin/odac-mail",
+    "build:mail:linux": "cd server/mail && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o ../../bin/odac-mail",
+    "build:mail:linux:arm": "cd server/mail && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -o ../../bin/odac-mail",
+    "build:all": "npm run build:proxy && npm run build:dns && npm run build:mail",
+    "build:all:linux": "npm run build:proxy:linux && npm run build:dns:linux && npm run build:mail:linux",
+    "build:all:linux:arm": "npm run build:proxy:linux:arm && npm run build:dns:linux:arm && npm run build:mail:linux:arm"
   },
   "lint-staged": {
     "*.js": [
@@ -86,7 +85,8 @@
     ],
     "*.go": [
       "cd server/proxy && go fmt ./... && go vet ./...",
-      "cd server/dns && go fmt ./... && go vet ./..."
+      "cd server/dns && go fmt ./... && go vet ./...",
+      "cd server/mail && go fmt ./... && go vet ./..."
     ]
   }
 }
