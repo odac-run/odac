@@ -1,7 +1,10 @@
 package smtp
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"mime/quotedprintable"
 	"strings"
 )
 
@@ -93,17 +96,18 @@ func parseMessage(raw []byte) parsedMessage {
 	headersBytes, _ := json.Marshal(headers)
 	msg.headersJSON = string(headersBytes)
 
-	// Determine body content type from headers
+	// Determine body content type and transfer encoding from headers
 	contentType := strings.ToLower(headers["content-type"])
+	cte := headers["content-transfer-encoding"]
 
 	if strings.Contains(contentType, "text/html") {
-		msg.html = bodySection
+		msg.html = decodeBody(bodySection, cte)
 	} else if strings.Contains(contentType, "multipart/") {
 		// Extract boundary and parse MIME parts
 		msg.html, msg.text = parseMIMEBody(contentType, bodySection)
 	} else {
 		// Default to text/plain
-		msg.text = bodySection
+		msg.text = decodeBody(bodySection, cte)
 	}
 
 	// If from/to weren't in headers, build from envelope
@@ -152,6 +156,42 @@ func formatAddressJSON(raw string) string {
 	return string(b)
 }
 
+// decodeBody decodes a message body based on its Content-Transfer-Encoding.
+// Supports quoted-printable (RFC 2045 §6.7) and base64 (RFC 2045 §6.8).
+// Returns the original body unchanged for 7bit, 8bit, binary, or unknown encodings.
+func decodeBody(body, encoding string) string {
+	switch strings.TrimSpace(strings.ToLower(encoding)) {
+	case "quoted-printable":
+		r := quotedprintable.NewReader(strings.NewReader(body))
+		decoded, err := io.ReadAll(r)
+		if err != nil {
+			return body
+		}
+		return string(decoded)
+	case "base64":
+		cleaned := strings.NewReplacer("\r", "", "\n", "", " ", "").Replace(body)
+		decoded, err := base64.StdEncoding.DecodeString(cleaned)
+		if err != nil {
+			return body
+		}
+		return string(decoded)
+	default:
+		return body
+	}
+}
+
+// extractHeader returns the value of a specific header from a raw header block (case-insensitive).
+func extractHeader(headerBlock, name string) string {
+	target := strings.ToLower(name) + ":"
+	for _, line := range strings.Split(headerBlock, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), target) {
+			return strings.TrimSpace(line[strings.Index(line, ":")+1:])
+		}
+	}
+	return ""
+}
+
 // parseMIMEBody extracts text/plain and text/html parts from a multipart message.
 func parseMIMEBody(contentType, body string) (html, text string) {
 	// Extract boundary from Content-Type header
@@ -186,12 +226,17 @@ func parseMIMEBody(contentType, body string) (html, text string) {
 			continue
 		}
 
-		partHeaders := strings.ToLower(part[:partHeaderEnd])
+		rawPartHeaders := part[:partHeaderEnd]
+		partHeaders := strings.ToLower(rawPartHeaders)
 		partBody := strings.TrimLeft(part[partHeaderEnd:], "\r\n")
+
+		// Decode body based on Content-Transfer-Encoding
+		cte := extractHeader(rawPartHeaders, "Content-Transfer-Encoding")
+		partBody = decodeBody(partBody, cte)
 
 		// Recurse into nested multipart
 		if strings.Contains(partHeaders, "multipart/") {
-			for _, line := range strings.Split(part[:partHeaderEnd], "\n") {
+			for _, line := range strings.Split(rawPartHeaders, "\n") {
 				line = strings.TrimSpace(strings.ToLower(line))
 				if strings.HasPrefix(line, "content-type:") {
 					subHTML, subText := parseMIMEBody(line[13:], partBody)

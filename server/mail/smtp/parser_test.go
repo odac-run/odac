@@ -115,3 +115,76 @@ func TestFormatAddressJSON_Empty(t *testing.T) {
 		t.Errorf("empty should return empty value array, got %s", result)
 	}
 }
+
+func TestParseMessage_QuotedPrintableSinglePart(t *testing.T) {
+	raw := "From: a@b.com\r\nTo: c@d.com\r\nSubject: QP Test\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<html><body>Hello=20World=20=20Test</body></html>\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.html, "Hello World  Test") {
+		t.Errorf("QP single-part html not decoded, got %q", msg.html)
+	}
+	if strings.Contains(msg.html, "=20") {
+		t.Errorf("html still contains =20 artifacts: %q", msg.html)
+	}
+}
+
+func TestParseMessage_QuotedPrintableMultipart(t *testing.T) {
+	raw := "From: sender@test.com\r\nTo: rcpt@test.com\r\nSubject: QP Multi\r\nContent-Type: multipart/alternative; boundary=\"qpbound\"\r\n\r\n--qpbound\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nHello=20World\r\n--qpbound\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<p>Hello=20World=3D=3DTest</p>\r\n--qpbound--\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.text, "Hello World") {
+		t.Errorf("QP text part not decoded, got %q", msg.text)
+	}
+	if !strings.Contains(msg.html, "Hello World==Test") {
+		t.Errorf("QP html part not decoded, got %q", msg.html)
+	}
+	if strings.Contains(msg.html, "=20") || strings.Contains(msg.html, "=3D") {
+		t.Errorf("html still contains QP artifacts: %q", msg.html)
+	}
+}
+
+func TestParseMessage_Base64SinglePart(t *testing.T) {
+	raw := "From: a@b.com\r\nTo: c@d.com\r\nSubject: B64\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPGh0bWw+PGJvZHk+SGVsbG8gV29ybGQ8L2JvZHk+PC9odG1sPg==\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if msg.html != "<html><body>Hello World</body></html>" {
+		t.Errorf("base64 html not decoded, got %q", msg.html)
+	}
+}
+
+func TestParseMessage_Base64Multipart(t *testing.T) {
+	raw := "From: a@b.com\r\nTo: c@d.com\r\nSubject: B64 Multi\r\nContent-Type: multipart/alternative; boundary=\"b64bound\"\r\n\r\n--b64bound\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8gV29ybGQ=\r\n--b64bound\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPHA+SGVsbG8gV29ybGQ8L3A+\r\n--b64bound--\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if msg.text != "Hello World" {
+		t.Errorf("base64 text not decoded, got %q", msg.text)
+	}
+	if msg.html != "<p>Hello World</p>" {
+		t.Errorf("base64 html not decoded, got %q", msg.html)
+	}
+}
+
+func TestParseMessage_QuotedPrintableSoftLineBreak(t *testing.T) {
+	raw := "From: a@b.com\r\nTo: c@d.com\r\nSubject: Soft Break\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nThis is a long line that has been =\r\nwrapped using soft line breaks.\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	expected := "This is a long line that has been wrapped using soft line breaks.\r\n"
+	if msg.text != expected {
+		t.Errorf("QP soft line break not handled, got %q, want %q", msg.text, expected)
+	}
+}
+
+func TestDecodeBody_7bit(t *testing.T) {
+	body := "Hello World"
+	if result := decodeBody(body, "7bit"); result != body {
+		t.Errorf("7bit should pass through unchanged, got %q", result)
+	}
+	if result := decodeBody(body, ""); result != body {
+		t.Errorf("empty encoding should pass through unchanged, got %q", result)
+	}
+}
