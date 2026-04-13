@@ -151,7 +151,7 @@ func (c *Client) sendToHost(from, to string, body []byte, host, ehloBase string,
 			continue
 		}
 
-		err = c.deliverMessage(conn, local.EHLO, from, to, body)
+		err = c.deliverMessage(conn, local.EHLO, from, to, body, host)
 		if err != nil {
 			conn.Close()
 			lastErr = err
@@ -312,7 +312,8 @@ func (c *Client) connect(local LocalAddress, host string, port int) (net.Conn, e
 }
 
 // deliverMessage performs the SMTP transaction: EHLO, STARTTLS, MAIL FROM, RCPT TO, DATA.
-func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byte) error {
+// mxHost is the MX hostname used as TLS ServerName for certificate validation.
+func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byte, mxHost string) error {
 	// Read greeting
 	if _, err := c.readResponse(conn); err != nil {
 		return fmt.Errorf("greeting failed: %w", err)
@@ -328,14 +329,13 @@ func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byt
 	if _, isTLS := conn.(*tls.Conn); !isTLS && strings.Contains(resp, "STARTTLS") {
 		_, err := c.command(conn, "STARTTLS\r\n")
 		if err == nil {
-			host := extractHostFromConn(conn)
 			tlsConn := tls.Client(conn, &tls.Config{
 				MinVersion: tls.VersionTLS12,
-				ServerName: host,
+				ServerName: mxHost,
 			})
 			if err := tlsConn.Handshake(); err != nil {
 				// STARTTLS failed, continue on plaintext
-				log.Printf("[SMTP-Client] STARTTLS handshake failed for %s: %v", host, err)
+				log.Printf("[SMTP-Client] STARTTLS handshake failed for %s: %v", mxHost, err)
 			} else {
 				conn = tlsConn
 				// Re-EHLO after STARTTLS

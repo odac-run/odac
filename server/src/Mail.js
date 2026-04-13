@@ -191,16 +191,56 @@ class Mail {
     domain = domain.join('.')
     if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
 
-    // Build RFC 2822 message from structured data
+    // Build RFC 2822 compliant MIME message from structured data
+    const contentType = data.header?.['Content-Type'] || ''
+    const isMultipart = contentType.includes('multipart/alternative')
+
+    // Extract boundary from Content-Type if multipart
+    let boundary = null
+    if (isMultipart) {
+      const match = contentType.match(/boundary="?([^";\s]+)"?/)
+      if (match) boundary = match[1]
+    }
+
     let headers = ''
-    for (let key in data.header) headers += `${key}: ${data.header[key]}\r\n`
+    for (const key in data.header) {
+      // Skip Content-Type for now; we rebuild it below if multipart
+      if (isMultipart && key === 'Content-Type') continue
+      headers += `${key}: ${data.header[key]}\r\n`
+    }
     if (!headers.toLowerCase().includes('from:')) headers += `From: ${data.from.value[0].address}\r\n`
     if (!headers.toLowerCase().includes('to:')) headers += `To: ${data.to.value[0].address}\r\n`
     if (!headers.toLowerCase().includes('subject:')) headers += `Subject: ${data.subject ?? ''}\r\n`
+    if (!headers.toLowerCase().includes('mime-version:')) headers += 'MIME-Version: 1.0\r\n'
 
-    let body = headers + '\r\n'
-    if (data.html) body += data.html
-    else if (data.text) body += data.text
+    let body = ''
+
+    if (isMultipart && boundary && data.html) {
+      // RFC 2046 multipart/alternative with proper boundary-delimited parts
+      headers += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`
+      body = headers + '\r\n'
+      if (data.text) {
+        body += `--${boundary}\r\n`
+        body += 'Content-Type: text/plain; charset=UTF-8\r\n\r\n'
+        body += data.text + '\r\n'
+      }
+      body += `--${boundary}\r\n`
+      body += 'Content-Type: text/html; charset=UTF-8\r\n\r\n'
+      body += data.html + '\r\n'
+      body += `--${boundary}--\r\n`
+    } else if (data.html) {
+      if (!headers.toLowerCase().includes('content-type:')) {
+        headers += 'Content-Type: text/html; charset=UTF-8\r\n'
+      }
+      body = headers + '\r\n' + data.html
+    } else if (data.text) {
+      if (!headers.toLowerCase().includes('content-type:')) {
+        headers += 'Content-Type: text/plain; charset=UTF-8\r\n'
+      }
+      body = headers + '\r\n' + data.text
+    } else {
+      body = headers + '\r\n'
+    }
 
     try {
       const res = await this.#apiRequest('POST', '/send', {
@@ -210,7 +250,8 @@ class Mail {
       })
       if (res?.success) return Odac.server('Api').result(true, await __('Mail sent successfully.'))
       return Odac.server('Api').result(false, res?.message || (await __('Mail sending failed.')))
-    } catch {
+    } catch (e) {
+      error('mail.send failed: %s', e.message)
       return Odac.server('Api').result(false, await __('Mail sending failed.'))
     }
   }
