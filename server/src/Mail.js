@@ -1,119 +1,42 @@
 const {log, error} = Odac.core('Log', false).init('Mail')
 
-const {generateKeyPair, randomBytes, scrypt, timingSafeEqual} = require('crypto')
+const {generateKeyPair} = require('crypto')
+const childProcess = require('child_process')
 const fs = require('fs')
 const fsp = require('fs/promises')
 const os = require('os')
-const parser = require('mailparser').simpleParser
-const SMTPServer = require('smtp-server').SMTPServer
-const sqlite3 = require('sqlite3').verbose()
+const path = require('path')
 const {promisify} = require('util')
-const server = require('./mail/server')
-const smtp = require('./mail/smtp')
-const tls = require('tls')
 
+/**
+ * Mail service manager that spawns and communicates with the Go mail binary.
+ * Mirrors the Proxy.js and DNS.js architecture: Node.js retains config management,
+ * DKIM key generation, and domain CRUD; Go binary handles SMTP/IMAP serving,
+ * SQLite storage, authentication, and outbound delivery.
+ */
 class Mail {
+  #active = false
   #checking = false
-  #clients = {}
-  #counts = {}
-  #db
-  #server_smtp
-  #server_smtp_insecure
-  #server_imap
-  #server_imap_sec
-  #started = false
-  #sslCache = new Map()
-  #blocked = new Map()
-
-  async #hashPassword(password) {
-    return new Promise((resolve, reject) => {
-      randomBytes(16, (err, salt) => {
-        if (err) return reject(err)
-        scrypt(password, salt, 64, (err, derivedKey) => {
-          if (err) return reject(err)
-          resolve(`scrypt$${salt.toString('hex')}$${derivedKey.toString('hex')}`)
-        })
-      })
-    })
-  }
-
-  async #comparePassword(password, storedHash) {
-    if (storedHash.startsWith('scrypt$')) {
-      const [, saltHex, keyHex] = storedHash.split('$')
-      const salt = Buffer.from(saltHex, 'hex')
-      const storedKey = Buffer.from(keyHex, 'hex')
-      return new Promise(resolve => {
-        scrypt(password, salt, 64, (err, derivedKey) => {
-          if (err) return resolve(false)
-          if (derivedKey.length !== storedKey.length) return resolve(false)
-          resolve(timingSafeEqual(derivedKey, storedKey))
-        })
-      })
-    }
-    // We can't verify old bcrypt hashes without bcrypt, so fail gracefully
-    return false
-  }
-
-  clearSSLCache(domain) {
-    if (domain) {
-      for (const key of this.#sslCache.keys()) {
-        if (key === domain || key.endsWith('.' + domain)) {
-          this.#sslCache.delete(key)
-        }
-      }
-    } else {
-      this.#sslCache.clear()
-    }
-  }
-
-  #handleFailedAuth(ip) {
-    if (!this.#clients[ip]) this.#clients[ip] = {attempts: 0, last: 0}
-    // Reset counter if last attempt was more than 1 hour ago
-    if (Date.now() - this.#clients[ip].last > 1000 * 60 * 60) {
-      this.#clients[ip] = {attempts: 0, last: 0}
-    }
-
-    this.#clients[ip].attempts++
-    this.#clients[ip].last = Date.now()
-
-    if (this.#clients[ip].attempts > 5) {
-      this.#block(ip, 'Too many failed login attempts')
-      delete this.#clients[ip]
-    }
-  }
-
-  #block(ip, reason = 'Suspicious activity') {
-    if (this.#blocked.has(ip)) return
-    log(`Blocking IP ${ip}: ${reason}`)
-    // Block for 24 hours
-    this.#blocked.set(ip, Date.now() + 1000 * 60 * 60 * 24)
-  }
-
-  #isBlocked(ip) {
-    if (!this.#blocked.has(ip)) return false
-    if (this.#blocked.get(ip) < Date.now()) {
-      this.#blocked.delete(ip)
-      return false
-    }
-    return true
-  }
+  #cleanupTimer = null
+  #mailApiPort = null
+  #mailProcess = null
+  #mailSocketPath = null
+  #syncTimer = null
 
   /**
-   * Validates an email address format.
-   * Includes support for '=', used in some specific routing/encoding schemes.
-   * @param {string} email
-   * @returns {boolean}
+   * Checks the health of the Go mail binary and respawns if needed.
+   * Also performs DKIM key generation for domains missing DKIM config.
+   * Called by the Watchdog service on periodic health checks.
    */
-  #isValidEmail(email) {
-    if (!email) return false
-    return email.match(/^[a-zA-Z0-9._%+\-=]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/)
-  }
-
   async check() {
     if (this.#checking) return
-    if (!this.#started) this.init()
-    if (!this.#started) return
+    if (!this.#active) return
     this.#checking = true
+
+    // Respawn Go binary if it crashed
+    this.spawnMail()
+
+    // DKIM key generation (stays in Node.js — needs DNS record creation)
     try {
       const dnsConfig = Odac.core('Config').config.dns ?? {}
       for (const domain of Object.keys(Odac.core('Config').config.domains ?? {})) {
@@ -125,15 +48,45 @@ class Mail {
     } catch (e) {
       error('DKIM check failed: %s', e.message)
     }
+
     this.#checking = false
   }
 
+  /**
+   * Clears the TLS context cache on the Go mail binary for a domain.
+   * Called by SSL.js after certificate renewal.
+   * @param {string} [domain] - Domain to clear, or all if omitted
+   */
+  async clearSSLCache(domain) {
+    if (!this.#mailProcess) return
+    if (!this.#mailSocketPath && !this.#mailApiPort) return
+
+    try {
+      const payload = {domain: domain || ''}
+      if (this.#mailSocketPath) {
+        await Odac.core('Http').post('http://localhost/ssl/clear', payload, {
+          socketPath: this.#mailSocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        await Odac.core('Http').post(`http://127.0.0.1:${this.#mailApiPort}/ssl/clear`, payload)
+      }
+    } catch (e) {
+      error('Failed to clear SSL cache: %s', e.message)
+    }
+  }
+
+  /**
+   * Creates a new mail account via the Go binary API.
+   * @param {string} email - Email address
+   * @param {string} password - Password
+   * @param {string} retype - Password confirmation
+   */
   async create(email, password, retype) {
     if (!email || !password || !retype) return Odac.server('Api').result(false, await __('All fields are required.'))
     if (password != retype) return Odac.server('Api').result(false, await __('Passwords do not match.'))
-    password = await this.#hashPassword(password)
-    if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
-    if (await this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s already exists.', email))
+
+    // Resolve domain (check subdomains)
     let domain = email.split('@')[1]
     if (!Odac.core('Config').config.domains?.[domain]) {
       for (let d in Odac.core('Config').config.domains ?? {}) {
@@ -147,30 +100,449 @@ class Mail {
         return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
       }
     }
-    this.#db.serialize(() => {
-      let stmt = this.#db.prepare("INSERT INTO mail_account ('email', 'password', 'domain') VALUES (?, ?, ?)")
-      stmt.run(email, password, domain)
-      stmt.finalize()
-    })
-    return Odac.server('Api').result(true, await __('Mail account %s created successfully.', email))
+
+    try {
+      const res = await this.#apiRequest('POST', '/account', {domain, email, password, retype})
+      if (res?.success) {
+        this.syncConfig()
+        return Odac.server('Api').result(true, await __('Mail account %s created successfully.', email))
+      }
+      return Odac.server('Api').result(false, res?.message || (await __('Account creation failed.')))
+    } catch (e) {
+      error('Account creation failed: %s', e.message)
+      return Odac.server('Api').result(false, await __('Account creation failed.'))
+    }
   }
 
+  /**
+   * Deletes a mail account via the Go binary API.
+   * @param {string} email - Email address to delete
+   */
   async delete(email) {
     if (!email) return Odac.server('Api').result(false, await __('Email address is required.'))
-    if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
-    if (!(await this.exists(email))) return Odac.server('Api').result(false, await __('Mail account %s not found.', email))
-    this.#db.serialize(() => {
-      let stmt = this.#db.prepare('DELETE FROM mail_account WHERE email = ?')
-      stmt.run(email)
-      stmt.finalize()
+
+    try {
+      const res = await this.#apiRequest('DELETE', '/account', {email})
+      if (res?.success) return Odac.server('Api').result(true, await __('Mail account %s deleted successfully.', email))
+      return Odac.server('Api').result(false, res?.message || (await __('Account deletion failed.')))
+    } catch {
+      return Odac.server('Api').result(false, await __('Account deletion failed.'))
+    }
+  }
+
+  /**
+   * Lists mail accounts for a domain via the Go binary API.
+   * @param {string} domain - Domain name
+   */
+  async list(domain) {
+    if (!domain) return Odac.server('Api').result(false, await __('Domain is required.'))
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+
+    try {
+      const res = await this.#apiRequest('GET', `/accounts?domain=${encodeURIComponent(domain)}`)
+      if (res?.success) {
+        const accounts = res.accounts || []
+        return Odac.server('Api').result(true, (await __('Mail accounts for domain %s.', domain)) + '\n' + accounts.join('\n'))
+      }
+      return Odac.server('Api').result(false, res?.message || (await __('Account list failed.')))
+    } catch {
+      return Odac.server('Api').result(false, await __('Account list failed.'))
+    }
+  }
+
+  /**
+   * Updates a mail account password via the Go binary API.
+   * @param {string} email - Email address
+   * @param {string} password - New password
+   * @param {string} retype - Password confirmation
+   */
+  async password(email, password, retype) {
+    if (!email || !password || !retype) return Odac.server('Api').result(false, await __('All fields are required.'))
+    if (password != retype) return Odac.server('Api').result(false, await __('Passwords do not match.'))
+
+    try {
+      const res = await this.#apiRequest('PUT', '/account/password', {email, password, retype})
+      if (res?.success) return Odac.server('Api').result(true, await __('Mail account %s password updated successfully.', email))
+      return Odac.server('Api').result(false, res?.message || (await __('Password update failed.')))
+    } catch {
+      return Odac.server('Api').result(false, await __('Password update failed.'))
+    }
+  }
+
+  // Test helper
+  reset() {
+    this.#mailProcess = null
+    this.#mailSocketPath = null
+    this.#mailApiPort = null
+  }
+
+  /**
+   * Sends an email via the Go binary's outbound SMTP client.
+   * Constructs the email payload and delegates to the Go API for delivery.
+   * @param {Object} data - Email data with from, to, header, html, text, attachments
+   */
+  async send(data) {
+    if (!data || !data.from || !data.to || !data.header) return Odac.server('Api').result(false, await __('All fields are required.'))
+    if (!data.from.value?.[0]?.address) return Odac.server('Api').result(false, await __('Invalid email address.'))
+    if (!data.to.value?.[0]?.address) return Odac.server('Api').result(false, await __('Invalid email address.'))
+
+    let domain = data.from.value[0].address.split('@')[1].split('.')
+    while (domain.length > 2 && !Odac.core('Config').config.domains?.[domain.join('.')]) domain.shift()
+    domain = domain.join('.')
+    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
+
+    // Build RFC 2822 message from structured data
+    let headers = ''
+    for (let key in data.header) headers += `${key}: ${data.header[key]}\r\n`
+    if (!headers.toLowerCase().includes('from:')) headers += `From: ${data.from.value[0].address}\r\n`
+    if (!headers.toLowerCase().includes('to:')) headers += `To: ${data.to.value[0].address}\r\n`
+    if (!headers.toLowerCase().includes('subject:')) headers += `Subject: ${data.subject ?? ''}\r\n`
+
+    let body = headers + '\r\n'
+    if (data.html) body += data.html
+    else if (data.text) body += data.text
+
+    try {
+      const res = await this.#apiRequest('POST', '/send', {
+        body: body,
+        from: data.from.value[0].address,
+        to: data.to.value[0].address
+      })
+      if (res?.success) return Odac.server('Api').result(true, await __('Mail sent successfully.'))
+      return Odac.server('Api').result(false, res?.message || (await __('Mail sending failed.')))
+    } catch {
+      return Odac.server('Api').result(false, await __('Mail sending failed.'))
+    }
+  }
+
+  /**
+   * Spawns or adopts the Go mail binary process.
+   * Follows the exact same pattern as Proxy.js#spawnProxy() and DNS.js#spawnDNS().
+   */
+  spawnMail() {
+    if (this.#mailProcess) return
+
+    const isWindows = os.platform() === 'win32'
+    const binaryName = isWindows ? 'odac-mail.exe' : 'odac-mail'
+    const binPath = path.resolve(__dirname, '../../bin', binaryName)
+    const logDir = path.join(os.homedir(), '.odac', 'logs')
+    const runDir = path.join(os.homedir(), '.odac', 'run')
+
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
+    if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
+
+    const instanceId = process.env.ODAC_INSTANCE_ID || 'default'
+    const logFile = path.join(logDir, 'mail.log')
+    const pidFile = path.join(runDir, `mail-${instanceId}.pid`)
+
+    if (!isWindows) {
+      this.#mailSocketPath = path.join(runDir, `mail-${instanceId}.sock`)
+    }
+
+    // 1. Try to adopt existing process (skip in Update Mode)
+    const isUpdateMode = process.env.ODAC_UPDATE_MODE === 'true'
+
+    if (!isUpdateMode) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf8'))
+        process.kill(pid, 0)
+
+        // Validate socket exists (Unix) to prevent PID reuse attacks
+        if (!isWindows) {
+          if (!fs.existsSync(this.#mailSocketPath)) {
+            log(`PID ${pid} exists but socket file is missing. PID reuse detected or Mail crashed. Ignoring orphan...`)
+            try {
+              fs.unlinkSync(pidFile)
+            } catch {
+              /* ignore */
+            }
+            throw new Error('Socket missing')
+          }
+        }
+
+        // Verify process name on Linux (PID reuse attack mitigation)
+        try {
+          const procPath = `/proc/${pid}/cmdline`
+          if (fs.existsSync(procPath)) {
+            const cmdline = fs.readFileSync(procPath, 'utf8')
+            if (!cmdline.includes('odac-mail')) {
+              log(`PID ${pid} is active but command line does not match Mail binary. PID reuse detected!`)
+              try {
+                fs.unlinkSync(pidFile)
+              } catch {
+                /* ignore */
+              }
+              throw new Error('PID reuse detected')
+            }
+          }
+        } catch (e) {
+          if (e.message === 'PID reuse detected') throw e
+        }
+
+        log(`Found orphaned Go Mail (PID: ${pid}). Reconnecting...`)
+
+        this.#mailProcess = {
+          pid,
+          kill: () => {
+            try {
+              process.kill(pid)
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        setTimeout(() => this.syncConfig(), 1000)
+        return
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          log('Orphaned Mail PID file issue. Cleaning up.')
+          try {
+            fs.unlinkSync(pidFile)
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } else {
+      log('Update mode detected. Forcing new Mail instance spawn...')
+    }
+
+    if (!fs.existsSync(binPath)) {
+      error(`Go mail binary not found at ${binPath}. Please run 'go build -o bin/${binaryName} ./server/mail'`)
+      return
+    }
+
+    // 2. Start new Mail process
+    let env = {...process.env}
+
+    if (!isWindows) {
+      env.ODAC_MAIL_SOCKET_PATH = this.#mailSocketPath
+      log(`Starting Go Mail (Socket: ${this.#mailSocketPath})...`)
+    } else {
+      log('Starting Go Mail (TCP Mode)...')
+    }
+
+    try {
+      const logFd = fs.openSync(logFile, 'a')
+
+      this.#mailProcess = childProcess.spawn(binPath, [], {
+        detached: true,
+        env: env,
+        stdio: ['ignore', logFd, logFd]
+      })
+
+      this.#mailProcess.unref()
+
+      try {
+        fs.closeSync(logFd)
+      } catch {
+        /* ignore */
+      }
+
+      if (this.#mailProcess.pid) {
+        try {
+          const flags = isUpdateMode ? 'w' : 'wx'
+          fs.writeFileSync(pidFile, this.#mailProcess.pid.toString(), {flag: flags})
+          log(`Go Mail started with PID ${this.#mailProcess.pid}`)
+        } catch (err) {
+          if (err.code === 'EEXIST') {
+            error(`Race condition detected: PID file ${pidFile} already exists. Stopping redundant Mail instance.`)
+            this.#mailProcess.kill()
+            this.#mailProcess = null
+            return
+          }
+          throw err
+        }
+      }
+
+      this.#mailProcess.on('exit', code => {
+        error(`Go Mail exited with code ${code}`)
+        this.#mailProcess = null
+        try {
+          fs.unlinkSync(pidFile)
+        } catch {
+          /* ignore */
+        }
+      })
+
+      if (this.#syncTimer) clearTimeout(this.#syncTimer)
+      this.#syncTimer = setTimeout(() => this.syncConfig(), 1000)
+
+      // Cleanup previous instance files
+      const prevId = process.env.ODAC_PREVIOUS_INSTANCE_ID
+      if (prevId) {
+        if (this.#cleanupTimer) clearTimeout(this.#cleanupTimer)
+        this.#cleanupTimer = setTimeout(() => {
+          log(`Cleaning up files from previous Mail instance: ${prevId}`)
+          const prevPidFile = path.join(runDir, `mail-${prevId}.pid`)
+          const prevSockFile = path.join(runDir, `mail-${prevId}.sock`)
+
+          try {
+            if (fs.existsSync(prevPidFile)) fs.unlinkSync(prevPidFile)
+            if (fs.existsSync(prevSockFile)) fs.unlinkSync(prevSockFile)
+            log(`Mail cleanup successful for instance ${prevId}`)
+          } catch (e) {
+            log(`Warning: Failed to cleanup previous Mail instance files: ${e.message}`)
+          }
+          this.#cleanupTimer = null
+        }, 60000)
+      }
+    } catch (err) {
+      error(`Failed to spawn Go Mail: ${err.message}`)
+    }
+  }
+
+  /**
+   * Starts the Mail service: spawns Go binary and syncs config.
+   */
+  start() {
+    if (this.#active) return
+    this.#active = true
+    this.spawnMail()
+  }
+
+  /**
+   * Stops the Mail service: kills the Go binary and cleans up.
+   */
+  stop() {
+    this.#active = false
+    if (this.#mailProcess) {
+      this.#mailProcess.kill()
+      this.#mailProcess = null
+      this.#mailApiPort = null
+      if (this.#mailSocketPath && fs.existsSync(this.#mailSocketPath)) {
+        try {
+          fs.unlinkSync(this.#mailSocketPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    if (this.#syncTimer) {
+      clearTimeout(this.#syncTimer)
+      this.#syncTimer = null
+    }
+    if (this.#cleanupTimer) {
+      clearTimeout(this.#cleanupTimer)
+      this.#cleanupTimer = null
+    }
+  }
+
+  /**
+   * Syncs the full mail configuration to the Go binary.
+   * Sends domains, SSL certs, DKIM keys, and IP data for PTR-based delivery.
+   * @param {number} retryCount - Internal retry counter
+   */
+  async syncConfig(retryCount = 0) {
+    log('Mail: syncConfig called (Retry: %d)', retryCount)
+
+    if (!this.#mailProcess) return
+    if (!this.#mailSocketPath && !this.#mailApiPort) return
+
+    if (this.#mailSocketPath && !fs.existsSync(this.#mailSocketPath)) {
+      return
+    }
+
+    const domains = Odac.core('Config').config.domains || {}
+    const dnsConfig = Odac.core('Config').config.dns || {}
+    const ssl = Odac.core('Config').config.ssl || {}
+
+    // Build domain config for Go binary
+    const mailDomains = {}
+    for (const [name, record] of Object.entries(domains)) {
+      const zone = dnsConfig[name]
+      const hasMX = zone?.records?.some(r => r.type === 'MX')
+
+      mailDomains[name] = {
+        cert: record.cert || {},
+        mxEnabled: !!hasMX,
+        subdomains: record.subdomain || []
+      }
+    }
+
+    // Build IP config for PTR-based outbound delivery
+    const DNS = Odac.server('DNS')
+    const normalizePtr = ip => ({
+      ...ip,
+      ptr: ip.ptr != null ? String(ip.ptr) : ''
     })
-    return Odac.server('Api').result(true, await __('Mail account %s deleted successfully.', email))
+
+    const ips = {
+      ipv4: (DNS?.ips?.ipv4 || []).map(normalizePtr),
+      ipv6: (DNS?.ips?.ipv6 || []).map(normalizePtr),
+      primary: DNS?.ip || '127.0.0.1'
+    }
+
+    const payload = {
+      accounts: [],
+      domains: mailDomains,
+      hostname: os.hostname(),
+      ips: ips,
+      ssl: ssl
+    }
+
+    log('Mail: Syncing %d domains to Go binary', Object.keys(mailDomains).length)
+
+    try {
+      if (this.#mailSocketPath) {
+        await Odac.core('Http').post('http://localhost/config', payload, {
+          socketPath: this.#mailSocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        await Odac.core('Http').post(`http://127.0.0.1:${this.#mailApiPort}/config`, payload)
+      }
+    } catch (e) {
+      if (retryCount < 3 && (e.code === 'ECONNREFUSED' || e.code === 'ENOENT' || e.code === 'ECONNRESET')) {
+        log(`Mail config sync failed (${e.code}). Retrying in 1s...`)
+        await new Promise(r => setTimeout(r, 1000))
+        return this.syncConfig(retryCount + 1)
+      }
+      error(`Failed to sync Mail config to Go binary: ${e.message}`)
+    }
+  }
+
+  // --- Private Methods ---
+
+  /**
+   * Makes an HTTP request to the Go mail binary API.
+   * @param {string} method - HTTP method
+   * @param {string} endpoint - API endpoint path
+   * @param {Object} [data] - Request body
+   * @returns {Object} Response data
+   */
+  async #apiRequest(method, endpoint, data) {
+    if (!this.#mailProcess) throw new Error('Mail process not running')
+    if (!this.#mailSocketPath && !this.#mailApiPort) throw new Error('Mail API not available')
+
+    const url = this.#mailSocketPath ? `http://localhost${endpoint}` : `http://127.0.0.1:${this.#mailApiPort}${endpoint}`
+
+    const options = this.#mailSocketPath ? {socketPath: this.#mailSocketPath, validateStatus: () => true} : {validateStatus: () => true}
+
+    let response
+    switch (method) {
+      case 'GET':
+        response = await Odac.core('Http').get(url, options)
+        break
+      case 'POST':
+        response = await Odac.core('Http').post(url, data, options)
+        break
+      case 'PUT':
+        response = await Odac.core('Http').put(url, data, options)
+        break
+      case 'DELETE':
+        response = await Odac.core('Http').delete(url, {...options, data})
+        break
+    }
+
+    return response?.data
   }
 
   /**
    * Generates a 2048-bit RSA DKIM key pair using native crypto (non-blocking),
    * persists keys to disk, and publishes the public key as a DNS TXT record.
-   * Uses PKCS#1 for private key (dkim-signer compatibility) and SPKI for public.
+   * Stays in Node.js because it needs to create DNS records via Odac.server('DNS').
    * @param {string} domain - The domain to generate DKIM keys for
    */
   async #dkim(domain) {
@@ -202,553 +574,9 @@ class Mail {
       value: `v=DKIM1; k=rsa; p=${publicKeyBase64}`
     })
     if (Odac.core('Config').force) Odac.core('Config').force()
+    // Sync updated DKIM config to Go binary
+    this.syncConfig()
     log('DKIM 2048-bit keys generated for %s (selector: %s)', domain, selector)
-  }
-
-  async exists(email) {
-    if (!this.#db) this.init()
-    if (!this.#db) return false // Still no DB after init attempt
-
-    return new Promise(resolve => {
-      this.#db.get('SELECT * FROM mail_account WHERE email = ?', [email], (err, row) => {
-        if (err) {
-          error('Database error in exists():', err.message)
-          return resolve(false)
-        }
-        if (row) resolve(row)
-        else resolve(false)
-      })
-    })
-  }
-
-  init() {
-    if (this.#db) return // Already initialized
-
-    // We should always initialize DB if we are starting mail services,
-    // even if no domains currently have MX records configured.
-    if (this.#started) return // Only initialize once if already started
-    this.#started = true
-    if (!fs.existsSync(os.homedir() + '/.odac/db')) fs.mkdirSync(os.homedir() + '/.odac/db', {recursive: true})
-    this.#db = new sqlite3.Database(os.homedir() + '/.odac/db/mail', err => {
-      if (err) error('Failed to open mail database:', err.message)
-    })
-
-    this.#db.serialize(() => {
-      this.#db.run(`CREATE TABLE IF NOT EXISTS mail_received ('id'          INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                                    'uid'         INTEGER NOT NULL,
-                                                                    'email'       VARCHAR(255) NOT NULL,
-                                                                    'mailbox'     VARCHAR(255),
-                                                                    'flags'       JSON DEFAULT '[]',
-                                                                    'attachments' JSON,
-                                                                    'headers'     JSON,
-                                                                    'headerLines' JSON,
-                                                                    'html'        TEXT,
-                                                                    'text'        TEXT,
-                                                                    'textAsHtml'  TEXT,
-                                                                    'subject'     TEXT,
-                                                                    'date'        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                                                    'to'          JSON,
-                                                                    'from'        JSON,
-                                                                    'messageId'   TEXT,
-                                                                    UNIQUE(email, uid))`)
-      this.#db.run(`CREATE TABLE IF NOT EXISTS mail_account ('id'       INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                                   'email'    VARCHAR(255) UNIQUE,
-                                                                   'password' VARCHAR(255),
-                                                                   'domain'   VARCHAR(255),
-                                                                   'created'  TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
-      this.#db.run(`CREATE TABLE IF NOT EXISTS mail_box ('id'       INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                               'email'    VARCHAR(255),
-                                                               'title'    VARCHAR(255),
-                                                               'parent'   INTEGER DEFAULT 0,
-                                                               'deleted'  BOOLEAN DEFAULT 0,
-                                                               'date'     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                                                UNIQUE(email, title))`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_email  ON mail_account  (email);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_domain ON mail_account  (domain);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_uid    ON mail_received (uid);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_email  ON mail_received (email);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_flags  ON mail_received (flags);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_date   ON mail_received (date);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_email  ON mail_box      (email);`)
-      this.#db.run(`CREATE INDEX IF NOT EXISTS idx_title  ON mail_box      (title);`)
-    })
-  }
-
-  start() {
-    this.init() // Ensure DB is initialized before server starts
-    if (this.#server_smtp || this.#server_imap || this.#server_imap_sec) return // Already started
-
-    const self = this
-    let options = {
-      logger: true,
-      tls: {minVersion: 'TLSv1.2'},
-      secure: false,
-      banner: 'ODAC',
-      size: 1024 * 1024 * 10,
-      authOptional: true,
-      onConnect(session, callback) {
-        if (self.#isBlocked(session.remoteAddress)) {
-          return callback(new Error('Your IP is blocked due to suspicious activity.'))
-        }
-        return callback()
-      },
-      onAuth(auth, session, callback) {
-        let ip = session.remoteAddress
-        // Basic format check
-        if (!self.#isValidEmail(auth.username)) {
-          self.#handleFailedAuth(ip)
-          return callback(new Error('Invalid username or password'))
-        }
-
-        self.exists(auth.username).then(async result => {
-          if (result && (await self.#comparePassword(auth.password, result.password))) {
-            // Successful login, clear attempts
-            if (self.#clients[ip]) delete self.#clients[ip]
-            return callback(null, {user: auth.username})
-          }
-
-          self.#handleFailedAuth(ip)
-          return callback(new Error('Invalid username or password'))
-        })
-      },
-      onAppend(data, callback) {
-        parser(data.message, {}, async (err, parsed) => {
-          if (err) {
-            error(err)
-            return callback(err)
-          }
-          await self.#store(data.address, parsed, data.mailbox, data.flags)
-          callback()
-        })
-      },
-      onExpunge(data, callback) {
-        self.#db.all(
-          "SELECT uid FROM mail_received WHERE email = ? AND mailbox = ? AND flags LIKE '%deleted%'",
-          [data.address, data.mailbox],
-          (err, rows) => {
-            if (err) {
-              error(err)
-              return callback(err)
-            }
-            let uids = rows.map(row => row.uid)
-            self.#db.run(
-              "DELETE FROM mail_received WHERE email = ? AND mailbox = ? AND flags LIKE '%deleted%'",
-              [data.address, data.mailbox],
-              err => {
-                if (err) {
-                  error(err)
-                  return callback(err)
-                }
-                callback(null, uids)
-              }
-            )
-          }
-        )
-      },
-      onData(stream, session, callback) {
-        parser(stream, {}, async (err, parsed) => {
-          if (err) return error(err)
-          // log('ON DATA:', session);
-          if (!parsed.to?.value?.[0]?.address) {
-            error('Missing recipient address')
-            return callback(new Error('Invalid recipient'))
-          }
-          if (!self.#isValidEmail(parsed.to.value[0].address)) {
-            error('Invalid recipient:', parsed.to.value[0].address)
-            return callback(new Error('Invalid recipient'))
-          }
-          if (!parsed.from?.value?.[0]?.address) {
-            error('Missing sender address')
-            return callback(new Error('Invalid sender'))
-          }
-          if (!self.#isValidEmail(parsed.from.value[0].address)) {
-            error('Invalid sender:', parsed.from.value[0].address)
-            return callback(new Error('Invalid sender'))
-          }
-          let sender = await self.exists(parsed.from.value[0].address)
-          if (sender && (!session.user || parsed.from.value[0].address !== session.user)) {
-            error('Unexpected sender:', parsed.from.value[0].address)
-            return callback(new Error('Unexpected sender'))
-          }
-          if (
-            !sender &&
-            !['hostmaster', 'postmaster'].includes(parsed.to.value[0].address.split('@')[0]) &&
-            !(await self.exists(parsed.to.value[0].address))
-          ) {
-            error('Unexpected recipient:', parsed.to.value[0].address)
-            return callback(new Error('Unexpected recipient'))
-          }
-          await self.#store(session.user ?? parsed.to.value[0].address, parsed)
-          if (session.user && parsed.from.value[0].address === session.user) smtp.send(parsed)
-          callback()
-        })
-      },
-      onCreate(data, callback) {
-        self.#db.run('INSERT INTO mail_box (email, title) VALUES (?, ?)', [data.address, data.mailbox], err => {
-          if (err) {
-            error(err)
-            return callback(err)
-          }
-          callback()
-        })
-      },
-      onDelete(data, callback) {
-        self.#db.run('DELETE FROM mail_box WHERE email = ? AND title = ?', [data.address, data.mailbox], err => {
-          if (err) {
-            error(err)
-            return callback(err)
-          }
-          callback()
-        })
-      },
-      onRename(data, callback) {
-        self.#db.run(
-          'UPDATE mail_box SET title = ? WHERE email = ? AND title = ?',
-          [data.newMailbox, data.address, data.oldMailbox],
-          err => {
-            if (err) {
-              error(err)
-              return callback(err)
-            }
-            callback()
-          }
-        )
-      },
-      onFetch(data, session, callback) {
-        let limit = ``
-        if (data.limit) {
-          if (data.limit[0] && !isNaN(data.limit[0])) limit += `AND uid >= ${parseInt(data.limit[0])} `
-          if (data.limit[1] && !isNaN(data.limit[1])) limit += `AND uid <= ${parseInt(data.limit[1])} `
-        }
-        self.#db.all(
-          `SELECT * FROM mail_received
-                              WHERE email = ? AND mailbox = ? ${limit}
-                              ORDER BY id DESC`,
-          [data.email, data.mailbox],
-          (err, rows) => {
-            if (err) {
-              error(err)
-              return callback(false)
-            }
-            callback(rows)
-          }
-        )
-      },
-      onList(data, callback) {
-        self.#db.all('SELECT title FROM mail_box WHERE email = ?', [data.address], (err, rows) => {
-          if (err) {
-            error(err)
-            return callback(err)
-          }
-          let boxes = rows.map(row => row.title)
-          if (!boxes.includes('INBOX')) boxes.unshift('INBOX')
-          callback(null, boxes)
-        })
-      },
-      onLsub(data, callback) {
-        self.#db.all('SELECT title FROM mail_box WHERE email = ?', [data.address], (err, rows) => {
-          if (err) {
-            error(err)
-            return callback(err)
-          }
-          let boxes = rows.map(row => row.title)
-          if (!boxes.includes('INBOX')) boxes.unshift('INBOX')
-          callback(null, boxes)
-        })
-      },
-      onMailFrom(address, session, callback) {
-        if (!self.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
-        return callback()
-      },
-      onRcptTo(address, session, callback) {
-        if (!self.#isValidEmail(address.address)) return callback(new Error('Invalid email address'))
-        return callback()
-      },
-      onSelect(data, session, callback) {
-        self.#db.get(
-          "SELECT COUNT(*) AS 'exists', SUM(IIF(flags LIKE '%seen%', 0, 1)) AS 'unseen', MAX(uid) + 1 AS uidnext, MAX(uid) AS uidvalidity FROM mail_received WHERE email = ? AND mailbox = ?",
-          [data.address, data.mailbox],
-          (err, row) => {
-            if (err) {
-              error(err)
-              return callback(err)
-            }
-            callback(row)
-          }
-        )
-      },
-      onStore(data, session, callback) {
-        let uids = data.uids
-        for (let flag of data.flags) {
-          for (let uid of uids) {
-            uid = [uid, uid]
-            if (uid.includes(':')) uid = uid.split(':')
-            switch (data.action) {
-              case 'add':
-                self.#db.run(
-                  `UPDATE mail_received
-                                    SET flags = JSON_INSERT(flags, '$[#]', ?)
-                                    WHERE email = ? AND uid BETWEEN ? AND ? AND flags NOT LIKE ?`,
-                  [flag, data.address, uid[0], uid[1], `%${flag}%`],
-                  err => {
-                    if (err) {
-                      error(err)
-                      return callback(err)
-                    }
-                  }
-                )
-                break
-              case 'remove':
-                self.#db.run(
-                  `UPDATE mail_received
-                                    SET flags = JSON_REMOVE(flags, (SELECT value FROM JSON_EACH(flags) WHERE value = ?))
-                                    WHERE email = ? AND uid BETWEEN ? AND ? AND flags LIKE ?`,
-                  [flag, data.address, uid[0], uid[1], `%${flag}%`],
-                  err => {
-                    if (err) {
-                      error(err)
-                      return callback(err)
-                    }
-                  }
-                )
-                break
-              case 'set':
-                self.#db.run(
-                  `UPDATE mail_received
-                                    SET flags = JSON_SET(flags, '$', ?)
-                                    WHERE email = ? AND uid BETWEEN ? AND ?`,
-                  [JSON.stringify(data.flags), data.address, uid[0], uid[1]],
-                  err => {
-                    if (err) {
-                      error(err)
-                      return callback(err)
-                    }
-                  }
-                )
-                break
-            }
-          }
-        }
-        callback()
-      },
-      onError(err) {
-        error('Error:', err)
-      }
-    }
-    // Retry helper for EADDRINUSE errors during zero-downtime updates
-    const MAX_RETRIES = 15
-    const RETRY_DELAY_MS = 1000
-
-    const listenWithRetry = (serverInstance, port, name, retryCount = 0) => {
-      const serverObj = serverInstance.server || serverInstance
-      serverObj.once('error', err => {
-        if (err.code === 'EADDRINUSE' && retryCount < MAX_RETRIES) {
-          log(`${name} port ${port} in use. Retrying (${retryCount + 1}/${MAX_RETRIES})...`)
-          setTimeout(() => listenWithRetry(serverInstance, port, name, retryCount + 1), RETRY_DELAY_MS)
-        } else if (err.code === 'EADDRINUSE') {
-          error(`${name} failed to bind port ${port} after ${MAX_RETRIES} retries`)
-        } else {
-          error(`${name} error:`, err)
-        }
-      })
-      if (typeof serverInstance.listen === 'function') {
-        serverInstance.listen(port)
-      }
-    }
-
-    this.#server_smtp_insecure = new SMTPServer(options)
-    listenWithRetry(this.#server_smtp_insecure, 25, 'SMTP Insecure')
-    this.#server_smtp_insecure.on('error', err => {
-      if (err.code !== 'EADDRINUSE') log('SMTP Server Error: ', err)
-    })
-    // Handle socket errors to prevent crash
-    if (this.#server_smtp_insecure.server) {
-      this.#server_smtp_insecure.server.on('connection', socket => {
-        socket.on('error', err => {
-          if (err.code !== 'ECONNRESET') error('SMTP Socket Error:', err)
-        })
-      })
-    }
-    this.#server_imap = new server(options)
-    this.#server_imap.listen(143, MAX_RETRIES, RETRY_DELAY_MS)
-    options.SNICallback = (hostname, callback) => {
-      const cached = this.#sslCache.get(hostname)
-      if (cached) return callback(null, cached)
-
-      let ssl = Odac.core('Config').config.ssl ?? {}
-      let sslOptions = {}
-      while (!Odac.core('Config').config.domains?.[hostname] && hostname.includes('.')) hostname = hostname.split('.').slice(1).join('.')
-      let website = Odac.core('Config').config.domains?.[hostname]
-      if (
-        website &&
-        website.cert?.ssl &&
-        website.cert.ssl.key &&
-        website.cert.ssl.cert &&
-        fs.existsSync(website.cert.ssl.key) &&
-        fs.existsSync(website.cert.ssl.cert)
-      ) {
-        sslOptions = {
-          key: fs.readFileSync(website.cert.ssl.key),
-          cert: fs.readFileSync(website.cert.ssl.cert)
-        }
-      } else {
-        sslOptions = {
-          key: fs.readFileSync(ssl.key),
-          cert: fs.readFileSync(ssl.cert)
-        }
-      }
-      sslOptions.minVersion = 'TLSv1.2'
-      const ctx = tls.createSecureContext(sslOptions)
-      this.#sslCache.set(hostname, ctx)
-      callback(null, ctx)
-    }
-    options.secure = true
-    this.#server_smtp = new SMTPServer(options)
-    listenWithRetry(this.#server_smtp, 465, 'SMTP Secure')
-    this.#server_smtp.on('error', err => {
-      if (err.code === 'EADDRINUSE') return // Handled by retry logic
-      if (err.code === 'ERR_SSL_HTTP_REQUEST' && err.meta?.remoteAddress) {
-        this.#block(err.meta.remoteAddress, 'HTTP request on SMTP port')
-      }
-      error('SMTP Server Error: ', err)
-    })
-    if (this.#server_smtp.server) {
-      this.#server_smtp.server.on('connection', socket => {
-        socket.on('error', err => {
-          if (err.code !== 'ECONNRESET') error('SMTP Secure Socket Error:', err)
-        })
-      })
-    }
-    this.#server_imap_sec = new server(options)
-    this.#server_imap_sec.listen(993, MAX_RETRIES, RETRY_DELAY_MS)
-  }
-
-  stop() {
-    try {
-      if (this.#server_smtp_insecure) {
-        this.#server_smtp_insecure.close(() => {})
-        this.#server_smtp_insecure = null
-      }
-      if (this.#server_smtp) {
-        this.#server_smtp.close(() => {})
-        this.#server_smtp = null
-      }
-      if (this.#server_imap) {
-        this.#server_imap.stop(() => {})
-        this.#server_imap = null
-      }
-      if (this.#server_imap_sec) {
-        this.#server_imap_sec.stop(() => {})
-        this.#server_imap_sec = null
-      }
-      // Clean up SMTP client resources
-      smtp.stop()
-    } catch (e) {
-      error('Error stopping Mail services: %s', e.message)
-    }
-  }
-
-  async list(domain) {
-    if (!domain) return Odac.server('Api').result(false, await __('Domain is required.'))
-    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
-    let accounts = []
-    await new Promise((resolve, reject) => {
-      this.#db.each(
-        'SELECT * FROM mail_account WHERE domain = ?',
-        [domain],
-        (err, row) => {
-          if (err) reject(err)
-          accounts.push(row.email)
-        },
-        (err, count) => {
-          if (err) reject(err)
-          resolve(count)
-        }
-      )
-    })
-    return Odac.server('Api').result(true, (await __('Mail accounts for domain %s.', domain)) + '\n' + accounts.join('\n'))
-  }
-
-  async password(email, password, retype) {
-    if (!email || !password || !retype) return Odac.server('Api').result(false, await __('All fields are required.'))
-    if (password != retype) return Odac.server('Api').result(false, await __('Passwords do not match.'))
-    password = await this.#hashPassword(password)
-    if (!this.#isValidEmail(email)) return Odac.server('Api').result(false, await __('Invalid email address.'))
-    if (!this.exists(email)) return Odac.server('Api').result(false, await __('Mail account %s not found.', email))
-    this.#db.serialize(() => {
-      let stmt = this.#db.prepare('UPDATE mail_account SET password = ? WHERE email = ?')
-      stmt.run(password, email)
-      stmt.finalize()
-    })
-    return Odac.server('Api').result(true, await __('Mail account %s password updated successfully.', email))
-  }
-
-  async send(data) {
-    if (!data || !data.from || !data.to || !data.header) return Odac.server('Api').result(false, await __('All fields are required.'))
-    if (!this.#isValidEmail(data.from.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
-    if (!this.#isValidEmail(data.to.value[0].address)) return Odac.server('Api').result(false, await __('Invalid email address.'))
-    let domain = data.from.value[0].address.split('@')[1].split('.')
-    while (domain.length > 2 && !Odac.core('Config').config.domains?.[domain.join('.')]) domain.shift()
-    domain = domain.join('.')
-    if (!Odac.core('Config').config.domains?.[domain]) return Odac.server('Api').result(false, await __('Domain %s not found.', domain))
-    let mail = {
-      atttachments: [],
-      headerLines: [],
-      from: data.from,
-      to: data.to,
-      subject: data.subject ?? ''
-    }
-    for (let key in data.header) mail.headerLines.push({key: key.toLowerCase(), line: key + ': ' + data.header[key]})
-    if (data.html) mail.html = data.html
-    if (data.text) mail.text = data.text
-    mail.attachments = data.attachments ?? []
-    smtp.send(mail)
-    return Odac.server('Api').result(true, await __('Mail sent successfully.'))
-  }
-
-  #store(email, data, mailbox = 'INBOX', flags = '[]') {
-    return new Promise(resolve => {
-      if (email === data.from.value[0].address) {
-        flags = JSON.stringify(['seen'])
-        mailbox = 'Sent'
-      }
-      this.#db.serialize(async () => {
-        if (!this.#counts[email]) {
-          await new Promise((sub_resolve, sub_reject) => {
-            this.#db.get('SELECT COUNT(*) AS count FROM mail_received WHERE email = ?', [email], (err, row) => {
-              if (err) return sub_reject(err)
-              this.#counts[email] = row.count + 1
-              return sub_resolve()
-            })
-          })
-        } else this.#counts[email]++
-        if (data.html === '0') data.html = ''
-        this.#db.run(
-          "INSERT INTO mail_received ('uid', 'email', 'mailbox', 'attachments', 'headers', 'headerLines', 'html', 'text', 'textAsHtml', 'subject', 'to', 'from', 'messageId', 'flags') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          [
-            this.#counts[email],
-            email,
-            mailbox,
-            JSON.stringify(data.attachments),
-            JSON.stringify(data.headers),
-            JSON.stringify(data.headerLines),
-            data.html,
-            data.text,
-            data.textAsHtml,
-            data.subject,
-            JSON.stringify(data.to),
-            JSON.stringify(data.from),
-            data.messageId,
-            flags
-          ],
-          async err => {
-            if (!err) return resolve(true)
-            error(err)
-            return resolve(await this.#store(email, data))
-          }
-        )
-      })
-    })
   }
 }
 

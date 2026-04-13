@@ -135,6 +135,13 @@ class Http {
   }
 
   /**
+   * Convenience PUT method.
+   */
+  async put(url, data, options = {}) {
+    return this.request(url, {...options, method: 'PUT', data})
+  }
+
+  /**
    * Convenience DELETE method.
    */
   async delete(url, options = {}) {
