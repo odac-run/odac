@@ -48,6 +48,9 @@ class OdacProxy {
       }
     } else if (app.port) {
       port = parseInt(app.port)
+    } else if (app.http && app.http !== false) {
+      port = parseInt(app.http)
+      useInternal = true
     }
 
     if (!port) return null
