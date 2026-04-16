@@ -519,9 +519,24 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 		content = sb.String() + "\r\n"
 
 	case upperSection == "TEXT":
-		if msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0" {
+		hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+		hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+		if hasHTML && hasText {
+			boundary := fmt.Sprintf("----=_ODAC_%d", msg.UID)
+			var bodySB strings.Builder
+			bodySB.WriteString("--" + boundary + "\r\n")
+			bodySB.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+			bodySB.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+			bodySB.WriteString(msg.Text.String)
+			bodySB.WriteString("\r\n--" + boundary + "\r\n")
+			bodySB.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+			bodySB.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+			bodySB.WriteString(msg.HTML.String)
+			bodySB.WriteString("\r\n--" + boundary + "--\r\n")
+			content = bodySB.String()
+		} else if hasHTML {
 			content = msg.HTML.String
-		} else if msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0" {
+		} else if hasText {
 			content = msg.Text.String
 		}
 
