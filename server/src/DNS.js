@@ -466,6 +466,31 @@ class DNS {
   }
 
   /**
+   * Waits until the Go DNS binary is spawned and config is successfully synced.
+   * Used by the Updater during zero-downtime handshake to confirm readiness
+   * before signaling the old instance to stop its overlap services.
+   * @param {number} [timeout=10000] - Maximum wait time in milliseconds
+   * @returns {Promise<boolean>} True if ready, false on timeout
+   */
+  async waitForReady(timeout = 10000) {
+    const start = Date.now()
+    const interval = 200
+
+    while (Date.now() - start < timeout) {
+      if (this.#dnsProcess && this.#dnsSocketPath && fs.existsSync(this.#dnsSocketPath)) {
+        try {
+          await this.syncConfig()
+          return true
+        } catch {
+          /* retry */
+        }
+      }
+      await new Promise(r => setTimeout(r, interval))
+    }
+    return false
+  }
+
+  /**
    * Syncs the full DNS zone configuration to the Go binary.
    * Sends zones + IP data so the Go resolver can serve authoritative answers.
    * @param {number} retryCount - Internal retry counter

@@ -269,7 +269,7 @@ class OdacProxy {
         }
       })
 
-      // Give it a moment to start
+      // Give it a moment to start, then sync config
       if (this.#syncTimer) clearTimeout(this.#syncTimer)
       this.#syncTimer = setTimeout(() => this.syncConfig(), 1000)
 
@@ -395,6 +395,31 @@ class OdacProxy {
       clearTimeout(this.#cleanupTimer)
       this.#cleanupTimer = null
     }
+  }
+
+  /**
+   * Waits until the Go Proxy binary is spawned and config is successfully synced.
+   * Used by the Updater during zero-downtime handshake to confirm readiness
+   * before signaling the old instance to stop its overlap services.
+   * @param {number} [timeout=10000] - Maximum wait time in milliseconds
+   * @returns {Promise<boolean>} True if ready, false on timeout
+   */
+  async waitForReady(timeout = 10000) {
+    const start = Date.now()
+    const interval = 200
+
+    while (Date.now() - start < timeout) {
+      if (this.#proxyProcess && this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+        try {
+          await this.syncConfig()
+          return true
+        } catch {
+          /* retry */
+        }
+      }
+      await new Promise(r => setTimeout(r, interval))
+    }
+    return false
   }
 
   async syncConfig(retryCount = 0) {
