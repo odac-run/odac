@@ -480,8 +480,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ── Smart Cache: Serve static assets from memory ──
 	if !isWebSocket && IsCacheable(r) {
 		if entry := p.cache.Get(host, r.URL.Path); entry != nil {
-			ServeFromCache(w, r, entry)
-			// Background revalidation: throttled to 1 request per entry per interval
+			if encoding != "" {
+				cw := newCompressionResponseWriter(w, encoding)
+				ServeFromCache(cw, r, entry)
+				cw.Close()
+			} else {
+				ServeFromCache(w, r, entry)
+			}
 			if entry.ShouldRevalidate() {
 				go p.revalidateCache(host, r, entry)
 			}
@@ -506,7 +511,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ── Page Cache: App-controlled HTML caching via X-Odac-Cache header ──
 	if !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
 		if entry := p.pages.Get(host, r.URL.Path, r); entry != nil {
-			ServePageFromCache(w, r, entry)
+			if encoding != "" {
+				cw := newCompressionResponseWriter(w, encoding)
+				ServePageFromCache(cw, r, entry)
+				cw.Close()
+			} else {
+				ServePageFromCache(w, r, entry)
+			}
 			if entry.ShouldRevalidate() {
 				go p.revalidatePageCache(host, r, entry)
 			}
