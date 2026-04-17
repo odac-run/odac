@@ -4,8 +4,16 @@ package config
 type Config struct {
 	Domains  map[string]Website `json:"domains"`
 	Firewall Firewall           `json:"firewall"`
+	Memory   *Memory            `json:"memory,omitempty"`
 	SSL      *SSL               `json:"ssl"`
 	Tunnels  []Tunnel           `json:"tunnels"`
+}
+
+// Memory represents host memory info provided by Node.js (os.totalmem/os.freemem).
+// Used by the cache engine to adapt its size to actual available system resources.
+type Memory struct {
+	Total uint64 `json:"total"` // Total physical RAM in bytes
+	Used  uint64 `json:"used"`  // Used RAM in bytes
 }
 
 // Tunnel represents a single tunnel endpoint with resolved backend info

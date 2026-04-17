@@ -28,6 +28,58 @@ class OdacProxy {
   }
 
   /**
+   * Purges cached static assets from the Go proxy's in-memory cache.
+   * Called after app deployments to ensure fresh assets are served.
+   * @param {string} [domain] - Domain to purge. If omitted, purges all cached assets.
+   * @returns {Promise<number>} Number of purged cache entries
+   */
+  async purgeCache(domain) {
+    if (!this.#proxyProcess) return 0
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return 0
+
+    const payload = domain ? {domain} : {}
+
+    try {
+      let response
+      if (this.#proxySocketPath) {
+        response = await Odac.core('Http').post('http://localhost/cache/purge', payload, {
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        response = await Odac.core('Http').post(`http://127.0.0.1:${this.#proxyApiPort}/cache/purge`, payload)
+      }
+
+      const purged = response.data?.purged || 0
+      if (purged > 0) log('Cache purged: %d entries%s', purged, domain ? ` for ${domain}` : '')
+      return purged
+    } catch (e) {
+      error('Failed to purge cache: %s', e.message)
+      return 0
+    }
+  }
+
+  /**
+   * Purges cached assets for all domains mapped to a specific app.
+   * Called automatically after app redeploy/restart to serve fresh assets.
+   * @param {string} appId - App name or ID to purge cache for
+   */
+  async purgeCacheForApp(appId) {
+    if (!appId) return
+
+    const domains = Odac.core('Config').config.domains || {}
+    const purged = []
+
+    for (const [domainName, record] of Object.entries(domains)) {
+      if (record.appId === appId) {
+        purged.push(this.purgeCache(domainName))
+      }
+    }
+
+    await Promise.all(purged)
+  }
+
+  /**
    * Resolves an app's backend target (IP + port) from its config.
    * Single source of truth for port detection and container IP resolution.
    * Used by both domain routing and tunnel routing to avoid duplication.
@@ -508,6 +560,7 @@ class OdacProxy {
     const config = {
       domains: proxyDomains,
       firewall: Odac.core('Config').config.firewall || {enabled: true},
+      memory: {total: os.totalmem(), used: os.totalmem() - os.freemem()},
       ssl: Odac.core('Config').config.ssl || null,
       tunnels: tunnelList
     }

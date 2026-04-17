@@ -72,6 +72,51 @@ func (s *Server) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleCachePurge clears cached assets for a specific domain or all domains.
+// POST with {"domain": "example.com"} purges that domain.
+// POST with empty body or {"domain": ""} purges all cached assets.
+func (s *Server) HandleCachePurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	// Body is optional — empty body means purge all
+	json.NewDecoder(r.Body).Decode(&req)
+
+	cache := s.proxy.Cache()
+	var count int
+
+	if req.Domain != "" {
+		count = cache.Purge(req.Domain)
+		log.Printf("[Cache] Purged %d entries for domain: %s", count, req.Domain)
+	} else {
+		count = cache.PurgeAll()
+		log.Printf("[Cache] Purged all %d entries", count)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"purged": count,
+	})
+}
+
+// HandleCacheStats returns current cache statistics.
+func (s *Server) HandleCacheStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(s.proxy.Cache().Stats())
+}
+
 func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -87,7 +132,7 @@ func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received config update: %d domains, firewall enabled: %v, tunnels: %d", len(cfg.Domains), cfg.Firewall.Enabled, len(cfg.Tunnels))
 
-	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL, cfg.Tunnels)
+	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL, cfg.Tunnels, cfg.Memory)
 	s.firewall.UpdateConfig(cfg.Firewall)
 
 	w.WriteHeader(http.StatusOK)
@@ -97,6 +142,8 @@ func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/acme/challenge", s.HandleACMEChallenge)
+	mux.HandleFunc("/cache/purge", s.HandleCachePurge)
+	mux.HandleFunc("/cache/stats", s.HandleCacheStats)
 	mux.HandleFunc("/config", s.HandleConfig)
 	mux.ServeHTTP(w, r)
 }

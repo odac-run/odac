@@ -23,8 +23,10 @@ const mockChildProcess = {
 }
 
 const mockOs = {
+  freemem: jest.fn().mockReturnValue(4 * 1024 * 1024 * 1024),
   platform: jest.fn().mockReturnValue('linux'),
-  homedir: jest.fn().mockReturnValue('/home/user')
+  homedir: jest.fn().mockReturnValue('/home/user'),
+  totalmem: jest.fn().mockReturnValue(8 * 1024 * 1024 * 1024)
 }
 
 // Apply mocks

@@ -85,6 +85,7 @@ func (bufferPool) Put(buf []byte) {
 type Proxy struct {
 	acmeChallenges map[string]string          // ACME HTTP-01 challenge tokens: token -> keyAuthorization
 	acmeMu         sync.RWMutex               // Separate mutex for ACME challenges to avoid contention
+	cache          *CacheManager              // Smart adaptive asset cache
 	domains        map[string]config.Website
 	sslCache       map[string]*tls.Certificate
 	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
@@ -104,6 +105,7 @@ type ocspCacheEntry struct {
 func NewProxy() *Proxy {
 	p := &Proxy{
 		acmeChallenges: make(map[string]string),
+		cache:          NewCacheManager(),
 		domains:        make(map[string]config.Website),
 		sslCache:       make(map[string]*tls.Certificate),
 		ocspCache:      make(map[string]*ocspCacheEntry),
@@ -184,7 +186,7 @@ func (p *Proxy) SetACMEChallenge(token, keyAuthorization string) {
 	log.Printf("ACME HTTP-01 challenge token set: %.8s...", token)
 }
 
-func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL, tunnels []config.Tunnel) {
+func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL, tunnels []config.Tunnel, memory *config.Memory) {
 	p.mu.Lock()
 	p.domains = domains
 	p.globalSSL = globalSSL
@@ -195,6 +197,11 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 	// Update tunnel connections outside main lock (TunnelManager has its own mutex)
 	if tunnels != nil {
 		p.tunnel.UpdateConfig(tunnels)
+	}
+
+	// Update cache memory limits from Node.js-provided host memory info
+	if memory != nil && memory.Total > 0 {
+		p.cache.UpdateMemory(memory.Total, memory.Used)
 	}
 }
 
@@ -443,6 +450,32 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Skip compression for WebSocket connections
 	isWebSocket := strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
 		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+
+	// ── Smart Cache: Serve static assets from memory ──
+	if !isWebSocket && IsCacheable(r) {
+		if entry := p.cache.Get(host, r.URL.Path); entry != nil {
+			ServeFromCache(w, r, entry)
+			// Background revalidation: throttled to 1 request per entry per interval
+			if entry.ShouldRevalidate() {
+				go p.revalidateCache(host, r, entry)
+			}
+			return
+		}
+
+		// Cache miss: proxy to backend but capture the response for caching.
+		// cacheRecordWriter MUST wrap the compressionResponseWriter (not vice versa)
+		// so it captures the raw uncompressed body from the backend.
+		// Chain: backend → reverseProxy → cacheRecordWriter → compressionWriter → client
+		crw := newCacheRecordWriter(w, encoding)
+		defer crw.Close()
+		p.reverseProxy.ServeHTTP(crw, r)
+
+		// Store in cache if response was cacheable (runs inline, body already buffered)
+		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 && crw.body.Len() <= cacheMaxFileSize {
+			p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
+		}
+		return
+	}
 
 	// Use compression wrapper if supported (skip for WebSocket)
 	if encoding != "" && !isWebSocket {
@@ -802,4 +835,188 @@ func (p *Proxy) refreshOCSPStaple(host string, cert *tls.Certificate) {
 		expiresAt: *nextUpdate,
 	}
 	debugLog("[DEBUG] OCSP: Refreshed staple for %s", host)
+}
+
+// ============================================================================
+// Cache Recording Writer — captures backend response for cache storage
+// ============================================================================
+
+// cacheRecordWriter intercepts the backend response to capture the raw
+// (uncompressed) body for cache storage, while optionally compressing
+// the data sent to the client. This ensures the cache always stores raw
+// bytes — any client can be served regardless of Accept-Encoding.
+//
+// Data flow: backend → cacheRecordWriter.Write(raw) → buffer(raw) + compress → client
+type cacheRecordWriter struct {
+	w          http.ResponseWriter
+	body       bytes.Buffer
+	compressor *compressionResponseWriter // nil if no compression needed
+	headers    http.Header
+	statusCode int
+	wroteHead  bool
+}
+
+func newCacheRecordWriter(w http.ResponseWriter, encoding string) *cacheRecordWriter {
+	crw := &cacheRecordWriter{
+		w:          w,
+		statusCode: http.StatusOK,
+	}
+	if encoding != "" {
+		crw.compressor = newCompressionResponseWriter(w, encoding)
+	}
+	return crw
+}
+
+func (crw *cacheRecordWriter) Header() http.Header {
+	return crw.w.Header()
+}
+
+func (crw *cacheRecordWriter) WriteHeader(code int) {
+	if crw.wroteHead {
+		return
+	}
+	crw.wroteHead = true
+	crw.statusCode = code
+
+	// Snapshot headers at write time for cache storage
+	crw.headers = crw.w.Header().Clone()
+
+	if crw.compressor != nil {
+		crw.compressor.WriteHeader(code)
+	} else {
+		crw.w.WriteHeader(code)
+	}
+}
+
+func (crw *cacheRecordWriter) Write(b []byte) (int, error) {
+	if !crw.wroteHead {
+		crw.WriteHeader(http.StatusOK)
+	}
+
+	// Always buffer the raw (uncompressed) body for cache storage
+	if crw.body.Len()+len(b) <= cacheMaxFileSize {
+		crw.body.Write(b)
+	}
+
+	// Send to client (compressed if compressor is active, raw otherwise)
+	if crw.compressor != nil {
+		return crw.compressor.Write(b)
+	}
+	return crw.w.Write(b)
+}
+
+func (crw *cacheRecordWriter) Flush() {
+	if crw.compressor != nil {
+		crw.compressor.Flush()
+		return
+	}
+	if f, ok := crw.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Close flushes and returns the compressor to its pool.
+func (crw *cacheRecordWriter) Close() {
+	if crw.compressor != nil {
+		crw.compressor.Close()
+	}
+}
+
+// toFakeResponse creates a minimal http.Response for cache admission checks.
+func (crw *cacheRecordWriter) toFakeResponse() *http.Response {
+	return &http.Response{
+		StatusCode: crw.statusCode,
+		Header:     crw.headers,
+	}
+}
+
+// ============================================================================
+// Cache Revalidation — async background freshness check
+// ============================================================================
+
+// revalidateCache sends a conditional request to the backend to check if
+// the cached asset has changed. If it has, the cache entry is updated.
+// This runs in a background goroutine — the client already got the cached response.
+func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *cacheEntry) {
+	defer entry.FinishRevalidation()
+
+	// Build a conditional request to the backend
+	p.mu.RLock()
+	website, exists := p.resolveDomain(host)
+	p.mu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	targetHost := "127.0.0.1"
+	if website.ContainerIP != "" {
+		targetHost = website.ContainerIP
+	} else if website.Container != "" {
+		targetHost = website.Container
+	}
+
+	targetURL := "http://" + net.JoinHostPort(targetHost, strconv.Itoa(website.Port)) + originalReq.URL.Path
+	if originalReq.URL.RawQuery != "" {
+		targetURL += "?" + originalReq.URL.RawQuery
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return
+	}
+
+	// Set conditional headers
+	if entry.etag != "" {
+		req.Header.Set("If-None-Match", entry.etag)
+	}
+	if entry.lastMod != "" {
+		req.Header.Set("If-Modified-Since", entry.lastMod)
+	}
+
+	// Preserve original Host header so backend routes correctly
+	req.Host = host
+
+	resp, err := revalidationClient.Do(req)
+	if err != nil {
+		debugLog("[Cache] Revalidation failed for %s%s: %v", host, originalReq.URL.Path, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified {
+		// Asset unchanged — cache is still fresh, just update lastAccess
+		debugLog("[Cache] Revalidated (304): %s%s", host, originalReq.URL.Path)
+		return
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		// Asset changed — read new body and update cache
+		body, err := io.ReadAll(io.LimitReader(resp.Body, cacheMaxFileSize+1))
+		if err != nil || len(body) > cacheMaxFileSize {
+			return
+		}
+
+		p.cache.Put(host, originalReq.URL.Path, resp, body)
+		debugLog("[Cache] Revalidated (200, updated): %s%s", host, originalReq.URL.Path)
+	}
+}
+
+// revalidationClient is a dedicated HTTP client for background cache revalidation.
+// Separate from the main proxy transport to avoid interference with user traffic.
+var revalidationClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
+// Cache returns the cache manager for external access (API purge, stats).
+func (p *Proxy) Cache() *CacheManager {
+	return p.cache
 }

@@ -1157,6 +1157,7 @@ class App {
 
         if (logCtrl) logCtrl.startPhase('proxy_propagation')
         Odac.server('Proxy').syncConfig()
+        Odac.server('Proxy').purgeCacheForApp(app.id)
         if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
       }
 
@@ -2063,6 +2064,7 @@ class App {
 
     if (logCtrl) logCtrl.startPhase('proxy_propagation')
     await Odac.server('Proxy').syncConfig()
+    Odac.server('Proxy').purgeCacheForApp(app.id)
     if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
 
     if (logCtrl) logCtrl.startPhase('stop_old_container')
