@@ -87,6 +87,7 @@ type Proxy struct {
 	acmeMu         sync.RWMutex               // Separate mutex for ACME challenges to avoid contention
 	cache          *CacheManager              // Smart adaptive asset cache
 	domains        map[string]config.Website
+	hints          *HintsStore                // 103 Early Hints engine
 	sslCache       map[string]*tls.Certificate
 	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
 	globalSSL      *config.SSL
@@ -107,6 +108,7 @@ func NewProxy() *Proxy {
 		acmeChallenges: make(map[string]string),
 		cache:          NewCacheManager(),
 		domains:        make(map[string]config.Website),
+		hints:          NewHintsStore(),
 		sslCache:       make(map[string]*tls.Certificate),
 		ocspCache:      make(map[string]*ocspCacheEntry),
 		tunnel:         NewTunnelManager(),
@@ -162,6 +164,19 @@ func NewProxy() *Proxy {
 			r.Header.Del("X-Powered-By")
 			r.Header.Del("X-AspNet-Version")
 			r.Header.Del("X-Runtime")
+
+			// Learn Link:rel=preload headers for 103 Early Hints
+			if r.Request != nil {
+				host := r.Request.Host
+				if idx := strings.Index(host, ":"); idx != -1 {
+					host = host[:idx]
+				}
+				if strings.HasPrefix(host, "www.") {
+					host = host[4:]
+				}
+				p.hints.Learn(host, r.Request.URL.Path, r)
+			}
+
 			return nil
 		},
 	}
@@ -450,6 +465,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Skip compression for WebSocket connections
 	isWebSocket := strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
 		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+
+	// ── 103 Early Hints: send learned preload hints before proxying ──
+	if !isWebSocket && r.Method == http.MethodGet {
+		p.hints.Send(w, host, r.URL.Path)
+	}
 
 	// ── Smart Cache: Serve static assets from memory ──
 	if !isWebSocket && IsCacheable(r) {
@@ -1019,4 +1039,9 @@ var revalidationClient = &http.Client{
 // Cache returns the cache manager for external access (API purge, stats).
 func (p *Proxy) Cache() *CacheManager {
 	return p.cache
+}
+
+// Hints returns the early hints store for external access (API purge).
+func (p *Proxy) Hints() *HintsStore {
+	return p.hints
 }

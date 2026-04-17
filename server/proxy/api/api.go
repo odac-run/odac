@@ -92,9 +92,11 @@ func (s *Server) HandleCachePurge(w http.ResponseWriter, r *http.Request) {
 
 	if req.Domain != "" {
 		count = cache.Purge(req.Domain)
+		s.proxy.Hints().Purge(req.Domain)
 		log.Printf("[Cache] Purged %d entries for domain: %s", count, req.Domain)
 	} else {
 		count = cache.PurgeAll()
+		s.proxy.Hints().PurgeAll()
 		log.Printf("[Cache] Purged all %d entries", count)
 	}
 
