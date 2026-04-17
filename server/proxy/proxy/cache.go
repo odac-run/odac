@@ -227,6 +227,30 @@ func assetPriority(urlPath string) float64 {
 	return 1.0
 }
 
+// IsCacheableResponse checks if a backend response is eligible for static asset caching.
+// Used when the request already passed IsCacheable but we need to verify the response too.
+func IsCacheableResponse(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	if !cacheableContentType(resp.Header.Get("Content-Type")) {
+		return false
+	}
+	cc := resp.Header.Get("Cache-Control")
+	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
+		return false
+	}
+	if resp.Header.Get("Set-Cookie") != "" {
+		return false
+	}
+	if vary := strings.ToLower(resp.Header.Get("Vary")); vary != "" {
+		if strings.Contains(vary, "*") || strings.Contains(vary, "cookie") || strings.Contains(vary, "authorization") {
+			return false
+		}
+	}
+	return true
+}
+
 // cacheableContentType validates that the response Content-Type matches
 // what we expect for the file extension. Prevents caching error pages
 // served with wrong extensions.
