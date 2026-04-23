@@ -175,6 +175,8 @@ func (s *Session) Data(r io.Reader) error {
 	// Parse RFC 2822 message into headers and body parts
 	parsed := parseMessage(body)
 
+	sentStored := false
+
 	for _, rcpt := range s.recipients {
 		// Check if sender is a local authenticated user
 		senderIsLocal := s.user != "" && s.from == s.user
@@ -196,23 +198,15 @@ func (s *Session) Data(r io.Reader) error {
 		}
 
 		// Store locally for local recipients
-		if rcptIsLocal {
-			mailbox := "INBOX"
-			flags := "[]"
-			// If sender is sending to themselves, mark as Sent
-			if rcpt == s.from {
-				mailbox = "Sent"
-				flags = `["seen"]`
-			}
-
+		if rcptIsLocal && rcpt != s.from {
 			msg := &storage.MessageRow{
 				Email:       rcpt,
-				Flags:       toNullString(flags),
+				Flags:       toNullString("[]"),
 				From:        toNullString(parsed.from),
 				Headers:     toNullString(parsed.headersJSON),
 				HeaderLines: toNullString(parsed.headerLinesJSON),
 				HTML:        toNullString(parsed.html),
-				Mailbox:     mailbox,
+				Mailbox:     "INBOX",
 				MessageID:   toNullString(parsed.messageID),
 				Subject:     toNullString(parsed.subject),
 				Text:        toNullString(parsed.text),
@@ -230,6 +224,27 @@ func (s *Session) Data(r io.Reader) error {
 					log.Printf("[SMTP] Outbound delivery failed: %s -> %s: %v", s.from, recipient, err)
 				}
 			}(rcpt, body)
+		}
+
+		// Store once in Sent folder for authenticated local senders
+		if senderIsLocal && !sentStored {
+			sentStored = true
+			sentMsg := &storage.MessageRow{
+				Email:       s.from,
+				Flags:       toNullString(`["seen"]`),
+				From:        toNullString(parsed.from),
+				Headers:     toNullString(parsed.headersJSON),
+				HeaderLines: toNullString(parsed.headerLinesJSON),
+				HTML:        toNullString(parsed.html),
+				Mailbox:     "Sent",
+				MessageID:   toNullString(parsed.messageID),
+				Subject:     toNullString(parsed.subject),
+				Text:        toNullString(parsed.text),
+				To:          toNullString(parsed.to),
+			}
+			if err := s.backend.store.MessageStore(ctx, sentMsg); err != nil {
+				log.Printf("[SMTP] Failed to store sent message for %s: %v", s.from, err)
+			}
 		}
 	}
 

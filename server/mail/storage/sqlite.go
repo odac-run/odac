@@ -23,6 +23,10 @@ type Store struct {
 	path string
 }
 
+// defaultMailboxes are provisioned automatically when a new account is created.
+// INBOX is implicit and always returned by MailboxList, so it's not included here.
+var defaultMailboxes = []string{"Drafts", "Junk", "Sent", "Trash"}
+
 // NewStore creates a new Store and opens the SQLite database.
 // Automatically creates the database directory and runs migrations.
 // The database path defaults to ~/.odac/db/mail if not specified.
@@ -114,17 +118,33 @@ func (s *Store) AccountExists(ctx context.Context, email string) (*AccountRow, e
 }
 
 // AccountCreate inserts a new mail account with a pre-hashed password.
+// Automatically provisions default mailboxes (Drafts, Junk, Sent, Trash).
 func (s *Store) AccountCreate(ctx context.Context, email, hashedPassword, domain string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("cannot begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx,
 		"INSERT INTO mail_account (email, password, domain) VALUES (?, ?, ?)",
 		email, hashedPassword, domain)
 	if err != nil {
 		return fmt.Errorf("account creation failed: %w", err)
 	}
-	return nil
+
+	for _, box := range defaultMailboxes {
+		_, err = tx.ExecContext(ctx,
+			"INSERT INTO mail_box (email, title) VALUES (?, ?)", email, box)
+		if err != nil {
+			return fmt.Errorf("default mailbox creation failed: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // AccountDelete removes a mail account by email address.
@@ -198,6 +218,16 @@ func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
 		return fmt.Errorf("cannot begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Auto-create mailbox if it doesn't exist (INBOX is implicit, skip it)
+	if msg.Mailbox != "INBOX" {
+		_, err = tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO mail_box (email, title) VALUES (?, ?)",
+			msg.Email, msg.Mailbox)
+		if err != nil {
+			return fmt.Errorf("mailbox auto-create failed: %w", err)
+		}
+	}
 
 	// Get next UID for this email account
 	var nextUID int64
