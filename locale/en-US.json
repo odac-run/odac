@@ -77,7 +77,12 @@
     "%s is a domain.": "%s is a domain.",
     "Enter the subdomain name (subdomain.example.com): ": "Enter the subdomain name (subdomain.example.com): ",
     "Enter your authentication key: ": "Enter your authentication key: ",
-    "Starting Odac Server...": "Starting Odac Server...",
     "Logged in": "Logged in",
-    "Authentication successful": "Authentication successful"
+    "Authentication successful": "Authentication successful",
+    "Create a new application": "Create a new application",
+    "Delete an App": "Delete an App",
+    "Connect a hardware device to an app": "Connect a hardware device to an app",
+    "Disconnect a hardware device from an app": "Disconnect a hardware device from an app",
+    "List all apps": "List all apps",
+    "Restart an App": "Restart an App"
 }

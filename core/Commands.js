@@ -128,16 +128,6 @@ module.exports = {
           })
         }
       },
-      restart: {
-        description: 'Restart an App',
-        args: ['-i', '--id'],
-        action: async args => {
-          const cli = Odac.cli('Cli')
-          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
-          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
-          await Odac.cli('Connector').call({action: 'app.restart', data: [app]})
-        }
-      },
       delete: {
         description: 'Delete an App',
         args: ['-i', '--id'],
@@ -148,9 +138,57 @@ module.exports = {
           await Odac.cli('Connector').call({action: 'app.delete', data: [app]})
         }
       },
+      device: {
+        sub: {
+          add: {
+            description: 'Connect a hardware device to an app',
+            args: ['-a', '--app', '-d', '--device'],
+            action: async args => {
+              const cli = Odac.cli('Cli')
+              let app = cli.parseArg(args, ['-a', '--app']) || args[0]
+              let device = cli.parseArg(args, ['-d', '--device']) || args[1]
+
+              if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+              if (!device) device = await cli.question(__('Enter the host device path (e.g. /dev/ttyACM0): '))
+
+              await Odac.cli('Connector').call({
+                action: 'app.device.add',
+                data: [app, device]
+              })
+            }
+          },
+          delete: {
+            description: 'Disconnect a hardware device from an app',
+            args: ['-a', '--app', '-d', '--device'],
+            action: async args => {
+              const cli = Odac.cli('Cli')
+              let app = cli.parseArg(args, ['-a', '--app']) || args[0]
+              let device = cli.parseArg(args, ['-d', '--device']) || args[1]
+
+              if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+              if (!device) device = await cli.question(__('Enter the host device path to remove: '))
+
+              await Odac.cli('Connector').call({
+                action: 'app.device.delete',
+                data: [app, device]
+              })
+            }
+          }
+        }
+      },
       list: {
         description: 'List all apps',
         action: async () => Odac.cli('Connector').call({action: 'app.list'})
+      },
+      restart: {
+        description: 'Restart an App',
+        args: ['-i', '--id'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args[0]
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+          await Odac.cli('Connector').call({action: 'app.restart', data: [app]})
+        }
       }
     }
   },

@@ -661,6 +661,7 @@ class App {
       image: app.image,
       ports: [],
       volumes,
+      devices: app.devices || [],
       env
     }
 
@@ -1502,6 +1503,51 @@ class App {
   }
 
   /**
+   * Connects a hardware device to an application container.
+   * @param {string|number} id - App id, name, or file
+   * @param {string} hostPath - Path to the device on the host (e.g. /dev/ttyACM0)
+   * @param {string} [containerPath] - Path to map inside the container (defaults to hostPath)
+   * @returns {object} Api.result
+   */
+  deviceAdd(id, hostPath, containerPath = null) {
+    const app = this.#get(id)
+    if (!app) return Odac.server('Api').result(false, __('App %s not found.', id))
+
+    if (!hostPath) return Odac.server('Api').result(false, __('Missing host device path.'))
+
+    if (!app.devices) app.devices = []
+
+    // Prevent duplicates
+    const existing = app.devices.find(d => d.host === hostPath)
+    if (existing) {
+      existing.container = containerPath || hostPath
+    } else {
+      app.devices.push({host: hostPath, container: containerPath || hostPath})
+    }
+
+    this.#saveApps()
+    return Odac.server('Api').result(true, __('Device %s added to %s. Restart required.', hostPath, app.name))
+  }
+
+  /**
+   * Removes a device mapping from an application.
+   * @param {string|number} id - App id, name, or file
+   * @param {string} hostPath - Host path of the device to remove
+   * @returns {object} Api.result
+   */
+  deviceDelete(id, hostPath) {
+    const app = this.#get(id)
+    if (!app) return Odac.server('Api').result(false, __('App %s not found.', id))
+
+    if (!app.devices) return Odac.server('Api').result(true, __('No devices connected to %s.', app.name))
+
+    app.devices = app.devices.filter(d => d.host !== hostPath)
+    this.#saveApps()
+
+    return Odac.server('Api').result(true, __('Device %s removed from %s. Restart required.', hostPath, app.name))
+  }
+
+  /**
    * Updates the Docker networks for a running app container.
    * Validates network names and delegates to Container.setNetworks.
    * @param {string|number} id - App id, name, or file
@@ -1821,6 +1867,7 @@ class App {
       image: runner.image,
       cmd: [runner.cmd, ...(runner.args || []), filename],
       volumes,
+      devices: app.devices || [],
       env
     })
   }
@@ -1872,6 +1919,7 @@ class App {
       // are metadata for Proxy routing and must NOT be sent as Docker PortBindings.
       ports: (app.ports || []).filter(p => p.host),
       volumes,
+      devices: app.devices || [],
       env
     }
 

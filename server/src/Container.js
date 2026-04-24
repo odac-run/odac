@@ -537,6 +537,17 @@ class Container {
       }
     }
 
+    const devices = []
+    if (options.devices) {
+      for (const dev of options.devices) {
+        devices.push({
+          PathOnHost: dev.host,
+          PathInContainer: dev.container || dev.host,
+          CgroupPermissions: 'rwm'
+        })
+      }
+    }
+
     try {
       const networkName = 'odac-network'
       await this.#ensureNetwork(networkName)
@@ -554,6 +565,7 @@ class Container {
         HostConfig: {
           RestartPolicy: {Name: 'unless-stopped'},
           Binds: bindings,
+          Devices: devices,
           PortBindings: portBindings,
           NetworkMode: networkName
         },

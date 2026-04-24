@@ -24,6 +24,8 @@ class Api {
     update: (...args) => Odac.server('System').update(...args),
     'app.create': (...args) => Odac.server('App').create(...args),
     'app.delete': (...args) => Odac.server('App').delete(...args),
+    'app.device.add': (...args) => Odac.server('App').deviceAdd(...args),
+    'app.device.delete': (...args) => Odac.server('App').deviceDelete(...args),
     'app.list': (...args) => Odac.server('App').list(...args),
     'app.restart': (...args) => Odac.server('App').restart(...args),
     'app.start': (...args) => Odac.server('App').start(...args),

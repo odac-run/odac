@@ -82,11 +82,53 @@ odac app delete -i my-app
 odac app delete --id my-app
 ```
 
+#### `odac app device add`
+Connect a hardware device to an application container.
+
+**Interactive:**
+```bash
+odac app device add
+```
+
+**Single-line:**
+```bash
+odac app device add -a my-app -d /dev/ttyACM0
+odac app device add --app my-app --device /dev/ttyACM0
+```
+
+#### `odac app device delete`
+Disconnect a hardware device from an application container.
+
+**Interactive:**
+```bash
+odac app device delete
+```
+
+**Single-line:**
+```bash
+odac app device delete -a my-app -d /dev/ttyACM0
+odac app device delete --app my-app --device /dev/ttyACM0
+```
+
 #### `odac app list`
 List all configured applications.
 
 ```bash
 odac app list
+```
+
+#### `odac app restart`
+Restart an application container.
+
+**Interactive:**
+```bash
+odac app restart
+```
+
+**Single-line:**
+```bash
+odac app restart -i my-app
+odac app restart --id my-app
 ```
 
 ### Domain Management

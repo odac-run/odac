@@ -51,6 +51,10 @@
         {
           "file": "03-delete-an-app.md",
           "title": "Delete an App"
+        },
+        {
+          "file": "04-connect-device.md",
+          "title": "Connect a Device"
         }
       ]
     },
