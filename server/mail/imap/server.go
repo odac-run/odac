@@ -52,11 +52,14 @@ func (s *Server) Start() {
 		return
 	}
 
-	// Port 993 — Implicit TLS
-	go s.listenTLS(993)
+	// Single TLS config shared between implicit-TLS (993) and STARTTLS (143).
+	tlsCfg := s.buildTLSConfig()
 
-	// Port 143 — Plaintext (STARTTLS available)
-	go s.listenPlain(143)
+	// Port 993 — Implicit TLS
+	go s.listenTLS(993, tlsCfg)
+
+	// Port 143 — Plaintext with STARTTLS upgrade
+	go s.listenPlain(143, tlsCfg)
 }
 
 // Stop gracefully shuts down both IMAP listeners.
@@ -91,10 +94,8 @@ func (s *Server) ClearSSLCache(domain string) {
 	})
 }
 
-func (s *Server) listenTLS(port int) {
+func (s *Server) listenTLS(port int, tlsCfg *tls.Config) {
 	const maxRetries = 15
-
-	tlsCfg := s.buildTLSConfig()
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -116,14 +117,14 @@ func (s *Server) listenTLS(port int) {
 		s.mu.Unlock()
 
 		log.Printf("[IMAP] TLS server listening on port %d", port)
-		s.acceptLoop(ln)
+		s.acceptLoop(ln, tlsCfg)
 		return
 	}
 
 	log.Printf("[IMAP] TLS failed to bind port %d after %d retries", port, maxRetries)
 }
 
-func (s *Server) listenPlain(port int) {
+func (s *Server) listenPlain(port int, tlsCfg *tls.Config) {
 	const maxRetries = 15
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -146,14 +147,14 @@ func (s *Server) listenPlain(port int) {
 		s.mu.Unlock()
 
 		log.Printf("[IMAP] Plain server listening on port %d", port)
-		s.acceptLoop(ln)
+		s.acceptLoop(ln, tlsCfg)
 		return
 	}
 
 	log.Printf("[IMAP] Plain failed to bind port %d after %d retries", port, maxRetries)
 }
 
-func (s *Server) acceptLoop(ln net.Listener) {
+func (s *Server) acceptLoop(ln net.Listener, tlsCfg *tls.Config) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -167,12 +168,12 @@ func (s *Server) acceptLoop(ln net.Listener) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleConnection(conn)
+			s.handleConnection(conn, tlsCfg)
 		}()
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
+func (s *Server) handleConnection(conn net.Conn, tlsCfg *tls.Config) {
 	defer conn.Close()
 
 	ip := extractConnIP(conn)
@@ -199,7 +200,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	log.Printf("[IMAP] New connection from %s (%d active)", ip, count)
 
-	c := NewConnection(conn, s.store, s.firewall, s.getConfig)
+	c := NewConnection(conn, tlsCfg, s.store, s.firewall, s.getConfig)
 	c.Serve()
 }
 

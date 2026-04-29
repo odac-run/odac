@@ -1,7 +1,9 @@
 package imap
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,8 +18,47 @@ import (
 )
 
 func (c *Connection) cmdCapability(tag string) {
-	c.write(fmt.Sprintf("* CAPABILITY %s\r\n", capabilities))
+	c.write(fmt.Sprintf("* CAPABILITY %s\r\n", c.capabilityString()))
 	c.write(fmt.Sprintf("%s OK CAPABILITY completed\r\n", tag))
+}
+
+// cmdStartTLS upgrades the plaintext connection to TLS per RFC 2595 / RFC 3501 §6.2.1.
+// Returns false if the connection should be closed (handshake or protocol error).
+func (c *Connection) cmdStartTLS(tag string) bool {
+	if c.tls {
+		c.write(fmt.Sprintf("%s NO TLS already active\r\n", tag))
+		return true
+	}
+	if c.tlsConfig == nil {
+		c.write(fmt.Sprintf("%s NO STARTTLS not configured\r\n", tag))
+		return true
+	}
+
+	// RFC 3501 §6.2.1: client MUST NOT pipeline commands after STARTTLS.
+	// Buffered bytes between the OK and the TLS ClientHello indicate either a
+	// broken client or a plaintext-injection attack — refuse the upgrade.
+	if c.reader.Buffered() > 0 {
+		c.write(fmt.Sprintf("%s BAD Unexpected pipelined data before TLS handshake\r\n", tag))
+		return false
+	}
+
+	c.write(fmt.Sprintf("%s OK Begin TLS negotiation now\r\n", tag))
+
+	c.conn.SetReadDeadline(time.Time{})
+	tlsConn := tls.Server(c.conn, c.tlsConfig)
+	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
+		log.Printf("[IMAP] STARTTLS handshake failed from %s: %v", extractConnIP(c.conn), err)
+		return false
+	}
+
+	// RFC 3501: discard all session state from the unprotected phase to defeat
+	// MITM attacks that may have manipulated pre-TLS commands or capabilities.
+	c.conn = tlsConn
+	c.reader = bufio.NewReaderSize(tlsConn, maxLineSize)
+	c.tls = true
+	c.auth = ""
+	c.mailbox = ""
+	return true
 }
 
 func (c *Connection) cmdLogout(tag string) {
@@ -26,6 +67,11 @@ func (c *Connection) cmdLogout(tag string) {
 }
 
 func (c *Connection) cmdLogin(tag, args string) {
+	if !c.tls {
+		c.write(fmt.Sprintf("%s NO [PRIVACYREQUIRED] LOGIN requires TLS — use STARTTLS or connect on port 993\r\n", tag))
+		return
+	}
+
 	parts := splitArgs(args)
 	if len(parts) < 2 {
 		c.write(fmt.Sprintf("%s NO Invalid arguments\r\n", tag))
@@ -76,6 +122,11 @@ func (c *Connection) cmdLogin(tag, args string) {
 }
 
 func (c *Connection) cmdAuthenticate(tag, args string) {
+	if !c.tls {
+		c.write(fmt.Sprintf("%s NO [PRIVACYREQUIRED] AUTHENTICATE requires TLS — use STARTTLS or connect on port 993\r\n", tag))
+		return
+	}
+
 	mech := strings.ToUpper(strings.TrimSpace(args))
 
 	if mech != "PLAIN" && mech != "LOGIN" {

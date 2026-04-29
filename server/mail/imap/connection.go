@@ -2,6 +2,7 @@ package imap
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
@@ -20,12 +21,13 @@ const (
 )
 
 var permanentFlags = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`, `\*`}
-var capabilities = "IMAP4rev1 AUTH=PLAIN IDLE"
 
 // Connection represents a single IMAP client session with its state machine.
 type Connection struct {
 	auth      string // Authenticated email (empty = not authenticated)
 	conn      net.Conn
+	tls       bool        // True if connection is TLS-encrypted (implicit TLS or post-STARTTLS)
+	tlsConfig *tls.Config // Used for STARTTLS upgrade on plaintext listener
 	firewall  *auth.Firewall
 	getConfig func() config.Config
 	mailbox   string // Currently selected mailbox
@@ -34,9 +36,13 @@ type Connection struct {
 }
 
 // NewConnection creates a new IMAP connection handler.
-func NewConnection(conn net.Conn, store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Connection {
+// tlsConfig is required so plaintext connections on port 143 can negotiate STARTTLS.
+func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Connection {
+	_, isTLS := conn.(*tls.Conn)
 	return &Connection{
 		conn:      conn,
+		tls:       isTLS,
+		tlsConfig: tlsConfig,
 		firewall:  fw,
 		getConfig: getConfig,
 		reader:    bufio.NewReaderSize(conn, maxLineSize),
@@ -44,10 +50,20 @@ func NewConnection(conn net.Conn, store *storage.Store, fw *auth.Firewall, getCo
 	}
 }
 
+// capabilityString returns the capability list appropriate for current TLS state.
+// Per RFC 3501 §6.2.1 + RFC 2595: advertise LOGINDISABLED and STARTTLS over plaintext;
+// expose AUTH mechanisms only after TLS is established.
+func (c *Connection) capabilityString() string {
+	if c.tls {
+		return "IMAP4rev1 AUTH=PLAIN AUTH=LOGIN IDLE"
+	}
+	return "IMAP4rev1 STARTTLS LOGINDISABLED IDLE"
+}
+
 // Serve runs the IMAP protocol loop: greeting → command processing → logout.
 func (c *Connection) Serve() {
-	// Send greeting
-	c.write("* OK [CAPABILITY IMAP4rev1 AUTH=PLAIN] IMAP4rev1 Server Ready\r\n")
+	// Send greeting with capabilities matching current TLS state.
+	c.write(fmt.Sprintf("* OK [CAPABILITY %s] IMAP4rev1 Server Ready\r\n", c.capabilityString()))
 
 	for {
 		c.conn.SetReadDeadline(time.Now().Add(idleTimeout))
@@ -138,7 +154,9 @@ func (c *Connection) Serve() {
 			c.write(fmt.Sprintf("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n"))
 			c.write(fmt.Sprintf("%s OK NAMESPACE completed\r\n", tag))
 		case "STARTTLS":
-			c.write(fmt.Sprintf("%s NO STARTTLS not available on this connection\r\n", tag))
+			if !c.cmdStartTLS(tag) {
+				return
+			}
 		default:
 			c.write(fmt.Sprintf("%s BAD Unknown command\r\n", tag))
 		}
