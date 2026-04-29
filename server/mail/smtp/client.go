@@ -145,13 +145,13 @@ func (c *Client) sendToHost(from, to string, body []byte, host, ehloBase string,
 
 	var lastErr error
 	for _, port := range c.ports {
-		conn, err := c.connect(local, host, port)
+		conn, reused, err := c.connect(local, host, port)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
-		err = c.deliverMessage(conn, local.EHLO, from, to, body, host)
+		err = c.deliverMessage(conn, local.EHLO, from, to, body, host, reused)
 		if err != nil {
 			conn.Close()
 			lastErr = err
@@ -257,7 +257,7 @@ func ptrMatchesDomain(ptr, domain, rootDomain string) bool {
 
 // connect establishes a TCP or TLS connection to the target SMTP server.
 // Uses the resolved local address for source IP binding.
-func (c *Client) connect(local LocalAddress, host string, port int) (net.Conn, error) {
+func (c *Client) connect(local LocalAddress, host string, port int) (net.Conn, bool, error) {
 	// Check pool first
 	key := fmt.Sprintf("%s:%d", host, port)
 	if val, ok := c.connPool.Load(key); ok {
@@ -270,7 +270,7 @@ func (c *Client) connect(local LocalAddress, host string, port int) (net.Conn, e
 			pc.conn.SetReadDeadline(time.Time{})
 			if err == nil || isTimeoutError(err) {
 				log.Printf("[SMTP-Client] Reusing pooled connection to %s", key)
-				return pc.conn, nil
+				return pc.conn, true, nil
 			}
 			pc.conn.Close()
 		} else {
@@ -298,25 +298,27 @@ func (c *Client) connect(local LocalAddress, host string, port int) (net.Conn, e
 			ServerName: host,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("TLS connect to %s failed: %w", addr, err)
+			return nil, false, fmt.Errorf("TLS connect to %s failed: %w", addr, err)
 		}
-		return tlsConn, nil
+		return tlsConn, false, nil
 	}
 
 	// Plaintext connection (STARTTLS will be attempted during delivery)
 	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("connect to %s failed: %w", addr, err)
+		return nil, false, fmt.Errorf("connect to %s failed: %w", addr, err)
 	}
-	return conn, nil
+	return conn, false, nil
 }
 
 // deliverMessage performs the SMTP transaction: EHLO, STARTTLS, MAIL FROM, RCPT TO, DATA.
 // mxHost is the MX hostname used as TLS ServerName for certificate validation.
-func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byte, mxHost string) error {
-	// Read greeting
-	if _, err := c.readResponse(conn); err != nil {
-		return fmt.Errorf("greeting failed: %w", err)
+func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byte, mxHost string, reused bool) error {
+	if !reused {
+		// Read greeting
+		if _, err := c.readResponse(conn); err != nil {
+			return fmt.Errorf("greeting failed: %w", err)
+		}
 	}
 
 	// EHLO
@@ -334,14 +336,13 @@ func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byt
 				ServerName: mxHost,
 			})
 			if err := tlsConn.Handshake(); err != nil {
-				// STARTTLS failed, continue on plaintext
 				log.Printf("[SMTP-Client] STARTTLS handshake failed for %s: %v", mxHost, err)
-			} else {
-				conn = tlsConn
-				// Re-EHLO after STARTTLS
-				if _, err := c.command(conn, fmt.Sprintf("EHLO %s\r\n", sanitize(ehlo))); err != nil {
-					return fmt.Errorf("post-STARTTLS EHLO failed: %w", err)
-				}
+				return fmt.Errorf("STARTTLS handshake failed: %w", err)
+			}
+			conn = tlsConn
+			// Re-EHLO after STARTTLS
+			if _, err := c.command(conn, fmt.Sprintf("EHLO %s\r\n", sanitize(ehlo))); err != nil {
+				return fmt.Errorf("post-STARTTLS EHLO failed: %w", err)
 			}
 		}
 	}
