@@ -24,15 +24,17 @@ var permanentFlags = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Dr
 
 // Connection represents a single IMAP client session with its state machine.
 type Connection struct {
-	auth      string // Authenticated email (empty = not authenticated)
-	conn      net.Conn
-	tls       bool        // True if connection is TLS-encrypted (implicit TLS or post-STARTTLS)
-	tlsConfig *tls.Config // Used for STARTTLS upgrade on plaintext listener
-	firewall  *auth.Firewall
-	getConfig func() config.Config
-	mailbox   string // Currently selected mailbox
-	reader    *bufio.Reader
-	store     *storage.Store
+	auth       string // Authenticated email (empty = not authenticated)
+	conn       net.Conn
+	tls        bool        // True if connection is TLS-encrypted (implicit TLS or post-STARTTLS)
+	tlsConfig  *tls.Config // Used for STARTTLS upgrade on plaintext listener
+	firewall   *auth.Firewall
+	getConfig  func() config.Config
+	mailbox    string // Currently selected mailbox
+	lastExists int64  // EXISTS count last reported to client (for delta untagged updates)
+	lastUnseen int64  // RECENT count last reported to client
+	reader     *bufio.Reader
+	store      *storage.Store
 }
 
 // NewConnection creates a new IMAP connection handler.
@@ -108,6 +110,7 @@ func (c *Connection) Serve() {
 		case "CAPABILITY":
 			c.cmdCapability(tag)
 		case "NOOP":
+			c.pushMailboxUpdates()
 			c.write(fmt.Sprintf("%s OK NOOP completed\r\n", tag))
 		case "LOGOUT":
 			c.cmdLogout(tag)

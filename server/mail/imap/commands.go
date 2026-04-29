@@ -22,6 +22,30 @@ func (c *Connection) cmdCapability(tag string) {
 	c.write(fmt.Sprintf("%s OK CAPABILITY completed\r\n", tag))
 }
 
+// pushMailboxUpdates emits untagged EXISTS / RECENT responses when the
+// selected mailbox state has changed since the last report. RFC 3501 §6.1.2
+// requires NOOP and IDLE to deliver these so clients learn about new mail
+// without re-issuing SELECT.
+func (c *Connection) pushMailboxUpdates() {
+	if c.mailbox == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stats, err := c.store.MailboxSelect(ctx, c.auth, c.mailbox)
+	if err != nil {
+		return
+	}
+	if stats.Exists != c.lastExists {
+		c.write(fmt.Sprintf("* %d EXISTS\r\n", stats.Exists))
+		c.lastExists = stats.Exists
+	}
+	if stats.Unseen != c.lastUnseen {
+		c.write(fmt.Sprintf("* %d RECENT\r\n", stats.Unseen))
+		c.lastUnseen = stats.Unseen
+	}
+}
+
 // cmdStartTLS upgrades the plaintext connection to TLS per RFC 2595 / RFC 3501 §6.2.1.
 // Returns false if the connection should be closed (handshake or protocol error).
 func (c *Connection) cmdStartTLS(tag string) bool {
@@ -197,6 +221,8 @@ func (c *Connection) cmdSelect(tag, args string) {
 	c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
 	c.write(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid\r\n", stats.UIDValidity))
 	c.write(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID\r\n", stats.UIDNext))
+	c.lastExists = stats.Exists
+	c.lastUnseen = stats.Unseen
 	c.write(fmt.Sprintf("%s OK [READ-WRITE] SELECT completed\r\n", tag))
 }
 
@@ -230,6 +256,8 @@ func (c *Connection) cmdExamine(tag, args string) {
 	c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
 	c.write(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid\r\n", stats.UIDValidity))
 	c.write(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID\r\n", stats.UIDNext))
+	c.lastExists = stats.Exists
+	c.lastUnseen = stats.Unseen
 	c.write(fmt.Sprintf("%s OK [READ-ONLY] EXAMINE completed\r\n", tag))
 }
 
@@ -750,21 +778,41 @@ func (c *Connection) writeBodyStructure(msg *storage.MessageRow) {
 	hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
 	hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
 
-	// RFC 3501 body structure: (type subtype (params) id description encoding size [lines] [md5] [disposition] [language] [location])
-	// Encoding must match actual content — we serve raw UTF-8, so "8BIT" or "7BIT"
+	// RFC 3501 §7.4.2 / §9 body-type-text:
+	//   (type subtype params id desc encoding size LINES md5 disposition language)
+	// LINES is REQUIRED for TEXT bodies — strict clients (Apple Mail, iOS) drop
+	// messages whose BODYSTRUCTURE has NIL where a line count is mandated.
 	if hasText && hasHTML {
 		textSize := len(msg.Text.String)
+		textLines := countLines(msg.Text.String)
 		htmlSize := len(msg.HTML.String)
-		c.write(fmt.Sprintf("BODYSTRUCTURE ((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL)(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) \"ALTERNATIVE\" NIL NIL NIL) ", textSize, htmlSize))
+		htmlLines := countLines(msg.HTML.String)
+		boundary := fmt.Sprintf("----=_ODAC_%d", msg.UID)
+		c.write(fmt.Sprintf("BODYSTRUCTURE ((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL)(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) \"ALTERNATIVE\" (\"BOUNDARY\" \"%s\") NIL NIL) ", textSize, textLines, htmlSize, htmlLines, boundary))
 	} else if hasHTML {
-		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) ", len(msg.HTML.String)))
+		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) ", len(msg.HTML.String), countLines(msg.HTML.String)))
 	} else {
 		size := 0
+		lines := 0
 		if hasText {
 			size = len(msg.Text.String)
+			lines = countLines(msg.Text.String)
 		}
-		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) ", size))
+		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) ", size, lines))
 	}
+}
+
+// countLines returns the number of text lines in a body part per RFC 3501 §7.4.2.
+// A trailing line without a terminator still counts as a line.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 func (c *Connection) cmdStore(tag, args string) {
@@ -916,19 +964,36 @@ func (c *Connection) cmdIdle(tag string) {
 
 	c.write("+ idling\r\n")
 
-	// Wait for DONE command with periodic checks
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
+	// Reader goroutine: receive DONE (or detect connection close).
+	// One-shot signaling — IDLE only accepts DONE, no other commands.
+	doneCh := make(chan struct{})
+	errCh := make(chan struct{})
+	go func() {
 		c.conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 		line, err := c.reader.ReadString('\n')
 		if err != nil {
-			return // Connection closed
+			close(errCh)
+			return
 		}
-
 		if strings.ToUpper(strings.TrimSpace(line)) == "DONE" {
+			close(doneCh)
+			return
+		}
+		close(errCh)
+	}()
+
+	// Poll the mailbox every 5s and push EXISTS/RECENT deltas to the client.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.pushMailboxUpdates()
+		case <-doneCh:
 			c.write(fmt.Sprintf("%s OK IDLE terminated\r\n", tag))
+			return
+		case <-errCh:
 			return
 		}
 	}

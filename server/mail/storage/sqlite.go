@@ -338,17 +338,25 @@ func (s *Store) MessageExpunge(ctx context.Context, email, mailbox string) ([]in
 }
 
 // MailboxSelect returns mailbox statistics for IMAP SELECT command.
+//
+// UIDNEXT is computed across all mailboxes for the account because UIDs in
+// this schema are assigned globally per-account (see MessageStore), not
+// per-mailbox. UIDVALIDITY is derived from the account creation timestamp so
+// that it stays stable for the account's lifetime — RFC 3501 §2.3.1.1
+// requires UIDVALIDITY to change only when UIDs are invalidated, otherwise
+// strict clients (Apple Mail) treat the mailbox as unstable and refuse to
+// sync new mail.
 func (s *Store) MailboxSelect(ctx context.Context, email, mailbox string) (*MailboxStats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	row := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) AS "exists",
-			COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'seen') THEN 0 ELSE 1 END), 0) AS unseen,
-			COALESCE(MAX(uid) + 1, 1) AS uidnext,
-			COALESCE(MAX(uid), 0) AS uidvalidity
-		FROM mail_received WHERE email = ? AND mailbox = ?`,
-		email, mailbox)
+		`SELECT
+			(SELECT COUNT(*) FROM mail_received WHERE email = ? AND mailbox = ?),
+			COALESCE((SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'seen') THEN 0 ELSE 1 END) FROM mail_received WHERE email = ? AND mailbox = ?), 0),
+			COALESCE((SELECT MAX(uid) + 1 FROM mail_received WHERE email = ?), 1),
+			COALESCE(CAST(strftime('%s', (SELECT created FROM mail_account WHERE email = ?)) AS INTEGER), 1)`,
+		email, mailbox, email, mailbox, email, email)
 
 	var stats MailboxStats
 	err := row.Scan(&stats.Exists, &stats.Unseen, &stats.UIDNext, &stats.UIDValidity)
