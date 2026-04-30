@@ -620,7 +620,41 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 		}
 
 	default:
-		content = buildFullBody(msg)
+		// RFC 3501 §6.4.5: numeric section selectors for multipart messages.
+		// For multipart/alternative we expose part 1 = text/plain, part 2 = text/html.
+		// Apple Mail / iOS request BODY[1], BODY[2], BODY[1.MIME], BODY[2.MIME] after
+		// reading BODYSTRUCTURE; returning the full message here makes them render
+		// the body as empty.
+		hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+		hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+		switch upperSection {
+		case "1":
+			if hasHTML && hasText {
+				content = msg.Text.String
+			} else if hasText {
+				content = msg.Text.String
+			} else if hasHTML {
+				content = msg.HTML.String
+			}
+		case "2":
+			if hasHTML && hasText {
+				content = msg.HTML.String
+			}
+		case "1.MIME":
+			if hasHTML && hasText {
+				content = "Content-Type: text/plain; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			} else if hasText {
+				content = "Content-Type: text/plain; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			} else if hasHTML {
+				content = "Content-Type: text/html; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			}
+		case "2.MIME":
+			if hasHTML && hasText {
+				content = "Content-Type: text/html; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			}
+		default:
+			content = buildFullBody(msg)
+		}
 	}
 
 	// Apply partial range if requested
