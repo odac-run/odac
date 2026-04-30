@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"odac-mail/auth"
+	"odac-mail/limits"
 	"odac-mail/storage"
 )
 
@@ -120,6 +121,14 @@ func (c *Connection) cmdLogin(tag, args string) {
 	if err != nil || !match {
 		c.firewall.HandleFailedAuth(ip)
 		c.write(fmt.Sprintf("%s NO Authentication failed\r\n", tag))
+		return
+	}
+
+	if reason := c.limit.BindUser(username); reason != limits.ReasonOK {
+		log.Printf("[IMAP] Post-auth limit hit for %s from %s: %s", username, ip, reason)
+		c.write("* BYE [LIMIT] Too many connections for user\r\n")
+		c.write(fmt.Sprintf("%s NO [LIMIT] Too many connections for user\r\n", tag))
+		c.conn.Close()
 		return
 	}
 

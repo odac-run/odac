@@ -17,39 +17,57 @@ import (
 
 	"odac-mail/auth"
 	"odac-mail/config"
+	"odac-mail/limits"
 	"odac-mail/storage"
 )
 
 // Backend implements smtp.Backend for the inbound SMTP server.
 // Handles authentication, message reception, and local delivery.
+//
+// One Backend instance is bound to one listener (port 25 or 465) so the
+// limiter and log tag reflect that listener's traffic in isolation.
 type Backend struct {
 	firewall  *auth.Firewall
 	getConfig func() config.Config
+	limiter   *limits.Limiter
 	store     *storage.Store
+	tag       string // "inbound" or "submission" — included in log lines
 }
 
 // NewBackend creates a new SMTP backend with the given dependencies.
-func NewBackend(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Backend {
+func NewBackend(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, tag string) *Backend {
 	return &Backend{
 		firewall:  fw,
 		getConfig: getConfig,
+		limiter:   limiter,
 		store:     store,
+		tag:       tag,
 	}
 }
 
 // NewSession is called for each new SMTP connection.
-// Checks IP blocklist before allowing the session to proceed.
+// Checks IP blocklist and acquires a limiter handle before allowing the
+// session to proceed. The handle is released in Logout.
 func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	ip := extractIP(c.Conn().RemoteAddr().String())
 	if b.firewall.IsBlocked(ip) {
-		log.Printf("[SMTP] Connection blocked by firewall: %s", ip)
+		log.Printf("[SMTP %s] Connection blocked by firewall: %s", b.tag, ip)
 		return nil, errors.New("your IP is blocked due to suspicious activity")
 	}
-	log.Printf("[SMTP] Connection accepted: %s", ip)
+
+	handle, reason := b.limiter.Acquire(ip)
+	if reason != limits.ReasonOK {
+		log.Printf("[SMTP %s] Rejecting %s: %s", b.tag, ip, reason)
+		return nil, errors.New("too many connections, try again later")
+	}
+
+	total, ips, users := b.limiter.Snapshot()
+	log.Printf("[SMTP %s] Connection accepted: %s (total=%d ips=%d users=%d)", b.tag, ip, total, ips, users)
 
 	return &Session{
 		backend: b,
 		ip:      ip,
+		limit:   handle,
 	}, nil
 }
 
@@ -59,6 +77,7 @@ type Session struct {
 	backend    *Backend
 	from       string
 	ip         string
+	limit      *limits.Handle // released in Logout
 	recipients []string
 	user       string // Authenticated user (empty if unauthenticated)
 }
@@ -105,10 +124,15 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 			return errors.New("invalid username or password")
 		}
 
+		if reason := s.limit.BindUser(username); reason != limits.ReasonOK {
+			log.Printf("[SMTP %s] Post-auth limit hit for %s from %s: %s", s.backend.tag, username, s.ip, reason)
+			return errors.New("too many connections for user, try again later")
+		}
+
 		// Successful login — clear failed attempts
 		s.backend.firewall.ClearAttempts(s.ip)
 		s.user = username
-		log.Printf("[SMTP] User authenticated: %s from %s", username, s.ip)
+		log.Printf("[SMTP %s] User authenticated: %s from %s", s.backend.tag, username, s.ip)
 
 		// Transparent password upgrade: rehash legacy N=16384 → current N=32768
 		if auth.NeedsRehash(account.Password) {
@@ -319,7 +343,9 @@ func (s *Session) Reset() {
 }
 
 // Logout is called when the connection is closed.
+// Releases the limiter handle acquired in NewSession.
 func (s *Session) Logout() error {
+	s.limit.Release()
 	return nil
 }
 

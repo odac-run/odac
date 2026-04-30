@@ -12,6 +12,7 @@ import (
 
 	"odac-mail/auth"
 	"odac-mail/config"
+	"odac-mail/limits"
 	"odac-mail/storage"
 )
 
@@ -42,16 +43,17 @@ type Connection struct {
 	tlsConfig  *tls.Config // Used for STARTTLS upgrade on plaintext listener
 	firewall   *auth.Firewall
 	getConfig  func() config.Config
-	mailbox    string // Currently selected mailbox
-	lastExists int64  // EXISTS count last reported to client (for delta untagged updates)
-	lastUnseen int64  // RECENT count last reported to client
+	limit      *limits.Handle // Connection-level limiter handle (BindUser on auth)
+	mailbox    string         // Currently selected mailbox
+	lastExists int64          // EXISTS count last reported to client (for delta untagged updates)
+	lastUnseen int64          // RECENT count last reported to client
 	reader     *bufio.Reader
 	store      *storage.Store
 }
 
 // NewConnection creates a new IMAP connection handler.
 // tlsConfig is required so plaintext connections on port 143 can negotiate STARTTLS.
-func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Connection {
+func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, fw *auth.Firewall, getConfig func() config.Config, limit *limits.Handle) *Connection {
 	_, isTLS := conn.(*tls.Conn)
 	return &Connection{
 		conn:      conn,
@@ -59,6 +61,7 @@ func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, f
 		tlsConfig: tlsConfig,
 		firewall:  fw,
 		getConfig: getConfig,
+		limit:     limit,
 		reader:    bufio.NewReaderSize(conn, maxLineSize),
 		store:     store,
 	}
