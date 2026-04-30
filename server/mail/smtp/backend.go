@@ -115,9 +115,15 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 }
 
 // Mail is called for MAIL FROM command. Validates sender address format.
+// When the session is authenticated, the sender address must match the
+// authenticated user to prevent impersonation of other accounts.
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	if !isValidEmail(from) {
 		return errors.New("invalid email address")
+	}
+	if s.user != "" && !strings.EqualFold(from, s.user) {
+		log.Printf("[SMTP] Sender mismatch: %s attempted MAIL FROM <%s> from %s", s.user, from, s.ip)
+		return errors.New("sender address does not match authenticated user")
 	}
 	s.from = from
 	return nil
@@ -179,7 +185,7 @@ func (s *Session) Data(r io.Reader) error {
 
 	for _, rcpt := range s.recipients {
 		// Check if sender is a local authenticated user
-		senderIsLocal := s.user != "" && s.from == s.user
+		senderIsLocal := s.user != "" && strings.EqualFold(s.from, s.user)
 
 		// Check if recipient is a local account
 		rcptAccount, _ := s.backend.store.AccountExists(ctx, rcpt)
