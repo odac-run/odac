@@ -365,17 +365,54 @@ func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byt
 		return fmt.Errorf("DATA rejected: %s", resp)
 	}
 
-	// Send body + terminator
+	// Send body + terminator. RFC 5321 §4.5.2 requires:
+	//  1. Lines must use CRLF terminators on the wire
+	//  2. Any line starting with "." must be dot-stuffed ("." → "..")
+	//     otherwise such a line is interpreted as end-of-DATA by the receiver
+	//     (HTML/CSS bodies frequently contain ".classname { ... }" lines)
+	//  3. The end of message marker is exactly <CRLF>.<CRLF>
+	wireBody := encodeDataBody(body)
 	conn.SetWriteDeadline(time.Now().Add(clientTimeout))
-	if _, err := conn.Write(body); err != nil {
+	if _, err := conn.Write(wireBody); err != nil {
 		return fmt.Errorf("body write failed: %w", err)
 	}
-	resp, err = c.command(conn, "\r\n.\r\n")
+	resp, err = c.command(conn, ".\r\n")
 	if err != nil || !strings.HasPrefix(resp, "2") {
 		return fmt.Errorf("message rejected: %s", resp)
 	}
 
 	return nil
+}
+
+// encodeDataBody prepares a message body for SMTP DATA transmission per RFC 5321.
+// It normalizes bare LF to CRLF, dot-stuffs any line starting with ".", and
+// guarantees the body ends with CRLF so the caller can append the "." terminator.
+func encodeDataBody(body []byte) []byte {
+	out := make([]byte, 0, len(body)+64)
+	atLineStart := true
+	for i := 0; i < len(body); i++ {
+		b := body[i]
+		if b == '\r' && i+1 < len(body) && body[i+1] == '\n' {
+			out = append(out, '\r', '\n')
+			i++
+			atLineStart = true
+			continue
+		}
+		if b == '\n' {
+			out = append(out, '\r', '\n')
+			atLineStart = true
+			continue
+		}
+		if atLineStart && b == '.' {
+			out = append(out, '.')
+		}
+		out = append(out, b)
+		atLineStart = false
+	}
+	if len(out) < 2 || out[len(out)-2] != '\r' || out[len(out)-1] != '\n' {
+		out = append(out, '\r', '\n')
+	}
+	return out
 }
 
 // command sends an SMTP command and reads the response.
