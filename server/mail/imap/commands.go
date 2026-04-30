@@ -213,12 +213,13 @@ func (c *Connection) cmdSelect(tag, args string) {
 		return
 	}
 
-	flagsList := strings.Join(permanentFlags, " ")
-	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", flagsList))
-	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", flagsList))
+	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", strings.Join(flagsList, " ")))
+	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", strings.Join(permanentFlags, " ")))
 	c.write(fmt.Sprintf("* %d EXISTS\r\n", stats.Exists))
 	c.write(fmt.Sprintf("* %d RECENT\r\n", stats.Unseen))
-	c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	if stats.Unseen > 0 {
+		c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	}
 	c.write(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid\r\n", stats.UIDValidity))
 	c.write(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID\r\n", stats.UIDNext))
 	c.lastExists = stats.Exists
@@ -248,12 +249,13 @@ func (c *Connection) cmdExamine(tag, args string) {
 		return
 	}
 
-	flagsList := strings.Join(permanentFlags, " ")
-	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", flagsList))
-	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", flagsList))
+	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", strings.Join(flagsList, " ")))
+	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", strings.Join(permanentFlags, " ")))
 	c.write(fmt.Sprintf("* %d EXISTS\r\n", stats.Exists))
 	c.write(fmt.Sprintf("* %d RECENT\r\n", stats.Unseen))
-	c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	if stats.Unseen > 0 {
+		c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	}
 	c.write(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid\r\n", stats.UIDValidity))
 	c.write(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID\r\n", stats.UIDNext))
 	c.lastExists = stats.Exists
@@ -266,10 +268,24 @@ func (c *Connection) cmdList(tag, args string) {
 		return
 	}
 
-	// Parse LIST arguments: LIST <reference> <mailbox pattern>
+	// RFC 5258 LIST-EXTENDED: optional selection-options in parentheses before reference.
+	// Example: LIST (SPECIAL-USE) "" "*"  — return only mailboxes with a SPECIAL-USE attribute.
+	specialUseOnly := false
+	rest := strings.TrimLeft(args, " ")
+	if strings.HasPrefix(rest, "(") {
+		end := strings.Index(rest, ")")
+		if end > 0 {
+			selOpts := strings.ToUpper(rest[1:end])
+			if strings.Contains(selOpts, "SPECIAL-USE") {
+				specialUseOnly = true
+			}
+			rest = strings.TrimLeft(rest[end+1:], " ")
+		}
+	}
+
+	listArgs := splitArgs(rest)
 	// LIST "" "" → return hierarchy delimiter only
-	listArgs := splitArgs(args)
-	if len(listArgs) >= 2 && unquote(listArgs[1]) == "" {
+	if len(listArgs) >= 2 && unquote(listArgs[1]) == "" && !specialUseOnly {
 		c.write("* LIST (\\Noselect) \"/\" \"\"\r\n")
 		c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
 		return
@@ -285,9 +301,37 @@ func (c *Connection) cmdList(tag, args string) {
 	}
 
 	for _, box := range boxes {
-		c.write(fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" \"%s\"\r\n", box))
+		flags := mailboxFlags(box)
+		if specialUseOnly && !strings.Contains(flags, "\\Sent") &&
+			!strings.Contains(flags, "\\Drafts") && !strings.Contains(flags, "\\Trash") &&
+			!strings.Contains(flags, "\\Junk") && !strings.Contains(flags, "\\Archive") &&
+			!strings.Contains(flags, "\\All") && !strings.Contains(flags, "\\Flagged") {
+			continue
+		}
+		c.write(fmt.Sprintf("* LIST (%s) \"/\" \"%s\"\r\n", flags, box))
 	}
 	c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
+}
+
+// mailboxFlags returns the IMAP LIST flags for a mailbox name, including
+// RFC 6154 SPECIAL-USE attributes that Apple Mail / iOS rely on to map
+// the account's Sent / Drafts / Trash / Junk folders. Without these flags,
+// iOS Mail refuses to fully sync the account.
+func mailboxFlags(box string) string {
+	flags := "\\HasNoChildren"
+	switch strings.ToLower(box) {
+	case "sent", "sent messages":
+		flags += " \\Sent"
+	case "drafts":
+		flags += " \\Drafts"
+	case "trash", "deleted messages":
+		flags += " \\Trash"
+	case "junk", "spam":
+		flags += " \\Junk"
+	case "archive":
+		flags += " \\Archive"
+	}
+	return flags
 }
 
 func (c *Connection) cmdLsub(tag, args string) {
@@ -305,7 +349,7 @@ func (c *Connection) cmdLsub(tag, args string) {
 	}
 
 	for _, box := range boxes {
-		c.write(fmt.Sprintf("* LSUB (\\HasNoChildren) \"/\" \"%s\"\r\n", box))
+		c.write(fmt.Sprintf("* LSUB (%s) \"/\" \"%s\"\r\n", mailboxFlags(box), box))
 	}
 	c.write(fmt.Sprintf("%s OK LSUB completed\r\n", tag))
 }
@@ -508,11 +552,7 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUI
 		c.write(fmt.Sprintf("FLAGS (%s) ", strings.Join(flags, " ")))
 	}
 	if strings.Contains(upper, "INTERNALDATE") {
-		date := msg.Date.String
-		if date == "" {
-			date = time.Now().Format("02-Jan-2006 15:04:05 -0700")
-		}
-		c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", date))
+		c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", formatInternalDate(msg.Date.String)))
 	}
 	if strings.Contains(upper, "RFC822.SIZE") || strings.Contains(upper, "RFC822") {
 		body := buildFullBody(msg)
@@ -743,7 +783,9 @@ func buildFilteredHeaders(msg *storage.MessageRow, wantFields []string) string {
 }
 
 func (c *Connection) writeEnvelope(msg *storage.MessageRow) {
-	date := msg.Date.String
+	// RFC 3501 §7.4.2: ENVELOPE date is the RFC 5322 origination date string,
+	// e.g. "Thu, 29 Apr 2026 17:21:00 +0000". ISO 8601 confuses Apple Mail / iOS.
+	date := formatEnvelopeDate(msg.Date.String)
 	subject := escapeIMAPString(msg.Subject.String)
 
 	fromAddrs := parseMailboxJSON(msg.From.String)
@@ -753,6 +795,31 @@ func (c *Connection) writeEnvelope(msg *storage.MessageRow) {
 	// sender and reply-to default to from if not present
 	c.write(fmt.Sprintf("ENVELOPE (\"%s\" \"%s\" %s %s %s %s NIL NIL NIL \"%s\") ",
 		date, subject, fromAddrs, fromAddrs, fromAddrs, toAddrs, escapeIMAPString(msg.MessageID.String)))
+}
+
+// formatEnvelopeDate converts a stored timestamp to RFC 5322 origination-date
+// format expected by IMAP ENVELOPE (e.g. "Thu, 29 Apr 2026 17:21:00 +0000").
+func formatEnvelopeDate(stored string) string {
+	const envFmt = "Mon, 02 Jan 2006 15:04:05 -0700"
+	if stored == "" {
+		return time.Now().UTC().Format(envFmt)
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05Z",
+		"2006-01-02 15:04:05",
+		envFmt,
+		time.RFC1123Z,
+		time.RFC1123,
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, stored); err == nil {
+			return t.UTC().Format(envFmt)
+		}
+	}
+	return stored
 }
 
 // parseMailboxJSON converts the Node.js mailparser JSON format
@@ -834,6 +901,38 @@ func (c *Connection) writeBodyStructure(msg *storage.MessageRow) {
 		}
 		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) ", size, lines))
 	}
+}
+
+// formatInternalDate converts a stored timestamp into the RFC 3501 §9
+// date-time format expected by IMAP clients: "DD-MMM-YYYY HH:MM:SS ±HHMM".
+// Apple Mail / iOS Mail strictly parse this field; ISO 8601 ("2026-04-29T17:21:00Z")
+// is rejected and the message ends up hidden in the list view.
+func formatInternalDate(stored string) string {
+	const imapFmt = "02-Jan-2006 15:04:05 -0700"
+	if stored == "" {
+		return time.Now().UTC().Format(imapFmt)
+	}
+	// Already in IMAP format? (heuristic: third char is '-' and contains a month name spelled out)
+	if len(stored) >= 11 && stored[2] == '-' && stored[6] == '-' {
+		return stored
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05Z",
+		"2006-01-02 15:04:05",
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC822,
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, stored); err == nil {
+			return t.UTC().Format(imapFmt)
+		}
+	}
+	return time.Now().UTC().Format(imapFmt)
 }
 
 // countLines returns the number of text lines in a body part per RFC 3501 §7.4.2.
@@ -1131,6 +1230,14 @@ func (c *Connection) cmdAppend(tag, args string) {
 func (c *Connection) write(data string) {
 	c.conn.SetWriteDeadline(time.Now().Add(commandTimeout))
 	c.conn.Write([]byte(data))
+	if imapDebug {
+		preview := data
+		if len(preview) > 200 {
+			preview = preview[:200] + "...(truncated)"
+		}
+		preview = strings.ReplaceAll(preview, "\r\n", "\\r\\n")
+		log.Printf("[IMAP] S->C %s: %s", c.conn.RemoteAddr(), preview)
+	}
 }
 
 // --- Helpers ---

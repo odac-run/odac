@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -20,6 +22,16 @@ const (
 	maxLineSize    = 64 * 1024
 )
 
+// imapDebug enables verbose protocol logging when ODAC_DEV=true.
+// Used to diagnose client issues (e.g. iOS Mail not syncing).
+var imapDebug = os.Getenv("ODAC_DEV") == "true"
+
+// flagsList — flags reported in the untagged FLAGS response (RFC 3501 §6.3.1).
+// Must NOT include `\*` because that token is only valid in PERMANENTFLAGS.
+var flagsList = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`}
+
+// permanentFlags — flags reported in PERMANENTFLAGS (may include `\*`
+// to indicate the server allows arbitrary new keywords).
 var permanentFlags = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`, `\*`}
 
 // Connection represents a single IMAP client session with its state machine.
@@ -57,9 +69,9 @@ func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, f
 // expose AUTH mechanisms only after TLS is established.
 func (c *Connection) capabilityString() string {
 	if c.tls {
-		return "IMAP4rev1 AUTH=PLAIN AUTH=LOGIN IDLE"
+		return "IMAP4rev1 AUTH=PLAIN AUTH=LOGIN IDLE NAMESPACE SPECIAL-USE LIST-EXTENDED UIDPLUS ENABLE"
 	}
-	return "IMAP4rev1 STARTTLS LOGINDISABLED IDLE"
+	return "IMAP4rev1 STARTTLS LOGINDISABLED IDLE NAMESPACE SPECIAL-USE LIST-EXTENDED UIDPLUS ENABLE"
 }
 
 // Serve runs the IMAP protocol loop: greeting → command processing → logout.
@@ -72,6 +84,10 @@ func (c *Connection) Serve() {
 
 		line, err := c.reader.ReadString('\n')
 		if err != nil {
+			if imapDebug {
+				log.Printf("[IMAP] disconnect %s auth=%q mailbox=%q: %v",
+					c.conn.RemoteAddr(), c.auth, c.mailbox, err)
+			}
 			return
 		}
 
@@ -104,6 +120,17 @@ func (c *Connection) Serve() {
 		args := ""
 		if len(parts) > 2 {
 			args = parts[2]
+		}
+
+		if imapDebug {
+			redacted := line
+			if cmd == "LOGIN" {
+				redacted = tag + " LOGIN <redacted>"
+			}
+			if cmd == "AUTHENTICATE" {
+				redacted = tag + " AUTHENTICATE <redacted>"
+			}
+			log.Printf("[IMAP] C->S %s: %s", c.conn.RemoteAddr(), redacted)
 		}
 
 		switch cmd {
@@ -156,6 +183,23 @@ func (c *Connection) Serve() {
 		case "NAMESPACE":
 			c.write(fmt.Sprintf("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n"))
 			c.write(fmt.Sprintf("%s OK NAMESPACE completed\r\n", tag))
+		case "ID":
+			// RFC 2971 §3.1: server returns its own ID parameter list, then OK.
+			// iOS Mail sends `ID ("name" "iPhone Mail" ...)` early in the session;
+			// returning BAD here is harmless but noisy in logs and confuses some clients.
+			c.write("* ID (\"name\" \"ODAC\" \"version\" \"1.0\")\r\n")
+			c.write(fmt.Sprintf("%s OK ID completed\r\n", tag))
+		case "ENABLE":
+			// RFC 5161: respond with the subset of capabilities we actually enable.
+			// We don't enable any extension state right now, so echo nothing and OK.
+			c.write(fmt.Sprintf("%s OK ENABLE completed\r\n", tag))
+		case "CHECK":
+			c.write(fmt.Sprintf("%s OK CHECK completed\r\n", tag))
+		case "UNSELECT":
+			c.mailbox = ""
+			c.lastExists = 0
+			c.lastUnseen = 0
+			c.write(fmt.Sprintf("%s OK UNSELECT completed\r\n", tag))
 		case "STARTTLS":
 			if !c.cmdStartTLS(tag) {
 				return
