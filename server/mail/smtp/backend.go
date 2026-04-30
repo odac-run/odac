@@ -42,8 +42,10 @@ func NewBackend(store *storage.Store, fw *auth.Firewall, getConfig func() config
 func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	ip := extractIP(c.Conn().RemoteAddr().String())
 	if b.firewall.IsBlocked(ip) {
+		log.Printf("[SMTP] Connection blocked by firewall: %s", ip)
 		return nil, errors.New("your IP is blocked due to suspicious activity")
 	}
+	log.Printf("[SMTP] Connection accepted: %s", ip)
 
 	return &Session{
 		backend: b,
@@ -71,6 +73,7 @@ func (s *Session) AuthMechanisms() []string {
 func (s *Session) Auth(mech string) (sasl.Server, error) {
 	return sasl.NewPlainServer(func(identity, username, password string) error {
 		if !isValidEmail(username) {
+			log.Printf("[SMTP] Auth failed (invalid username format) %q from %s", username, s.ip)
 			s.backend.firewall.HandleFailedAuth(s.ip)
 			return errors.New("invalid username or password")
 		}
@@ -79,13 +82,25 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 		defer cancel()
 
 		account, err := s.backend.store.AccountExists(ctx, username)
-		if err != nil || account == nil {
+		if err != nil {
+			log.Printf("[SMTP] Auth lookup error for %s from %s: %v", username, s.ip, err)
+			s.backend.firewall.HandleFailedAuth(s.ip)
+			return errors.New("invalid username or password")
+		}
+		if account == nil {
+			log.Printf("[SMTP] Auth failed (no such account) %s from %s", username, s.ip)
 			s.backend.firewall.HandleFailedAuth(s.ip)
 			return errors.New("invalid username or password")
 		}
 
 		match, err := auth.ComparePassword(password, account.Password)
-		if err != nil || !match {
+		if err != nil {
+			log.Printf("[SMTP] Auth password compare error for %s from %s: %v", username, s.ip, err)
+			s.backend.firewall.HandleFailedAuth(s.ip)
+			return errors.New("invalid username or password")
+		}
+		if !match {
+			log.Printf("[SMTP] Auth failed (bad password) %s from %s", username, s.ip)
 			s.backend.firewall.HandleFailedAuth(s.ip)
 			return errors.New("invalid username or password")
 		}
@@ -119,6 +134,7 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 // authenticated user to prevent impersonation of other accounts.
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	if !isValidEmail(from) {
+		log.Printf("[SMTP] MAIL FROM rejected (invalid email %q) from %s", from, s.ip)
 		return errors.New("invalid email address")
 	}
 	if s.user != "" && !strings.EqualFold(from, s.user) {
@@ -126,6 +142,7 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 		return errors.New("sender address does not match authenticated user")
 	}
 	s.from = from
+	log.Printf("[SMTP] MAIL FROM <%s> accepted (auth=%q) from %s", from, s.user, s.ip)
 	return nil
 }
 
@@ -134,12 +151,14 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 // Authenticated users can send to any address (outbound delivery).
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	if !isValidEmail(to) {
+		log.Printf("[SMTP] RCPT TO rejected (invalid email %q) from=%s ip=%s", to, s.from, s.ip)
 		return errors.New("invalid email address")
 	}
 
 	// Authenticated users can send anywhere
 	if s.user != "" {
 		s.recipients = append(s.recipients, to)
+		log.Printf("[SMTP] RCPT TO <%s> accepted (authenticated %s) from %s", to, s.user, s.ip)
 		return nil
 	}
 
@@ -154,15 +173,22 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 
 	if localPart == "postmaster" || localPart == "hostmaster" {
 		s.recipients = append(s.recipients, to)
+		log.Printf("[SMTP] RCPT TO <%s> accepted (postmaster/hostmaster) from=%s ip=%s", to, s.from, s.ip)
 		return nil
 	}
 
-	account, _ := s.backend.store.AccountExists(ctx, to)
+	account, err := s.backend.store.AccountExists(ctx, to)
+	if err != nil {
+		log.Printf("[SMTP] RCPT TO <%s> account lookup error from=%s ip=%s: %v", to, s.from, s.ip, err)
+		return errors.New("relay access denied")
+	}
 	if account == nil {
+		log.Printf("[SMTP] RCPT TO <%s> rejected (no local account) from=%s ip=%s", to, s.from, s.ip)
 		return errors.New("relay access denied")
 	}
 
 	s.recipients = append(s.recipients, to)
+	log.Printf("[SMTP] RCPT TO <%s> accepted (local account) from=%s ip=%s", to, s.from, s.ip)
 	return nil
 }
 
@@ -170,9 +196,16 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 // Parses the RFC 2822 message, stores locally for known recipients,
 // and triggers outbound delivery for authenticated senders.
 func (s *Session) Data(r io.Reader) error {
-	body, err := io.ReadAll(io.LimitReader(r, 10*1024*1024)) // 10MB limit
+	const maxBody = 10 * 1024 * 1024 // 10MB limit
+	body, err := io.ReadAll(io.LimitReader(r, maxBody))
 	if err != nil {
+		log.Printf("[SMTP] DATA read failed (read=%d sender=%s rcpts=%d ip=%s): %v",
+			len(body), s.from, len(s.recipients), s.ip, err)
 		return err
+	}
+	if len(body) == maxBody {
+		log.Printf("[SMTP] DATA hit 10MB cap (truncated) sender=%s rcpts=%d ip=%s",
+			s.from, len(s.recipients), s.ip)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -180,15 +213,23 @@ func (s *Session) Data(r io.Reader) error {
 
 	// Parse RFC 2822 message into headers and body parts
 	parsed := parseMessage(body)
+	log.Printf("[SMTP] DATA received: %d bytes sender=%s rcpts=%v ip=%s msg-id=%q subject=%q html=%dB text=%dB",
+		len(body), s.from, s.recipients, s.ip,
+		parsed.messageID, parsed.subject, len(parsed.html), len(parsed.text))
 
 	sentStored := false
+	storedCount := 0
+	outboundCount := 0
 
 	for _, rcpt := range s.recipients {
 		// Check if sender is a local authenticated user
 		senderIsLocal := s.user != "" && strings.EqualFold(s.from, s.user)
 
 		// Check if recipient is a local account
-		rcptAccount, _ := s.backend.store.AccountExists(ctx, rcpt)
+		rcptAccount, lookupErr := s.backend.store.AccountExists(ctx, rcpt)
+		if lookupErr != nil {
+			log.Printf("[SMTP] DATA rcpt lookup error for %s: %v", rcpt, lookupErr)
+		}
 		rcptIsLocal := rcptAccount != nil
 
 		// Also accept postmaster/hostmaster for any configured domain
@@ -196,6 +237,9 @@ func (s *Session) Data(r io.Reader) error {
 			localPart := strings.SplitN(rcpt, "@", 2)[0]
 			rcptIsLocal = localPart == "postmaster" || localPart == "hostmaster"
 		}
+
+		log.Printf("[SMTP] DATA dispatch: rcpt=%s sender_local=%v rcpt_local=%v from=%s ip=%s",
+			rcpt, senderIsLocal, rcptIsLocal, s.from, s.ip)
 
 		// Reject if neither sender nor recipient is local
 		if !senderIsLocal && !rcptIsLocal {
@@ -220,11 +264,18 @@ func (s *Session) Data(r io.Reader) error {
 			}
 			if err := s.backend.store.MessageStore(ctx, msg); err != nil {
 				log.Printf("[SMTP] Failed to store message for %s: %v", rcpt, err)
+			} else {
+				storedCount++
+				log.Printf("[SMTP] Stored INBOX message: rcpt=%s msg-id=%q subject=%q",
+					rcpt, parsed.messageID, parsed.subject)
 			}
+		} else if rcptIsLocal && rcpt == s.from {
+			log.Printf("[SMTP] Skipped store (self-loop, rcpt==from): %s", rcpt)
 		}
 
 		// Outbound delivery for authenticated local senders
 		if senderIsLocal && !rcptIsLocal {
+			outboundCount++
 			go func(recipient string, data []byte) {
 				if err := GetClient().Send(s.from, recipient, data); err != nil {
 					log.Printf("[SMTP] Outbound delivery failed: %s -> %s: %v", s.from, recipient, err)
@@ -250,10 +301,14 @@ func (s *Session) Data(r io.Reader) error {
 			}
 			if err := s.backend.store.MessageStore(ctx, sentMsg); err != nil {
 				log.Printf("[SMTP] Failed to store sent message for %s: %v", s.from, err)
+			} else {
+				log.Printf("[SMTP] Stored Sent message: from=%s msg-id=%q", s.from, parsed.messageID)
 			}
 		}
 	}
 
+	log.Printf("[SMTP] DATA complete: stored=%d outbound=%d sender=%s rcpts=%d ip=%s",
+		storedCount, outboundCount, s.from, len(s.recipients), s.ip)
 	return nil
 }
 
