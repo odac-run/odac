@@ -581,10 +581,51 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUI
 	}
 
 	// BODY / BODY.PEEK handling — check for BODY[ or BODY.PEEK[ pattern
-	// to avoid conflict with BODYSTRUCTURE keyword
+	// to avoid conflict with BODYSTRUCTURE keyword.
 	if strings.Contains(upper, "BODY[") || strings.Contains(upper, "BODY.PEEK[") {
-		c.writeBodySection(items, msg)
+		for _, sel := range findBodySelectors(items) {
+			c.writeBodySection(sel, msg)
+		}
 	}
+}
+
+// findBodySelectors returns each BODY[...] / BODY.PEEK[...] selector found in
+// items, including any trailing <origin.count> partial range.
+func findBodySelectors(items string) []string {
+	var out []string
+	upper := strings.ToUpper(items)
+	i := 0
+	for i < len(items) {
+		rest := upper[i:]
+		aIdx, bIdx := strings.Index(rest, "BODY["), strings.Index(rest, "BODY.PEEK[")
+		var start int
+		switch {
+		case aIdx < 0 && bIdx < 0:
+			return out
+		case bIdx < 0 || (aIdx >= 0 && aIdx < bIdx):
+			start = i + aIdx
+		default:
+			start = i + bIdx
+		}
+		bracket := strings.Index(items[start:], "[")
+		if bracket < 0 {
+			return out
+		}
+		bracket += start
+		closeBracket := strings.Index(items[bracket+1:], "]")
+		if closeBracket < 0 {
+			return out
+		}
+		end := bracket + 1 + closeBracket + 1
+		if end < len(items) && items[end] == '<' {
+			if gt := strings.Index(items[end:], ">"); gt > 0 {
+				end += gt + 1
+			}
+		}
+		out = append(out, items[start:end])
+		i = end
+	}
+	return out
 }
 
 // writeBodySection handles BODY[section] and BODY.PEEK[section] requests.
@@ -724,10 +765,10 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 
 		// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
 		key := fmt.Sprintf("BODY[%s]<%d>", section, origin)
-		c.write(fmt.Sprintf("%s {%d}\r\n%s", key, len(content), content))
+		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
 	} else {
 		key := "BODY[" + section + "]"
-		c.write(fmt.Sprintf("%s {%d}\r\n%s", key, len(content), content))
+		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
 	}
 }
 
