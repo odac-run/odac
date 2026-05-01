@@ -466,9 +466,17 @@ class DNS {
   }
 
   /**
-   * Waits until the Go DNS binary is spawned and config is successfully synced.
-   * Used by the Updater during zero-downtime handshake to confirm readiness
-   * before signaling the old instance to stop its overlap services.
+   * Waits until the Go DNS binary's public listeners (UDP:53 and TCP:53)
+   * are bound and answering queries. Used by the Updater during the
+   * zero-downtime handshake to confirm the new instance is actually
+   * resolving before the old one releases its overlap listeners.
+   *
+   * Polls the binary's /ready endpoint over the management socket. The
+   * endpoint returns 200 only after both UDP and TCP listeners report
+   * started via miekg/dns NotifyStartedFunc — this is the authoritative
+   * signal, not a syncConfig success or a fixed sleep. Config sync is
+   * then performed once readiness is confirmed.
+   *
    * @param {number} [timeout=10000] - Maximum wait time in milliseconds
    * @returns {Promise<boolean>} True if ready, false on timeout
    */
@@ -477,10 +485,28 @@ class DNS {
     const interval = 200
 
     while (Date.now() - start < timeout) {
-      if (this.#dnsProcess && this.#dnsSocketPath && fs.existsSync(this.#dnsSocketPath)) {
+      if (this.#dnsProcess && (this.#dnsSocketPath || this.#dnsApiPort)) {
         try {
-          await this.syncConfig()
-          return true
+          let response
+          if (this.#dnsSocketPath && fs.existsSync(this.#dnsSocketPath)) {
+            response = await Odac.core('Http').get('http://localhost/ready', {
+              socketPath: this.#dnsSocketPath,
+              validateStatus: () => true,
+              timeout: 1000
+            })
+          } else if (this.#dnsApiPort) {
+            response = await Odac.core('Http').get(`http://127.0.0.1:${this.#dnsApiPort}/ready`, {
+              validateStatus: () => true,
+              timeout: 1000
+            })
+          }
+
+          if (response && response.status === 200) {
+            // Public listeners bound — push zone config now so the binary
+            // serves authoritative answers the moment it accepts queries.
+            await this.syncConfig()
+            return true
+          }
         } catch {
           /* retry */
         }

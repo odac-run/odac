@@ -450,9 +450,16 @@ class OdacProxy {
   }
 
   /**
-   * Waits until the Go Proxy binary is spawned and config is successfully synced.
-   * Used by the Updater during zero-downtime handshake to confirm readiness
-   * before signaling the old instance to stop its overlap services.
+   * Waits until the Go Proxy binary's public listeners (:80 and :443) are
+   * bound and accepting connections. Used by the Updater during the
+   * zero-downtime handshake to confirm the new instance is actually serving
+   * traffic before the old one releases its overlap listeners.
+   *
+   * Polls the binary's /ready endpoint over the management socket. The
+   * endpoint returns 200 only after both TCP listeners are bound — this is
+   * the authoritative signal, not a syncConfig success or a fixed sleep.
+   * Config sync is then performed once readiness is confirmed.
+   *
    * @param {number} [timeout=10000] - Maximum wait time in milliseconds
    * @returns {Promise<boolean>} True if ready, false on timeout
    */
@@ -461,10 +468,28 @@ class OdacProxy {
     const interval = 200
 
     while (Date.now() - start < timeout) {
-      if (this.#proxyProcess && this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+      if (this.#proxyProcess && (this.#proxySocketPath || this.#proxyApiPort)) {
         try {
-          await this.syncConfig()
-          return true
+          let response
+          if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+            response = await Odac.core('Http').get('http://localhost/ready', {
+              socketPath: this.#proxySocketPath,
+              validateStatus: () => true,
+              timeout: 1000
+            })
+          } else if (this.#proxyApiPort) {
+            response = await Odac.core('Http').get(`http://127.0.0.1:${this.#proxyApiPort}/ready`, {
+              validateStatus: () => true,
+              timeout: 1000
+            })
+          }
+
+          if (response && response.status === 200) {
+            // Public listeners bound — push config now so the binary serves
+            // requests with up-to-date routing the moment it accepts them.
+            await this.syncConfig()
+            return true
+          }
         } catch {
           /* retry */
         }

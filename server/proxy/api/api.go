@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"sync/atomic"
 
 	"odac-proxy/config"
 	"odac-proxy/proxy"
@@ -18,15 +19,32 @@ type acmeRequest struct {
 	Token            string `json:"token"`
 }
 
-type Server struct {
-	proxy    *proxy.Proxy
-	firewall *proxy.Firewall
+// Readiness reports whether the public listeners (HTTP :80 and HTTPS :443)
+// are bound and serving. It is owned by main and shared with the API server
+// so the /ready endpoint can answer authoritatively.
+type Readiness struct {
+	HTTP  atomic.Bool
+	HTTPS atomic.Bool
 }
 
-func NewServer(p *proxy.Proxy, f *proxy.Firewall) *Server {
+// IsReady returns true only when both HTTP and HTTPS public listeners are bound.
+// HTTP/3 is intentionally excluded — it is best-effort (UDP, may fail on hosts
+// without sufficient privileges) and not required for a successful handover.
+func (r *Readiness) IsReady() bool {
+	return r.HTTP.Load() && r.HTTPS.Load()
+}
+
+type Server struct {
+	proxy     *proxy.Proxy
+	firewall  *proxy.Firewall
+	readiness *Readiness
+}
+
+func NewServer(p *proxy.Proxy, f *proxy.Firewall, r *Readiness) *Server {
 	return &Server{
-		proxy:    p,
+		proxy:     p,
 		firewall: f,
+		readiness: r,
 	}
 }
 
@@ -121,6 +139,26 @@ func (s *Server) HandleCacheStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.proxy.Cache().Stats())
 }
 
+// HandleReady reports public-listener readiness for the zero-downtime handover.
+// Returns 200 OK only after both :80 and :443 have been bound and are accepting
+// connections. The Node.js Updater polls this before signaling the old container
+// to release its overlap services — guaranteeing no traffic gap during takeover.
+func (s *Server) HandleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.readiness != nil && s.readiness.IsReady() {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+		return
+	}
+
+	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte("not ready"))
+}
+
 func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -149,5 +187,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/cache/purge", s.HandleCachePurge)
 	mux.HandleFunc("/cache/stats", s.HandleCacheStats)
 	mux.HandleFunc("/config", s.HandleConfig)
+	mux.HandleFunc("/ready", s.HandleReady)
 	mux.ServeHTTP(w, r)
 }

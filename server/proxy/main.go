@@ -100,7 +100,14 @@ func main() {
 		log.Printf("Control API listening on 127.0.0.1:%d", apiPort)
 	}
 
-	apiServer := api.NewServer(prx, fw)
+	// Public-listener readiness — flipped to true after :80 / :443 bind succeeds.
+	// Surfaced via the API's /ready endpoint so the Node.js Updater can confirm
+	// the new container is actually accepting traffic before the old one releases
+	// its overlap services. Without this, the handover races against the kernel
+	// bind and produces a multi-second outage during zero-downtime updates.
+	readiness := &api.Readiness{}
+
+	apiServer := api.NewServer(prx, fw, readiness)
 
 	go func() {
 		if err := http.Serve(apiListener, apiServer); err != nil {
@@ -125,13 +132,21 @@ func main() {
 		MaxHeaderBytes:    32 << 10, // 32 KB limit for headers to prevent DoS
 	}
 
+	// Bind :80 synchronously so a failure is fatal immediately and so the
+	// readiness flag flips before the goroutine schedules. The kernel accepts
+	// connections into the listen backlog as soon as Listen() returns; Serve()
+	// drains them. Flipping httpReady here is therefore the earliest correct
+	// signal that the new container can serve traffic.
+	httpListener, err := listen("tcp", ":80")
+	if err != nil {
+		log.Fatalf("HTTP listener failed: %v", err)
+	}
+	readiness.HTTP.Store(true)
+	log.Println("HTTP listener bound on :80")
+
 	go func() {
 		log.Println("Starting HTTP server on :80")
-		listener, err := listen("tcp", ":80")
-		if err != nil {
-			log.Fatalf("HTTP listener failed: %v", err)
-		}
-		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(httpListener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
@@ -219,13 +234,17 @@ func main() {
 		}
 	}()
 
+	// Same rationale as HTTP above: bind synchronously, flip readiness, then Serve.
+	httpsListener, err := listen("tcp", ":443")
+	if err != nil {
+		log.Fatalf("HTTPS listener failed: %v", err)
+	}
+	readiness.HTTPS.Store(true)
+	log.Println("HTTPS listener bound on :443")
+
 	go func() {
 		log.Println("Starting HTTPS server on :443")
-		listener, err := listen("tcp", ":443")
-		if err != nil {
-			log.Fatalf("HTTPS listener failed: %v", err)
-		}
-		if err := httpsServer.Serve(tls.NewListener(listener, tlsConfig)); err != nil && err != http.ErrServerClosed {
+		if err := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfig)); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	}()
