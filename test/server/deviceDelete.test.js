@@ -1,5 +1,3 @@
-const path = require('path')
-
 // Stable mock config reference
 let mockConfig = {
   app: {path: '/var/odac/apps'},
