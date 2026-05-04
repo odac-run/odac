@@ -23,6 +23,10 @@ type Store struct {
 	path string
 }
 
+// defaultMailboxes are provisioned automatically when a new account is created.
+// INBOX is implicit and always returned by MailboxList, so it's not included here.
+var defaultMailboxes = []string{"Drafts", "Junk", "Sent", "Trash"}
+
 // NewStore creates a new Store and opens the SQLite database.
 // Automatically creates the database directory and runs migrations.
 // The database path defaults to ~/.odac/db/mail if not specified.
@@ -114,17 +118,33 @@ func (s *Store) AccountExists(ctx context.Context, email string) (*AccountRow, e
 }
 
 // AccountCreate inserts a new mail account with a pre-hashed password.
+// Automatically provisions default mailboxes (Drafts, Junk, Sent, Trash).
 func (s *Store) AccountCreate(ctx context.Context, email, hashedPassword, domain string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("cannot begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx,
 		"INSERT INTO mail_account (email, password, domain) VALUES (?, ?, ?)",
 		email, hashedPassword, domain)
 	if err != nil {
 		return fmt.Errorf("account creation failed: %w", err)
 	}
-	return nil
+
+	for _, box := range defaultMailboxes {
+		_, err = tx.ExecContext(ctx,
+			"INSERT INTO mail_box (email, title) VALUES (?, ?)", email, box)
+		if err != nil {
+			return fmt.Errorf("default mailbox creation failed: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // AccountDelete removes a mail account by email address.
@@ -198,6 +218,16 @@ func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
 		return fmt.Errorf("cannot begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Auto-create mailbox if it doesn't exist (INBOX is implicit, skip it)
+	if msg.Mailbox != "INBOX" {
+		_, err = tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO mail_box (email, title) VALUES (?, ?)",
+			msg.Email, msg.Mailbox)
+		if err != nil {
+			return fmt.Errorf("mailbox auto-create failed: %w", err)
+		}
+	}
 
 	// Get next UID for this email account
 	var nextUID int64
@@ -308,17 +338,25 @@ func (s *Store) MessageExpunge(ctx context.Context, email, mailbox string) ([]in
 }
 
 // MailboxSelect returns mailbox statistics for IMAP SELECT command.
+//
+// UIDNEXT is computed across all mailboxes for the account because UIDs in
+// this schema are assigned globally per-account (see MessageStore), not
+// per-mailbox. UIDVALIDITY is derived from the account creation timestamp so
+// that it stays stable for the account's lifetime — RFC 3501 §2.3.1.1
+// requires UIDVALIDITY to change only when UIDs are invalidated, otherwise
+// strict clients (Apple Mail) treat the mailbox as unstable and refuse to
+// sync new mail.
 func (s *Store) MailboxSelect(ctx context.Context, email, mailbox string) (*MailboxStats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	row := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) AS "exists",
-			COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'seen') THEN 0 ELSE 1 END), 0) AS unseen,
-			COALESCE(MAX(uid) + 1, 1) AS uidnext,
-			COALESCE(MAX(uid), 0) AS uidvalidity
-		FROM mail_received WHERE email = ? AND mailbox = ?`,
-		email, mailbox)
+		`SELECT
+			(SELECT COUNT(*) FROM mail_received WHERE email = ? AND mailbox = ?),
+			COALESCE((SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'seen') THEN 0 ELSE 1 END) FROM mail_received WHERE email = ? AND mailbox = ?), 0),
+			COALESCE((SELECT MAX(uid) + 1 FROM mail_received WHERE email = ?), 1),
+			COALESCE(CAST(strftime('%s', (SELECT created FROM mail_account WHERE email = ?)) AS INTEGER), 1)`,
+		email, mailbox, email, mailbox, email, email)
 
 	var stats MailboxStats
 	err := row.Scan(&stats.Exists, &stats.Unseen, &stats.UIDNext, &stats.UIDValidity)

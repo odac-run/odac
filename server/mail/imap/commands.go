@@ -1,7 +1,9 @@
 package imap
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,12 +14,76 @@ import (
 	"time"
 
 	"odac-mail/auth"
+	"odac-mail/limits"
 	"odac-mail/storage"
 )
 
 func (c *Connection) cmdCapability(tag string) {
-	c.write(fmt.Sprintf("* CAPABILITY %s\r\n", capabilities))
+	c.write(fmt.Sprintf("* CAPABILITY %s\r\n", c.capabilityString()))
 	c.write(fmt.Sprintf("%s OK CAPABILITY completed\r\n", tag))
+}
+
+// pushMailboxUpdates emits untagged EXISTS / RECENT responses when the
+// selected mailbox state has changed since the last report. RFC 3501 §6.1.2
+// requires NOOP and IDLE to deliver these so clients learn about new mail
+// without re-issuing SELECT.
+func (c *Connection) pushMailboxUpdates() {
+	if c.mailbox == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stats, err := c.store.MailboxSelect(ctx, c.auth, c.mailbox)
+	if err != nil {
+		return
+	}
+	if stats.Exists != c.lastExists {
+		c.write(fmt.Sprintf("* %d EXISTS\r\n", stats.Exists))
+		c.lastExists = stats.Exists
+	}
+	if stats.Unseen != c.lastUnseen {
+		c.write(fmt.Sprintf("* %d RECENT\r\n", stats.Unseen))
+		c.lastUnseen = stats.Unseen
+	}
+}
+
+// cmdStartTLS upgrades the plaintext connection to TLS per RFC 2595 / RFC 3501 §6.2.1.
+// Returns false if the connection should be closed (handshake or protocol error).
+func (c *Connection) cmdStartTLS(tag string) bool {
+	if c.tls {
+		c.write(fmt.Sprintf("%s NO TLS already active\r\n", tag))
+		return true
+	}
+	if c.tlsConfig == nil {
+		c.write(fmt.Sprintf("%s NO STARTTLS not configured\r\n", tag))
+		return true
+	}
+
+	// RFC 3501 §6.2.1: client MUST NOT pipeline commands after STARTTLS.
+	// Buffered bytes between the OK and the TLS ClientHello indicate either a
+	// broken client or a plaintext-injection attack — refuse the upgrade.
+	if c.reader.Buffered() > 0 {
+		c.write(fmt.Sprintf("%s BAD Unexpected pipelined data before TLS handshake\r\n", tag))
+		return false
+	}
+
+	c.write(fmt.Sprintf("%s OK Begin TLS negotiation now\r\n", tag))
+
+	c.conn.SetReadDeadline(time.Time{})
+	tlsConn := tls.Server(c.conn, c.tlsConfig)
+	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
+		log.Printf("[IMAP] STARTTLS handshake failed from %s: %v", extractConnIP(c.conn), err)
+		return false
+	}
+
+	// RFC 3501: discard all session state from the unprotected phase to defeat
+	// MITM attacks that may have manipulated pre-TLS commands or capabilities.
+	c.conn = tlsConn
+	c.reader = bufio.NewReaderSize(tlsConn, maxLineSize)
+	c.tls = true
+	c.auth = ""
+	c.mailbox = ""
+	return true
 }
 
 func (c *Connection) cmdLogout(tag string) {
@@ -26,6 +92,11 @@ func (c *Connection) cmdLogout(tag string) {
 }
 
 func (c *Connection) cmdLogin(tag, args string) {
+	if !c.tls {
+		c.write(fmt.Sprintf("%s NO [PRIVACYREQUIRED] LOGIN requires TLS — use STARTTLS or connect on port 993\r\n", tag))
+		return
+	}
+
 	parts := splitArgs(args)
 	if len(parts) < 2 {
 		c.write(fmt.Sprintf("%s NO Invalid arguments\r\n", tag))
@@ -53,6 +124,14 @@ func (c *Connection) cmdLogin(tag, args string) {
 		return
 	}
 
+	if reason := c.limit.BindUser(username); reason != limits.ReasonOK {
+		log.Printf("[IMAP] Post-auth limit hit for %s from %s: %s", username, ip, reason)
+		c.write("* BYE [LIMIT] Too many connections for user\r\n")
+		c.write(fmt.Sprintf("%s NO [LIMIT] Too many connections for user\r\n", tag))
+		c.conn.Close()
+		return
+	}
+
 	c.firewall.ClearAttempts(ip)
 	c.auth = username
 	log.Printf("[IMAP] User authenticated: %s from %s", username, ip)
@@ -76,6 +155,11 @@ func (c *Connection) cmdLogin(tag, args string) {
 }
 
 func (c *Connection) cmdAuthenticate(tag, args string) {
+	if !c.tls {
+		c.write(fmt.Sprintf("%s NO [PRIVACYREQUIRED] AUTHENTICATE requires TLS — use STARTTLS or connect on port 993\r\n", tag))
+		return
+	}
+
 	mech := strings.ToUpper(strings.TrimSpace(args))
 
 	if mech != "PLAIN" && mech != "LOGIN" {
@@ -138,14 +222,17 @@ func (c *Connection) cmdSelect(tag, args string) {
 		return
 	}
 
-	flagsList := strings.Join(permanentFlags, " ")
-	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", flagsList))
-	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", flagsList))
+	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", strings.Join(flagsList, " ")))
+	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", strings.Join(permanentFlags, " ")))
 	c.write(fmt.Sprintf("* %d EXISTS\r\n", stats.Exists))
 	c.write(fmt.Sprintf("* %d RECENT\r\n", stats.Unseen))
-	c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	if stats.Unseen > 0 {
+		c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	}
 	c.write(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid\r\n", stats.UIDValidity))
 	c.write(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID\r\n", stats.UIDNext))
+	c.lastExists = stats.Exists
+	c.lastUnseen = stats.Unseen
 	c.write(fmt.Sprintf("%s OK [READ-WRITE] SELECT completed\r\n", tag))
 }
 
@@ -171,14 +258,17 @@ func (c *Connection) cmdExamine(tag, args string) {
 		return
 	}
 
-	flagsList := strings.Join(permanentFlags, " ")
-	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", flagsList))
-	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", flagsList))
+	c.write(fmt.Sprintf("* FLAGS (%s)\r\n", strings.Join(flagsList, " ")))
+	c.write(fmt.Sprintf("* OK [PERMANENTFLAGS (%s)] Flags permitted\r\n", strings.Join(permanentFlags, " ")))
 	c.write(fmt.Sprintf("* %d EXISTS\r\n", stats.Exists))
 	c.write(fmt.Sprintf("* %d RECENT\r\n", stats.Unseen))
-	c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	if stats.Unseen > 0 {
+		c.write(fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen\r\n", stats.Unseen, stats.Unseen))
+	}
 	c.write(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid\r\n", stats.UIDValidity))
 	c.write(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID\r\n", stats.UIDNext))
+	c.lastExists = stats.Exists
+	c.lastUnseen = stats.Unseen
 	c.write(fmt.Sprintf("%s OK [READ-ONLY] EXAMINE completed\r\n", tag))
 }
 
@@ -187,10 +277,24 @@ func (c *Connection) cmdList(tag, args string) {
 		return
 	}
 
-	// Parse LIST arguments: LIST <reference> <mailbox pattern>
+	// RFC 5258 LIST-EXTENDED: optional selection-options in parentheses before reference.
+	// Example: LIST (SPECIAL-USE) "" "*"  — return only mailboxes with a SPECIAL-USE attribute.
+	specialUseOnly := false
+	rest := strings.TrimLeft(args, " ")
+	if strings.HasPrefix(rest, "(") {
+		end := strings.Index(rest, ")")
+		if end > 0 {
+			selOpts := strings.ToUpper(rest[1:end])
+			if strings.Contains(selOpts, "SPECIAL-USE") {
+				specialUseOnly = true
+			}
+			rest = strings.TrimLeft(rest[end+1:], " ")
+		}
+	}
+
+	listArgs := splitArgs(rest)
 	// LIST "" "" → return hierarchy delimiter only
-	listArgs := splitArgs(args)
-	if len(listArgs) >= 2 && unquote(listArgs[1]) == "" {
+	if len(listArgs) >= 2 && unquote(listArgs[1]) == "" && !specialUseOnly {
 		c.write("* LIST (\\Noselect) \"/\" \"\"\r\n")
 		c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
 		return
@@ -206,9 +310,37 @@ func (c *Connection) cmdList(tag, args string) {
 	}
 
 	for _, box := range boxes {
-		c.write(fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" \"%s\"\r\n", box))
+		flags := mailboxFlags(box)
+		if specialUseOnly && !strings.Contains(flags, "\\Sent") &&
+			!strings.Contains(flags, "\\Drafts") && !strings.Contains(flags, "\\Trash") &&
+			!strings.Contains(flags, "\\Junk") && !strings.Contains(flags, "\\Archive") &&
+			!strings.Contains(flags, "\\All") && !strings.Contains(flags, "\\Flagged") {
+			continue
+		}
+		c.write(fmt.Sprintf("* LIST (%s) \"/\" \"%s\"\r\n", flags, box))
 	}
 	c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
+}
+
+// mailboxFlags returns the IMAP LIST flags for a mailbox name, including
+// RFC 6154 SPECIAL-USE attributes that Apple Mail / iOS rely on to map
+// the account's Sent / Drafts / Trash / Junk folders. Without these flags,
+// iOS Mail refuses to fully sync the account.
+func mailboxFlags(box string) string {
+	flags := "\\HasNoChildren"
+	switch strings.ToLower(box) {
+	case "sent", "sent messages":
+		flags += " \\Sent"
+	case "drafts":
+		flags += " \\Drafts"
+	case "trash", "deleted messages":
+		flags += " \\Trash"
+	case "junk", "spam":
+		flags += " \\Junk"
+	case "archive":
+		flags += " \\Archive"
+	}
+	return flags
 }
 
 func (c *Connection) cmdLsub(tag, args string) {
@@ -226,7 +358,7 @@ func (c *Connection) cmdLsub(tag, args string) {
 	}
 
 	for _, box := range boxes {
-		c.write(fmt.Sprintf("* LSUB (\\HasNoChildren) \"/\" \"%s\"\r\n", box))
+		c.write(fmt.Sprintf("* LSUB (%s) \"/\" \"%s\"\r\n", mailboxFlags(box), box))
 	}
 	c.write(fmt.Sprintf("%s OK LSUB completed\r\n", tag))
 }
@@ -429,11 +561,7 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUI
 		c.write(fmt.Sprintf("FLAGS (%s) ", strings.Join(flags, " ")))
 	}
 	if strings.Contains(upper, "INTERNALDATE") {
-		date := msg.Date.String
-		if date == "" {
-			date = time.Now().Format("02-Jan-2006 15:04:05 -0700")
-		}
-		c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", date))
+		c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", formatInternalDate(msg.Date.String)))
 	}
 	if strings.Contains(upper, "RFC822.SIZE") || strings.Contains(upper, "RFC822") {
 		body := buildFullBody(msg)
@@ -453,10 +581,51 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUI
 	}
 
 	// BODY / BODY.PEEK handling — check for BODY[ or BODY.PEEK[ pattern
-	// to avoid conflict with BODYSTRUCTURE keyword
+	// to avoid conflict with BODYSTRUCTURE keyword.
 	if strings.Contains(upper, "BODY[") || strings.Contains(upper, "BODY.PEEK[") {
-		c.writeBodySection(items, msg)
+		for _, sel := range findBodySelectors(items) {
+			c.writeBodySection(sel, msg)
+		}
 	}
+}
+
+// findBodySelectors returns each BODY[...] / BODY.PEEK[...] selector found in
+// items, including any trailing <origin.count> partial range.
+func findBodySelectors(items string) []string {
+	var out []string
+	upper := strings.ToUpper(items)
+	i := 0
+	for i < len(items) {
+		rest := upper[i:]
+		aIdx, bIdx := strings.Index(rest, "BODY["), strings.Index(rest, "BODY.PEEK[")
+		var start int
+		switch {
+		case aIdx < 0 && bIdx < 0:
+			return out
+		case bIdx < 0 || (aIdx >= 0 && aIdx < bIdx):
+			start = i + aIdx
+		default:
+			start = i + bIdx
+		}
+		bracket := strings.Index(items[start:], "[")
+		if bracket < 0 {
+			return out
+		}
+		bracket += start
+		closeBracket := strings.Index(items[bracket+1:], "]")
+		if closeBracket < 0 {
+			return out
+		}
+		end := bracket + 1 + closeBracket + 1
+		if end < len(items) && items[end] == '<' {
+			if gt := strings.Index(items[end:], ">"); gt > 0 {
+				end += gt + 1
+			}
+		}
+		out = append(out, items[start:end])
+		i = end
+	}
+	return out
 }
 
 // writeBodySection handles BODY[section] and BODY.PEEK[section] requests.
@@ -519,14 +688,63 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 		content = sb.String() + "\r\n"
 
 	case upperSection == "TEXT":
-		if msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0" {
+		hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+		hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+		if hasHTML && hasText {
+			boundary := fmt.Sprintf("----=_ODAC_%d", msg.UID)
+			var bodySB strings.Builder
+			bodySB.WriteString("--" + boundary + "\r\n")
+			bodySB.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+			bodySB.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+			bodySB.WriteString(msg.Text.String)
+			bodySB.WriteString("\r\n--" + boundary + "\r\n")
+			bodySB.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+			bodySB.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+			bodySB.WriteString(msg.HTML.String)
+			bodySB.WriteString("\r\n--" + boundary + "--\r\n")
+			content = bodySB.String()
+		} else if hasHTML {
 			content = msg.HTML.String
-		} else if msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0" {
+		} else if hasText {
 			content = msg.Text.String
 		}
 
 	default:
-		content = buildFullBody(msg)
+		// RFC 3501 §6.4.5: numeric section selectors for multipart messages.
+		// For multipart/alternative we expose part 1 = text/plain, part 2 = text/html.
+		// Apple Mail / iOS request BODY[1], BODY[2], BODY[1.MIME], BODY[2.MIME] after
+		// reading BODYSTRUCTURE; returning the full message here makes them render
+		// the body as empty.
+		hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
+		hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
+		switch upperSection {
+		case "1":
+			if hasHTML && hasText {
+				content = msg.Text.String
+			} else if hasText {
+				content = msg.Text.String
+			} else if hasHTML {
+				content = msg.HTML.String
+			}
+		case "2":
+			if hasHTML && hasText {
+				content = msg.HTML.String
+			}
+		case "1.MIME":
+			if hasHTML && hasText {
+				content = "Content-Type: text/plain; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			} else if hasText {
+				content = "Content-Type: text/plain; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			} else if hasHTML {
+				content = "Content-Type: text/html; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			}
+		case "2.MIME":
+			if hasHTML && hasText {
+				content = "Content-Type: text/html; charset=\"UTF-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+			}
+		default:
+			content = buildFullBody(msg)
+		}
 	}
 
 	// Apply partial range if requested
@@ -547,10 +765,10 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 
 		// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
 		key := fmt.Sprintf("BODY[%s]<%d>", section, origin)
-		c.write(fmt.Sprintf("%s {%d}\r\n%s", key, len(content), content))
+		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
 	} else {
 		key := "BODY[" + section + "]"
-		c.write(fmt.Sprintf("%s {%d}\r\n%s", key, len(content), content))
+		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
 	}
 }
 
@@ -615,7 +833,9 @@ func buildFilteredHeaders(msg *storage.MessageRow, wantFields []string) string {
 }
 
 func (c *Connection) writeEnvelope(msg *storage.MessageRow) {
-	date := msg.Date.String
+	// RFC 3501 §7.4.2: ENVELOPE date is the RFC 5322 origination date string,
+	// e.g. "Thu, 29 Apr 2026 17:21:00 +0000". ISO 8601 confuses Apple Mail / iOS.
+	date := formatEnvelopeDate(msg.Date.String)
 	subject := escapeIMAPString(msg.Subject.String)
 
 	fromAddrs := parseMailboxJSON(msg.From.String)
@@ -625,6 +845,31 @@ func (c *Connection) writeEnvelope(msg *storage.MessageRow) {
 	// sender and reply-to default to from if not present
 	c.write(fmt.Sprintf("ENVELOPE (\"%s\" \"%s\" %s %s %s %s NIL NIL NIL \"%s\") ",
 		date, subject, fromAddrs, fromAddrs, fromAddrs, toAddrs, escapeIMAPString(msg.MessageID.String)))
+}
+
+// formatEnvelopeDate converts a stored timestamp to RFC 5322 origination-date
+// format expected by IMAP ENVELOPE (e.g. "Thu, 29 Apr 2026 17:21:00 +0000").
+func formatEnvelopeDate(stored string) string {
+	const envFmt = "Mon, 02 Jan 2006 15:04:05 -0700"
+	if stored == "" {
+		return time.Now().UTC().Format(envFmt)
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05Z",
+		"2006-01-02 15:04:05",
+		envFmt,
+		time.RFC1123Z,
+		time.RFC1123,
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, stored); err == nil {
+			return t.UTC().Format(envFmt)
+		}
+	}
+	return stored
 }
 
 // parseMailboxJSON converts the Node.js mailparser JSON format
@@ -684,21 +929,73 @@ func (c *Connection) writeBodyStructure(msg *storage.MessageRow) {
 	hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
 	hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
 
-	// RFC 3501 body structure: (type subtype (params) id description encoding size [lines] [md5] [disposition] [language] [location])
-	// Encoding must match actual content — we serve raw UTF-8, so "8BIT" or "7BIT"
+	// RFC 3501 §7.4.2 / §9 body-type-text:
+	//   (type subtype params id desc encoding size LINES md5 disposition language)
+	// LINES is REQUIRED for TEXT bodies — strict clients (Apple Mail, iOS) drop
+	// messages whose BODYSTRUCTURE has NIL where a line count is mandated.
 	if hasText && hasHTML {
 		textSize := len(msg.Text.String)
+		textLines := countLines(msg.Text.String)
 		htmlSize := len(msg.HTML.String)
-		c.write(fmt.Sprintf("BODYSTRUCTURE ((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL)(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) \"ALTERNATIVE\" NIL NIL NIL) ", textSize, htmlSize))
+		htmlLines := countLines(msg.HTML.String)
+		boundary := fmt.Sprintf("----=_ODAC_%d", msg.UID)
+		c.write(fmt.Sprintf("BODYSTRUCTURE ((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL)(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) \"ALTERNATIVE\" (\"BOUNDARY\" \"%s\") NIL NIL) ", textSize, textLines, htmlSize, htmlLines, boundary))
 	} else if hasHTML {
-		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) ", len(msg.HTML.String)))
+		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) ", len(msg.HTML.String), countLines(msg.HTML.String)))
 	} else {
 		size := 0
+		lines := 0
 		if hasText {
 			size = len(msg.Text.String)
+			lines = countLines(msg.Text.String)
 		}
-		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d NIL NIL NIL NIL) ", size))
+		c.write(fmt.Sprintf("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" %d %d NIL NIL NIL) ", size, lines))
 	}
+}
+
+// formatInternalDate converts a stored timestamp into the RFC 3501 §9
+// date-time format expected by IMAP clients: "DD-MMM-YYYY HH:MM:SS ±HHMM".
+// Apple Mail / iOS Mail strictly parse this field; ISO 8601 ("2026-04-29T17:21:00Z")
+// is rejected and the message ends up hidden in the list view.
+func formatInternalDate(stored string) string {
+	const imapFmt = "02-Jan-2006 15:04:05 -0700"
+	if stored == "" {
+		return time.Now().UTC().Format(imapFmt)
+	}
+	// Already in IMAP format? (heuristic: third char is '-' and contains a month name spelled out)
+	if len(stored) >= 11 && stored[2] == '-' && stored[6] == '-' {
+		return stored
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05Z",
+		"2006-01-02 15:04:05",
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC822,
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, stored); err == nil {
+			return t.UTC().Format(imapFmt)
+		}
+	}
+	return time.Now().UTC().Format(imapFmt)
+}
+
+// countLines returns the number of text lines in a body part per RFC 3501 §7.4.2.
+// A trailing line without a terminator still counts as a line.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 func (c *Connection) cmdStore(tag, args string) {
@@ -850,19 +1147,36 @@ func (c *Connection) cmdIdle(tag string) {
 
 	c.write("+ idling\r\n")
 
-	// Wait for DONE command with periodic checks
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
+	// Reader goroutine: receive DONE (or detect connection close).
+	// One-shot signaling — IDLE only accepts DONE, no other commands.
+	doneCh := make(chan struct{})
+	errCh := make(chan struct{})
+	go func() {
 		c.conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 		line, err := c.reader.ReadString('\n')
 		if err != nil {
-			return // Connection closed
+			close(errCh)
+			return
 		}
-
 		if strings.ToUpper(strings.TrimSpace(line)) == "DONE" {
+			close(doneCh)
+			return
+		}
+		close(errCh)
+	}()
+
+	// Poll the mailbox every 5s and push EXISTS/RECENT deltas to the client.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.pushMailboxUpdates()
+		case <-doneCh:
 			c.write(fmt.Sprintf("%s OK IDLE terminated\r\n", tag))
+			return
+		case <-errCh:
 			return
 		}
 	}
@@ -966,6 +1280,14 @@ func (c *Connection) cmdAppend(tag, args string) {
 func (c *Connection) write(data string) {
 	c.conn.SetWriteDeadline(time.Now().Add(commandTimeout))
 	c.conn.Write([]byte(data))
+	if imapDebug {
+		preview := data
+		if len(preview) > 200 {
+			preview = preview[:200] + "...(truncated)"
+		}
+		preview = strings.ReplaceAll(preview, "\r\n", "\\r\\n")
+		log.Printf("[IMAP] S->C %s: %s", c.conn.RemoteAddr(), preview)
+	}
 }
 
 // --- Helpers ---

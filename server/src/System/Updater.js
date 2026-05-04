@@ -659,19 +659,28 @@ class Updater {
 
             // 2. Start Services (Trigger Ready)
             this.#triggerReady()
-            log('Services started. Waiting 3s for Web stability...')
+            log('Services started. Waiting for Proxy & DNS readiness...')
 
-            // 3. Wait 3 Seconds - Web Stability Check
+            // 3. Wait for Proxy and DNS to be fully ready (config synced)
+            const [proxyReady, dnsReady] = await Promise.all([
+              Odac.server('Proxy').waitForReady(10000),
+              Odac.server('DNS').waitForReady(10000)
+            ])
+
+            if (!proxyReady || !dnsReady) {
+              log('WARNING: Readiness check incomplete (Proxy: %s, DNS: %s). Proceeding anyway.', proxyReady, dnsReady)
+            } else {
+              log('Proxy & DNS confirmed ready with config synced.')
+            }
+
+            log('Signaling old container to stop Web...')
+            socket.write('WEB_READY')
+
+            // 4. Wait 12 Seconds - General System Stability Check
             setTimeout(() => {
-              log('Web stability passed (3s). Signaling old container to stop Web...')
-              socket.write('WEB_READY')
-
-              // 4. Wait 12 Seconds more - General System Stability Check
-              setTimeout(() => {
-                log('General stability check passed (15s total). Signaling completion...')
-                socket.write('TAKEOVER_COMPLETE')
-              }, 12000)
-            }, 3000)
+              log('General stability check passed (15s total). Signaling completion...')
+              socket.write('TAKEOVER_COMPLETE')
+            }, 12000)
           } catch (e) {
             error('Startup failed: %s', e.message)
             socket.destroy()

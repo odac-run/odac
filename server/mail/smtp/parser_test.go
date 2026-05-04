@@ -79,6 +79,32 @@ func TestParseMessage_MultipartNoQuoteBoundary(t *testing.T) {
 	}
 }
 
+func TestParseMessage_MixedCaseBoundary(t *testing.T) {
+	raw := "From: sender@java-server.com\r\nTo: rcpt@example.com\r\nSubject: Mixed Case\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"----=_Part_5048008_556565411.1776343091886\"\r\n\r\n------=_Part_5048008_556565411.1776343091886\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nPlain text version\r\n------=_Part_5048008_556565411.1776343091886\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body><p>HTML version</p></body></html>\r\n------=_Part_5048008_556565411.1776343091886--\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.text, "Plain text version") {
+		t.Errorf("text = %q, should contain 'Plain text version'", msg.text)
+	}
+	if !strings.Contains(msg.html, "<html><body><p>HTML version</p></body></html>") {
+		t.Errorf("html = %q, should contain HTML content", msg.html)
+	}
+}
+
+func TestParseMessage_NestedMultipartMixedCase(t *testing.T) {
+	raw := "From: a@b.com\r\nTo: c@d.com\r\nSubject: Nested\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed;\r\n boundary=\"----=_Outer_123\"\r\n\r\n------=_Outer_123\r\nContent-Type: multipart/alternative;\r\n boundary=\"----=_Inner_456\"\r\n\r\n------=_Inner_456\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nNested plain\r\n------=_Inner_456\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<p>Nested HTML</p>\r\n------=_Inner_456--\r\n------=_Outer_123--\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.text, "Nested plain") {
+		t.Errorf("text = %q, should contain 'Nested plain'", msg.text)
+	}
+	if !strings.Contains(msg.html, "<p>Nested HTML</p>") {
+		t.Errorf("html = %q, should contain nested HTML", msg.html)
+	}
+}
+
 func TestParseMessage_DisplayNameFrom(t *testing.T) {
 	raw := "From: \"John Doe\" <john@example.com>\r\nTo: jane@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 

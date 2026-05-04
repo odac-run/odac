@@ -103,8 +103,8 @@ func parseMessage(raw []byte) parsedMessage {
 	if strings.Contains(contentType, "text/html") {
 		msg.html = decodeBody(bodySection, cte)
 	} else if strings.Contains(contentType, "multipart/") {
-		// Extract boundary and parse MIME parts
-		msg.html, msg.text = parseMIMEBody(contentType, bodySection)
+		// Pass original (non-lowercased) Content-Type to preserve boundary case
+		msg.html, msg.text = parseMIMEBody(headers["content-type"], bodySection)
 	} else {
 		// Default to text/plain
 		msg.text = decodeBody(bodySection, cte)
@@ -180,13 +180,28 @@ func decodeBody(body, encoding string) string {
 	}
 }
 
-// extractHeader returns the value of a specific header from a raw header block (case-insensitive).
+// extractHeader returns the full (unfolded) value of a specific header from a raw header block.
+// Handles RFC 2822 continuation lines (lines starting with whitespace).
 func extractHeader(headerBlock, name string) string {
 	target := strings.ToLower(name) + ":"
-	for _, line := range strings.Split(headerBlock, "\n") {
+	lines := strings.Split(headerBlock, "\n")
+	for i, line := range lines {
 		line = strings.TrimRight(line, "\r")
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), target) {
-			return strings.TrimSpace(line[strings.Index(line, ":")+1:])
+			value := strings.TrimSpace(line[strings.Index(line, ":")+1:])
+			// Collect continuation lines (RFC 2822 §2.2.3)
+			for j := i + 1; j < len(lines); j++ {
+				cont := strings.TrimRight(lines[j], "\r")
+				if len(cont) == 0 {
+					break
+				}
+				if cont[0] == ' ' || cont[0] == '\t' {
+					value += " " + strings.TrimSpace(cont)
+				} else {
+					break
+				}
+			}
+			return value
 		}
 	}
 	return ""
@@ -242,23 +257,23 @@ func parseMIMEBodyDepth(contentType, body string, depth int) (html, text string)
 		partHeaders := strings.ToLower(rawPartHeaders)
 		partBody := strings.TrimLeft(part[partHeaderEnd:], "\r\n")
 
+		// Trim trailing \r\n that precedes the next boundary delimiter (RFC 2046 §5.1.1)
+		partBody = strings.TrimRight(partBody, "\r\n")
+
 		// Decode body based on Content-Transfer-Encoding
 		cte := extractHeader(rawPartHeaders, "Content-Transfer-Encoding")
 		partBody = decodeBody(partBody, cte)
 
 		// Recurse into nested multipart
 		if strings.Contains(partHeaders, "multipart/") {
-			for _, line := range strings.Split(rawPartHeaders, "\n") {
-				line = strings.TrimSpace(strings.ToLower(line))
-				if strings.HasPrefix(line, "content-type:") {
-					subHTML, subText := parseMIMEBodyDepth(line[13:], partBody, depth+1)
-					if subHTML != "" {
-						html = subHTML
-					}
-					if subText != "" {
-						text = subText
-					}
-					break
+			nestedCT := extractHeader(rawPartHeaders, "Content-Type")
+			if nestedCT != "" {
+				subHTML, subText := parseMIMEBodyDepth(nestedCT, partBody, depth+1)
+				if subHTML != "" {
+					html = subHTML
+				}
+				if subText != "" {
+					text = subText
 				}
 			}
 			continue

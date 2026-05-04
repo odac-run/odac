@@ -242,3 +242,40 @@ func TestIsValidEmail(t *testing.T) {
 		}
 	}
 }
+
+func TestEncodeDataBody_DotStuffing(t *testing.T) {
+	in := []byte("Subject: x\r\n\r\n<style>\r\n.foo { color: red; }\r\n.\r\nbar\r\n</style>\r\n")
+	got := string(encodeDataBody(in))
+	want := "Subject: x\r\n\r\n<style>\r\n..foo { color: red; }\r\n..\r\nbar\r\n</style>\r\n"
+	if got != want {
+		t.Errorf("dot-stuffing failed\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestEncodeDataBody_BareLFNormalized(t *testing.T) {
+	in := []byte("Subject: x\n\nhello\n.world\n")
+	got := string(encodeDataBody(in))
+	want := "Subject: x\r\n\r\nhello\r\n..world\r\n"
+	if got != want {
+		t.Errorf("LF→CRLF + dot-stuffing failed\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestEncodeDataBody_TrailingCRLFGuaranteed(t *testing.T) {
+	got := string(encodeDataBody([]byte("no-trailing-newline")))
+	if got != "no-trailing-newline\r\n" {
+		t.Errorf("trailing CRLF not added, got %q", got)
+	}
+	got = string(encodeDataBody([]byte("ends-with-crlf\r\n")))
+	if got != "ends-with-crlf\r\n" {
+		t.Errorf("should not duplicate trailing CRLF, got %q", got)
+	}
+}
+
+func TestEncodeDataBody_DotMidLineUnchanged(t *testing.T) {
+	in := []byte("This is a sentence. With a period.\r\nAnother line.\r\n")
+	got := string(encodeDataBody(in))
+	if got != string(in) {
+		t.Errorf("mid-line dots should not be stuffed\n got: %q\nwant: %q", got, string(in))
+	}
+}

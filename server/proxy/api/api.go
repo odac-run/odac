@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"sync/atomic"
 
 	"odac-proxy/config"
 	"odac-proxy/proxy"
@@ -18,15 +19,32 @@ type acmeRequest struct {
 	Token            string `json:"token"`
 }
 
-type Server struct {
-	proxy    *proxy.Proxy
-	firewall *proxy.Firewall
+// Readiness reports whether the public listeners (HTTP :80 and HTTPS :443)
+// are bound and serving. It is owned by main and shared with the API server
+// so the /ready endpoint can answer authoritatively.
+type Readiness struct {
+	HTTP  atomic.Bool
+	HTTPS atomic.Bool
 }
 
-func NewServer(p *proxy.Proxy, f *proxy.Firewall) *Server {
+// IsReady returns true only when both HTTP and HTTPS public listeners are bound.
+// HTTP/3 is intentionally excluded — it is best-effort (UDP, may fail on hosts
+// without sufficient privileges) and not required for a successful handover.
+func (r *Readiness) IsReady() bool {
+	return r.HTTP.Load() && r.HTTPS.Load()
+}
+
+type Server struct {
+	proxy     *proxy.Proxy
+	firewall  *proxy.Firewall
+	readiness *Readiness
+}
+
+func NewServer(p *proxy.Proxy, f *proxy.Firewall, r *Readiness) *Server {
 	return &Server{
-		proxy:    p,
+		proxy:     p,
 		firewall: f,
+		readiness: r,
 	}
 }
 
@@ -72,6 +90,75 @@ func (s *Server) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleCachePurge clears cached assets for a specific domain or all domains.
+// POST with {"domain": "example.com"} purges that domain.
+// POST with empty body or {"domain": ""} purges all cached assets.
+func (s *Server) HandleCachePurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	// Body is optional — empty body means purge all
+	json.NewDecoder(r.Body).Decode(&req)
+
+	cache := s.proxy.Cache()
+	var count int
+
+	if req.Domain != "" {
+		count = cache.Purge(req.Domain)
+		s.proxy.Pages().Purge(req.Domain)
+		s.proxy.Hints().Purge(req.Domain)
+		log.Printf("[Cache] Purged %d entries for domain: %s", count, req.Domain)
+	} else {
+		count = cache.PurgeAll()
+		s.proxy.Pages().PurgeAll()
+		s.proxy.Hints().PurgeAll()
+		log.Printf("[Cache] Purged all %d entries", count)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"purged": count,
+	})
+}
+
+// HandleCacheStats returns current cache statistics.
+func (s *Server) HandleCacheStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(s.proxy.Cache().Stats())
+}
+
+// HandleReady reports public-listener readiness for the zero-downtime handover.
+// Returns 200 OK only after both :80 and :443 have been bound and are accepting
+// connections. The Node.js Updater polls this before signaling the old container
+// to release its overlap services — guaranteeing no traffic gap during takeover.
+func (s *Server) HandleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.readiness != nil && s.readiness.IsReady() {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+		return
+	}
+
+	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte("not ready"))
+}
+
 func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -87,7 +174,7 @@ func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received config update: %d domains, firewall enabled: %v, tunnels: %d", len(cfg.Domains), cfg.Firewall.Enabled, len(cfg.Tunnels))
 
-	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL, cfg.Tunnels)
+	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL, cfg.Tunnels, cfg.Memory)
 	s.firewall.UpdateConfig(cfg.Firewall)
 
 	w.WriteHeader(http.StatusOK)
@@ -97,6 +184,9 @@ func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/acme/challenge", s.HandleACMEChallenge)
+	mux.HandleFunc("/cache/purge", s.HandleCachePurge)
+	mux.HandleFunc("/cache/stats", s.HandleCacheStats)
 	mux.HandleFunc("/config", s.HandleConfig)
+	mux.HandleFunc("/ready", s.HandleReady)
 	mux.ServeHTTP(w, r)
 }

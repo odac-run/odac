@@ -11,19 +11,19 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"odac-mail/auth"
 	"odac-mail/config"
+	"odac-mail/limits"
 	"odac-mail/storage"
 )
 
 // Server manages IMAP listeners on ports 143 (STARTTLS) and 993 (implicit TLS).
 type Server struct {
-	connPerIP sync.Map // map[string]*int32 — active connections per IP
 	firewall  *auth.Firewall
 	getConfig func() config.Config
+	limiter   *limits.Limiter
 	mu        sync.Mutex
 	insecure  net.Listener // Port 143
 	secure    net.Listener // Port 993
@@ -32,15 +32,20 @@ type Server struct {
 	wg        sync.WaitGroup
 }
 
-const maxConnectionsPerIP = 10
-
 // NewServer creates a new IMAP server with the given dependencies.
 func NewServer(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Server {
 	return &Server{
 		firewall:  fw,
 		getConfig: getConfig,
+		limiter:   limits.New(limits.IMAPProfile()),
 		store:     store,
 	}
+}
+
+// Limiter exposes the connection limiter so the connection handler can
+// bind users post-auth via the same instance.
+func (s *Server) Limiter() *limits.Limiter {
+	return s.limiter
 }
 
 // Start begins listening on IMAP ports with retry logic for zero-downtime updates.
@@ -52,11 +57,14 @@ func (s *Server) Start() {
 		return
 	}
 
-	// Port 993 — Implicit TLS
-	go s.listenTLS(993)
+	// Single TLS config shared between implicit-TLS (993) and STARTTLS (143).
+	tlsCfg := s.buildTLSConfig()
 
-	// Port 143 — Plaintext (STARTTLS available)
-	go s.listenPlain(143)
+	// Port 993 — Implicit TLS
+	go s.listenTLS(993, tlsCfg)
+
+	// Port 143 — Plaintext with STARTTLS upgrade
+	go s.listenPlain(143, tlsCfg)
 }
 
 // Stop gracefully shuts down both IMAP listeners.
@@ -91,10 +99,8 @@ func (s *Server) ClearSSLCache(domain string) {
 	})
 }
 
-func (s *Server) listenTLS(port int) {
+func (s *Server) listenTLS(port int, tlsCfg *tls.Config) {
 	const maxRetries = 15
-
-	tlsCfg := s.buildTLSConfig()
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -116,14 +122,14 @@ func (s *Server) listenTLS(port int) {
 		s.mu.Unlock()
 
 		log.Printf("[IMAP] TLS server listening on port %d", port)
-		s.acceptLoop(ln)
+		s.acceptLoop(ln, tlsCfg)
 		return
 	}
 
 	log.Printf("[IMAP] TLS failed to bind port %d after %d retries", port, maxRetries)
 }
 
-func (s *Server) listenPlain(port int) {
+func (s *Server) listenPlain(port int, tlsCfg *tls.Config) {
 	const maxRetries = 15
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -146,14 +152,14 @@ func (s *Server) listenPlain(port int) {
 		s.mu.Unlock()
 
 		log.Printf("[IMAP] Plain server listening on port %d", port)
-		s.acceptLoop(ln)
+		s.acceptLoop(ln, tlsCfg)
 		return
 	}
 
 	log.Printf("[IMAP] Plain failed to bind port %d after %d retries", port, maxRetries)
 }
 
-func (s *Server) acceptLoop(ln net.Listener) {
+func (s *Server) acceptLoop(ln net.Listener, tlsCfg *tls.Config) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -167,12 +173,12 @@ func (s *Server) acceptLoop(ln net.Listener) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleConnection(conn)
+			s.handleConnection(conn, tlsCfg)
 		}()
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
+func (s *Server) handleConnection(conn net.Conn, tlsCfg *tls.Config) {
 	defer conn.Close()
 
 	ip := extractConnIP(conn)
@@ -181,25 +187,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Per-IP connection rate limiting
-	val, _ := s.connPerIP.LoadOrStore(ip, new(int32))
-	counter := val.(*int32)
-	count := atomic.AddInt32(counter, 1)
-	defer func() {
-		if atomic.AddInt32(counter, -1) <= 0 {
-			s.connPerIP.Delete(ip)
-		}
-	}()
-
-	if count > maxConnectionsPerIP {
-		log.Printf("[IMAP] Connection limit exceeded for %s (%d/%d)", ip, count, maxConnectionsPerIP)
-		conn.Write([]byte("* BYE Too many connections\r\n"))
+	handle, reason := s.limiter.Acquire(ip)
+	if reason != limits.ReasonOK {
+		log.Printf("[IMAP] Rejecting %s: %s", ip, reason)
+		conn.Write([]byte("* BYE [LIMIT] Too many connections\r\n"))
 		return
 	}
+	defer handle.Release()
 
-	log.Printf("[IMAP] New connection from %s (%d active)", ip, count)
+	total, ips, users := s.limiter.Snapshot()
+	log.Printf("[IMAP] New connection from %s (total=%d ips=%d users=%d)", ip, total, ips, users)
 
-	c := NewConnection(conn, s.store, s.firewall, s.getConfig)
+	c := NewConnection(conn, tlsCfg, s.store, s.firewall, s.getConfig, handle)
 	c.Serve()
 }
 

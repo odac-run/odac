@@ -14,6 +14,9 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   release:
     name: Release
@@ -22,12 +25,12 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
       
@@ -46,7 +49,7 @@ jobs:
 
       - name: Checkout Actions
         if: steps.version.outputs.version != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: odac-run/actions
           token: ${{ secrets.GH_PAT }}
@@ -70,7 +73,7 @@ jobs:
         run: rm -rf .github/odac-actions
 
       - name: Update Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         if: steps.ai_notes.outcome == 'success' && steps.version.outputs.version != ''
         with:
           tag_name: v${{ steps.version.outputs.version }}
@@ -111,7 +114,7 @@ jobs:
             type=raw,value=latest
       
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64

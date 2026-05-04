@@ -28,6 +28,58 @@ class OdacProxy {
   }
 
   /**
+   * Purges cached static assets from the Go proxy's in-memory cache.
+   * Called after app deployments to ensure fresh assets are served.
+   * @param {string} [domain] - Domain to purge. If omitted, purges all cached assets.
+   * @returns {Promise<number>} Number of purged cache entries
+   */
+  async purgeCache(domain) {
+    if (!this.#proxyProcess) return 0
+    if (!this.#proxySocketPath && !this.#proxyApiPort) return 0
+
+    const payload = domain ? {domain} : {}
+
+    try {
+      let response
+      if (this.#proxySocketPath) {
+        response = await Odac.core('Http').post('http://localhost/cache/purge', payload, {
+          socketPath: this.#proxySocketPath,
+          validateStatus: () => true
+        })
+      } else {
+        response = await Odac.core('Http').post(`http://127.0.0.1:${this.#proxyApiPort}/cache/purge`, payload)
+      }
+
+      const purged = response.data?.purged || 0
+      if (purged > 0) log('Cache purged: %d entries%s', purged, domain ? ` for ${domain}` : '')
+      return purged
+    } catch (e) {
+      error('Failed to purge cache: %s', e.message)
+      return 0
+    }
+  }
+
+  /**
+   * Purges cached assets for all domains mapped to a specific app.
+   * Called automatically after app redeploy/restart to serve fresh assets.
+   * @param {string} appId - App name or ID to purge cache for
+   */
+  async purgeCacheForApp(appId) {
+    if (!appId) return
+
+    const domains = Odac.core('Config').config.domains || {}
+    const purged = []
+
+    for (const [domainName, record] of Object.entries(domains)) {
+      if (record.appId === appId) {
+        purged.push(this.purgeCache(domainName))
+      }
+    }
+
+    await Promise.all(purged)
+  }
+
+  /**
    * Resolves an app's backend target (IP + port) from its config.
    * Single source of truth for port detection and container IP resolution.
    * Used by both domain routing and tunnel routing to avoid duplication.
@@ -48,6 +100,9 @@ class OdacProxy {
       }
     } else if (app.port) {
       port = parseInt(app.port)
+    } else if (app.http && app.http !== false) {
+      port = parseInt(app.http)
+      useInternal = true
     }
 
     if (!port) return null
@@ -266,7 +321,7 @@ class OdacProxy {
         }
       })
 
-      // Give it a moment to start
+      // Give it a moment to start, then sync config
       if (this.#syncTimer) clearTimeout(this.#syncTimer)
       this.#syncTimer = setTimeout(() => this.syncConfig(), 1000)
 
@@ -394,6 +449,56 @@ class OdacProxy {
     }
   }
 
+  /**
+   * Waits until the Go Proxy binary's public listeners (:80 and :443) are
+   * bound and accepting connections. Used by the Updater during the
+   * zero-downtime handshake to confirm the new instance is actually serving
+   * traffic before the old one releases its overlap listeners.
+   *
+   * Polls the binary's /ready endpoint over the management socket. The
+   * endpoint returns 200 only after both TCP listeners are bound — this is
+   * the authoritative signal, not a syncConfig success or a fixed sleep.
+   * Config sync is then performed once readiness is confirmed.
+   *
+   * @param {number} [timeout=10000] - Maximum wait time in milliseconds
+   * @returns {Promise<boolean>} True if ready, false on timeout
+   */
+  async waitForReady(timeout = 10000) {
+    const start = Date.now()
+    const interval = 200
+
+    while (Date.now() - start < timeout) {
+      if (this.#proxyProcess && (this.#proxySocketPath || this.#proxyApiPort)) {
+        try {
+          let response
+          if (this.#proxySocketPath && fs.existsSync(this.#proxySocketPath)) {
+            response = await Odac.core('Http').get('http://localhost/ready', {
+              socketPath: this.#proxySocketPath,
+              validateStatus: () => true,
+              timeout: 1000
+            })
+          } else if (this.#proxyApiPort) {
+            response = await Odac.core('Http').get(`http://127.0.0.1:${this.#proxyApiPort}/ready`, {
+              validateStatus: () => true,
+              timeout: 1000
+            })
+          }
+
+          if (response && response.status === 200) {
+            // Public listeners bound — push config now so the binary serves
+            // requests with up-to-date routing the moment it accepts them.
+            await this.syncConfig()
+            return true
+          }
+        } catch {
+          /* retry */
+        }
+      }
+      await new Promise(r => setTimeout(r, interval))
+    }
+    return false
+  }
+
   async syncConfig(retryCount = 0) {
     if (typeof log !== 'undefined') log('Proxy: syncConfig called (Retry: %d)', retryCount)
 
@@ -480,6 +585,7 @@ class OdacProxy {
     const config = {
       domains: proxyDomains,
       firewall: Odac.core('Config').config.firewall || {enabled: true},
+      memory: {total: os.totalmem(), used: os.totalmem() - os.freemem()},
       ssl: Odac.core('Config').config.ssl || null,
       tunnels: tunnelList
     }

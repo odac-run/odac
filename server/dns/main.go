@@ -57,18 +57,25 @@ func main() {
 	res := resolver.NewResolver()
 	rateLimiter := resolver.NewRateLimiter(res)
 
+	// Public-listener readiness — flipped to true once each DNS listener
+	// (UDP and TCP) reports started via miekg/dns NotifyStartedFunc. Surfaced
+	// via the API's /ready endpoint so the Node.js Updater can confirm the
+	// new container is actually answering queries before the old one releases
+	// its overlap services.
+	readiness := &api.Readiness{}
+
 	// Determine the DNS listening port
 	port := determineDNSPort()
 
 	// Start UDP and TCP DNS servers
-	udpServer, tcpServer := startDNSServers(rateLimiter, port)
+	udpServer, tcpServer := startDNSServers(rateLimiter, port, readiness)
 
 	// Print the active port for Node.js to parse from stdout
 	// CRITICAL: Node.js parses this line to know which port DNS is listening on
 	fmt.Printf("ODAC_DNS_PORT=%d\n", port)
 
 	// Start Control API (Unix Socket or TCP fallback)
-	apiListener := startControlAPI(res)
+	apiListener := startControlAPI(res, readiness)
 
 	// Wait for termination signal
 	c := make(chan os.Signal, 1)
@@ -212,15 +219,23 @@ func handleSystemdResolved() bool {
 }
 
 // startDNSServers creates and starts UDP and TCP DNS servers on the given port.
-func startDNSServers(handler dns.Handler, port int) (*dns.Server, *dns.Server) {
+// readiness is flipped to ready per-listener via NotifyStartedFunc, which
+// miekg/dns invokes only after the underlying socket has been bound and the
+// server is accepting traffic. This is the authoritative bind signal —
+// preferred over a sleep-based heuristic which races against the kernel.
+func startDNSServers(handler dns.Handler, port int, readiness *api.Readiness) (*dns.Server, *dns.Server) {
 	addr := fmt.Sprintf(":%d", port)
 
 	udpServer := &dns.Server{
-		Addr:    addr,
-		Handler: handler,
-		Net:     "udp",
-		UDPSize: 4096, // EDNS0 support for larger responses
+		Addr:      addr,
+		Handler:   handler,
+		Net:       "udp",
+		UDPSize:   4096, // EDNS0 support for larger responses
 		ReusePort: runtime.GOOS == "linux",
+		NotifyStartedFunc: func() {
+			readiness.UDP.Store(true)
+			log.Printf("[DNS] UDP listener bound on %s", addr)
+		},
 	}
 
 	tcpServer := &dns.Server{
@@ -228,6 +243,10 @@ func startDNSServers(handler dns.Handler, port int) (*dns.Server, *dns.Server) {
 		Handler:   handler,
 		Net:       "tcp",
 		ReusePort: runtime.GOOS == "linux",
+		NotifyStartedFunc: func() {
+			readiness.TCP.Store(true)
+			log.Printf("[DNS] TCP listener bound on %s", addr)
+		},
 	}
 
 	go func() {
@@ -244,18 +263,16 @@ func startDNSServers(handler dns.Handler, port int) (*dns.Server, *dns.Server) {
 		}
 	}()
 
-	// Small delay to ensure servers are bound before returning
-	time.Sleep(100 * time.Millisecond)
-	log.Printf("[DNS] DNS servers started on port %d (UDP+TCP)", port)
+	log.Printf("[DNS] DNS servers spawning on port %d (UDP+TCP) — readiness reported via /ready", port)
 
 	return udpServer, tcpServer
 }
 
 // startControlAPI starts the HTTP control API on a Unix socket or TCP fallback.
 // Mirrors the proxy's API listener setup in main.go.
-func startControlAPI(res *resolver.Resolver) net.Listener {
+func startControlAPI(res *resolver.Resolver, readiness *api.Readiness) net.Listener {
 	socketPath := os.Getenv("ODAC_DNS_SOCKET_PATH")
-	apiServer := api.NewServer(res)
+	apiServer := api.NewServer(res, readiness)
 
 	var listener net.Listener
 	var err error

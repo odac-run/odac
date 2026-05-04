@@ -21,7 +21,10 @@ odac auth [-k|--key] <key>
 ```bash
 odac app create [-n|--name] <name> [-u|--url] <gitUrl>  # Create app
 odac app delete [-i|--id] <app>                          # Delete app
+odac app device add [-a|--app] <app> [-d|--device] <path> # Connect device
+odac app device delete [-a|--app] <app> [-d|--device] <path> # Disconnect device
 odac app list                                            # List apps
+odac app restart [-i|--id] <app>                         # Restart app
 ```
 
 ### Domains
