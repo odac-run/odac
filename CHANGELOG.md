@@ -1,5 +1,43 @@
 ### ✨ What's New
 
+- add support for managing hardware device mappings in app containers via CLI
+- **limits:** implement hierarchical connection limiting for IMAP/SMTP
+- **proxy:** add adaptive cache engine with memory-aware purge and stats APIs
+- **proxy:** add page cache with app-controlled TTL and vary support
+- **proxy:** add smart early hints cache for proxy
+
+### 📚 Documentation
+
+- add instructions for beta channel installation to quick-install guide
+
+### 🛠️ Fixes & Improvements
+
+- add /ready endpoint to DNS and Proxy servers to ensure authoritative listener readiness during zero-downtime handovers
+- add connection reuse state to SMTP client and enforce TLS handshake success
+- **docker:** update Go version to 1.25-alpine for building
+- enhance BODY[section] handling for multipart messages per RFC 3501 §6.4.5
+- **imap:** add multipart/alternative support for TEXT body sections
+- **imap:** enforce TLS before plaintext auth on port 143
+- **imap:** support for NAMESPACE, ID, and ENABLE commands
+- implement multi-section body parsing and fix spacing in IMAP body responses
+- implement real-time mailbox delta updates via NOOP/IDLE and correct BODYSTRUCTURE line counts
+- **proxy:** add compression support for cached responses
+- **proxy:** add HTTP port fallback with internal routing
+- **smtp:** dot-stuff outbound DATA per RFC 5321 §4.5.2
+- **smtp:** enforce authenticated user matches MAIL FROM sender
+- **smtp:** enhance logging for connection, authentication, and message handling
+- **test:** remove unused path imports in device test files
+- **updater:** add readiness checks for zero-downtime service handshake
+- **workflows:** update actions versions and enhance environment variables
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ✨ What's New
+
 - migrate mail server to Go (SMTP/IMAP/DKIM)
 
 ### 📚 Documentation
