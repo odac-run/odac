@@ -105,7 +105,8 @@ describe('App', () => {
           isRunning: jest.fn(() => false),
           stop: jest.fn(),
           trigger: jest.fn(),
-          syncConfig: jest.fn()
+          syncConfig: jest.fn(),
+          purgeCacheForApp: jest.fn()
         }
       })
     }
