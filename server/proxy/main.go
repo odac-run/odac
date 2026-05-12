@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,6 +36,11 @@ func listen(network, address string) (net.Listener, error) {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	if home, err := os.UserHomeDir(); err == nil {
+		if w, e := newRotateWriter(filepath.Join(home, ".odac", "logs", "proxy.log"), 50*1024*1024); e == nil {
+			log.SetOutput(w)
+		}
+	}
 	log.Println("Starting ODAC Proxy...")
 
 	// Increase file descriptor limit

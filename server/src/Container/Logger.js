@@ -226,12 +226,36 @@ class Logger {
       // Start fresh
     }
 
-    const fileStream = fs.createWriteStream(logFile, {flags: 'a'})
+    let fileStream = fs.createWriteStream(logFile, {flags: 'a'})
 
     // Auto-rotate check (simple approach: check on creation)
     this.#rotateRuntimeLogs()
 
     let isEnded = false
+
+    // Size-based rotation within a single day. Per-day age cleanup is handled
+    // by #rotateRuntimeLogs(); this guards against unbounded growth when an
+    // app spams logs faster than the daily roll can clear.
+    const MAX_BYTES = 100 * 1024 * 1024 // 100 MB cap; one .1 backup ≈ 200 MB peak
+    const CHECK_EVERY = 1024 * 1024 // stat every ~1 MB of writes
+    let bytesSinceCheck = 0
+
+    const maybeRotate = chunkLen => {
+      bytesSinceCheck += chunkLen
+      if (bytesSinceCheck < CHECK_EVERY) return
+      bytesSinceCheck = 0
+      try {
+        const s = fs.statSync(logFile)
+        if (s.size <= MAX_BYTES) return
+        const old = fileStream
+        old.end()
+        fs.renameSync(logFile, logFile + '.1')
+        fileStream = fs.createWriteStream(logFile, {flags: 'a'})
+      } catch {
+        // Stat/rename failure (file missing, race with cleanup): drop one check
+        // window; next write retries. fileStream is unchanged so writes still go.
+      }
+    }
 
     return {
       stream: fileStream, // Keep for backward compat if needed
@@ -247,6 +271,7 @@ class Logger {
         this.#notifySubscribers('runtime', 'out', data, ts)
 
         fileStream.write(chunk)
+        maybeRotate(chunk.length || data.length)
       },
 
       // Error log writer (tracks stats)
@@ -278,6 +303,7 @@ class Logger {
           }
         }
         fileStream.write(chunk)
+        maybeRotate(chunk.length || data.length)
       },
 
       end: () => {

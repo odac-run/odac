@@ -55,6 +55,10 @@ class App {
     }
     this.#apps = this.#loadAppsFromConfig()
     this.#loaded = true
+
+    // Best-effort sweep — green log dirs are short-lived by design, so any
+    // surviving at startup is an orphan from a past Blue-Green deploy.
+    this.#cleanupStaleGreenLogs().catch(e => error('Stale green log sweep failed: %s', e.message))
   }
 
   async check() {
@@ -1206,6 +1210,7 @@ class App {
         } catch {
           /* ignore cleanup errors */
         }
+        await this.#cleanupGreenArtifacts(greenContainerName)
       }
 
       this.#set(app.id, {status: 'errored'})
@@ -2094,6 +2099,7 @@ class App {
     if (!isReady || !greenIP) {
       await Odac.server('Container').stop(greenContainerName)
       await Odac.server('Container').remove(greenContainerName)
+      await this.#cleanupGreenArtifacts(greenContainerName)
       const details = lastReadinessError ? ` Last readiness error: ${lastReadinessError}` : ''
       throw new Error(`New container failed readiness probe (port bind timeout). ${operation} aborted to maintain uptime.${details}`)
     }
@@ -2102,6 +2108,7 @@ class App {
     if (!httpReady) {
       await Odac.server('Container').stop(greenContainerName)
       await Odac.server('Container').remove(greenContainerName)
+      await this.#cleanupGreenArtifacts(greenContainerName)
       throw new Error(`New container failed HTTP readiness probe. ${operation} aborted to maintain uptime.`)
     }
 
@@ -2145,6 +2152,10 @@ class App {
 
     if (renameSuccess) {
       this.#set(app.id, {activeContainerId: null})
+      // Docker container has been renamed away from greenContainerName, so the
+      // on-disk log dir under that name is orphaned. Skip on rename failure —
+      // there the green name is still the live container.
+      await this.#cleanupGreenArtifacts(greenContainerName)
     } else {
       error(
         'Failed to rename green container %s to %s after 5 attempts. ZDD will persist with activeContainerId.',
@@ -2291,6 +2302,58 @@ class App {
   #generateRuntimeId(prefix = '') {
     const suffix = `${Date.now()}_${nodeCrypto.randomBytes(4).toString('hex')}`
     return prefix ? `${prefix}_${suffix}` : suffix
+  }
+
+  // Matches the green container name suffix produced by #generateRuntimeId():
+  // `<appName>-green-<13+digit-ts>_<8-hex>`. Used to detect orphaned log dirs
+  // and Map entries left behind by Blue-Green deploys.
+  static #GREEN_SUFFIX_RE = /-green-\d+_[a-f0-9]{8}$/
+
+  // Removes the on-disk log dir + in-memory bookkeeping for a green container
+  // that is no longer live (either successfully renamed away or aborted).
+  // Safe to call with a non-green name (no-op if pattern doesn't match).
+  async #cleanupGreenArtifacts(greenContainerName) {
+    if (!greenContainerName || !App.#GREEN_SUFFIX_RE.test(greenContainerName)) return
+    const logDir = path.join(os.homedir(), '.odac', 'logs', greenContainerName)
+    try {
+      await fs.promises.rm(logDir, {recursive: true, force: true})
+    } catch (e) {
+      log('Failed to remove stale green log dir for %s: %s', greenContainerName, e.message)
+    }
+    this.#loggers.delete(greenContainerName)
+    this.#logStreams.delete(greenContainerName)
+    try {
+      Odac.server('Container').unregisterBuildLogger(greenContainerName)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Startup sweep for green log dirs that survived past Blue-Green deploys
+  // before the prevention fix was in place (or from a future bug that lets
+  // one leak again). Names matching `*-green-<ts>_<hex>` are short-lived by
+  // contract — they only exist while a green container is mid-flight, so any
+  // such dir found at startup is orphaned.
+  async #cleanupStaleGreenLogs() {
+    const logsRoot = path.join(os.homedir(), '.odac', 'logs')
+    let entries
+    try {
+      entries = await fs.promises.readdir(logsRoot, {withFileTypes: true})
+    } catch {
+      return
+    }
+    let removed = 0
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue
+      if (!App.#GREEN_SUFFIX_RE.test(ent.name)) continue
+      try {
+        await fs.promises.rm(path.join(logsRoot, ent.name), {recursive: true, force: true})
+        removed++
+      } catch (e) {
+        log('Failed to remove stale green log dir %s: %s', ent.name, e.message)
+      }
+    }
+    if (removed) log('Cleaned up %d stale green log dir(s)', removed)
   }
 
   #generateUniqueName(baseName) {

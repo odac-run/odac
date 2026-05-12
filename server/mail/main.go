@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -45,6 +46,11 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	if home, err := os.UserHomeDir(); err == nil {
+		if w, e := newRotateWriter(filepath.Join(home, ".odac", "logs", "mail.log"), 50*1024*1024); e == nil {
+			log.SetOutput(w)
+		}
+	}
 	log.Println("[Mail] Starting ODAC Mail Server...")
 
 	// Increase file descriptor limit for high connection throughput

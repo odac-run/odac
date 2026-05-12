@@ -266,14 +266,11 @@ class Mail {
     const isWindows = os.platform() === 'win32'
     const binaryName = isWindows ? 'odac-mail.exe' : 'odac-mail'
     const binPath = path.resolve(__dirname, '../../bin', binaryName)
-    const logDir = path.join(os.homedir(), '.odac', 'logs')
     const runDir = path.join(os.homedir(), '.odac', 'run')
 
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
     if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
 
     const instanceId = process.env.ODAC_INSTANCE_ID || 'default'
-    const logFile = path.join(logDir, 'mail.log')
     const pidFile = path.join(runDir, `mail-${instanceId}.pid`)
 
     if (!isWindows) {
@@ -365,21 +362,16 @@ class Mail {
     }
 
     try {
-      const logFd = fs.openSync(logFile, 'a')
-
+      // Go binary writes its own log to ~/.odac/logs/mail.log with size-based
+      // rotation (server/mail/logrotate.go). stdio fully discarded so a Node
+      // restart can't SIGPIPE the detached process during orphan adoption.
       this.#mailProcess = childProcess.spawn(binPath, [], {
         detached: true,
         env: env,
-        stdio: ['ignore', logFd, logFd]
+        stdio: ['ignore', 'ignore', 'ignore']
       })
 
       this.#mailProcess.unref()
-
-      try {
-        fs.closeSync(logFd)
-      } catch {
-        /* ignore */
-      }
 
       if (this.#mailProcess.pid) {
         try {
