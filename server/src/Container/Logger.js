@@ -36,6 +36,18 @@ class Logger {
   }
 
   /**
+   * Removes this logger's on-disk directory tree. Best-effort: callers should
+   * have already closed active write streams (e.g. via App.stop) before calling.
+   */
+  async destroy() {
+    try {
+      await fs.promises.rm(this.#logsDir, {recursive: true, force: true})
+    } catch (e) {
+      error('Failed to remove logs directory for %s: %s', this.#appName, e.message)
+    }
+  }
+
+  /**
    * Creates a write stream for a new build and analyzes it on the fly
    * @param {string} buildId - Unique build identifier
    * @param {Object} metadata - Initial metadata (e.g. { trigger: 'git', branch: 'main' })

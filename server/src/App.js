@@ -900,7 +900,7 @@ class App {
     return logger.subscribe(callback, 'runtime')
   }
 
-  async delete(id) {
+  async delete(id, {purge = true} = {}) {
     const app = this.#get(id)
 
     if (!app) {
@@ -912,7 +912,19 @@ class App {
     this.#saveApps()
 
     await Odac.server('Container').remove(app.name)
+
+    const logger = this.#loggers.get(app.name)
     this.#loggers.delete(app.name)
+
+    if (purge) {
+      if (logger) await logger.destroy()
+      try {
+        const appDir = path.join(Odac.core('Config').config.app.path, app.name)
+        await fs.promises.rm(appDir, {recursive: true, force: true})
+      } catch (e) {
+        error('Failed to remove app directory for %s: %s', app.name, e.message)
+      }
+    }
 
     // Cascading delete: Remove associated domains
     try {

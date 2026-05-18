@@ -27,7 +27,7 @@ class Hub {
         fn: payload => Odac.server('App').getBuildStats(payload.name || payload.container || payload.id)
       },
       'app.delete': {
-        fn: payload => Odac.server('App').delete(payload.id),
+        fn: payload => Odac.server('App').delete(payload.id, {purge: payload.purge !== false}),
         triggers: ['app.list']
       },
       'app.env.get': {
