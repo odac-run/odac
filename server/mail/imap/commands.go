@@ -474,11 +474,11 @@ func (c *Connection) cmdUID(tag, args string) {
 	case "FETCH":
 		c.cmdFetch(tag, subArgs, true)
 	case "STORE":
-		c.cmdStore(tag, subArgs)
+		c.cmdStore(tag, subArgs, true)
 	case "SEARCH":
 		c.cmdSearch(tag, subArgs)
 	case "COPY":
-		c.cmdCopy(tag, subArgs)
+		c.cmdCopy(tag, subArgs, true)
 	default:
 		c.write(fmt.Sprintf("%s BAD Unknown UID command\r\n", tag))
 	}
@@ -498,21 +498,6 @@ func (c *Connection) cmdFetch(tag, args string, isUID bool) {
 	seqSet := parts[0]
 	dataItems := parts[1]
 
-	var uidMin, uidMax int64
-	if seqSet != "ALL" && seqSet != "*" {
-		if strings.Contains(seqSet, ":") {
-			rangeParts := strings.SplitN(seqSet, ":", 2)
-			uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
-			if rangeParts[1] != "*" {
-				uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
-			}
-		} else {
-			uid, _ := strconv.ParseInt(seqSet, 10, 64)
-			uidMin = uid
-			uidMax = uid
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -523,19 +508,15 @@ func (c *Connection) cmdFetch(tag, args string, isUID bool) {
 		return
 	}
 
-	// Step 2: Determine which UIDs to fetch based on requested range
-	var targetUIDs []int64
+	// Step 2: Determine which UIDs to fetch based on requested range.
+	// UIDs are assigned globally across all mailboxes, so sequence positions
+	// and UID values diverge whenever messages arrive in other mailboxes.
+	// seqSetToUIDs handles both UID-mode and sequence-mode correctly.
 	seqMap := make(map[int64]int) // UID → sequence number
 	for i, uid := range allUIDs {
 		seqMap[uid] = i + 1
-		if uidMin > 0 && uid < uidMin {
-			continue
-		}
-		if uidMax > 0 && uid > uidMax {
-			continue
-		}
-		targetUIDs = append(targetUIDs, uid)
 	}
+	targetUIDs := seqSetToUIDs(seqSet, allUIDs, isUID)
 
 	// Step 3: Fetch only the requested messages with full body
 	for _, uid := range targetUIDs {
@@ -998,7 +979,7 @@ func countLines(s string) int {
 	return n
 }
 
-func (c *Connection) cmdStore(tag, args string) {
+func (c *Connection) cmdStore(tag, args string, isUID bool) {
 	if !c.requireMailbox(tag) {
 		return
 	}
@@ -1035,24 +1016,43 @@ func (c *Connection) cmdStore(tag, args string) {
 		flags = append(flags, strings.ToLower(strings.TrimPrefix(f, "\\")))
 	}
 
-	// Parse UID range
-	var uidMin, uidMax int64
-	if strings.Contains(seqSet, ":") {
-		rangeParts := strings.SplitN(seqSet, ":", 2)
-		uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
-		uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
-	} else {
-		uid, _ := strconv.ParseInt(seqSet, 10, 64)
-		uidMin = uid
-		uidMax = uid
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := c.store.MessageStoreFlags(ctx, c.auth, uidMin, uidMax, action, flags); err != nil {
-		c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
-		return
+	if isUID {
+		// UID-based: parse directly and apply in one query.
+		var uidMin, uidMax int64
+		if strings.Contains(seqSet, ":") {
+			rangeParts := strings.SplitN(seqSet, ":", 2)
+			uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
+			if rangeParts[1] != "*" {
+				uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
+			}
+		} else {
+			uid, _ := strconv.ParseInt(seqSet, 10, 64)
+			uidMin = uid
+			uidMax = uid
+		}
+		if uidMax == 0 {
+			uidMax = 1<<63 - 1
+		}
+		if err := c.store.MessageStoreFlags(ctx, c.auth, uidMin, uidMax, action, flags); err != nil {
+			c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
+			return
+		}
+	} else {
+		// Sequence-based: resolve positions to UIDs first.
+		allUIDs, err := c.store.MessageUIDs(ctx, c.auth, c.mailbox)
+		if err != nil {
+			c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
+			return
+		}
+		for _, uid := range seqSetToUIDs(seqSet, allUIDs, false) {
+			if err := c.store.MessageStoreFlags(ctx, c.auth, uid, uid, action, flags); err != nil {
+				c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
+				return
+			}
+		}
 	}
 
 	c.write(fmt.Sprintf("%s OK STORE completed\r\n", tag))
@@ -1182,7 +1182,7 @@ func (c *Connection) cmdIdle(tag string) {
 	}
 }
 
-func (c *Connection) cmdCopy(tag, args string) {
+func (c *Connection) cmdCopy(tag, args string, isUID bool) {
 	if !c.requireMailbox(tag) {
 		return
 	}
@@ -1196,25 +1196,41 @@ func (c *Connection) cmdCopy(tag, args string) {
 	seqSet := parts[0]
 	targetMailbox := unquote(parts[1])
 
-	var uidMin, uidMax int64
-	if strings.Contains(seqSet, ":") {
-		rangeParts := strings.SplitN(seqSet, ":", 2)
-		uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
-		if rangeParts[1] != "*" {
-			uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
-		}
-	} else {
-		uid, _ := strconv.ParseInt(seqSet, 10, 64)
-		uidMin = uid
-		uidMax = uid
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := c.store.MessageCopy(ctx, c.auth, uidMin, uidMax, c.mailbox, targetMailbox); err != nil {
-		c.write(fmt.Sprintf("%s NO COPY failed\r\n", tag))
-		return
+	if isUID {
+		var uidMin, uidMax int64
+		if strings.Contains(seqSet, ":") {
+			rangeParts := strings.SplitN(seqSet, ":", 2)
+			uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
+			if rangeParts[1] != "*" {
+				uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
+			}
+		} else {
+			uid, _ := strconv.ParseInt(seqSet, 10, 64)
+			uidMin = uid
+			uidMax = uid
+		}
+		if uidMax == 0 {
+			uidMax = 1<<63 - 1
+		}
+		if err := c.store.MessageCopy(ctx, c.auth, uidMin, uidMax, c.mailbox, targetMailbox); err != nil {
+			c.write(fmt.Sprintf("%s NO COPY failed\r\n", tag))
+			return
+		}
+	} else {
+		allUIDs, err := c.store.MessageUIDs(ctx, c.auth, c.mailbox)
+		if err != nil {
+			c.write(fmt.Sprintf("%s NO COPY failed\r\n", tag))
+			return
+		}
+		for _, uid := range seqSetToUIDs(seqSet, allUIDs, false) {
+			if err := c.store.MessageCopy(ctx, c.auth, uid, uid, c.mailbox, targetMailbox); err != nil {
+				c.write(fmt.Sprintf("%s NO COPY failed\r\n", tag))
+				return
+			}
+		}
 	}
 	c.write(fmt.Sprintf("%s OK COPY completed\r\n", tag))
 }

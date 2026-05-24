@@ -168,9 +168,9 @@ func (c *Connection) Serve() {
 		case "FETCH":
 			c.cmdFetch(tag, args, false)
 		case "STORE":
-			c.cmdStore(tag, args)
+			c.cmdStore(tag, args, false)
 		case "COPY":
-			c.cmdCopy(tag, args)
+			c.cmdCopy(tag, args, false)
 		case "APPEND":
 			c.cmdAppend(tag, args)
 		case "EXPUNGE":
