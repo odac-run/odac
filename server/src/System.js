@@ -69,7 +69,7 @@ class System {
    * Returns detailed system information (hostname, platform, arch, CPU, memory, container engine).
    * Used by Hub to broadcast hardware/software inventory to the dashboard.
    */
-  info() {
+  async info() {
     return Info.getSystemInfo()
   }
 
@@ -85,7 +85,7 @@ class System {
    * Returns Linux distribution details (name, version, id) or null on non-Linux platforms.
    * Used by Hub during authentication to report the host OS identity.
    */
-  distro() {
+  async distro() {
     return Info.getLinuxDistro()
   }
 }

@@ -166,14 +166,11 @@ class OdacProxy {
     const proxyName = isWindows ? 'odac-proxy.exe' : 'odac-proxy'
     const binPath = path.resolve(__dirname, '../../bin', proxyName)
     const runDir = path.join(os.homedir(), '.odac', 'run')
-    const logDir = path.join(os.homedir(), '.odac', 'logs')
 
     if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, {recursive: true})
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, {recursive: true})
 
     const instanceId = process.env.ODAC_INSTANCE_ID || 'default'
     const pidFile = path.join(runDir, `proxy-${instanceId}.pid`)
-    const logFile = path.join(logDir, 'proxy.log')
 
     // Set socket path
     if (!isWindows) {
@@ -281,15 +278,16 @@ class OdacProxy {
     }
 
     try {
-      const logFd = fs.openSync(logFile, 'a')
-
+      // Go binary writes its own log to ~/.odac/logs/proxy.log with size-based
+      // rotation (server/proxy/logrotate.go). stdio fully discarded so a Node
+      // restart can't SIGPIPE the detached process during orphan adoption.
       this.#proxyProcess = childProcess.spawn(binPath, [], {
-        detached: true, // Allow running after parent exit
-        stdio: ['ignore', logFd, logFd], // Redirect logs to file
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
         env: env
       })
 
-      this.#proxyProcess.unref() // Don't prevent Node from exiting
+      this.#proxyProcess.unref()
 
       if (this.#proxyProcess.pid) {
         try {

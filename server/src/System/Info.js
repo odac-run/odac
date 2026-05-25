@@ -236,36 +236,99 @@ class Info {
     return Math.max(0, Math.min(100, usage))
   }
 
-  getLinuxDistro() {
+  // Detects the real host OS when running inside a container.
+  // From within a Linux container we infer the host by combining the kernel
+  // release string with mount-table and DMI evidence — Docker Desktop on
+  // Mac/Windows runs a Linux VM, so os.platform() alone always says 'linux'.
+  async detectHostPlatform() {
     if (os.platform() !== 'linux') {
-      return null
+      return os.platform()
     }
 
+    const release = (os.release() || '').toLowerCase()
+
+    if (release.includes('microsoft') || release.includes('wsl')) {
+      return 'win32'
+    }
+
+    if (!release.includes('linuxkit')) {
+      return 'linux'
+    }
+
+    // linuxkit kernel ⇒ Docker Desktop. Disambiguate Mac vs Windows via
+    // the bind-mount filesystems Docker Desktop sets up for the host share.
     try {
-      const osRelease = fs.readFileSync('/etc/os-release', 'utf8')
-      const distro = {}
-
-      for (const line of osRelease.split('\n')) {
-        const [key, value] = line.split('=')
-        if (key && value) {
-          distro[key] = value.replace(/"/g, '')
-        }
+      const mounts = await fs.promises.readFile('/proc/mounts', 'utf8')
+      if (/\b(osxfs|virtiofs|grpcfuse|fuse\.osxfs)\b/.test(mounts)) {
+        return 'darwin'
       }
-
-      return {
-        name: distro.NAME || distro.ID || 'Unknown',
-        version: distro.VERSION_ID || distro.VERSION || 'Unknown',
-        id: distro.ID || 'unknown'
+      if (/\bdrvfs\b/.test(mounts) || mounts.includes('/run/desktop/mnt/host/')) {
+        return 'win32'
       }
     } catch {
-      return null
+      // fall through
     }
+
+    // DMI fingerprint as a last resort — requires privileged container.
+    try {
+      const vendorInfo = await fs.promises.readFile('/sys/class/dmi/id/sys_vendor', 'utf8')
+      const vendor = vendorInfo.trim().toLowerCase()
+      if (vendor.includes('apple')) return 'darwin'
+      if (vendor.includes('microsoft')) return 'win32'
+    } catch {
+      // fall through
+    }
+
+    return 'linux'
   }
 
-  getSystemInfo() {
+  async getLinuxDistro() {
+    if ((await this.detectHostPlatform()) !== 'linux') {
+      return null
+    }
+
+    // When ODAC runs inside a container on a Linux host, /etc/os-release
+    // reports the container OS (Alpine), not the host. Prefer host-visible
+    // paths first:
+    //   - /host/etc/os-release   : explicit bind mount from docker-compose
+    //   - /proc/1/root/etc/...   : reachable when the container has pid: host
+    //   - /etc/os-release        : final fallback (bare-metal or no host access)
+    const candidates = ['/host/etc/os-release', '/proc/1/root/etc/os-release', '/etc/os-release']
+
+    for (const candidate of candidates) {
+      try {
+        const osRelease = await fs.promises.readFile(candidate, 'utf8')
+        const distro = {}
+
+        for (const line of osRelease.split('\n')) {
+          const [key, value] = line.split('=')
+          if (key && value) {
+            distro[key] = value.replace(/"/g, '')
+          }
+        }
+
+        if (!distro.NAME && !distro.ID) {
+          continue
+        }
+
+        return {
+          name: distro.NAME || distro.ID || 'Unknown',
+          version: distro.VERSION_ID || distro.VERSION || 'Unknown',
+          id: distro.ID || 'unknown'
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+
+    return null
+  }
+
+  async getSystemInfo() {
     const cpus = os.cpus()
     const packageJson = require(path.join(__dirname, '../../../package.json'))
-    const distro = this.getLinuxDistro()
+    const distro = await this.getLinuxDistro()
+    const platform = await this.detectHostPlatform()
 
     const info = {
       arch: os.arch(),
@@ -281,7 +344,7 @@ class Info {
         free: Math.floor(os.freemem() / 1024)
       },
       node: process.version,
-      platform: os.platform(),
+      platform: platform,
       release: os.release(),
       uptime: os.uptime(),
       version: packageJson.version

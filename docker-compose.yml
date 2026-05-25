@@ -22,6 +22,9 @@ services:
 
       # Kernel modules access (for BBR optimization)
       - /lib/modules:/lib/modules:ro
+
+      # Host OS release info (so System.distro() reports the host, not the container)
+      - /etc/os-release:/host/etc/os-release:ro
     
     environment:
       - NODE_ENV=production

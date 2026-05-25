@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -40,6 +41,11 @@ var fallbackPorts = []int{5353, 1053, 8053}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	if home, err := os.UserHomeDir(); err == nil {
+		if w, e := newRotateWriter(filepath.Join(home, ".odac", "logs", "dns.log"), 50*1024*1024); e == nil {
+			log.SetOutput(w)
+		}
+	}
 	log.Println("[DNS] Starting ODAC DNS Server...")
 
 	// Increase file descriptor limit for high query throughput

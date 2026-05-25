@@ -232,6 +232,9 @@ class Container {
 
     const hostPath = this.resolveHostPath(targetDir)
 
+    // Pass all dynamic values via env vars to prevent shell injection.
+    // gitCmd is a literal string; user data only reaches the shell via "$VAR"
+    // expansion, where quote/metachars inside the value are NOT re-parsed.
     const envVars = []
     if (token) {
       envVars.push(`GIT_REMOTE_URL=${secureUrl}`)
@@ -362,9 +365,13 @@ class Container {
   }
 
   /**
-   * Executes a command inside an existing running container
+   * Executes a command inside an existing running container.
+   * SECURITY: `command` MUST be a hardcoded literal string — never pass
+   * user-controlled input. All current callers use static strings (e.g.
+   * port-scanning helpers). If a future caller needs dynamic args, switch
+   * to an array Cmd (['bin', 'arg1', ...]) to bypass the shell entirely.
    * @param {string} name - Container name
-   * @param {string} command - Command to execute
+   * @param {string} command - Literal shell command (no user input)
    */
   async execInContainer(name, command) {
     if (!this.available) throw new Error('Docker not available')
