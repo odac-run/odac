@@ -34,7 +34,7 @@
     "find-process": "^2.0.0",
     "selfsigned": "^2.4.1",
     "ssh2": "^1.15.0",
-    "ws": "^8.18.0"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
