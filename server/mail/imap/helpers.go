@@ -2,6 +2,7 @@ package imap
 
 import (
 	"database/sql"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -33,29 +34,41 @@ func seqSetToUIDs(seqSet string, allUIDs []int64, isUID bool) []int64 {
 		return n
 	}
 
-	var lo, hi int64
-	if strings.Contains(seqSet, ":") {
-		parts := strings.SplitN(seqSet, ":", 2)
-		lo = parseNum(parts[0], isUID)
-		hi = parseNum(parts[1], isUID)
-		if lo > hi {
-			lo, hi = hi, lo
-		}
-	} else {
-		lo = parseNum(seqSet, isUID)
-		hi = lo
-	}
-
 	var out []int64
-	for i, uid := range allUIDs {
-		if isUID {
-			if uid >= lo && uid <= hi {
-				out = append(out, uid)
+	parts := strings.Split(seqSet, ",")
+	for _, part := range parts {
+		var lo, hi int64
+		if strings.Contains(part, ":") {
+			bounds := strings.SplitN(part, ":", 2)
+			lo = parseNum(bounds[0], isUID)
+			hi = parseNum(bounds[1], isUID)
+			if lo > hi {
+				lo, hi = hi, lo
 			}
 		} else {
-			seq := int64(i + 1)
-			if seq >= lo && seq <= hi {
-				out = append(out, uid)
+			lo = parseNum(part, isUID)
+			hi = lo
+		}
+
+		if isUID {
+			startIdx := sort.Search(len(allUIDs), func(i int) bool {
+				return allUIDs[i] >= lo
+			})
+			endIdx := sort.Search(len(allUIDs), func(i int) bool {
+				return allUIDs[i] > hi
+			})
+			if startIdx < endIdx {
+				out = append(out, allUIDs[startIdx:endIdx]...)
+			}
+		} else {
+			if lo < 1 {
+				lo = 1
+			}
+			if hi > lastSeq {
+				hi = lastSeq
+			}
+			if lo <= hi {
+				out = append(out, allUIDs[lo-1:hi]...)
 			}
 		}
 	}

@@ -1019,40 +1019,16 @@ func (c *Connection) cmdStore(tag, args string, isUID bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if isUID {
-		// UID-based: parse directly and apply in one query.
-		var uidMin, uidMax int64
-		if strings.Contains(seqSet, ":") {
-			rangeParts := strings.SplitN(seqSet, ":", 2)
-			uidMin, _ = strconv.ParseInt(rangeParts[0], 10, 64)
-			if rangeParts[1] != "*" {
-				uidMax, _ = strconv.ParseInt(rangeParts[1], 10, 64)
-			}
-		} else {
-			uid, _ := strconv.ParseInt(seqSet, 10, 64)
-			uidMin = uid
-			uidMax = uid
-		}
-		if uidMax == 0 {
-			uidMax = 1<<63 - 1
-		}
-		if err := c.store.MessageStoreFlags(ctx, c.auth, uidMin, uidMax, action, flags); err != nil {
-			c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
-			return
-		}
-	} else {
-		// Sequence-based: resolve positions to UIDs first.
-		allUIDs, err := c.store.MessageUIDs(ctx, c.auth, c.mailbox)
-		if err != nil {
-			c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
-			return
-		}
-		for _, uid := range seqSetToUIDs(seqSet, allUIDs, false) {
-			if err := c.store.MessageStoreFlags(ctx, c.auth, uid, uid, action, flags); err != nil {
-				c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
-				return
-			}
-		}
+	allUIDs, err := c.store.MessageUIDs(ctx, c.auth, c.mailbox)
+	if err != nil {
+		c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
+		return
+	}
+	uids := seqSetToUIDs(seqSet, allUIDs, isUID)
+
+	if err := c.store.MessageStoreFlags(ctx, c.auth, uids, action, flags); err != nil {
+		c.write(fmt.Sprintf("%s NO STORE failed\r\n", tag))
+		return
 	}
 
 	c.write(fmt.Sprintf("%s OK STORE completed\r\n", tag))

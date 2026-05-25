@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -431,30 +432,38 @@ func (s *Store) MailboxRename(ctx context.Context, email, oldTitle, newTitle str
 	return nil
 }
 
-// MessageStoreFlags updates flags on messages matching the given UID range.
-func (s *Store) MessageStoreFlags(ctx context.Context, email string, uidMin, uidMax int64, action string, flags []string) error {
+// MessageStoreFlags updates flags on messages matching the given UIDs.
+func (s *Store) MessageStoreFlags(ctx context.Context, email string, uids []int64, action string, flags []string) error {
+	if len(uids) == 0 {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var uidStrs []string
+	for _, uid := range uids {
+		uidStrs = append(uidStrs, fmt.Sprintf("%d", uid))
+	}
+	inClause := strings.Join(uidStrs, ",")
 
 	for _, flag := range flags {
 		switch action {
 		case "add":
-			_, err := s.db.ExecContext(ctx,
-				`UPDATE mail_received
+			query := fmt.Sprintf(`UPDATE mail_received
 				SET flags = JSON_INSERT(flags, '$[#]', ?)
-				WHERE email = ? AND uid BETWEEN ? AND ?
-				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`,
-				flag, email, uidMin, uidMax, flag)
+				WHERE email = ? AND uid IN (%s)
+				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
+			_, err := s.db.ExecContext(ctx, query, flag, email, flag)
 			if err != nil {
 				return fmt.Errorf("flag add failed: %w", err)
 			}
 		case "remove":
-			_, err := s.db.ExecContext(ctx,
-				`UPDATE mail_received
+			query := fmt.Sprintf(`UPDATE mail_received
 				SET flags = (SELECT JSON_GROUP_ARRAY(value) FROM JSON_EACH(flags) WHERE value != ?)
-				WHERE email = ? AND uid BETWEEN ? AND ?
-				AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`,
-				flag, email, uidMin, uidMax, flag)
+				WHERE email = ? AND uid IN (%s)
+				AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
+			_, err := s.db.ExecContext(ctx, query, flag, email, flag)
 			if err != nil {
 				return fmt.Errorf("flag remove failed: %w", err)
 			}
@@ -467,9 +476,8 @@ func (s *Store) MessageStoreFlags(ctx context.Context, email string, uidMin, uid
 				flagsJSON += `"` + f + `"`
 			}
 			flagsJSON += "]"
-			_, err := s.db.ExecContext(ctx,
-				`UPDATE mail_received SET flags = ? WHERE email = ? AND uid BETWEEN ? AND ?`,
-				flagsJSON, email, uidMin, uidMax)
+			query := fmt.Sprintf(`UPDATE mail_received SET flags = ? WHERE email = ? AND uid IN (%s)`, inClause)
+			_, err := s.db.ExecContext(ctx, query, flagsJSON, email)
 			if err != nil {
 				return fmt.Errorf("flag set failed: %w", err)
 			}

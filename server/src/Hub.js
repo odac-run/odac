@@ -115,7 +115,7 @@ class Hub {
         fn: payload => Odac.server('Proxy').setTunnels(payload.tunnels)
       },
       'system.info': {
-        fn: () => Odac.server('Api').result(true, Odac.server('System').info()),
+        fn: async () => Odac.server('Api').result(true, await Odac.server('System').info()),
         interval: 60 * 60 * 1000,
         lastRun: 0
       },
@@ -335,7 +335,7 @@ class Hub {
     log('Odac authenticating...')
     log('Auth code received: %s', code ? code.substring(0, 8) + '...' : 'none')
 
-    const info = Odac.server('System').info()
+    const info = await Odac.server('System').info()
     const data = {code, ...info}
 
     try {

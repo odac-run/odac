@@ -252,16 +252,16 @@ class Logger {
     const CHECK_EVERY = 1024 * 1024 // stat every ~1 MB of writes
     let bytesSinceCheck = 0
 
-    const maybeRotate = chunkLen => {
+    const maybeRotate = async chunkLen => {
       bytesSinceCheck += chunkLen
       if (bytesSinceCheck < CHECK_EVERY) return
       bytesSinceCheck = 0
       try {
-        const s = fs.statSync(logFile)
+        const s = await fs.promises.stat(logFile)
         if (s.size <= MAX_BYTES) return
         const old = fileStream
         old.end()
-        fs.renameSync(logFile, logFile + '.1')
+        await fs.promises.rename(logFile, logFile + '.1')
         fileStream = fs.createWriteStream(logFile, {flags: 'a'})
       } catch {
         // Stat/rename failure (file missing, race with cleanup): drop one check

@@ -240,7 +240,7 @@ class Info {
   // From within a Linux container we infer the host by combining the kernel
   // release string with mount-table and DMI evidence — Docker Desktop on
   // Mac/Windows runs a Linux VM, so os.platform() alone always says 'linux'.
-  detectHostPlatform() {
+  async detectHostPlatform() {
     if (os.platform() !== 'linux') {
       return os.platform()
     }
@@ -258,7 +258,7 @@ class Info {
     // linuxkit kernel ⇒ Docker Desktop. Disambiguate Mac vs Windows via
     // the bind-mount filesystems Docker Desktop sets up for the host share.
     try {
-      const mounts = fs.readFileSync('/proc/mounts', 'utf8')
+      const mounts = await fs.promises.readFile('/proc/mounts', 'utf8')
       if (/\b(osxfs|virtiofs|grpcfuse|fuse\.osxfs)\b/.test(mounts)) {
         return 'darwin'
       }
@@ -271,7 +271,8 @@ class Info {
 
     // DMI fingerprint as a last resort — requires privileged container.
     try {
-      const vendor = fs.readFileSync('/sys/class/dmi/id/sys_vendor', 'utf8').trim().toLowerCase()
+      const vendorInfo = await fs.promises.readFile('/sys/class/dmi/id/sys_vendor', 'utf8')
+      const vendor = vendorInfo.trim().toLowerCase()
       if (vendor.includes('apple')) return 'darwin'
       if (vendor.includes('microsoft')) return 'win32'
     } catch {
@@ -281,8 +282,8 @@ class Info {
     return 'linux'
   }
 
-  getLinuxDistro() {
-    if (this.detectHostPlatform() !== 'linux') {
+  async getLinuxDistro() {
+    if ((await this.detectHostPlatform()) !== 'linux') {
       return null
     }
 
@@ -296,7 +297,7 @@ class Info {
 
     for (const candidate of candidates) {
       try {
-        const osRelease = fs.readFileSync(candidate, 'utf8')
+        const osRelease = await fs.promises.readFile(candidate, 'utf8')
         const distro = {}
 
         for (const line of osRelease.split('\n')) {
@@ -323,10 +324,11 @@ class Info {
     return null
   }
 
-  getSystemInfo() {
+  async getSystemInfo() {
     const cpus = os.cpus()
     const packageJson = require(path.join(__dirname, '../../../package.json'))
-    const distro = this.getLinuxDistro()
+    const distro = await this.getLinuxDistro()
+    const platform = await this.detectHostPlatform()
 
     const info = {
       arch: os.arch(),
@@ -342,7 +344,7 @@ class Info {
         free: Math.floor(os.freemem() / 1024)
       },
       node: process.version,
-      platform: this.detectHostPlatform(),
+      platform: platform,
       release: os.release(),
       uptime: os.uptime(),
       version: packageJson.version

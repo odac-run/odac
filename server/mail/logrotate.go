@@ -33,7 +33,21 @@ func newRotateWriter(path string, maxBytes int64) (*rotateWriter, error) {
 func (w *rotateWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	if w.f == nil {
+		nf, err := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return 0, err
+		}
+		w.f = nf
+	}
+
 	n, err := w.f.Write(p)
+	if err != nil {
+		w.f = nil
+		return n, err
+	}
+
 	w.sinceCheck += int64(n)
 	if w.sinceCheck >= 4096 {
 		w.sinceCheck = 0
@@ -42,6 +56,8 @@ func (w *rotateWriter) Write(p []byte) (int, error) {
 			_ = os.Rename(w.path, w.path+".1")
 			if nf, openErr := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); openErr == nil {
 				w.f = nf
+			} else {
+				w.f = nil
 			}
 		}
 	}
