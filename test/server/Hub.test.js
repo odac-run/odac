@@ -469,30 +469,30 @@ describe('Hub', () => {
   })
 
   describe('Linux distro detection', () => {
-    it('should return null on non-Linux platforms via System', () => {
+    it('should return null on non-Linux platforms via System', async () => {
       os.platform.mockReturnValue('darwin')
-      const distro = System.getLinuxDistro()
+      const distro = await System.getLinuxDistro()
       expect(distro).toBeNull()
     })
 
-    it('should parse os-release file via System', () => {
+    it('should parse os-release file via System', async () => {
       os.platform.mockReturnValue('linux')
-      fs.readFileSync.mockReturnValue('NAME="Ubuntu"\nVERSION_ID="20.04"\nID=ubuntu')
+      fs.promises = fs.promises || {}
+      fs.promises.readFile = jest.fn().mockResolvedValue('NAME="Ubuntu"\nVERSION_ID="20.04"\nID=ubuntu')
 
-      const distro = System.getLinuxDistro()
+      const distro = await System.getLinuxDistro()
 
       expect(distro.name).toBe('Ubuntu')
       expect(distro.version).toBe('20.04')
       expect(distro.id).toBe('ubuntu')
     })
 
-    it('should handle missing os-release file via System', () => {
+    it('should handle missing os-release file via System', async () => {
       os.platform.mockReturnValue('linux')
-      fs.readFileSync.mockImplementation(() => {
-        throw new Error('File not found')
-      })
+      fs.promises = fs.promises || {}
+      fs.promises.readFile = jest.fn().mockRejectedValue(new Error('File not found'))
 
-      const distro = System.getLinuxDistro()
+      const distro = await System.getLinuxDistro()
       expect(distro).toBeNull()
     })
   })
