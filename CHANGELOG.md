@@ -1,5 +1,22 @@
 ### ✨ What's New
 
+- enhance app deletion with optional purge and add logger cleanup
+- implement size-based log rotation in Go modules and Node.js runtime logger
+- improve OS detection in containers by prioritizing host-visible paths
+
+### 🛠️ Fixes & Improvements
+
+- enhance IMAP command handling with UID support and refactor seqSetToUIDs
+- resolve imap sequence parsing, database N+1 queries, and event-loop blocking I/O
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ✨ What's New
+
 - add support for managing hardware device mappings in app containers via CLI
 - **limits:** implement hierarchical connection limiting for IMAP/SMTP
 - **proxy:** add adaptive cache engine with memory-aware purge and stats APIs
