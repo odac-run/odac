@@ -7,8 +7,9 @@ const nodeCrypto = require('crypto')
 const childProcess = require('child_process')
 const os = require('os')
 const Logger = require('./Container/Logger')
+const Deploy = require('./App/Deploy')
+const Create = require('./App/Create')
 
-const LEGACY_ENV_DIRECTIVES = new Set(['generate'])
 const SCRIPT_EXTENSIONS = ['.js', '.py', '.php', '.sh', '.rb']
 const SCRIPT_RUNNERS = {
   '.js': {image: 'node:lts-alpine', cmd: 'node', local: 'node'},
@@ -24,6 +25,57 @@ class App {
   #loaded = false
   #processing = new Set()
   #creating = new Set()
+  #logStreams = new Map() // app.name -> logCtrl
+  #loggers = new Map() // app.name -> Logger instance
+
+  deploy
+  creator
+
+  constructor() {
+    // Controlled internal API surface for Deploy/Create submodules.
+    // Arrow functions preserve class scope so they can reach private fields,
+    // which are otherwise inaccessible from object literals or other classes.
+    const api = {
+      // State references (Set/Map passed by reference — direct mutation is fine)
+      processing: this.#processing,
+      creating: this.#creating,
+      loggers: this.#loggers,
+      logStreams: this.#logStreams,
+
+      // App list access
+      getApps: () => this.#apps,
+      addApp: app => {
+        this.#apps.push(app)
+        this.#saveApps()
+      },
+      filterApps: predicate => {
+        this.#apps = this.#apps.filter(predicate)
+        this.#saveApps()
+      },
+
+      // Single-app accessors
+      get: id => this.#get(id),
+      set: (id, updates) => this.#set(id, updates),
+      saveApps: () => this.#saveApps(),
+      getNextId: () => this.#getNextId(),
+      generateUniqueName: name => this.#generateUniqueName(name),
+      generateRuntimeId: prefix => this.#generateRuntimeId(prefix),
+      getLoggerInstance: name => this.#getLoggerInstance(name),
+      getGitMetadata: url => this.#getGitMetadata(url),
+      preparePorts: ports => this.#preparePorts(ports),
+      prepareVolumes: (volumes, appDir) => this.#prepareVolumes(volumes, appDir),
+
+      // Runtime delegation (Create uses these to start fresh apps)
+      run: (id, logCtrl) => this.#run(id, logCtrl),
+      runGitApp: app => this.#runGitApp(app),
+      attachLogger: app => this.#attachLogger(app),
+      scanAndSaveHttpStatus: app => this.#scanAndSaveHttpStatus(app),
+      stop: id => this.stop(id)
+    }
+
+    this.deploy = new Deploy(api)
+    this.creator = new Create(api)
+  }
 
   // Lifecycle
   async init() {
@@ -58,7 +110,7 @@ class App {
 
     // Best-effort sweep — green log dirs are short-lived by design, so any
     // surviving at startup is an orphan from a past Blue-Green deploy.
-    this.#cleanupStaleGreenLogs().catch(e => error('Stale green log sweep failed: %s', e.message))
+    this.deploy.cleanupStaleGreenLogs().catch(e => error('Stale green log sweep failed: %s', e.message))
   }
 
   async check() {
@@ -122,503 +174,7 @@ class App {
   }
 
   async create(config) {
-    // Support both string (legacy) and object config
-    // String: create("mysql")
-    // Object: create({type: "app", app: "postgres", name: "postgres-2--xyz"})
-    // Object: create({type: "github", repo: "...", token: "...", name: "myapp"})
-
-    if (typeof config === 'string') {
-      if (/^(https?|git|ssh):\/\//.test(config) || /^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/.test(config)) {
-        const name = this.#generateUniqueName(path.basename(config, '.git').replace(/[^a-zA-Z0-9-]/g, '-'))
-        config = {type: 'git', url: config, name}
-      } else {
-        config = {type: 'app', app: config}
-      }
-    }
-
-    log('Creating app: %j', config)
-
-    // Validate config
-    if (!config.type) {
-      return Odac.server('Api').result(false, __('Missing config type'))
-    }
-
-    switch (config.type) {
-      case 'app':
-        return this.#createFromRecipe(config)
-      case 'git':
-        return this.#createFromGit(config)
-      case 'github':
-        return this.#createFromGithub(config)
-      case 'template':
-        return this.#createFromTemplatePayload(config)
-      default:
-        return Odac.server('Api').result(false, __('Unknown config type: %s', config.type))
-    }
-  }
-
-  async #createFromRecipe(config) {
-    const {app: appType, name: customName} = config
-
-    if (!appType) {
-      log('createFromRecipe: Missing app type')
-      return Odac.server('Api').result(false, __('Missing app type'))
-    }
-
-    log('createFromRecipe: Fetching recipe for %s', appType)
-
-    let recipe
-    try {
-      recipe = await Odac.server('Hub').getApp(appType)
-      log('createFromRecipe: Recipe received: %j', recipe)
-    } catch (e) {
-      error('createFromRecipe: Failed to fetch recipe: %s', e)
-      return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', appType, e))
-    }
-
-    // Template Detection: Multi-app stacks (e.g. WordPress + MariaDB) are delegated to the template handler
-    if (recipe.apps && typeof recipe.apps === 'object' && Object.keys(recipe.apps).length > 0) {
-      const baseName = customName || this.#generateUniqueName(recipe.name)
-      return this.#createFromTemplate(baseName, recipe, config)
-    }
-
-    const name = customName || this.#generateUniqueName(recipe.name)
-    log('createFromRecipe: Using name: %s', name)
-
-    if (this.#get(name)) {
-      log('createFromRecipe: App %s already exists', name)
-      return Odac.server('Api').result(false, __('App %s already exists', name))
-    }
-
-    if (this.#creating.has(name)) {
-      log('createFromRecipe: App %s is already being created', name)
-      return Odac.server('Api').result(false, __('App %s is already being created', name))
-    }
-
-    // Initialize Logger & Register SYNC to prevent race conditions with Hub requests
-    const logger = this.#getLoggerInstance(name)
-    Odac.server('Container').registerBuildLogger(name, logger)
-
-    this.#creating.add(name)
-
-    let logCtrl = null
-
-    try {
-      const appDir = path.join(Odac.core('Config').config.app.path, name)
-      if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, {recursive: true})
-
-      await logger.init()
-
-      const buildId = this.#generateRuntimeId('build')
-      logCtrl = logger.createBuildStream(buildId, {
-        image: recipe.image,
-        strategy: 'recipe-app'
-      })
-
-      const app = {
-        id: this.#getNextId(),
-        name,
-        type: 'container',
-        image: recipe.image,
-        cmd: this.#normalizeCmd(recipe.cmd),
-        ports: await this.#preparePorts(recipe.ports),
-        volumes: [...this.#prepareVolumes(recipe.volumes, appDir), ...(await this.#writeConfigFiles(recipe.configs, appDir))],
-        env: this.#mergeRecipeEnv(recipe, config.env, name),
-        active: true,
-        created: Date.now(),
-        status: 'installing'
-      }
-
-      log('createFromRecipe: App config: %j', app)
-
-      this.#apps.push(app)
-      this.#saveApps()
-
-      try {
-        log('createFromRecipe: Starting app...')
-        if (await this.#run(app.id, logCtrl)) {
-          log('createFromRecipe: App started successfully')
-          // Notify Hub
-          Odac.server('Hub').trigger('app.list')
-          if (logCtrl) await logCtrl.finalize(true)
-          return Odac.server('Api').result(true, __('App %s created successfully.', name))
-        }
-        throw new Error('Failed to start app container. Check logs for details.')
-      } catch (e) {
-        error('createFromRecipe: Failed to start app: %s', e.message)
-        this.#apps = this.#apps.filter(s => s.id !== app.id)
-        this.#saveApps()
-        if (logCtrl) await logCtrl.finalize(false)
-        return Odac.server('Api').result(false, e.message)
-      }
-    } finally {
-      this.#creating.delete(name)
-      Odac.server('Container').unregisterBuildLogger(name)
-    }
-  }
-
-  /**
-   * Handles direct template payloads from Hub (type: 'template').
-   * Hub sends the full template data inline — no additional fetch required.
-   * Validates required fields and delegates to the core #createFromTemplate orchestrator.
-   *
-   * @param {object} config - Direct template payload { type, name, apps, ... }
-   * @returns {Promise<object>} Api.result
-   */
-  async #createFromTemplatePayload(config) {
-    const {apps, name} = config
-
-    if (!apps || typeof apps !== 'object' || Object.keys(apps).length === 0) {
-      return Odac.server('Api').result(false, __('Invalid template: no apps defined.'))
-    }
-
-    if (!name) {
-      return Odac.server('Api').result(false, __('Missing template name.'))
-    }
-
-    const hasCloudContainers = Object.values(apps).every(app => app && typeof app === 'object' && app.container)
-    const baseName = hasCloudContainers ? name : this.#generateUniqueName(name)
-    return this.#createFromTemplate(baseName, {name, apps}, config)
-  }
-
-  /**
-   * Deploys a multi-app template stack (e.g. WordPress + MariaDB) as a single atomic operation.
-   * Resolves inter-app dependencies via topological sort, generates secrets,
-   * interpolates template variables, and links apps via env.linked for runtime resolution.
-   * Rollback is automatic on partial failure — no orphan containers are left behind.
-   *
-   * @param {string} baseName - Base name for the stack (e.g. 'myblog')
-   * @param {object} recipe - Template recipe from Hub containing apps map
-   * @param {object} config - Original user config (may contain env overrides)
-   * @returns {Promise<object>} Api.result
-   */
-  async #createFromTemplate(baseName, recipe, config) {
-    log('createFromTemplate: Starting template deployment for %s (%s)', baseName, recipe.name)
-
-    const templateApps = recipe.apps
-    const appKeys = Object.keys(templateApps)
-
-    if (appKeys.length === 0) {
-      return Odac.server('Api').result(false, __('Template %s has no apps defined.', recipe.name))
-    }
-
-    // Phase 1: Resolve dependency order via topological sort (Kahn's O(V+E))
-    let orderedKeys
-    try {
-      orderedKeys = this.#resolveTemplateDependencies(templateApps)
-    } catch (e) {
-      return Odac.server('Api').result(false, e.message)
-    }
-
-    log('createFromTemplate: Dependency order: %j', orderedKeys)
-
-    // Phase 2: Resolve container names — use Cloud-provided names or generate locally
-    const nameMap = {} // appKey -> containerName
-    for (const key of orderedKeys) {
-      const cloudName = templateApps[key].container
-      const containerName = cloudName || this.#generateUniqueName(`${baseName}-${key}`)
-
-      if (this.#get(containerName)) {
-        return Odac.server('Api').result(false, __('App %s already exists', containerName))
-      }
-      if (this.#creating.has(containerName)) {
-        return Odac.server('Api').result(false, __('App %s is already being created', containerName))
-      }
-      nameMap[key] = containerName
-    }
-
-    // Acquire creation locks atomically for all template members
-    for (const key of orderedKeys) {
-      this.#creating.add(nameMap[key])
-    }
-
-    try {
-      // Phase 3: Pre-generate all environment variables (resolve 'generate' and 'container' directives)
-      const envMap = {} // appKey -> resolved manual env
-      for (const key of orderedKeys) {
-        envMap[key] = this.#prepareEnv(templateApps[key].env || {}, nameMap[key])
-      }
-
-      // Phase 4: Build interpolation context and resolve ${...} template variables
-      const context = {}
-      for (const key of orderedKeys) {
-        context[key] = {env: envMap[key], name: nameMap[key]}
-      }
-      for (const key of orderedKeys) {
-        envMap[key] = this.#interpolateTemplateVars(envMap[key], context)
-      }
-
-      // Apply user-provided env overrides (if any)
-      const userEnv = config.env || {}
-      for (const key of orderedKeys) {
-        if (userEnv[key] && typeof userEnv[key] === 'object') {
-          Object.assign(envMap[key], userEnv[key])
-        }
-      }
-
-      // Phase 5: Create and start each app in dependency order
-      const createdApps = []
-      const loggers = new Map() // containerName -> { logger, logCtrl }
-
-      for (const key of orderedKeys) {
-        const appDef = templateApps[key]
-        const containerName = nameMap[key]
-        const appDir = path.join(Odac.core('Config').config.app.path, containerName)
-
-        await fs.promises.mkdir(appDir, {recursive: true})
-
-        // Initialize build logger for this template member
-        const logger = this.#getLoggerInstance(containerName)
-        Odac.server('Container').registerBuildLogger(containerName, logger)
-        await logger.init()
-
-        const buildId = this.#generateRuntimeId('build')
-        const logCtrl = logger.createBuildStream(buildId, {
-          image: appDef.image,
-          strategy: 'template-app',
-          template: {group: baseName, role: key}
-        })
-        loggers.set(containerName, {logCtrl, logger})
-
-        // Resolve linked container names for this template member
-        const linkedNames = (appDef.linked || []).map(depKey => nameMap[depKey]).filter(Boolean)
-
-        const app = {
-          id: this.#getNextId(),
-          name: containerName,
-          type: 'container',
-          image: appDef.image,
-          cmd: this.#normalizeCmd(appDef.cmd),
-          ports: await this.#preparePorts(appDef.ports),
-          volumes: [...this.#prepareVolumes(appDef.volumes, appDir), ...(await this.#writeConfigFiles(appDef.configs, appDir))],
-          env: {
-            manual: envMap[key],
-            linked: linkedNames
-          },
-          template: {
-            group: baseName,
-            name: recipe.name,
-            role: key
-          },
-          active: true,
-          created: Date.now(),
-          status: 'installing'
-        }
-
-        this.#apps.push(app)
-        this.#saveApps()
-
-        log('createFromTemplate: Starting %s [%s] (%s)...', containerName, key, appDef.image)
-
-        try {
-          if (!(await this.#run(app.id, logCtrl))) {
-            throw new Error('Container run returned false')
-          }
-          await logCtrl.finalize(true)
-        } catch (runErr) {
-          if (logCtrl) await logCtrl.finalize(false)
-          throw new Error(__('Failed to start %s (%s): %s', containerName, key, runErr.message))
-        }
-
-        createdApps.push(app)
-        log('createFromTemplate: %s started successfully', containerName)
-      }
-
-      // Notify Hub
-      Odac.server('Hub').trigger('app.list')
-
-      const names = createdApps.map(a => a.name).join(', ')
-      return Odac.server('Api').result(true, __('Template %s deployed successfully: %s', recipe.name, names))
-    } catch (e) {
-      error('createFromTemplate: Deployment failed, initiating rollback: %s', e.message)
-
-      // Rollback: Stop and remove all partially created apps
-      const rollbackApps = this.#apps.filter(a => a.template?.group === baseName && a.template?.name === recipe.name)
-      for (const app of rollbackApps) {
-        try {
-          await this.stop(app.id)
-          await Odac.server('Container').remove(app.name)
-        } catch {
-          /* ignore rollback errors */
-        }
-      }
-
-      // Remove from app list
-      const rollbackIds = new Set(rollbackApps.map(a => a.id))
-      this.#apps = this.#apps.filter(a => !rollbackIds.has(a.id))
-      this.#saveApps()
-
-      return Odac.server('Api').result(false, e.message)
-    } finally {
-      // Release all creation locks and unregister build loggers
-      for (const key of orderedKeys) {
-        this.#creating.delete(nameMap[key])
-        Odac.server('Container').unregisterBuildLogger(nameMap[key])
-      }
-    }
-  }
-
-  async #createFromGithub(config) {
-    // Legacy - redirect to git
-    return this.#createFromGit(config)
-  }
-
-  async #createFromGit(config) {
-    const {url, token, branch, name, linked, dev = false, env = {}, port = 3000} = config
-
-    log('createFromGit: Starting git deployment')
-    log('createFromGit: URL: %s, Branch: %s, Name: %s', url, branch, name)
-
-    // Validate required fields
-    if (!url) {
-      return Odac.server('Api').result(false, __('Missing git URL'))
-    }
-
-    // Security: Validate Git URL to prevent Command Injection
-    // Block dangerous shell characters that could be used to chain commands
-    if (/[;&|`$(){}<>\n\r]/.test(url)) {
-      return Odac.server('Api').result(false, __('Invalid Git URL: Contains illegal characters.'))
-    }
-
-    // Validate protocol (optional but recommended)
-    if (!url.match(/^(https?|git|ssh|ftps?|rsync):\/\//) && !url.match(/^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/)) {
-      return Odac.server('Api').result(false, __('Invalid Git URL: Unsupported protocol.'))
-    }
-    if (!name) {
-      return Odac.server('Api').result(false, __('Missing app name'))
-    }
-
-    // Check if name already exists
-    if (this.#get(name)) {
-      return Odac.server('Api').result(false, __('App %s already exists', name))
-    }
-
-    if (this.#creating.has(name)) {
-      return Odac.server('Api').result(false, __('App %s is already being created', name))
-    }
-
-    // Initialize Logger & Register SYNC to prevent race conditions with Hub requests
-    const logger = this.#getLoggerInstance(name)
-    Odac.server('Container').registerBuildLogger(name, logger)
-
-    this.#creating.add(name)
-
-    try {
-      // Validate the app name to prevent path traversal.
-      if (path.basename(name) !== name) {
-        return Odac.server('Api').result(false, __('Invalid app name.'))
-      }
-
-      const appDir = path.join(Odac.core('Config').config.app.path, name)
-      log('createFromGit: App directory: %s', appDir)
-
-      if (fs.existsSync(appDir)) {
-        log('createFromGit: Removing existing directory')
-        fs.rmSync(appDir, {recursive: true, force: true})
-      }
-      fs.mkdirSync(appDir, {recursive: true})
-
-      // Now initialize directories safely
-      await logger.init()
-
-      const imageName = `odac-app-${name}`
-      let logCtrl = null
-
-      try {
-        const buildId = this.#generateRuntimeId('build')
-        logCtrl = logger.createBuildStream(buildId, {
-          image: imageName,
-          strategy: 'git-app'
-        })
-
-        // Step 1: Clone repository
-        log('createFromGit: Cloning repository...')
-        if (logCtrl) logCtrl.startPhase('git_clone')
-        await Odac.server('Container').cloneRepo(url, branch, appDir, token, logCtrl)
-        if (logCtrl) logCtrl.endPhase('git_clone', true)
-        log('createFromGit: Clone successful')
-
-        // Step 2: Build with Native Builder
-        log('createFromGit: Building image...')
-        await Odac.server('Container').build(appDir, imageName, name, {
-          stream: logCtrl.stream,
-          start: logCtrl.startPhase,
-          end: logCtrl.endPhase,
-          finalize: () => {}, // Delay finalization until deployment is complete
-          subscribe: logCtrl.subscribe
-        })
-        log('createFromGit: Build successful')
-
-        // Auto-detect port from Image EXPOSE if not manually specified
-        let detectedPort = port
-        if (!config.port) {
-          try {
-            const exposed = await Odac.server('Container').getImageExposedPorts(imageName)
-            if (exposed && exposed.length > 0) {
-              detectedPort = exposed[0]
-              log('createFromGit: Auto-detected port from image: %d', detectedPort)
-            }
-          } catch (e) {
-            log('createFromGit: Failed to detect port from image: %s', e.message)
-          }
-        }
-
-        // Step 3: Create app record
-        const gitMetadata = this.#getGitMetadata(url)
-        const app = {
-          id: this.#getNextId(),
-          name,
-          type: 'git',
-          git: {
-            repo: gitMetadata.repo,
-            branch: branch || 'main',
-            provider: gitMetadata.provider
-          },
-          url,
-          branch,
-          image: imageName,
-          env: {
-            manual: env.manual || Array.isArray(env.linked) ? env.manual || {} : env,
-            linked: env.manual || Array.isArray(env.linked) ? env.linked || [] : linked || []
-          },
-          // Store internal port for Proxy routing (Metadata only, does not expose to host)
-          ports: [{container: parseInt(detectedPort)}],
-          dev,
-          active: true,
-          created: Date.now(),
-          status: 'starting'
-        }
-
-        this.#apps.push(app)
-        this.#saveApps()
-
-        // Step 4: Run the container
-        log('createFromGit: Starting container...')
-        if (logCtrl) logCtrl.startPhase('start_new_container')
-        await this.#runGitApp(app)
-        if (logCtrl) logCtrl.endPhase('start_new_container', true)
-
-        this.#set(app.id, {status: 'running', started: Date.now()})
-        this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
-        log('createFromGit: App started successfully')
-
-        // Notify Hub
-        Odac.server('Hub').trigger('app.list')
-
-        if (logCtrl) await logCtrl.finalize(true)
-        return Odac.server('Api').result(true, __('App %s deployed successfully.', name))
-      } catch (e) {
-        error('createFromGit: Failed: %s', e.message)
-        if (logCtrl) await logCtrl.finalize(false)
-        if (fs.existsSync(appDir)) {
-          fs.rmSync(appDir, {recursive: true, force: true})
-        }
-        return Odac.server('Api').result(false, e.message)
-      }
-    } finally {
-      this.#creating.delete(name)
-      Odac.server('Container').unregisterBuildLogger(name)
-    }
+    return this.creator.create(config)
   }
 
   async #runGitApp(app) {
@@ -809,9 +365,6 @@ class App {
     }
   }
 
-  #logStreams = new Map() // app.name -> logCtrl
-  #loggers = new Map() // app.name -> Logger instance
-
   #getLoggerInstance(appName) {
     let logger = this.#loggers.get(appName)
     if (!logger) {
@@ -936,7 +489,7 @@ class App {
     // Without this, a green container can survive as a ghost under its temporary
     // `<app.name>-green-<ts>_<hex>` name (or worse, get renamed to app.name after we
     // already removed it). Targets: app.activeContainerId + Docker name pattern match.
-    await this.#sweepGreenContainersFor(app.name, app.activeContainerId)
+    await this.deploy.sweepGreenContainersFor(app.name, app.activeContainerId)
 
     this.#apps = this.#apps.filter(s => s.name !== app.name && s.id !== app.id)
     this.#saveApps()
@@ -976,44 +529,6 @@ class App {
     return Odac.server('Api').result(true, __('App %s deleted successfully.', app.name))
   }
 
-  async #sweepGreenContainersFor(appName, activeContainerId) {
-    const container = Odac.server('Container')
-    if (!container.available) return
-
-    const candidates = new Set()
-    if (activeContainerId && activeContainerId !== appName) candidates.add(activeContainerId)
-
-    const greenPrefix = `${appName}-green-`
-    try {
-      const all = await container.list()
-      for (const c of all) {
-        for (const rawName of c.names || []) {
-          const name = rawName.replace(/^\//, '')
-          if (name.startsWith(greenPrefix) && App.#GREEN_SUFFIX_RE.test(name)) {
-            candidates.add(name)
-          }
-        }
-      }
-    } catch (e) {
-      log('Delete[%s]: green sweep listing failed: %s', appName, e.message)
-    }
-
-    for (const name of candidates) {
-      log('Delete[%s]: sweeping green companion %s', appName, name)
-      try {
-        await container.stop(name)
-      } catch {
-        /* already stopped or gone */
-      }
-      try {
-        await container.remove(name)
-      } catch {
-        /* already removed */
-      }
-      await this.#cleanupGreenArtifacts(name)
-    }
-  }
-
   async restart(id) {
     const app = this.#get(id)
     if (!app) {
@@ -1042,7 +557,7 @@ class App {
 
       try {
         greenContainerName = `${app.name}-green-${this.#generateRuntimeId()}`
-        await this.#performBlueGreenDeploy(app, greenContainerName, {
+        await this.deploy.performBlueGreenDeploy(app, greenContainerName, {
           operation: 'Restart',
           runGreenContainer: async () => {
             const greenApp = {...app, name: greenContainerName, _appIdentity: app.name}
@@ -1219,7 +734,7 @@ class App {
         // --- Zero-Downtime Deployment (Blue-Green) ---
         log('ZDD enabled for %s (Has Domains). Executing Blue-Green switch.', app.name)
         greenContainerName = `${app.name}-green-${this.#generateRuntimeId()}`
-        await this.#performBlueGreenDeploy(app, greenContainerName, {
+        await this.deploy.performBlueGreenDeploy(app, greenContainerName, {
           logCtrl,
           operation: 'Redeploy',
           runGreenContainer: async () => {
@@ -1297,7 +812,7 @@ class App {
         } catch {
           /* ignore cleanup errors */
         }
-        await this.#cleanupGreenArtifacts(greenContainerName)
+        await this.deploy.cleanupGreenArtifacts(greenContainerName)
       }
 
       this.#set(app.id, {status: 'errored'})
@@ -1342,7 +857,6 @@ class App {
     const envConfig = app.env || {}
     const isNewStructure = envConfig.manual || Array.isArray(envConfig.linked)
 
-    // Sanitize manual envs
     // Sanitize manual envs
     const manual = this.#sanitizeEnv(this.#getManualEnv(envConfig))
 
@@ -2133,169 +1647,6 @@ class App {
     }
   }
 
-  async #performBlueGreenDeploy(app, greenContainerName, options = {}) {
-    const {logCtrl = null, operation = 'Redeploy', runGreenContainer, setStarting = false} = options
-
-    if (typeof runGreenContainer !== 'function') {
-      throw new Error('Blue-Green deploy requires a runGreenContainer function.')
-    }
-
-    if (!app.ports || app.ports.length === 0 || !app.ports[0].container) {
-      log('Legacy App Fix: Assigning default port 3000 to app %s during %s', app.name, operation.toLowerCase())
-      app.ports = [{container: 3000}]
-      this.#saveApps()
-    }
-
-    if (setStarting) {
-      this.#set(app.id, {status: 'starting'})
-    }
-
-    if (logCtrl) logCtrl.startPhase('start_new_container')
-    await runGreenContainer()
-    if (logCtrl) logCtrl.endPhase('start_new_container', true)
-
-    this.#set(app.id, {status: 'switching'})
-
-    let expectedPort = 3000
-    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
-      expectedPort = app.ports[0].container
-    }
-
-    let isReady = false
-    let attempts = 0
-    let greenIP = null
-    let lastReadinessError = null
-    while (attempts < 120) {
-      try {
-        const listeningPorts = await Odac.server('Container').getListeningPorts(greenContainerName)
-        if (listeningPorts.includes(expectedPort)) {
-          greenIP = await Odac.server('Container').getIP(greenContainerName)
-          if (greenIP) {
-            isReady = true
-            break
-          }
-        }
-      } catch (e) {
-        lastReadinessError = e && e.message ? e.message : 'unknown readiness probe error'
-      }
-
-      await new Promise(r => setTimeout(r, 1000))
-      attempts++
-    }
-
-    if (!isReady || !greenIP) {
-      await Odac.server('Container').stop(greenContainerName)
-      await Odac.server('Container').remove(greenContainerName)
-      await this.#cleanupGreenArtifacts(greenContainerName)
-      const details = lastReadinessError ? ` Last readiness error: ${lastReadinessError}` : ''
-      throw new Error(`New container failed readiness probe (port bind timeout). ${operation} aborted to maintain uptime.${details}`)
-    }
-
-    const httpReady = await this.#httpHealthCheck(greenIP, expectedPort)
-    if (!httpReady) {
-      await Odac.server('Container').stop(greenContainerName)
-      await Odac.server('Container').remove(greenContainerName)
-      await this.#cleanupGreenArtifacts(greenContainerName)
-      throw new Error(`New container failed HTTP readiness probe. ${operation} aborted to maintain uptime.`)
-    }
-
-    app.ip = greenIP
-    this.#set(app.id, {status: 'running', activeContainerId: greenContainerName})
-
-    this.#scanAndSaveHttpStatus(app).catch(e => error('HTTP scan failed for %s: %s', app.name, e.message))
-
-    if (logCtrl) logCtrl.startPhase('proxy_propagation')
-    await Odac.server('Proxy').syncConfig()
-    Odac.server('Proxy').purgeCacheForApp(app.id)
-    if (logCtrl) logCtrl.endPhase('proxy_propagation', true)
-
-    if (logCtrl) logCtrl.startPhase('stop_old_container')
-    if (process.env.NODE_ENV !== 'test') {
-      await new Promise(r => setTimeout(r, 5000))
-    }
-
-    const oldRuntimeLog = this.#logStreams.get(app.name)
-    if (oldRuntimeLog && typeof oldRuntimeLog.end === 'function') oldRuntimeLog.end()
-    this.#logStreams.delete(app.name)
-
-    await Odac.server('Container').stop(app.name)
-    await Odac.server('Container').remove(app.name)
-
-    const greenRuntimeLog = this.#logStreams.get(greenContainerName)
-    if (greenRuntimeLog && typeof greenRuntimeLog.end === 'function') greenRuntimeLog.end()
-    this.#logStreams.delete(greenContainerName)
-
-    let renameSuccess = false
-    for (let i = 0; i < 5; i++) {
-      try {
-        await Odac.server('Container').docker.getContainer(greenContainerName).rename({name: app.name})
-        renameSuccess = true
-        break
-      } catch (e) {
-        log('Docker rename failed, retrying in 2s (Attempt %d/5): %s', i + 1, e.message)
-        await new Promise(r => setTimeout(r, 2000))
-      }
-    }
-
-    if (renameSuccess) {
-      this.#set(app.id, {activeContainerId: null})
-      // Docker container has been renamed away from greenContainerName, so the
-      // on-disk log dir under that name is orphaned. Skip on rename failure —
-      // there the green name is still the live container.
-      await this.#cleanupGreenArtifacts(greenContainerName)
-    } else {
-      error(
-        'Failed to rename green container %s to %s after 5 attempts. ZDD will persist with activeContainerId.',
-        greenContainerName,
-        app.name
-      )
-    }
-
-    await this.#attachLogger(app)
-
-    if (logCtrl) {
-      await new Promise(r => setTimeout(r, 1000))
-      logCtrl.endPhase('stop_old_container', true)
-    }
-
-    this.#set(app.id, {started: Date.now()})
-  }
-  /**
-   * Performs an HTTP-level health check against a container.
-   * TCP port listening does NOT guarantee the app can serve HTTP traffic.
-   * This method sends actual HTTP requests to verify L7 readiness,
-   * eliminating the brief 502 window during Blue-Green ZDD switches.
-   *
-   * @param {string} ip - Container IP address
-   * @param {number} port - Container port
-   * @param {number} [maxAttempts=30] - Maximum retry attempts (1s apart)
-   * @returns {Promise<boolean>} true if the container responds to HTTP
-   */
-  async #httpHealthCheck(ip, port, maxAttempts = 30) {
-    for (let i = 0; i < maxAttempts; i++) {
-      try {
-        await new Promise((resolve, reject) => {
-          const req = http.get({hostname: ip, port, path: '/', timeout: 2000}, res => {
-            // Any HTTP response (even 404/500) means the app is serving
-            res.resume()
-            resolve()
-          })
-          req.on('error', reject)
-          req.on('timeout', () => {
-            req.destroy()
-            reject(new Error('timeout'))
-          })
-        })
-        log('HTTP health check passed for %s:%d (attempt %d)', ip, port, i + 1)
-        return true
-      } catch {
-        // App not ready yet, retry
-        await new Promise(r => setTimeout(r, 1000))
-      }
-    }
-    return false
-  }
-
   /**
    * Scans container ports to detect if an HTTP server is running.
    * Saves the detected port or 'false' to the app config for newly added apps.
@@ -2379,68 +1730,9 @@ class App {
     return false
   }
 
-  #generatePassword(length = 16) {
-    return nodeCrypto
-      .randomBytes(Math.ceil(length / 2))
-      .toString('hex')
-      .slice(0, length)
-  }
-
   #generateRuntimeId(prefix = '') {
     const suffix = `${Date.now()}_${nodeCrypto.randomBytes(4).toString('hex')}`
     return prefix ? `${prefix}_${suffix}` : suffix
-  }
-
-  // Matches the green container name suffix produced by #generateRuntimeId():
-  // `<appName>-green-<13+digit-ts>_<8-hex>`. Used to detect orphaned log dirs
-  // and Map entries left behind by Blue-Green deploys.
-  static #GREEN_SUFFIX_RE = /-green-\d+_[a-f0-9]{8}$/
-
-  // Removes the on-disk log dir + in-memory bookkeeping for a green container
-  // that is no longer live (either successfully renamed away or aborted).
-  // Safe to call with a non-green name (no-op if pattern doesn't match).
-  async #cleanupGreenArtifacts(greenContainerName) {
-    if (!greenContainerName || !App.#GREEN_SUFFIX_RE.test(greenContainerName)) return
-    const logDir = path.join(os.homedir(), '.odac', 'logs', greenContainerName)
-    try {
-      await fs.promises.rm(logDir, {recursive: true, force: true})
-    } catch (e) {
-      log('Failed to remove stale green log dir for %s: %s', greenContainerName, e.message)
-    }
-    this.#loggers.delete(greenContainerName)
-    this.#logStreams.delete(greenContainerName)
-    try {
-      Odac.server('Container').unregisterBuildLogger(greenContainerName)
-    } catch {
-      /* ignore */
-    }
-  }
-
-  // Startup sweep for green log dirs that survived past Blue-Green deploys
-  // before the prevention fix was in place (or from a future bug that lets
-  // one leak again). Names matching `*-green-<ts>_<hex>` are short-lived by
-  // contract — they only exist while a green container is mid-flight, so any
-  // such dir found at startup is orphaned.
-  async #cleanupStaleGreenLogs() {
-    const logsRoot = path.join(os.homedir(), '.odac', 'logs')
-    let entries
-    try {
-      entries = await fs.promises.readdir(logsRoot, {withFileTypes: true})
-    } catch {
-      return
-    }
-    let removed = 0
-    for (const ent of entries) {
-      if (!ent.isDirectory()) continue
-      if (!App.#GREEN_SUFFIX_RE.test(ent.name)) continue
-      try {
-        await fs.promises.rm(path.join(logsRoot, ent.name), {recursive: true, force: true})
-        removed++
-      } catch (e) {
-        log('Failed to remove stale green log dir %s: %s', ent.name, e.message)
-      }
-    }
-    if (removed) log('Cleaned up %d stale green log dir(s)', removed)
   }
 
   #generateUniqueName(baseName) {
@@ -2569,40 +1861,6 @@ class App {
     return ports
   }
 
-  #prepareEnv(recipeEnv, containerName = '') {
-    if (!recipeEnv) return {}
-
-    const ctx = {containerName}
-    const env = {}
-    for (const [key, value] of Object.entries(recipeEnv)) {
-      env[key] = typeof value === 'object' && value !== null ? this.#resolveEnvDirective(value, ctx) : value
-    }
-
-    return env
-  }
-
-  /**
-   * Resolves a single env directive object into its runtime value.
-   * Supports explicit {type: 'x', ...} format and legacy shorthand (e.g. {generate: true}).
-   * New directives can be added by extending the switch cases.
-   *
-   * @param {object} directive - Directive object from recipe env definition
-   * @param {object} ctx - Resolution context (containerName, etc.)
-   * @returns {*} Resolved value
-   */
-  #resolveEnvDirective(directive, ctx) {
-    const type = directive.type || Object.keys(directive).find(k => LEGACY_ENV_DIRECTIVES.has(k))
-
-    switch (type) {
-      case 'container':
-        return ctx.containerName
-      case 'generate':
-        return this.#generatePassword(directive.length || 16)
-      default:
-        return directive
-    }
-  }
-
   // Private: Port Management
   async #findAvailablePort(start) {
     let port = start
@@ -2632,97 +1890,6 @@ class App {
   }
 
   /**
-   * Performs topological sort on template app definitions based on linked dependencies.
-   * Uses Kahn's algorithm for O(V+E) performance. Detects circular dependencies.
-   *
-   * @param {object} templateApps - Map of appKey -> { linked?: string[], ... }
-   * @returns {string[]} Ordered array of app keys (dependencies first)
-   * @throws {Error} If circular dependencies detected or a dependency is undefined
-   */
-  #resolveTemplateDependencies(templateApps) {
-    const keys = Object.keys(templateApps)
-    const adjacency = {} // dep -> [dependents]
-    const inDegree = {} // key -> number of incoming edges
-
-    // Initialize graph
-    for (const key of keys) {
-      adjacency[key] = []
-      inDegree[key] = 0
-    }
-
-    // Build edges: if Web depends on DB, edge DB -> Web (DB must come first)
-    for (const key of keys) {
-      const deps = templateApps[key].linked || []
-      for (const dep of deps) {
-        if (!adjacency[dep]) {
-          throw new Error(__('Template dependency "%s" (required by "%s") is not defined.', dep, key))
-        }
-        adjacency[dep].push(key)
-        inDegree[key]++
-      }
-    }
-
-    // Kahn's Algorithm: BFS from nodes with zero in-degree
-    const queue = keys.filter(k => inDegree[k] === 0)
-    const sorted = []
-
-    while (queue.length > 0) {
-      const node = queue.shift()
-      sorted.push(node)
-
-      for (const neighbor of adjacency[node]) {
-        inDegree[neighbor]--
-        if (inDegree[neighbor] === 0) {
-          queue.push(neighbor)
-        }
-      }
-    }
-
-    if (sorted.length !== keys.length) {
-      throw new Error(__('Circular dependency detected in template.'))
-    }
-
-    return sorted
-  }
-
-  // Private: Env Resolution
-  #mergeRecipeEnv(recipe, userEnv = {}, containerName = '') {
-    const defaultEnv = this.#prepareEnv(recipe.env, containerName)
-    const defaultLinked = recipe.linked || []
-
-    const userIsStructured = userEnv.manual || Array.isArray(userEnv.linked)
-    const userManual = this.#getManualEnv(userEnv)
-    const userLinked = userIsStructured ? userEnv.linked || [] : []
-
-    // Merge: User overrides recipe defaults
-    const manual = {...defaultEnv, ...userManual}
-
-    // Linked: Recipe + User (Merge Arrays, Unique)
-    const linkedSet = new Set([...defaultLinked, ...userLinked])
-    const linked = [...linkedSet]
-
-    return {manual, linked}
-  }
-
-  /**
-   * Normalizes a command input into an array suitable for Docker Cmd.
-   * Accepts both string ("node app.js --port 3000") and array (["node", "app.js"]) formats.
-   * Returns null if no command is provided, preserving the image default CMD/ENTRYPOINT.
-   *
-   * @param {string|string[]|null|undefined} cmd - Raw command from recipe or config
-   * @returns {string[]|null} Normalized command array or null
-   */
-  #normalizeCmd(cmd) {
-    if (!cmd) return null
-    if (Array.isArray(cmd)) return cmd.length > 0 ? cmd : null
-    if (typeof cmd === 'string') {
-      const parts = cmd.trim().split(/\s+/)
-      return parts.length > 0 ? parts : null
-    }
-    return null
-  }
-
-  /**
    * Masks sensitive values in an env object based on SENSITIVE_KEY_PATTERN.
    * @param {object} env - Raw key-value env pairs
    * @returns {object} Sanitized env with sensitive values replaced by '***'
@@ -2749,47 +1916,6 @@ class App {
     return isNewStructure ? envConfig.manual || {} : envConfig
   }
 
-  /**
-   * Resolves template variable references in environment values.
-   * Supports ${appKey.name} for container name and ${appKey.env.VAR} for env values.
-   * Uses single-pass regex replacement — O(n) per env key.
-   *
-   * @param {object} env - Environment key-value pairs potentially containing ${...} references
-   * @param {object} context - Map of appKey -> { name, env } for all template members
-   * @returns {object} Resolved environment object with all variables interpolated
-   */
-  #interpolateTemplateVars(env, context) {
-    const resolved = {}
-    const varPattern = /\$\{([a-zA-Z0-9_]+)\.([a-zA-Z0-9_.]+)\}/g
-
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof value !== 'string') {
-        resolved[key] = value
-        continue
-      }
-
-      resolved[key] = value.replace(varPattern, (match, appKey, propPath) => {
-        const appCtx = context[appKey]
-        if (!appCtx) return match // Leave unresolved if app not found
-
-        // Navigate dot-separated path: "env.MYSQL_PASSWORD" or "name"
-        const parts = propPath.split('.')
-        let current = appCtx
-        for (const part of parts) {
-          if (current && typeof current === 'object' && part in current) {
-            current = current[part]
-          } else {
-            return match // Leave unresolved if path not found
-          }
-        }
-
-        return typeof current === 'string' ? current : String(current)
-      })
-    }
-
-    return resolved
-  }
-
   #resolveEnv(app, includeSystem = true) {
     const finalEnv = includeSystem ? {HOST: '0.0.0.0', ODAC_APP: 'true'} : {}
     const envConfig = app.env || {}
@@ -2813,52 +1939,6 @@ class App {
     Object.assign(finalEnv, this.#getManualEnv(envConfig))
 
     return finalEnv
-  }
-
-  /**
-   * Writes recipe-defined config files to the app directory and returns
-   * corresponding volume mappings for container mount.
-   * Supports JSON objects (serialized) and raw strings (YAML, TOML, INI, etc.).
-   * Files are stored under appDir/configs/ mirroring the container path structure.
-   *
-   * @param {Array<{path: string, content: object|string}>} configs - Config file definitions from recipe
-   * @param {string} appDir - Application directory on host
-   * @returns {Promise<Array<{host: string, container: string}>>} Volume mappings for the written files
-   */
-  async #writeConfigFiles(configs, appDir) {
-    if (!Array.isArray(configs) || configs.length === 0) return []
-
-    const volumes = []
-    const configBase = path.join(appDir, 'configs')
-
-    for (const cfg of configs) {
-      if (!cfg.path || cfg.content === undefined || cfg.content === null) continue
-
-      // Sanitize: prevent path traversal and absolute path escape
-      const normalized = path.normalize(cfg.path)
-      if (normalized.includes('..') || path.isAbsolute(normalized)) {
-        error('writeConfigFiles: Skipping unsafe config path: %s', cfg.path)
-        continue
-      }
-
-      // Mirror container path structure under appDir/configs/
-      const hostFile = path.join(configBase, normalized)
-
-      // Defense-in-depth: verify resolved path stays within configBase sandbox
-      if (!path.resolve(hostFile).startsWith(path.resolve(configBase))) {
-        error('writeConfigFiles: Resolved path escapes sandbox: %s → %s', cfg.path, hostFile)
-        continue
-      }
-      await fs.promises.mkdir(path.dirname(hostFile), {recursive: true})
-
-      const data = typeof cfg.content === 'string' ? cfg.content : JSON.stringify(cfg.content, null, 2)
-      await fs.promises.writeFile(hostFile, data, 'utf8')
-
-      volumes.push({host: hostFile, container: cfg.path})
-      log('writeConfigFiles: Wrote %s (%d bytes)', cfg.path, Buffer.byteLength(data))
-    }
-
-    return volumes
   }
 }
 
