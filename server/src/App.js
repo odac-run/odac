@@ -907,14 +907,51 @@ class App {
       return Odac.server('Api').result(false, __('App %s not found.', id))
     }
 
-    await this.stop(app.id)
+    log('Deleting app %s (force-cleanup any in-flight blue/green containers)', app.name)
+
+    // User has already double-confirmed in the UI — delete must succeed regardless of
+    // restart/redeploy/create state. Releasing in-flight locks lets concurrent flows
+    // abandon gracefully; mid-flight #set() calls become no-ops once we drop the app
+    // from #apps below.
+    this.#processing.delete(app.id)
+    this.#creating.delete(app.name)
+
+    const container = Odac.server('Container')
+
+    try {
+      await this.stop(app.id)
+    } catch (e) {
+      error('Delete[%s]: stop failed: %s', app.name, e.message)
+    }
+
+    if (container.available) {
+      try {
+        await container.remove(app.name)
+      } catch (e) {
+        error('Delete[%s]: remove failed: %s', app.name, e.message)
+      }
+    }
+
+    // Sweep any Blue-Green companions left behind by an in-flight ZDD deploy.
+    // Without this, a green container can survive as a ghost under its temporary
+    // `<app.name>-green-<ts>_<hex>` name (or worse, get renamed to app.name after we
+    // already removed it). Targets: app.activeContainerId + Docker name pattern match.
+    await this.#sweepGreenContainersFor(app.name, app.activeContainerId)
+
     this.#apps = this.#apps.filter(s => s.name !== app.name && s.id !== app.id)
     this.#saveApps()
 
-    await Odac.server('Container').remove(app.name)
+    const logCtrl = this.#logStreams.get(app.name)
+    if (logCtrl && typeof logCtrl.end === 'function') logCtrl.end()
+    this.#logStreams.delete(app.name)
 
     const logger = this.#loggers.get(app.name)
     this.#loggers.delete(app.name)
+    try {
+      container.unregisterBuildLogger(app.name)
+    } catch {
+      /* ignore */
+    }
 
     if (purge) {
       if (logger) await logger.destroy()
@@ -937,6 +974,44 @@ class App {
     Odac.server('Hub').trigger('app.list')
 
     return Odac.server('Api').result(true, __('App %s deleted successfully.', app.name))
+  }
+
+  async #sweepGreenContainersFor(appName, activeContainerId) {
+    const container = Odac.server('Container')
+    if (!container.available) return
+
+    const candidates = new Set()
+    if (activeContainerId && activeContainerId !== appName) candidates.add(activeContainerId)
+
+    const greenPrefix = `${appName}-green-`
+    try {
+      const all = await container.list()
+      for (const c of all) {
+        for (const rawName of c.names || []) {
+          const name = rawName.replace(/^\//, '')
+          if (name.startsWith(greenPrefix) && App.#GREEN_SUFFIX_RE.test(name)) {
+            candidates.add(name)
+          }
+        }
+      }
+    } catch (e) {
+      log('Delete[%s]: green sweep listing failed: %s', appName, e.message)
+    }
+
+    for (const name of candidates) {
+      log('Delete[%s]: sweeping green companion %s', appName, name)
+      try {
+        await container.stop(name)
+      } catch {
+        /* already stopped or gone */
+      }
+      try {
+        await container.remove(name)
+      } catch {
+        /* already removed */
+      }
+      await this.#cleanupGreenArtifacts(name)
+    }
   }
 
   async restart(id) {
