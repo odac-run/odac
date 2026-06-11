@@ -107,13 +107,6 @@ func (f *Firewall) Check(next http.Handler) http.Handler {
 			ip = r.RemoteAddr
 		}
 
-		// Handle X-Forwarded-For if needed (Node.js version does)
-		forwarded := r.Header.Get("X-Forwarded-For")
-		if forwarded != "" {
-			parts := strings.Split(forwarded, ",")
-			ip = strings.TrimSpace(parts[0])
-		}
-
 		// Normalize IPv6 mapped IPv4
 		if strings.HasPrefix(ip, "::ffff:") {
 			ip = ip[7:]
