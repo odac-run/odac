@@ -231,14 +231,27 @@ func main() {
 		},
 	}
 
-	go func() {
-		log.Println("Starting HTTP/3 server on :443 (UDP)")
-		if err := h3Server.ListenAndServe(); err != nil {
-			// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
-			log.Printf("HTTP/3 server failed: %v", err)
-			log.Println("Hint: If you see 'message too long' or performance issues, run: sysctl -w net.core.rmem_max=2500000")
-		}
-	}()
+	// Bind the UDP :443 socket ourselves with SO_REUSEPORT (via setSocketOptions),
+	// exactly like the TCP listeners above. quic-go's h3Server.ListenAndServe()
+	// does a plain net.ListenUDP without SO_REUSEPORT, so during a zero-downtime
+	// update the new process cannot bind UDP :443 while the old process still holds
+	// it ("address already in use"). It would then log the error and never retry,
+	// leaving HTTP/3 silently down for the lifetime of the new process. Binding via
+	// ListenPacket + h3Server.Serve() lets the old and new sockets overlap.
+	udpConn, err := (&net.ListenConfig{Control: setSocketOptions}).
+		ListenPacket(context.Background(), "udp", ":443")
+	if err != nil {
+		// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
+		log.Printf("HTTP/3 UDP listener failed: %v", err)
+		log.Println("Hint: If you see 'message too long' or performance issues, run: sysctl -w net.core.rmem_max=2500000")
+	} else {
+		go func() {
+			log.Println("Starting HTTP/3 server on :443 (UDP)")
+			if err := h3Server.Serve(udpConn); err != nil {
+				log.Printf("HTTP/3 server failed: %v", err)
+			}
+		}()
+	}
 
 	// Same rationale as HTTP above: bind synchronously, flip readiness, then Serve.
 	httpsListener, err := listen("tcp", ":443")
