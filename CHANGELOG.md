@@ -1,3 +1,20 @@
+### ⚙️ Engine Tuning
+
+- Add Create and Deploy modules for application management
+
+### 🛠️ Fixes & Improvements
+
+- enhance app deletion process with force cleanup and green container management
+- enhance security by using real TCP peer address for access-control decisions
+- improve HTTP/3 server startup by binding UDP socket with SO_REUSEPORT
+- validate branch name format and tighten path sandbox boundary checks
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ✨ What's New
 
 - enhance app deletion with optional purge and add logger cleanup
