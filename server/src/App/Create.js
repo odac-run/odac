@@ -354,6 +354,12 @@ class Create {
     if (!url.match(/^(https?|git|ssh|ftps?|rsync):\/\//) && !url.match(/^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:/)) {
       return Odac.server('Api').result(false, __('Invalid Git URL: Unsupported protocol.'))
     }
+
+    // Validate branch name: block git argument injection (--upload-pack) and shell metacharacters
+    if (branch && (branch.startsWith('-') || /[;&|`$(){}<>\n\r]/.test(branch))) {
+      return Odac.server('Api').result(false, __('Invalid branch name format.'))
+    }
+
     if (!name) {
       return Odac.server('Api').result(false, __('Missing app name'))
     }
@@ -653,7 +659,7 @@ class Create {
 
       const hostFile = path.join(configBase, normalized)
 
-      if (!path.resolve(hostFile).startsWith(path.resolve(configBase))) {
+      if (!path.resolve(hostFile).startsWith(path.resolve(configBase) + path.sep)) {
         error('writeConfigFiles: Resolved path escapes sandbox: %s → %s', cfg.path, hostFile)
         continue
       }
