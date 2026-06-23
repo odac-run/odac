@@ -12,55 +12,105 @@ const MAX_RESTARTS_IN_WINDOW = 100
 const RESTART_WINDOW_MS = 1000 * 60 * 5 // 5 minutes
 const SAVE_INTERVAL_MS = 1000 // 1 second
 
+// Logs are appended incrementally; once a file passes MAX_LINES it is rewritten
+// down to the last TRIM_LINES, then appending resumes.
+const MAX_LINES = 2000
+const TRIM_LINES = 1000
+
 class Watchdog {
-  #logBuffer = ''
-  #errorBuffer = ''
+  // buf: in-memory content, flushed: bytes already on disk (-1 forces a full
+  // rewrite, e.g. first flush or after a log-name switch), dirty: has new data.
+  #log = {buf: '', flushed: -1, dirty: false}
+  #err = {buf: '', flushed: -1, dirty: false}
   #restartCount = 0
   #lastRestartTimestamp = 0
   #isSaving = false
+  #savePromise = null
 
   init() {
-    // Set up periodic log saving. This is done only once.
     setInterval(() => this.#saveLogs(), SAVE_INTERVAL_MS)
-
-    // Start the server for the first time.
     this.#startServer()
   }
 
-  /**
-   * Saves the buffered logs to their respective files.
-   * This function is designed to be called periodically.
-   * Keeps only the last 1000 lines in each log file.
-   */
-  async #saveLogs() {
-    if (this.#isSaving) return
+  #saveLogs() {
+    // Return the in-flight save so callers (e.g. shutdown) can await it.
+    if (this.#isSaving) return this.#savePromise
+    if (!this.#log.dirty && !this.#err.dirty) return Promise.resolve()
     this.#isSaving = true
+    this.#savePromise = this.#runSave()
+    return this.#savePromise
+  }
 
+  async #runSave() {
     try {
-      // Ensure log directory exists before attempting to write files
       await fs.mkdir(LOG_DIR, {recursive: true})
       const logName = process.env.ODAC_LOG_NAME || '.odac'
-      const logFile = path.join(LOG_DIR, `${logName}.log`)
-      const errFile = path.join(LOG_DIR, `${logName}_err.log`)
 
-      // Limit log buffer to last 1000 lines
-      const logLines = this.#logBuffer.split('\n')
-      if (logLines.length > 1000) {
-        this.#logBuffer = logLines.slice(-1000).join('\n')
+      // Flush independently: a failure on the standard log must not skip the
+      // error log, which carries the crash reason. Each #flush keeps its own
+      // buffer dirty on failure, so the skipped one retries next interval.
+      try {
+        await this.#flush(this.#log, path.join(LOG_DIR, `${logName}.log`))
+      } catch (e) {
+        console.error('Failed to save standard log:', e)
       }
-
-      // Limit error buffer to last 1000 lines
-      const errLines = this.#errorBuffer.split('\n')
-      if (errLines.length > 1000) {
-        this.#errorBuffer = errLines.slice(-1000).join('\n')
+      try {
+        await this.#flush(this.#err, path.join(LOG_DIR, `${logName}_err.log`))
+      } catch (e) {
+        console.error('Failed to save error log:', e)
       }
-
-      await fs.writeFile(logFile, this.#logBuffer, 'utf8')
-      await fs.writeFile(errFile, this.#errorBuffer, 'utf8')
     } catch (error) {
       console.error('Failed to save logs:', error)
     } finally {
       this.#isSaving = false
+    }
+  }
+
+  /**
+   * Flushes any pending logs without interrupting an in-flight write, then exits.
+   */
+  async #shutdown(code) {
+    try {
+      if (this.#savePromise) await this.#savePromise
+      await this.#saveLogs()
+    } catch {
+      /* best effort — exit regardless */
+    }
+    process.exit(code)
+  }
+
+  /**
+   * Appends new buffer content to its file, rewriting down to TRIM_LINES once
+   * the buffer grows past MAX_LINES.
+   */
+  async #flush(state, file) {
+    if (!state.dirty) return
+
+    const prevFlushed = state.flushed
+    const lines = state.buf.split('\n')
+    const rewrite = state.flushed < 0 || lines.length > MAX_LINES
+
+    let payload
+    if (rewrite) {
+      if (lines.length > TRIM_LINES) state.buf = lines.slice(-TRIM_LINES).join('\n')
+      payload = state.buf
+    } else {
+      payload = state.buf.slice(state.flushed)
+    }
+
+    // Advance the offset and clear the flag before awaiting so data arriving
+    // mid-write is picked up by the next flush instead of being dropped.
+    state.flushed = state.buf.length
+    state.dirty = false
+
+    try {
+      if (rewrite) await fs.writeFile(file, payload, 'utf8')
+      else if (payload) await fs.appendFile(file, payload, 'utf8')
+    } catch (err) {
+      // Retry next cycle: re-append the same bytes, or force a fresh rewrite.
+      state.dirty = true
+      state.flushed = rewrite ? -1 : prevFlushed
+      throw err
     }
   }
 
@@ -124,24 +174,33 @@ class Watchdog {
       if (str.includes('ODAC_CMD:SWITCH_LOGS')) {
         console.log('Watchdog: Switching to standard logs (.odac.log)...')
         process.env.ODAC_LOG_NAME = '.odac'
+        // New file name: force a full rewrite for both streams.
+        this.#log.flushed = -1
+        this.#err.flushed = -1
+        this.#err.dirty = true
       }
-      this.#logBuffer += `[LOG][${new Date().toISOString()}] ${str}`
+      this.#log.buf += `[LOG][${new Date().toISOString()}] ${str}`
+      this.#log.dirty = true
     })
 
     child.stderr.on('data', data => {
-      this.#logBuffer += `[ERR][${new Date().toISOString()}] ${data.toString()}`
-      this.#errorBuffer += `[ERR][${new Date().toISOString()}] ${data.toString()}`
+      const line = `[ERR][${new Date().toISOString()}] ${data.toString()}`
+      this.#log.buf += line
+      this.#err.buf += line
+      this.#log.dirty = true
+      this.#err.dirty = true
     })
 
     child.on('close', code => {
       // If server exited intentionally (code 0), shutdown watchdog too
       if (code === 0) {
         console.log('Server process exited normally (code 0). Watchdog shutting down.')
-        return process.exit(0)
+        return this.#shutdown(0)
       }
 
       Odac.core('Config').reload()
-      this.#errorBuffer += `[ERR][${new Date().toISOString()}] Process closed with code ${code}\n`
+      this.#err.buf += `[ERR][${new Date().toISOString()}] Process closed with code ${code}\n`
+      this.#err.dirty = true
 
       // Reset restart count if the last restart was a while ago
       if (Date.now() - this.#lastRestartTimestamp > RESTART_WINDOW_MS) {
@@ -158,8 +217,7 @@ class Watchdog {
         this.#startServer()
       } else {
         console.error('Server has crashed too many times. Not restarting.')
-        // Final attempt to save logs before exiting
-        this.#saveLogs().then(() => process.exit(1))
+        this.#shutdown(1)
       }
     })
   }
