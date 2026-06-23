@@ -510,6 +510,7 @@ class Container {
    * @param {Object} options.env - Environment variables {KEY: 'VALUE'}
    * @param {Array} options.cmd - Command to run (optional)
    * @param {string} options.user - User to run as (optional, e.g., 'root')
+   * @param {boolean} options.privileged - Run in Docker Privileged mode (optional). SECURITY: full host device/kernel access.
    * @param {Object} [activeLogger] - Optional logger instance
    */
   async runApp(name, options, activeLogger = null) {
@@ -585,6 +586,11 @@ class Container {
 
       if (options.user) {
         containerConfig.User = options.user
+      }
+
+      // SECURITY: full host device/kernel access. CLI-only escape hatch.
+      if (options.privileged) {
+        containerConfig.HostConfig.Privileged = true
       }
 
       const container = await this.#docker.createContainer(containerConfig)

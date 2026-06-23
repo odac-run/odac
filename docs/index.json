@@ -55,6 +55,10 @@
         {
           "file": "04-connect-device.md",
           "title": "Connect a Device"
+        },
+        {
+          "file": "05-privileged-access.md",
+          "title": "Privileged Access"
         }
       ]
     },

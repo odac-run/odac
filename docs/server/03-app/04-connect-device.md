@@ -34,3 +34,9 @@ odac app device delete my-arduino-app /dev/ttyACM0
 > ```
 
 > 📝 **Note:** For security reasons, devices are mapped with `read-write-mknod` (rwm) permissions by default. Ensure your application has the necessary internal permissions (e.g., user groups) to access the device.
+
+> 🔐 **Permission denied?** If your app still can't access the mapped device (the device node is typically owned by `root` with a group like `dialout`), it likely needs to run as root. Instead of manually `chmod`-ing the device on every restart, grant elevated access — see [Privileged Access](05-privileged-access.md):
+> ```bash
+> odac app privileged my-arduino-app   # run as root
+> odac app restart my-arduino-app
+> ```

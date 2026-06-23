@@ -117,6 +117,15 @@ List all configured applications.
 odac app list
 ```
 
+#### `odac app privileged`
+Grant elevated access to an application (CLI-only, at your own risk). See [Privileged Access](../03-app/05-privileged-access.md).
+
+```bash
+odac app privileged my-app          # Run as root (default)
+odac app privileged my-app --full   # Full Docker Privileged mode + root
+odac app privileged my-app --off    # Revoke elevated access
+```
+
 #### `odac app restart`
 Restart an application container.
 

@@ -266,6 +266,88 @@ describe('App', () => {
     })
   })
 
+  describe('privileged access', () => {
+    test('setPrivileged defaults to root mode and persists the flag', async () => {
+      mockConfig.apps = [{id: 1, name: 'priv-app', type: 'container'}]
+      await App.init()
+
+      const result = App.setPrivileged('priv-app')
+      expect(result.success).toBe(true)
+      expect(mockConfig.apps[0].privileged).toBe('root')
+    })
+
+    test('setPrivileged accepts full mode', async () => {
+      mockConfig.apps = [{id: 1, name: 'priv-app', type: 'container'}]
+      await App.init()
+
+      App.setPrivileged('priv-app', 'full')
+      expect(mockConfig.apps[0].privileged).toBe('full')
+    })
+
+    test('setPrivileged off removes the flag', async () => {
+      mockConfig.apps = [{id: 1, name: 'priv-app', type: 'container', privileged: 'full'}]
+      await App.init()
+
+      const result = App.setPrivileged('priv-app', 'off')
+      expect(result.success).toBe(true)
+      expect(mockConfig.apps[0].privileged).toBeUndefined()
+    })
+
+    test('setPrivileged rejects an invalid mode without touching the app', async () => {
+      mockConfig.apps = [{id: 1, name: 'priv-app', type: 'container'}]
+      await App.init()
+
+      const result = App.setPrivileged('priv-app', 'superuser')
+      expect(result.success).toBe(false)
+      expect(mockConfig.apps[0].privileged).toBeUndefined()
+    })
+
+    test('setPrivileged returns an error for an unknown app', async () => {
+      mockConfig.apps = []
+      await App.init()
+
+      const result = App.setPrivileged('ghost')
+      expect(result.success).toBe(false)
+    })
+
+    test('full privileged app runs with Docker Privileged mode and root user', async () => {
+      mockConfig.apps = [{id: 1, name: 'priv-full', active: true, type: 'container', image: 'test:latest', privileged: 'full'}]
+      mockConfig.app = {path: '/tmp/odac-test'}
+      mockRunApp.mockResolvedValue(true)
+
+      await App.check()
+
+      expect(mockRunApp).toHaveBeenCalled()
+      const opts = mockRunApp.mock.calls[0][1]
+      expect(opts.privileged).toBe(true)
+      expect(opts.user).toBe('root')
+    })
+
+    test('root privileged app runs as root without Docker Privileged mode', async () => {
+      mockConfig.apps = [{id: 1, name: 'priv-root', active: true, type: 'container', image: 'test:latest', privileged: 'root'}]
+      mockConfig.app = {path: '/tmp/odac-test'}
+      mockRunApp.mockResolvedValue(true)
+
+      await App.check()
+
+      const opts = mockRunApp.mock.calls[0][1]
+      expect(opts.user).toBe('root')
+      expect(opts.privileged).toBeUndefined()
+    })
+
+    test('non-privileged app runs without any elevation', async () => {
+      mockConfig.apps = [{id: 1, name: 'plain-app', active: true, type: 'container', image: 'test:latest'}]
+      mockConfig.app = {path: '/tmp/odac-test'}
+      mockRunApp.mockResolvedValue(true)
+
+      await App.check()
+
+      const opts = mockRunApp.mock.calls[0][1]
+      expect(opts.user).toBeUndefined()
+      expect(opts.privileged).toBeUndefined()
+    })
+  })
+
   describe('delete()', () => {
     test('should call Domain.deleteByApp when an app is deleted', async () => {
       const mockDeleteByApp = jest.fn()

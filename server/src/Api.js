@@ -27,6 +27,7 @@ class Api {
     'app.device.add': (...args) => Odac.server('App').deviceAdd(...args),
     'app.device.delete': (...args) => Odac.server('App').deviceDelete(...args),
     'app.list': (...args) => Odac.server('App').list(...args),
+    'app.privileged': (...args) => Odac.server('App').setPrivileged(...args),
     'app.restart': (...args) => Odac.server('App').restart(...args),
     'app.start': (...args) => Odac.server('App').start(...args),
     'dns.list': (...args) => Odac.server('DNS').list(...args),
