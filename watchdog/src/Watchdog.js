@@ -25,27 +25,58 @@ class Watchdog {
   #restartCount = 0
   #lastRestartTimestamp = 0
   #isSaving = false
+  #savePromise = null
 
   init() {
     setInterval(() => this.#saveLogs(), SAVE_INTERVAL_MS)
     this.#startServer()
   }
 
-  async #saveLogs() {
-    if (this.#isSaving) return
-    if (!this.#log.dirty && !this.#err.dirty) return
+  #saveLogs() {
+    // Return the in-flight save so callers (e.g. shutdown) can await it.
+    if (this.#isSaving) return this.#savePromise
+    if (!this.#log.dirty && !this.#err.dirty) return Promise.resolve()
     this.#isSaving = true
+    this.#savePromise = this.#runSave()
+    return this.#savePromise
+  }
 
+  async #runSave() {
     try {
       await fs.mkdir(LOG_DIR, {recursive: true})
       const logName = process.env.ODAC_LOG_NAME || '.odac'
-      await this.#flush(this.#log, path.join(LOG_DIR, `${logName}.log`))
-      await this.#flush(this.#err, path.join(LOG_DIR, `${logName}_err.log`))
+
+      // Flush independently: a failure on the standard log must not skip the
+      // error log, which carries the crash reason. Each #flush keeps its own
+      // buffer dirty on failure, so the skipped one retries next interval.
+      try {
+        await this.#flush(this.#log, path.join(LOG_DIR, `${logName}.log`))
+      } catch (e) {
+        console.error('Failed to save standard log:', e)
+      }
+      try {
+        await this.#flush(this.#err, path.join(LOG_DIR, `${logName}_err.log`))
+      } catch (e) {
+        console.error('Failed to save error log:', e)
+      }
     } catch (error) {
       console.error('Failed to save logs:', error)
     } finally {
       this.#isSaving = false
     }
+  }
+
+  /**
+   * Flushes any pending logs without interrupting an in-flight write, then exits.
+   */
+  async #shutdown(code) {
+    try {
+      if (this.#savePromise) await this.#savePromise
+      await this.#saveLogs()
+    } catch {
+      /* best effort — exit regardless */
+    }
+    process.exit(code)
   }
 
   /**
@@ -164,7 +195,7 @@ class Watchdog {
       // If server exited intentionally (code 0), shutdown watchdog too
       if (code === 0) {
         console.log('Server process exited normally (code 0). Watchdog shutting down.')
-        return process.exit(0)
+        return this.#shutdown(0)
       }
 
       Odac.core('Config').reload()
@@ -186,8 +217,7 @@ class Watchdog {
         this.#startServer()
       } else {
         console.error('Server has crashed too many times. Not restarting.')
-        // Final attempt to save logs before exiting
-        this.#saveLogs().then(() => process.exit(1))
+        this.#shutdown(1)
       }
     })
   }
