@@ -107,6 +107,20 @@
           "title": "Delete a Domain"
         }
       ]
+    },
+    {
+      "file": "07-proxy",
+      "title": "Proxy",
+      "children": [
+        {
+          "file": "01-page-cache.md",
+          "title": "Page Cache"
+        },
+        {
+          "file": "02-asset-cache.md",
+          "title": "Asset Cache"
+        }
+      ]
     }
   ]
 }
