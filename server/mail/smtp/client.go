@@ -347,14 +347,20 @@ func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byt
 				ServerName:         mxHost,
 				InsecureSkipVerify: true, // opportunistic; verification handled below, non-fatal
 				VerifyConnection: func(cs tls.ConnectionState) error {
-					roots, _ := x509.SystemCertPool()
+					// Defensive: Go rejects an empty server Certificate message
+					// during the handshake (for the default non-anonymous suites)
+					// before this runs, so PeerCertificates is normally non-empty.
+					if len(cs.PeerCertificates) == 0 {
+						return nil
+					}
 					inter := x509.NewCertPool()
 					for _, peer := range cs.PeerCertificates[1:] {
 						inter.AddCert(peer)
 					}
+					// Roots left nil → Verify uses the runtime's cached system root
+					// pool directly, avoiding a per-handshake pool clone.
 					if _, vErr := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
 						DNSName:       mxHost,
-						Roots:         roots,
 						Intermediates: inter,
 					}); vErr != nil {
 						log.Printf("[SMTP-Client] TLS to %s unverified, delivering opportunistically: %v", mxHost, vErr)
