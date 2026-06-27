@@ -1,3 +1,23 @@
+### doc
+
+- add proxy caching documentation for page and asset caches
+
+### ✨ What's New
+
+- add CLI-only privileged access for apps
+
+### 🛠️ Fixes & Improvements
+
+- allow QUERY method in 0-RTT for improved safety and idempotency
+- enhance TLS verification in SMTP client to handle empty server certificates
+- implement opportunistic TLS with verification for SMTP client
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - enhance log saving mechanism in Watchdog for better reliability and error handling
