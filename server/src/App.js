@@ -236,6 +236,8 @@ class App {
       runOptions.user = 'root'
     }
 
+    this.#applyPrivilege(app, runOptions)
+
     // Fix volume permissions before starting the app container.
     await this.#fixVolumePermissions(volumes)
 
@@ -1192,6 +1194,37 @@ class App {
     return Odac.server('Api').result(true, __('Networks updated for %s: %s', app.name, result.networks.join(', ')))
   }
 
+  /**
+   * Sets the privilege level for an app. CLI-only escalation path — intentionally
+   * NOT exposed via Hub, so it cannot be triggered from the dashboard/web.
+   * The operator takes full responsibility for the security implications.
+   * @param {string|number} id - App id, name, or file
+   * @param {'root'|'full'|'off'} mode - 'root' (run as root), 'full' (Docker Privileged + root), 'off' (drop)
+   * @returns {object} Api.result
+   */
+  setPrivileged(id, mode = 'root') {
+    const app = this.#get(id)
+    if (!app) {
+      return Odac.server('Api').result(false, __('App %s not found.', id))
+    }
+
+    if (!['root', 'full', 'off'].includes(mode)) {
+      return Odac.server('Api').result(false, __('Invalid mode: %s. Expected root, full, or off.', mode))
+    }
+
+    if (mode === 'off') {
+      delete app.privileged
+      this.#saveApps()
+      return Odac.server('Api').result(true, __('Elevated access removed from %s. Restart required to apply.', app.name))
+    }
+
+    app.privileged = mode
+    this.#saveApps()
+
+    const label = mode === 'full' ? __('FULL privileged (Docker Privileged + root)') : __('root user')
+    return Odac.server('Api').result(true, __('%s now runs with %s. Restart required to apply.', app.name, label))
+  }
+
   async list(detailed = false) {
     if (this.#apps.length === 0) {
       this.#apps = this.#loadAppsFromConfig()
@@ -1469,13 +1502,17 @@ class App {
       }
     }
 
-    await Odac.server('Container').runApp(app.name, {
+    const runOptions = {
       image: runner.image,
       cmd: [runner.cmd, ...(runner.args || []), filename],
       volumes,
       devices: app.devices || [],
       env
-    })
+    }
+
+    this.#applyPrivilege(app, runOptions)
+
+    await Odac.server('Container').runApp(app.name, runOptions)
   }
 
   async #runContainer(app, logCtrl = null) {
@@ -1531,6 +1568,8 @@ class App {
 
     if (app.cmd) runOptions.cmd = app.cmd
 
+    this.#applyPrivilege(app, runOptions)
+
     await container.runApp(app.name, runOptions, logCtrl)
 
     await this.#attachLogger(app)
@@ -1539,6 +1578,17 @@ class App {
     // Verify the container is actually listening on the expected port.
     // Handles images that ignore PORT env var or have no EXPOSE metadata.
     this.#pollForPort(app, port || 3000)
+  }
+
+  #applyPrivilege(app, runOptions) {
+    if (app.privileged === 'full') {
+      log('App %s configured as FULL privileged. Enabling Docker Privileged mode + root.', app.name)
+      runOptions.privileged = true
+      runOptions.user = 'root'
+    } else if (app.privileged === 'root') {
+      log('App %s configured to run as root.', app.name)
+      runOptions.user = 'root'
+    }
   }
 
   /**

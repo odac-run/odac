@@ -344,8 +344,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Therefore, we MUST NOT allow non-idempotent methods (like POST, PUT, DELETE) over 0-RTT.
 	if r.TLS != nil && !r.TLS.HandshakeComplete {
 		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
-			// Safe methods are allowed in 0-RTT
+		case http.MethodGet, http.MethodHead, http.MethodOptions, "QUERY":
+			// Safe methods are allowed in 0-RTT.
+			// QUERY (RFC 9789) is defined as safe and idempotent, so it is replay-safe
+			// like GET despite carrying a request body. No http.Method* constant exists yet.
 		default:
 			// Risky methods MUST be rejected or retried with confirmed handshake (1-RTT)
 			// HTTP 425 (Too Early) tells the client to retry after handshake completion.

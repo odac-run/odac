@@ -3,6 +3,7 @@ package smtp
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log"
@@ -331,9 +332,41 @@ func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byt
 	if _, isTLS := conn.(*tls.Conn); !isTLS && strings.Contains(resp, "STARTTLS") {
 		_, err := c.command(conn, "STARTTLS\r\n")
 		if err == nil {
+			// Opportunistic TLS (RFC 7435), matching the universal MTA-to-MTA
+			// relay default (e.g. Postfix smtp_tls_security_level=may): always
+			// encrypt, but never let an unverifiable peer cert block delivery —
+			// the destination MX comes from unauthenticated DNS and the only
+			// alternatives are plaintext (worse) or non-delivery (worst).
+			//
+			// We still attempt real verification against the system roots for
+			// observability (so a stale CA bundle or a peer chain change is
+			// visible in logs) and as the hook a future MTA-STS/DANE policy would
+			// turn into hard enforcement. The handshake itself is not failed.
 			tlsConn := tls.Client(conn, &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				ServerName: mxHost,
+				MinVersion:         tls.VersionTLS12,
+				ServerName:         mxHost,
+				InsecureSkipVerify: true, // opportunistic; verification handled below, non-fatal
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					// Defensive: Go rejects an empty server Certificate message
+					// during the handshake (for the default non-anonymous suites)
+					// before this runs, so PeerCertificates is normally non-empty.
+					if len(cs.PeerCertificates) == 0 {
+						return nil
+					}
+					inter := x509.NewCertPool()
+					for _, peer := range cs.PeerCertificates[1:] {
+						inter.AddCert(peer)
+					}
+					// Roots left nil → Verify uses the runtime's cached system root
+					// pool directly, avoiding a per-handshake pool clone.
+					if _, vErr := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
+						DNSName:       mxHost,
+						Intermediates: inter,
+					}); vErr != nil {
+						log.Printf("[SMTP-Client] TLS to %s unverified, delivering opportunistically: %v", mxHost, vErr)
+					}
+					return nil
+				},
 			})
 			if err := tlsConn.Handshake(); err != nil {
 				log.Printf("[SMTP-Client] STARTTLS handshake failed for %s: %v", mxHost, err)

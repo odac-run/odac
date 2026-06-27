@@ -180,6 +180,35 @@ module.exports = {
         description: 'List all apps',
         action: async () => Odac.cli('Connector').call({action: 'app.list'})
       },
+      privileged: {
+        description: 'Grant elevated access to an app: --root (default) or --full. Use --off to revoke. (At your own risk)',
+        args: ['-i', '--id', '--root', '--full', '--off'],
+        action: async args => {
+          const cli = Odac.cli('Cli')
+          let app = cli.parseArg(args, ['-i', '--id']) || args.find(a => !a.startsWith('-'))
+          if (!app) app = await cli.question(__('Enter the App ID or Name: '))
+
+          let mode = 'root'
+          if (args.includes('--off')) mode = 'off'
+          else if (args.includes('--full')) mode = 'full'
+
+          if (mode !== 'off') {
+            const warning =
+              mode === 'full'
+                ? __(
+                    'WARNING: FULL privileged mode gives this app COMPLETE access to host devices and the kernel. This is dangerous and entirely at your own risk.'
+                  )
+                : __('WARNING: This will run the app as ROOT inside its container. Grant only to apps you trust.')
+            console.log(warning)
+            const confirm = await cli.question(__('Type "yes" to continue: '))
+            if (confirm.trim().toLowerCase() !== 'yes') {
+              return console.log(__('Aborted.'))
+            }
+          }
+
+          await Odac.cli('Connector').call({action: 'app.privileged', data: [app, mode]})
+        }
+      },
       restart: {
         description: 'Restart an App',
         args: ['-i', '--id'],
