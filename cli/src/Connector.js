@@ -178,7 +178,7 @@ class Connector {
         if (!Odac.core('Config').config.server.watchdog) return resolve(false)
         findProcess('pid', Odac.core('Config').config.server.watchdog)
           .then(list => {
-            if (list.length > 0 && list[0].name == 'node') return resolve(true)
+            if (list.length > 0 && ['node', 'odac-watchdog'].includes(list[0].name)) return resolve(true)
             return resolve(false)
           })
           .catch(err => {

@@ -51,6 +51,7 @@ jest-*
 # Binaries
 bin/odac-proxy
 bin/odac-dns
+bin/odac-watchdog
 
 .secret/
 .odac/

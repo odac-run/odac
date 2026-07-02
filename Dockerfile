@@ -5,6 +5,7 @@ WORKDIR /build
 COPY server/proxy ./server/proxy
 COPY server/dns ./server/dns
 COPY server/mail ./server/mail
+COPY odac ./odac
 # Build static binary
 # -ldflags="-s -w" reduces binary size by stripping debug symbols
 RUN cd server/proxy && \
@@ -13,6 +14,8 @@ RUN cd server/dns && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-dns
 RUN cd server/mail && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-mail
+RUN cd odac && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-watchdog ./cmd/odac-watchdog
 
 # Stage 1: Build Node.js Native Dependencies
 FROM node:22-alpine AS node-builder
@@ -63,15 +66,16 @@ RUN npm ci --omit=dev
 # Copy Node.js modules from builder
 COPY --from=node-builder /app/node_modules ./node_modules
 
-# Copy Go Proxy, DNS and Mail binaries from go-builder
+# Copy Go Proxy, DNS, Mail and Watchdog binaries from go-builder
 COPY --from=go-builder /build/odac-proxy ./bin/odac-proxy
 COPY --from=go-builder /build/odac-dns ./bin/odac-dns
 COPY --from=go-builder /build/odac-mail ./bin/odac-mail
+COPY --from=go-builder /build/odac-watchdog ./bin/odac-watchdog
 
 # Copy application source code
 COPY . .
 # Ensure binary is executable
-RUN chmod +x ./bin/odac-proxy && chmod +x ./bin/odac-dns && chmod +x ./bin/odac-mail
+RUN chmod +x ./bin/odac-proxy && chmod +x ./bin/odac-dns && chmod +x ./bin/odac-mail && chmod +x ./bin/odac-watchdog
 
 # Create necessary directories
 RUN mkdir -p /app/.odac
@@ -94,5 +98,5 @@ ENV ODAC_WEB_PATH=/app/sites
 # Volumes for persistence
 VOLUME ["/app/.odac"]
 
-# Start Odac daemon
-CMD ["node", "watchdog/index.js"]
+# Start Odac daemon (Go watchdog supervising the Node server)
+CMD ["./bin/odac-watchdog"]
