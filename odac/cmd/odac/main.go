@@ -1,29 +1,29 @@
-// odac is the ODAC CLI (Go port of cli/ — task 2.1: skeleton + connector).
-//
-// This skeleton covers the connector (contract 0.1 client via
-// internal/apiproto), liveness checking, the no-argument status view and a
-// generic `odac api <action> [args...]` invoker. Command surface parity with
-// core/Commands.js (including boot-on-demand of a stopped server) is task
-// 2.2; the monitor TUI is 2.3; i18n is 2.4. Until 2.2 lands, the Node CLI
-// remains the user-facing entry point.
+// odac is the ODAC CLI (Go port of cli/ — tasks 2.1 connector + 2.2 command
+// surface). Remaining gaps: the monitor TUI (`debug`/`monit`, task 2.3) and
+// i18n (task 2.4); until the 2.5 parity sign-off the Node CLI remains the
+// shipped entry point.
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"odac/internal/apiproto"
 	"odac/internal/config"
 )
 
 type app struct {
+	boot   func() // boot-on-demand hook; defaultBoot in production, stubbed in tests
+	booted bool
 	cfg    *config.Store
 	client *apiproto.Client
-	out    io.Writer
 	errOut io.Writer
+	in     io.Reader
+	out    io.Writer
+	reader *bufio.Reader // lazy, persistent stdin reader for question()
 }
 
 func main() {
@@ -36,9 +36,11 @@ func main() {
 	a := &app{
 		cfg:    cfg,
 		client: &apiproto.Client{Addr: apiAddr()},
-		out:    os.Stdout,
 		errOut: os.Stderr,
+		in:     os.Stdin,
+		out:    os.Stdout,
 	}
+	a.boot = a.defaultBoot
 	os.Exit(a.run(os.Args[1:]))
 }
 
@@ -54,38 +56,38 @@ func apiAddr() string {
 func (a *app) run(args []string) int {
 	fmt.Fprintln(a.out, "\n "+color("ODAC", ansiMagenta)+" \n")
 
+	// Cli.init boots the server before dispatching any command.
+	if !a.check() {
+		a.boot()
+	}
+
 	if len(args) == 0 {
 		return a.status()
 	}
-
-	switch args[0] {
-	case "api":
+	if args[0] == "api" {
+		// Generic action invoker (not part of the Node surface): arguments
+		// parse as JSON when possible, plain strings otherwise.
 		if len(args) < 2 {
 			fmt.Fprintln(a.errOut, "Usage: odac api <action> [args...]")
 			return 1
 		}
-		return a.callAction(args[1], args[2:])
+		return a.call(args[1], parseArgs(args[2:]), false)
 	}
-
-	fmt.Fprintf(a.errOut, "'odac %s' is not ported to the Go CLI yet (task 2.2); use the Node CLI.\n",
-		strings.Join(args, " "))
-	return 1
+	return a.dispatch(args)
 }
 
-// callAction performs one request/response cycle: root auth from api.json,
+// call performs one request/response cycle: root auth from api.json,
 // progress lines rendered as they stream, final response rendered last.
-func (a *app) callAction(action string, rawArgs []string) int {
+func (a *app) call(action string, data []any, detail bool) int {
 	if !a.check() {
-		// Node's CLI boots the server here; boot-on-demand is ported in 2.2
-		// together with the rest of the init flow.
 		fmt.Fprintln(a.errOut, "Odac server is not running.")
 		return 1
 	}
 
 	auth, _ := a.cfg.Map("api")["auth"].(string)
-	r := &renderer{out: a.out, errOut: a.errOut}
+	r := &renderer{out: a.out, errOut: a.errOut, detail: detail}
 	resp, err := a.client.Call(
-		apiproto.Request{Auth: auth, Action: action, Data: parseArgs(rawArgs)},
+		apiproto.Request{Auth: auth, Action: action, Data: data},
 		r.progress,
 	)
 	if err != nil {
@@ -99,9 +101,7 @@ func (a *app) callAction(action string, rawArgs []string) int {
 	return 1
 }
 
-// parseArgs converts CLI arguments to the positional `data` array. Arguments
-// that parse as JSON are passed typed (numbers, booleans, objects); everything
-// else is a plain string, matching how Node command handlers receive values.
+// parseArgs converts `odac api` arguments to the positional `data` array.
 func parseArgs(rawArgs []string) []any {
 	data := make([]any, 0, len(rawArgs))
 	for _, arg := range rawArgs {

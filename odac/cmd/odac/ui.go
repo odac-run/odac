@@ -51,6 +51,7 @@ func icon(status string) string {
 type renderer struct {
 	out         io.Writer
 	errOut      io.Writer
+	detail      bool // per-row detail blocks instead of a table (Node: table: false)
 	lastProcess string
 	sawProgress bool
 }
@@ -88,19 +89,23 @@ func (r *renderer) final(resp *apiproto.Response) {
 	if resp.Message != "" {
 		fmt.Fprintln(r.out, resp.Message)
 	}
-	renderData(r.out, resp.Data)
+	renderData(r.out, resp.Data, r.detail)
 }
 
 // renderData prints the final response payload: non-empty arrays of rows as a
-// table, other objects as pretty JSON (Node uses console.dir there).
-func renderData(out io.Writer, data json.RawMessage) {
+// table (or detail blocks), other objects as pretty JSON (Node: console.dir).
+func renderData(out io.Writer, data json.RawMessage, detail bool) {
 	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
 		return
 	}
 	var rows []map[string]any
 	if json.Unmarshal(data, &rows) == nil {
 		if len(rows) > 0 {
-			printTable(out, data, rows)
+			if detail {
+				printDetail(out, data, rows)
+			} else {
+				printTable(out, data, rows)
+			}
 		}
 		return
 	}
@@ -173,13 +178,51 @@ func pad(b *strings.Builder, s string, width int) {
 	}
 }
 
-// firstRowKeys extracts the first row's keys in JSON document order.
-func firstRowKeys(raw json.RawMessage) []string {
+// printDetail ports Connector.js's `table: false` branch: each row becomes a
+// "---"-delimited block of "key : value" lines, keys padded per row. Unlike
+// the table path there is no date formatting (Node doesn't apply it here).
+func printDetail(out io.Writer, raw json.RawMessage, rows []map[string]any) {
+	rawList := rawRows(raw)
+	for i, row := range rows {
+		var keys []string
+		if i < len(rawList) {
+			keys = objectKeys(rawList[i])
+		}
+		maxLen := 0
+		for _, k := range keys {
+			if len(k) > maxLen {
+				maxLen = len(k)
+			}
+		}
+		fmt.Fprintln(out, "---")
+		for _, k := range keys {
+			fmt.Fprintf(out, "%-*s : %s\n", maxLen, k, detailValue(row[k]))
+		}
+	}
+	fmt.Fprintln(out, "---")
+}
+
+func rawRows(raw json.RawMessage) []json.RawMessage {
 	var rows []json.RawMessage
-	if json.Unmarshal(raw, &rows) != nil || len(rows) == 0 {
+	if json.Unmarshal(raw, &rows) != nil {
 		return nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(rows[0]))
+	return rows
+}
+
+// firstRowKeys extracts the first row's keys in JSON document order.
+func firstRowKeys(raw json.RawMessage) []string {
+	rows := rawRows(raw)
+	if len(rows) == 0 {
+		return nil
+	}
+	return objectKeys(rows[0])
+}
+
+// objectKeys extracts a JSON object's top-level keys in document order
+// (Go maps don't preserve it, so it is re-read from the raw payload).
+func objectKeys(raw json.RawMessage) []string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	var keys []string
 	depth := 0
 	for {
@@ -231,10 +274,23 @@ func skipValue(dec *json.Decoder) {
 	}
 }
 
-// cellValue formats one table cell: arrays join with ", ", empty values
-// render as "-", and numeric values under date-like keys become timestamps
-// (ms vs s heuristic: values above 1e11 are already milliseconds).
+// cellValue formats one table cell like detailValue, plus the table-only
+// date rule: numeric values under date-like keys become timestamps (ms vs s
+// heuristic: values above 1e11 are already milliseconds).
 func cellValue(key string, v any) string {
+	if n, isNum := numericValue(v); isNum && n > 0 && isDateKey(key) {
+		ms := n
+		if n <= 1e11 {
+			ms = n * 1000
+		}
+		return time.UnixMilli(int64(ms)).Format("2006-01-02 15:04")
+	}
+	return detailValue(v)
+}
+
+// detailValue formats one value: arrays join with ", "; Node's `val || '-'`
+// renders every falsy value as "-".
+func detailValue(v any) string {
 	if v == nil {
 		return "-"
 	}
@@ -249,20 +305,11 @@ func cellValue(key string, v any) string {
 		return "-"
 	}
 
-	if n, isNum := numericValue(v); isNum && n > 0 && isDateKey(key) {
-		ms := n
-		if n <= 1e11 {
-			ms = n * 1000
-		}
-		return time.UnixMilli(int64(ms)).Format("2006-01-02 15:04")
-	}
-
 	s := fmt.Sprint(v)
 	if f, ok := v.(float64); ok {
 		s = strconv.FormatFloat(f, 'f', -1, 64)
 	}
 	if s == "" || s == "false" || s == "0" {
-		// Node's `val || '-'` treats all falsy values as absent.
 		return "-"
 	}
 	return s

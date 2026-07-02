@@ -56,12 +56,15 @@ func testApp(t *testing.T, addr string) (*app, *bytes.Buffer, *bytes.Buffer) {
 	}
 	cfg.Set("api", map[string]any{"auth": "roottoken"})
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
-	return &app{
+	a := &app{
 		cfg:    cfg,
 		client: &apiproto.Client{Addr: addr},
-		out:    out,
 		errOut: errOut,
-	}, out, errOut
+		in:     strings.NewReader(""),
+		out:    out,
+	}
+	a.boot = func() {} // tests never spawn a real watchdog
+	return a, out, errOut
 }
 
 func TestRunAPIActionEndToEnd(t *testing.T) {
@@ -129,12 +132,12 @@ func TestRunStatusOffline(t *testing.T) {
 }
 
 func TestRunUnknownCommand(t *testing.T) {
-	a, _, errOut := testApp(t, "127.0.0.1:0")
+	a, out, _ := testApp(t, "127.0.0.1:0")
 	if code := a.run([]string{"frobnicate"}); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(errOut.String(), "frobnicate") {
-		t.Errorf("stderr = %q", errOut)
+	if !strings.Contains(out.String(), "is not a valid command") {
+		t.Errorf("stdout = %q", out)
 	}
 }
 

@@ -86,7 +86,8 @@ func (a *app) status() int {
 		fmt.Fprintf(a.out, "Login on %s to manage all your server operations.\n", color("https://odac.run", 95))
 	}
 	fmt.Fprintln(a.out)
-	return 0
+	fmt.Fprintln(a.out, "Commands:")
+	return a.help("", true)
 }
 
 func statusValue(online bool) string {
