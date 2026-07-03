@@ -1,7 +1,6 @@
-// odac is the ODAC CLI (Go port of cli/ — tasks 2.1 connector + 2.2 command
-// surface). Remaining gaps: the monitor TUI (`debug`/`monit`, task 2.3) and
-// i18n (task 2.4); until the 2.5 parity sign-off the Node CLI remains the
-// shipped entry point.
+// odac is the ODAC CLI (Go port of cli/ — tasks 2.1 connector, 2.2 command
+// surface, 2.3 monitor TUI). Remaining gap: i18n (task 2.4); until the 2.5
+// parity sign-off the Node CLI remains the shipped entry point.
 package main
 
 import (

@@ -60,7 +60,9 @@ func init() {
 		}},
 		{"debug", &command{
 			description: "Debug ODAC Server",
-			action:      monitorStub,
+			action: func(a *app, args []string) int {
+				return a.monitor("debug")
+			},
 		}},
 		{"help", &command{
 			description: "List all available commands",
@@ -70,7 +72,9 @@ func init() {
 		}},
 		{"monit", &command{
 			description: "Monitor Applications and Services",
-			action:      monitorStub,
+			action: func(a *app, args []string) int {
+				return a.monitor("monit")
+			},
 		}},
 		{"restart", &command{
 			description: "Restart ODAC Server",
@@ -291,11 +295,6 @@ func init() {
 			},
 		}},
 	}
-}
-
-func monitorStub(a *app, args []string) int {
-	fmt.Fprintln(a.errOut, "The monitor is not ported to the Go CLI yet (task 2.3); use the Node CLI.")
-	return 1
 }
 
 // dispatch ports Cli.init's argument walk: descend into sub-commands while
