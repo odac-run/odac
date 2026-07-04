@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -200,6 +201,59 @@ func TestLoadModuleLogsFromDisk(t *testing.T) {
 	m.loadModuleLogs()
 	if len(m.logsContent) != 1 || !strings.Contains(m.logsContent[0], "[dns]") {
 		t.Errorf("dns watch = %v", m.logsContent)
+	}
+}
+
+// TestTailFile covers the bounded log reads: small files come back whole, a
+// mid-file start drops the leading partial line, missing files read as "".
+func TestTailFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.log")
+	if err := os.WriteFile(p, []byte("first\nsecond\nthird\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := tailFile(p, 1024); got != "first\nsecond\nthird\n" {
+		t.Errorf("full read = %q", got)
+	}
+	// 13 bytes from the end lands inside "second"; the partial line drops.
+	if got := tailFile(p, 13); got != "third\n" {
+		t.Errorf("tail read = %q, want %q", got, "third\n")
+	}
+	if got := tailFile(filepath.Join(dir, "missing.log"), 1024); got != "" {
+		t.Errorf("missing file = %q, want empty", got)
+	}
+}
+
+// TestLoadModuleLogsCacheSkipsReads asserts the mtime cache prevents
+// re-reading unchanged files (the pre-fix code read whole files every tick).
+func TestLoadModuleLogsCacheSkipsReads(t *testing.T) {
+	m, a := testMonitor(t, "debug")
+	logsDir := filepath.Join(a.cfg.BaseDir(), "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(logsDir, ".odac.log")
+	if err := os.WriteFile(p, []byte("[LOG][2026-07-03T10:00:00.000Z] [api] up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.loadModuleLogs()
+	first := m.logsContent
+
+	// Rewrite the content but keep the mtime: a cache hit must not re-read.
+	if err := os.WriteFile(p, []byte("[LOG][2026-07-03T10:00:00.000Z] [api] CHANGED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, st.ModTime(), m.logsMtime); err != nil {
+		t.Fatal(err)
+	}
+	m.loadModuleLogs()
+	if !slices.Equal(m.logsContent, first) {
+		t.Errorf("cache miss re-read the file: %v", m.logsContent)
 	}
 }
 

@@ -454,39 +454,80 @@ func (m *monitor) selectedModules() []string {
 	return names
 }
 
+// logTailBytes bounds how much of each log file a refresh reads. Only the
+// last height-4 filtered lines ever render, but the files grow without
+// bound (the watchdog appends the server's stdout continuously); reading
+// them whole froze the debug view on long-running servers.
+const logTailBytes = 256 * 1024
+
 // loadModuleLogs merges .odac.log with the converted proxy log and filters by
 // watched modules. Node's mtime cache compares Date objects by reference and
-// never hits; the intended cache is implemented here (mtime + watch set).
+// never hits; the intended cache is implemented here (mtime + watch set) and
+// checked before any file content is read.
 func (m *monitor) loadModuleLogs() {
 	logsDir := filepath.Join(m.a.cfg.BaseDir(), "logs")
+	odacPath := filepath.Join(logsDir, ".odac.log")
+	proxyPath := filepath.Join(logsDir, "proxy.log")
 
-	var log string
 	var mtime time.Time
-	if st, err := os.Stat(filepath.Join(logsDir, ".odac.log")); err == nil {
+	if st, err := os.Stat(odacPath); err == nil {
 		mtime = st.ModTime()
-		if raw, err := os.ReadFile(filepath.Join(logsDir, ".odac.log")); err == nil {
-			log = string(raw)
-		}
 	}
-
 	proxyIdx := slices.Index(m.modules, "proxy")
-	if len(m.watch) == 0 || slices.Contains(m.watch, proxyIdx) {
-		if st, err := os.Stat(filepath.Join(logsDir, "proxy.log")); err == nil {
-			if st.ModTime().After(mtime) {
-				mtime = st.ModTime()
-			}
-			if raw, err := os.ReadFile(filepath.Join(logsDir, "proxy.log")); err == nil {
-				log += "\n" + convertProxyLog(string(raw))
-			}
+	includeProxy := len(m.watch) == 0 || slices.Contains(m.watch, proxyIdx)
+	if includeProxy {
+		if st, err := os.Stat(proxyPath); err == nil && st.ModTime().After(mtime) {
+			mtime = st.ModTime()
 		}
 	}
 
 	if slices.Equal(m.watch, m.logsWatched) && mtime.Equal(m.logsMtime) && m.logsContent != nil {
 		return
 	}
+
+	log := tailFile(odacPath, logTailBytes)
+	if includeProxy {
+		if raw := tailFile(proxyPath, logTailBytes); raw != "" {
+			log += "\n" + convertProxyLog(raw)
+		}
+	}
 	m.logsContent = filterModuleLines(log, m.selectedModules(), m.height-4)
 	m.logsMtime = mtime
 	m.logsWatched = slices.Clone(m.watch)
+}
+
+// tailFile reads at most maxBytes from the end of path. When the read starts
+// mid-file the leading partial line is dropped, so callers always see whole
+// lines. Returns "" when the file is missing or unreadable.
+func tailFile(path string, maxBytes int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	offset := st.Size() - maxBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	if offset > 0 {
+		if nl := bytes.IndexByte(raw, '\n'); nl >= 0 {
+			raw = raw[nl+1:]
+		} else {
+			return ""
+		}
+	}
+	return string(raw)
 }
 
 var proxyLineRe = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\s+(.*)$`)
