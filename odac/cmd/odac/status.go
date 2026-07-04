@@ -74,22 +74,26 @@ func (a *app) status() int {
 	rows = append(rows, struct{ label, value string }{"Auth", authValue(authenticated)})
 
 	// Labels are translated at display time (Cli.js #status: __(iterator)).
+	// The column width spans all five labels even when a row is hidden
+	// offline — Node measures the full iterator list before printing.
 	width := 0
-	labels := make([]string, len(rows))
-	for i, row := range rows {
-		labels[i] = __(row.label)
-		if n := len([]rune(labels[i])); n > width {
+	for _, label := range []string{"Status", "Uptime", "Apps", "Domains", "Auth"} {
+		if n := len([]rune(__(label))); n > width {
 			width = n
 		}
 	}
-	for i, row := range rows {
-		fmt.Fprintf(a.out, "%s%s : %s\n", labels[i], strings.Repeat(" ", width-len([]rune(labels[i]))), row.value)
+	for _, row := range rows {
+		label := __(row.label)
+		fmt.Fprintf(a.out, "%s%s : %s\n", label, strings.Repeat(" ", width-len([]rune(label))), row.value)
 	}
 	if !authenticated {
 		fmt.Fprintln(a.out, __("Login on %s to manage all your server operations.", color("https://odac.run", 95)))
 	}
 	fmt.Fprintln(a.out)
 	fmt.Fprintln(a.out, __("Commands:"))
+	// Node's #status fires help(true) without awaiting it, so its trailing
+	// console.log('') lands right after "Commands:", before the list.
+	fmt.Fprintln(a.out)
 	return a.help("", true)
 }
 
@@ -109,6 +113,8 @@ func authValue(authenticated bool) string {
 
 // uptimeString mirrors Cli.#status formatting: days+hours, or
 // hours+minutes, minutes+seconds, plain seconds as the span shrinks.
+// Node concatenates "Nd "/"Nh "/"Nm " with trailing spaces and only the
+// seconds part without one; the trailing space is kept for byte parity.
 func uptimeString(d time.Duration) string {
 	seconds := int(d.Seconds())
 	minutes := seconds / 60
@@ -131,5 +137,5 @@ func uptimeString(d time.Duration) string {
 	if seconds > 0 && hours == 0 {
 		fmt.Fprintf(&b, "%ds", seconds)
 	}
-	return strings.TrimSpace(b.String())
+	return b.String()
 }

@@ -166,12 +166,13 @@ func TestUptimeString(t *testing.T) {
 		d    time.Duration
 		want string
 	}{
+		// Trailing spaces mirror Node's `days + 'd '` concatenation.
 		{42 * time.Second, "42s"},
 		{3*time.Minute + 5*time.Second, "3m 5s"},
-		{2*time.Hour + 10*time.Minute, "2h 10m"},
-		{50 * time.Hour, "2d 2h"},
-		{49 * time.Hour, "2d 1h"},
-		{24 * time.Hour, "1d"},
+		{2*time.Hour + 10*time.Minute, "2h 10m "},
+		{50 * time.Hour, "2d 2h "},
+		{49 * time.Hour, "2d 1h "},
+		{24 * time.Hour, "1d "},
 	}
 	for _, tt := range tests {
 		if got := uptimeString(tt.d); got != tt.want {
@@ -225,6 +226,31 @@ func TestFirstRowKeysPreservesJSONOrder(t *testing.T) {
 	want := []string{"zeta", "alpha", "mid"}
 	if got := firstRowKeys(raw); !reflect.DeepEqual(got, want) {
 		t.Errorf("firstRowKeys = %v, want %v", got, want)
+	}
+}
+
+// TestPrintTableStretch pins the terminal width and asserts Node's
+// stretch-to-width behavior: floor(extra/columns) is added to every column.
+func TestPrintTableStretch(t *testing.T) {
+	orig := tableWidth
+	tableWidth = func() int { return 40 }
+	defer func() { tableWidth = orig }()
+
+	raw := json.RawMessage(`[{"name":"blog","type":"git"}]`)
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	printTable(&out, raw, rows)
+
+	lines := strings.Split(out.String(), "\n")
+	// min widths: NAME 6, TYPE 6 → total 12, extra 28, +14 per column → 40.
+	if got := len(lines[1]); got != 40 {
+		t.Errorf("separator width = %d, want 40\n%s", got, out.String())
+	}
+	if !strings.HasPrefix(lines[0], "NAME"+strings.Repeat(" ", 16)+"TYPE") {
+		t.Errorf("header not stretched: %q", lines[0])
 	}
 }
 

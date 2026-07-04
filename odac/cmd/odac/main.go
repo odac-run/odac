@@ -1,6 +1,7 @@
 // odac is the ODAC CLI (Go port of cli/ — tasks 2.1 connector, 2.2 command
-// surface, 2.3 monitor TUI, 2.4 i18n). Until the 2.5 parity sign-off the
-// Node CLI remains the shipped entry point.
+// surface, 2.3 monitor TUI, 2.4 i18n, 2.5 parity sign-off). Byte-parity with
+// the Node CLI is verified; the bin/odac entry point switches over in the
+// Phase 4 restructure.
 package main
 
 import (

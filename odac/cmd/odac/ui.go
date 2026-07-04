@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"odac/internal/apiproto"
 )
@@ -58,7 +61,9 @@ type renderer struct {
 
 func (r *renderer) progress(p apiproto.Progress) {
 	if r.sawProgress && r.lastProcess == p.Process {
-		fmt.Fprint(r.out, "\x1b[2K\r") // clear line + cursor to column 0
+		// clear line + cursor to column 0, byte-matching Node's
+		// clearLine(0) + cursorTo(0)
+		fmt.Fprint(r.out, "\x1b[2K\x1b[1G")
 	} else {
 		r.lastProcess = p.Process
 		fmt.Fprint(r.out, "\n")
@@ -118,12 +123,21 @@ func renderData(out io.Writer, data json.RawMessage, detail bool) {
 	}
 }
 
+// tableWidth mirrors Node's `process.stdout.columns || 80` (#printTable):
+// tables stretch to the terminal width, and a piped stdout stretches to 80.
+// Variable so tests can pin it.
+var tableWidth = func() int {
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		return w
+	}
+	return 80
+}
+
 // printTable ports Connector.js #printTable: uppercase headers, columns
-// padded to max(content, header)+2, a dashed separator, date-like numeric
-// values formatted as local "YYYY-MM-DD HH:MM". Column order follows the
-// first row's JSON key order (Go maps don't preserve it, so it is re-read
-// from the raw payload). Terminal-width stretching is left for the 2.5
-// parity pass.
+// padded to max(content, header)+2 and stretched evenly to the terminal
+// width, a dashed separator, date-like numeric values formatted as local
+// "YYYY-MM-DD HH:MM". Column order follows the first row's JSON key order
+// (Go maps don't preserve it, so it is re-read from the raw payload).
 func printTable(out io.Writer, raw json.RawMessage, rows []map[string]any) {
 	keys := firstRowKeys(raw)
 	if len(keys) == 0 {
@@ -138,15 +152,30 @@ func printTable(out io.Writer, raw json.RawMessage, rows []map[string]any) {
 		}
 	}
 
+	// Widths use Node's measure, not the rendered cell: `String(val || '')`
+	// joins arrays with "," (no space) and maps falsy values to "", while the
+	// cell renders with ", " and "-". Array columns therefore measure one
+	// short per extra element, exactly like #printTable.
 	widths := make([]int, len(keys))
 	for j, k := range keys {
 		widths[j] = len([]rune(strings.ToUpper(k)))
-		for i := range cells {
-			if n := len([]rune(cells[i][j])); n > widths[j] {
+		for _, row := range rows {
+			if n := len([]rune(measureValue(k, row[k]))); n > widths[j] {
 				widths[j] = n
 			}
 		}
 		widths[j] += 2
+	}
+
+	total := 0
+	for _, w := range widths {
+		total += w
+	}
+	if tw := tableWidth(); tw > total {
+		extra := (tw - total) / len(keys)
+		for j := range widths {
+			widths[j] += extra
+		}
 	}
 
 	var line strings.Builder
@@ -272,6 +301,40 @@ func skipValue(dec *json.Decoder) {
 			}
 		}
 	}
+}
+
+// measureValue is the string Node sizes a column by: `String(val || ”)` on
+// the date-formatted row — falsy values measure as "" (they render as "-"),
+// arrays measure with a bare "," join (they render with ", ").
+func measureValue(key string, v any) string {
+	if arr, ok := v.([]any); ok {
+		if len(arr) == 0 {
+			return ""
+		}
+		parts := make([]string, len(arr))
+		for i, item := range arr {
+			parts[i] = fmt.Sprint(item)
+		}
+		return strings.Join(parts, ",")
+	}
+	switch n := v.(type) {
+	case nil:
+		return ""
+	case bool:
+		if !n {
+			return ""
+		}
+		return "true"
+	case string:
+		if n == "" {
+			return ""
+		}
+	case float64:
+		if n == 0 {
+			return ""
+		}
+	}
+	return cellValue(key, v)
 }
 
 // cellValue formats one table cell like detailValue, plus the table-only
