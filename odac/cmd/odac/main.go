@@ -1,6 +1,6 @@
 // odac is the ODAC CLI (Go port of cli/ — tasks 2.1 connector, 2.2 command
-// surface, 2.3 monitor TUI). Remaining gap: i18n (task 2.4); until the 2.5
-// parity sign-off the Node CLI remains the shipped entry point.
+// surface, 2.3 monitor TUI, 2.4 i18n). Until the 2.5 parity sign-off the
+// Node CLI remains the shipped entry point.
 package main
 
 import (
@@ -12,7 +12,13 @@ import (
 
 	"odac/internal/apiproto"
 	"odac/internal/config"
+	"odac/internal/lang"
 )
+
+// __ mirrors Node's global `__` (core/Odac.js → Lang.get): the same literals
+// are wrapped at the same sites, so the translated surfaces stay greppable
+// against cli/ and core/Commands.js for the 2.5 parity pass.
+var __ = lang.T
 
 type app struct {
 	boot   func() // boot-on-demand hook; defaultBoot in production, stubbed in tests

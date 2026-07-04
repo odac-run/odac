@@ -73,35 +73,38 @@ func (a *app) status() int {
 	}
 	rows = append(rows, struct{ label, value string }{"Auth", authValue(authenticated)})
 
+	// Labels are translated at display time (Cli.js #status: __(iterator)).
 	width := 0
-	for _, row := range rows {
-		if len(row.label) > width {
-			width = len(row.label)
+	labels := make([]string, len(rows))
+	for i, row := range rows {
+		labels[i] = __(row.label)
+		if n := len([]rune(labels[i])); n > width {
+			width = n
 		}
 	}
-	for _, row := range rows {
-		fmt.Fprintf(a.out, "%s%s : %s\n", row.label, strings.Repeat(" ", width-len(row.label)), row.value)
+	for i, row := range rows {
+		fmt.Fprintf(a.out, "%s%s : %s\n", labels[i], strings.Repeat(" ", width-len([]rune(labels[i]))), row.value)
 	}
 	if !authenticated {
-		fmt.Fprintf(a.out, "Login on %s to manage all your server operations.\n", color("https://odac.run", 95))
+		fmt.Fprintln(a.out, __("Login on %s to manage all your server operations.", color("https://odac.run", 95)))
 	}
 	fmt.Fprintln(a.out)
-	fmt.Fprintln(a.out, "Commands:")
+	fmt.Fprintln(a.out, __("Commands:"))
 	return a.help("", true)
 }
 
 func statusValue(online bool) string {
 	if online {
-		return color(" Online", ansiGreen)
+		return color(" "+__("Online"), ansiGreen)
 	}
-	return color(" Offline", ansiYellow)
+	return color(" "+__("Offline"), ansiYellow)
 }
 
 func authValue(authenticated bool) string {
 	if authenticated {
-		return color(" Logged in", ansiGreen)
+		return color(" "+__("Logged in"), ansiGreen)
 	}
-	return color(" Not logged in", ansiYellow)
+	return color(" "+__("Not logged in"), ansiYellow)
 }
 
 // uptimeString mirrors Cli.#status formatting: days+hours, or

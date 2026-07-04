@@ -163,7 +163,10 @@ func monCol1(width int) int {
 	return c1
 }
 
-const monShortcuts = "Mouse | ↑/↓ Navigate | ↵ Select | R Restart | Ctrl+C Exit"
+func monShortcuts() string {
+	return "Mouse | ↑/↓ " + __("Navigate") + " | ↵ " + __("Select") +
+		" | R " + __("Restart") + " | Ctrl+C " + __("Exit")
+}
 
 type monApp struct {
 	id     string
@@ -588,14 +591,14 @@ func (m *monitor) debugFrame() string {
 
 	b.WriteString(mcolor("┌", "gray"))
 	b.WriteString(mcolor(rep("─", 5), "gray"))
-	title := "Modules"
+	title := __("Modules")
 	b.WriteString(" " + title + " ")
-	b.WriteString(mcolor(rep("─", c1-len(title)-7), "gray"))
+	b.WriteString(mcolor(rep("─", c1-len([]rune(title))-7), "gray"))
 	b.WriteString(mcolor("┬", "gray"))
 	b.WriteString(mcolor(rep("─", 5), "gray"))
-	title = "Logs"
+	title = __("Logs")
 	b.WriteString(" " + title + " ")
-	b.WriteString(mcolor(rep("─", m.width-c1-len(title)-7), "gray"))
+	b.WriteString(mcolor(rep("─", m.width-c1-len([]rune(title))-7), "gray"))
 	b.WriteString(mcolor("┐\n", "gray"))
 
 	for i := 0; i < m.height-3; i++ {
@@ -913,9 +916,9 @@ func (m *monitor) monitFrame() string {
 	c1 := monCol1(m.width)
 	m.lineToApp = map[int]int{}
 
-	mainTitle := "Apps"
+	mainTitle := __("Apps")
 	if m.publicCount > 0 && m.publicCount < len(m.apps) {
-		mainTitle = "Public"
+		mainTitle = __("Public")
 	}
 
 	var b strings.Builder
@@ -924,7 +927,7 @@ func (m *monitor) monitFrame() string {
 	if len(m.apps) > 0 {
 		b.WriteString(mcolor("─", "gray"))
 		b.WriteString(" " + mainTitle + " ")
-		b.WriteString(mcolor(rep("─", c1-len(mainTitle)-3), "gray"))
+		b.WriteString(mcolor(rep("─", c1-len([]rune(mainTitle))-3), "gray"))
 	} else {
 		b.WriteString(mcolor(rep("─", c1), "gray"))
 	}
@@ -937,7 +940,7 @@ func (m *monitor) monitFrame() string {
 	shownInternalHeader := false
 	for i := 0; i < len(m.apps) && rendered < m.height-4; i++ {
 		if i >= m.publicCount && m.publicCount > 0 && !shownInternalHeader {
-			b.WriteString(m.groupHeader(c1, "Internal", rendered))
+			b.WriteString(m.groupHeader(c1, __("Internal"), rendered))
 			rendered++
 			shownInternalHeader = true
 			if rendered >= m.height-4 {
@@ -1013,7 +1016,7 @@ func (m *monitor) groupHeader(c1 int, title string, line int) string {
 	b.WriteString(mcolor("│", "gray"))
 	b.WriteString(mcolor("─", "gray"))
 	b.WriteString(" " + title + " ")
-	b.WriteString(mcolor(rep("─", c1-len(title)-3), "gray"))
+	b.WriteString(mcolor(rep("─", c1-len([]rune(title))-3), "gray"))
 	b.WriteString(mcolor("│", "gray"))
 	b.WriteString(msafeLog(m.monitLogLine(line), m.width-c1))
 	b.WriteString(mcolor("│\n", "gray"))
@@ -1028,7 +1031,7 @@ func (m *monitor) footer(c1 int) string {
 	b.WriteString(mcolor(rep("─", m.width-c1), "gray"))
 	b.WriteString(mcolor("┘\n", "gray"))
 	b.WriteString(mcolor(" ODAC", "magenta", "bold"))
-	b.WriteString(mcolor(mspacing(monShortcuts, m.width+1-len("ODAC"), "right"), "gray"))
+	b.WriteString(mcolor(mspacing(monShortcuts(), m.width+1-len("ODAC"), "right"), "gray"))
 	return b.String()
 }
 

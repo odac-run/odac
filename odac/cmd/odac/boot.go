@@ -21,7 +21,7 @@ func (a *app) defaultBoot() {
 	}
 	a.booted = true
 
-	fmt.Fprintln(a.out, "Starting Odac Server...")
+	fmt.Fprintln(a.out, __("Starting Odac Server..."))
 	cmd := watchdogCommand()
 	if cmd == nil {
 		fmt.Fprintln(a.errOut, "No watchdog found (looked for odac-watchdog next to this binary and the Node watchdog).")

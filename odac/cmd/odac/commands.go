@@ -53,7 +53,7 @@ func init() {
 					key = args[0]
 				}
 				if key == "" {
-					key = a.question("Enter your authentication key: ")
+					key = a.question(__("Enter your authentication key: "))
 				}
 				return a.call("auth", []any{key}, false)
 			},
@@ -94,7 +94,7 @@ func init() {
 			description: "Run a script or file as a service",
 			action: func(a *app, args []string) int {
 				if len(args) == 0 || args[0] == "" {
-					fmt.Fprintln(a.out, "Please specify a file to run.")
+					fmt.Fprintln(a.out, __("Please specify a file to run."))
 					return 1
 				}
 				file := args[0]
@@ -127,7 +127,7 @@ func init() {
 							description: "Connect a hardware device to an app",
 							args:        []string{"-a", "--app", "-d", "--device"},
 							action: func(a *app, args []string) int {
-								app, device := a.appDeviceArgs(args, "Enter the host device path (e.g. /dev/ttyACM0): ")
+								app, device := a.appDeviceArgs(args, __("Enter the host device path (e.g. /dev/ttyACM0): "))
 								return a.call("app.device.add", []any{app, device}, false)
 							},
 						}},
@@ -135,7 +135,7 @@ func init() {
 							description: "Disconnect a hardware device from an app",
 							args:        []string{"-a", "--app", "-d", "--device"},
 							action: func(a *app, args []string) int {
-								app, device := a.appDeviceArgs(args, "Enter the host device path to remove: ")
+								app, device := a.appDeviceArgs(args, __("Enter the host device path to remove: "))
 								return a.call("app.device.delete", []any{app, device}, false)
 							},
 						}},
@@ -173,7 +173,7 @@ func init() {
 							domain = args[0]
 						}
 						if domain == "" {
-							domain = a.question("Enter the domain name: ")
+							domain = a.question(__("Enter the domain name: "))
 						}
 						return a.call("dns.list", []any{domain}, true)
 					},
@@ -196,10 +196,10 @@ func init() {
 							app = args[1]
 						}
 						if domain == "" {
-							domain = a.question("Enter the domain name: ")
+							domain = a.question(__("Enter the domain name: "))
 						}
 						if app == "" {
-							app = a.question("Enter the App ID or Name: ")
+							app = a.question(__("Enter the App ID or Name: "))
 						}
 						return a.call("domain.add", []any{domain, app}, false)
 					},
@@ -213,7 +213,7 @@ func init() {
 							domain = args[0]
 						}
 						if domain == "" {
-							domain = a.question("Enter the domain name: ")
+							domain = a.question(__("Enter the domain name: "))
 						}
 						return a.call("domain.delete", []any{domain}, false)
 					},
@@ -242,7 +242,7 @@ func init() {
 					description: "Create a new mail account",
 					args:        []string{"-e", "--email", "-p", "--password"},
 					action: func(a *app, args []string) int {
-						email, password, confirm := a.mailCredentials(args, "Enter the password: ", "Re-enter the password: ")
+						email, password, confirm := a.mailCredentials(args, __("Enter the password: "), __("Re-enter the password: "))
 						return a.call("mail.create", []any{email, password, confirm}, false)
 					},
 				}},
@@ -252,7 +252,7 @@ func init() {
 					action: func(a *app, args []string) int {
 						email := parseArg(args, "-e", "--email")
 						if email == "" {
-							email = a.question("Enter the e-mail address: ")
+							email = a.question(__("Enter the e-mail address: "))
 						}
 						return a.call("mail.delete", []any{email}, false)
 					},
@@ -263,7 +263,7 @@ func init() {
 					action: func(a *app, args []string) int {
 						domain := parseArg(args, "-d", "--domain")
 						if domain == "" {
-							domain = a.question("Enter the domain name: ")
+							domain = a.question(__("Enter the domain name: "))
 						}
 						return a.call("mail.list", []any{domain}, false)
 					},
@@ -272,7 +272,7 @@ func init() {
 					description: "Change mail account password",
 					args:        []string{"-e", "--email", "-p", "--password"},
 					action: func(a *app, args []string) int {
-						email, password, confirm := a.mailCredentials(args, "Enter the new password: ", "Re-enter the new password: ")
+						email, password, confirm := a.mailCredentials(args, __("Enter the new password: "), __("Re-enter the new password: "))
 						return a.call("mail.password", []any{email, password, confirm}, false)
 					},
 				}},
@@ -287,7 +287,7 @@ func init() {
 					action: func(a *app, args []string) int {
 						domain := parseArg(args, "-d", "--domain")
 						if domain == "" {
-							domain = a.question("Enter the domain name: ")
+							domain = a.question(__("Enter the domain name: "))
 						}
 						return a.call("ssl.renew", []any{domain}, false)
 					},
@@ -304,7 +304,7 @@ func (a *app) dispatch(args []string) int {
 	full := strings.Join(args, " ")
 	cmd := findEntry(commands, args[0])
 	if cmd == nil {
-		fmt.Fprintf(a.out, "'%s' is not a valid command.\n", color("odac "+full, ansiYellow))
+		fmt.Fprintln(a.out, __("'%s' is not a valid command.", color("odac "+full, ansiYellow)))
 		return 1
 	}
 	top := args[0]
@@ -351,7 +351,7 @@ func (a *app) appArg(args []string) string {
 		app = args[0]
 	}
 	if app == "" {
-		app = a.question("Enter the App ID or Name: ")
+		app = a.question(__("Enter the App ID or Name: "))
 	}
 	return app
 }
@@ -366,7 +366,7 @@ func (a *app) appDeviceArgs(args []string, devicePrompt string) (string, string)
 		device = args[1]
 	}
 	if app == "" {
-		app = a.question("Enter the App ID or Name: ")
+		app = a.question(__("Enter the App ID or Name: "))
 	}
 	if device == "" {
 		device = a.question(devicePrompt)
@@ -381,7 +381,7 @@ func (a *app) mailCredentials(args []string, passwordPrompt, confirmPrompt strin
 	password := parseArg(args, "-p", "--password")
 	fromFlag := password != ""
 	if email == "" {
-		email = a.question("Enter the e-mail address: ")
+		email = a.question(__("Enter the e-mail address: "))
 	}
 	if password == "" {
 		password = a.question(passwordPrompt)
@@ -422,7 +422,7 @@ func appCreateAction(a *app, args []string) int {
 	if typ == "git" || typ == "github" {
 		url := parseArg(args, "-u", "--url")
 		if url == "" {
-			url = a.question("Enter Git URL: ")
+			url = a.question(__("Enter Git URL: "))
 		}
 		name := parseArg(args, "-n", "--name")
 		if name == "" {
@@ -441,7 +441,7 @@ func appCreateAction(a *app, args []string) int {
 	}
 
 	if typ == "" {
-		typ = a.question("Enter the app type or repo: ")
+		typ = a.question(__("Enter the app type or repo: "))
 	}
 
 	if gitSchemeRe.MatchString(typ) || gitScpRe.MatchString(typ) {
@@ -471,7 +471,7 @@ func appPrivilegedAction(a *app, args []string) int {
 		}
 	}
 	if app == "" {
-		app = a.question("Enter the App ID or Name: ")
+		app = a.question(__("Enter the App ID or Name: "))
 	}
 
 	mode := "root"
@@ -482,13 +482,13 @@ func appPrivilegedAction(a *app, args []string) int {
 	}
 
 	if mode != "off" {
-		warning := "WARNING: This will run the app as ROOT inside its container. Grant only to apps you trust."
+		warning := __("WARNING: This will run the app as ROOT inside its container. Grant only to apps you trust.")
 		if mode == "full" {
-			warning = "WARNING: FULL privileged mode gives this app COMPLETE access to host devices and the kernel. This is dangerous and entirely at your own risk."
+			warning = __("WARNING: FULL privileged mode gives this app COMPLETE access to host devices and the kernel. This is dangerous and entirely at your own risk.")
 		}
 		fmt.Fprintln(a.out, warning)
-		if !strings.EqualFold(a.question(`Type "yes" to continue: `), "yes") {
-			fmt.Fprintln(a.out, "Aborted.")
+		if !strings.EqualFold(a.question(__(`Type "yes" to continue: `)), "yes") {
+			fmt.Fprintln(a.out, __("Aborted."))
 			return 1
 		}
 	}
@@ -560,7 +560,7 @@ func collectHelp(rows *[]helpRow, path string, c *command) {
 		}
 		*rows = append(*rows, helpRow{
 			prefix: color("odac "+path, 91) + color(positional, ansiGray),
-			desc:   c.description,
+			desc:   __(c.description),
 		})
 	}
 	for _, sub := range c.sub {
