@@ -1,3 +1,14 @@
+### 🛠️ Fixes & Improvements
+
+- improve log rotation handling to prevent stream write errors during rotation
+- resolve unresolved env directives on user overrides in app create
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### doc
 
 - add proxy caching documentation for page and asset caches
