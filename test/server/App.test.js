@@ -1012,6 +1012,65 @@ describe('App', () => {
       expect(call.env.DB_NAME).toBe('custom_db')
     })
 
+    test('should not let an echoed-back generate directive overwrite the generated password (single-app recipe)', async () => {
+      // The UI receives the recipe's raw env shape and may send it straight back
+      // as config.env when creating the app. If that raw directive object isn't
+      // resolved before merging, it clobbers the already-generated password with
+      // "[object Object]" instead of a real value.
+      const recipeEnv = {
+        MARIADB_DATABASE: 'odac',
+        MARIADB_HOST: {type: 'container'},
+        MARIADB_ROOT_PASSWORD: {length: 16, generate: true},
+        MARIADB_USER: 'root'
+      }
+      mockGetApp.mockResolvedValue({
+        name: 'mariadb',
+        image: 'mariadb:latest',
+        env: recipeEnv
+      })
+
+      const result = await App.create({
+        type: 'app',
+        app: 'mariadb',
+        name: 'mymariadb',
+        env: recipeEnv
+      })
+      expect(result.success).toBe(true)
+
+      const call = mockRunApp.mock.calls[0][1]
+      expect(call.env.MARIADB_ROOT_PASSWORD).not.toBe('[object Object]')
+      expect(typeof call.env.MARIADB_ROOT_PASSWORD).toBe('string')
+      expect(call.env.MARIADB_ROOT_PASSWORD).toHaveLength(16)
+      expect(call.env.MARIADB_HOST).toBe('mymariadb')
+    })
+
+    test('should not let an echoed-back generate directive overwrite the generated password (template)', async () => {
+      mockGetApp.mockResolvedValue({
+        name: 'stack',
+        apps: {
+          db: {
+            image: 'mariadb:latest',
+            env: {
+              DB_PASSWORD: {generate: true, length: 16}
+            }
+          }
+        }
+      })
+
+      const result = await App.create({
+        type: 'app',
+        app: 'stack',
+        name: 'mystack',
+        env: {db: {DB_PASSWORD: {generate: true, length: 16}}}
+      })
+      expect(result.success).toBe(true)
+
+      const call = mockRunApp.mock.calls[0][1]
+      expect(call.env.DB_PASSWORD).not.toBe('[object Object]')
+      expect(typeof call.env.DB_PASSWORD).toBe('string')
+      expect(call.env.DB_PASSWORD).toHaveLength(16)
+    })
+
     test('should handle direct template payload (type: template) from Hub', async () => {
       // Hub sends the full template data inline with Cloud-provided container names
       const result = await App.create({

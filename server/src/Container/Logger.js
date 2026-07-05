@@ -252,20 +252,29 @@ class Logger {
     const CHECK_EVERY = 1024 * 1024 // stat every ~1 MB of writes
     let bytesSinceCheck = 0
 
+    let rotating = false
     const maybeRotate = async chunkLen => {
       bytesSinceCheck += chunkLen
-      if (bytesSinceCheck < CHECK_EVERY) return
+      if (rotating || bytesSinceCheck < CHECK_EVERY) return
       bytesSinceCheck = 0
+      rotating = true
       try {
         const s = await fs.promises.stat(logFile)
         if (s.size <= MAX_BYTES) return
-        const old = fileStream
-        old.end()
+        // Order matters: writes keep flowing while we await, so the old
+        // stream must stay writable until the new one is swapped in.
+        // Ending it first crashes the process with ERR_STREAM_WRITE_AFTER_END
+        // on the next docker-modem chunk. Renaming an open file is safe on
+        // POSIX; late writes land in the .1 backup.
         await fs.promises.rename(logFile, logFile + '.1')
+        const old = fileStream
         fileStream = fs.createWriteStream(logFile, {flags: 'a'})
+        old.end()
       } catch {
         // Stat/rename failure (file missing, race with cleanup): drop one check
         // window; next write retries. fileStream is unchanged so writes still go.
+      } finally {
+        rotating = false
       }
     }
 

@@ -236,7 +236,9 @@ class Create {
       const userEnv = config.env || {}
       for (const key of orderedKeys) {
         if (userEnv[key] && typeof userEnv[key] === 'object') {
-          Object.assign(envMap[key], userEnv[key])
+          // Resolve directives on overrides so unresolved values (e.g.
+          // { generate: true }) don't overwrite generated envs as "[object Object]".
+          Object.assign(envMap[key], this.#prepareEnv(userEnv[key], nameMap[key]))
         }
       }
 
@@ -579,7 +581,11 @@ class Create {
     const userManual = this.#getManualEnv(userEnv)
     const userLinked = userIsStructured ? userEnv.linked || [] : []
 
-    const manual = {...defaultEnv, ...userManual}
+    // Resolve directives (e.g. { generate: true }, { type: 'container' }) on the
+    // user overrides too — the UI sends the recipe env back untouched, so an
+    // unresolved directive here would overwrite the generated value and reach
+    // the container as "[object Object]".
+    const manual = {...defaultEnv, ...this.#prepareEnv(userManual, containerName)}
 
     const linkedSet = new Set([...defaultLinked, ...userLinked])
     const linked = [...linkedSet]
