@@ -16,9 +16,11 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"time"
 
 	"odac/internal/config"
+	"odac/internal/dataplane"
 	"odac/internal/logx"
 	"odac/internal/system"
 )
@@ -40,8 +42,16 @@ func main() {
 		log.Error("Config autosave failed:", err.Error())
 	})
 
+	binDir := moduleBinDir()
+	dnsSvc := dataplane.NewDNS(cfg, binDir)
+	proxySvc := dataplane.NewProxy(cfg, binDir, nil) // container IP resolver lands with 3.4
+	mailSvc := dataplane.NewMail(cfg, binDir, dnsSvc)
+
 	sys := system.New(cfg, system.Services{
-		// Slots fill in as migration tasks land: Proxy/DNS/Mail (3.2),
+		Proxy: proxySvc,
+		DNS:   dnsSvc,
+		Mail:  mailSvc,
+		// Remaining slots fill in as migration tasks land:
 		// Api (3.3), App (3.4), SSL (3.5), Hub (3.6).
 	}, system.NewStartupGate(baseDir))
 
@@ -52,4 +62,21 @@ func main() {
 	log.Log("Odac server started")
 
 	select {} // run until the watchdog (or a signal) kills us
+}
+
+// moduleBinDir locates the data-plane binaries (odac-proxy/dns/mail). They
+// ship next to this executable in bin/ (Node resolved the same directory as
+// ../../bin relative to server/src). ODAC_BIN_DIR overrides for tests only.
+func moduleBinDir() string {
+	if dir := os.Getenv("ODAC_BIN_DIR"); dir != "" {
+		return dir
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	return filepath.Dir(exe)
 }
