@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAppliesDefaults(t *testing.T) {
@@ -156,5 +157,47 @@ func TestBothCorruptedFallsBackToDefaults(t *testing.T) {
 	fw := s.Map("firewall")
 	if fw == nil || fw["enabled"] != true {
 		t.Errorf("firewall not defaulted after double corruption: %v", fw)
+	}
+}
+
+func TestAutoSavePersistsDirtyModules(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stop := s.AutoSave(10*time.Millisecond, func(err error) { t.Errorf("autosave error: %v", err) })
+	defer stop()
+
+	srv := s.Map("server")
+	srv["pid"] = 4242
+	s.Touch("server")
+
+	file := filepath.Join(dir, "config", "server.json")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, err := os.ReadFile(file)
+		if err == nil {
+			var parsed map[string]map[string]any
+			if json.Unmarshal(raw, &parsed) == nil && parsed["server"]["pid"] == float64(4242) {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server.json not autosaved with pid; last content: %s", raw)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Stop must halt further saves: dirty a module, stop, verify no write.
+	stop()
+	stop() // idempotent
+	srv["pid"] = 9999
+	s.Touch("server")
+	time.Sleep(50 * time.Millisecond)
+	raw, _ := os.ReadFile(file)
+	if strings.Contains(string(raw), "9999") {
+		t.Error("autosave kept writing after stop()")
 	}
 }

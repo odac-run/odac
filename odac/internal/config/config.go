@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // moduleKeys maps each module file (name without .json) to the top-level
@@ -126,6 +127,31 @@ func (s *Store) SaveDirty() error {
 		s.dirty[module] = false
 	}
 	return errors.Join(errs...)
+}
+
+// AutoSave starts a background loop persisting dirty modules every interval,
+// mirroring Node's 500ms server-side autosave (contract 0.6). Modules whose
+// write fails stay dirty and are retried on the next tick. Only the server
+// process may run autosave (single-writer invariant — the CLI never writes).
+// The returned stop function is idempotent.
+func (s *Store) AutoSave(interval time.Duration, onError func(error)) (stop func()) {
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if err := s.SaveDirty(); err != nil && onError != nil {
+					onError(err)
+				}
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // ForceSave marks every module dirty and saves, mirroring Config.force() in
