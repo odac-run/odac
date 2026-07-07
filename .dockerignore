@@ -14,6 +14,19 @@ test/
 .kiro/
 .vscode/
 .secret/
+.agent/
+.claude/
+
+# Runtime state (certs, config, storage) — must never be baked into an image
+.odac/
+
+# Locally compiled binaries (image builds its own in the go-builder stage;
+# a dev machine's copies may be the wrong arch/OS)
+bin/odac-proxy
+bin/odac-dns
+bin/odac-mail
+bin/odac-watchdog
+bin/odac-go
 
 # Documentation
 docs/

@@ -66,14 +66,16 @@ RUN npm ci --omit=dev
 # Copy Node.js modules from builder
 COPY --from=node-builder /app/node_modules ./node_modules
 
-# Copy Go Proxy, DNS, Mail and Watchdog binaries from go-builder
+# Copy application source code
+COPY . .
+
+# Copy Go Proxy, DNS, Mail and Watchdog binaries from go-builder.
+# Must come AFTER `COPY . .` so a developer machine's local bin/ binaries
+# (possibly wrong arch/OS) can never shadow the freshly built ones.
 COPY --from=go-builder /build/odac-proxy ./bin/odac-proxy
 COPY --from=go-builder /build/odac-dns ./bin/odac-dns
 COPY --from=go-builder /build/odac-mail ./bin/odac-mail
 COPY --from=go-builder /build/odac-watchdog ./bin/odac-watchdog
-
-# Copy application source code
-COPY . .
 # Ensure binary is executable
 RUN chmod +x ./bin/odac-proxy && chmod +x ./bin/odac-dns && chmod +x ./bin/odac-mail && chmod +x ./bin/odac-watchdog
 
