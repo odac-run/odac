@@ -36,11 +36,26 @@ var moduleKeys = map[string][]string{
 }
 
 // Store holds the merged in-memory configuration.
+//
+// Two locks with a fixed order (valueMu before mu, never the reverse):
+//
+//   - mu guards the top-level data/dirty maps (every accessor takes it).
+//   - valueMu guards the VALUES hanging off those keys. Node's handlers
+//     mutated config objects freely under the single-threaded event loop;
+//     in Go, API command handlers (task 3.3+) mutate deep maps while the
+//     autosave loop and the data-plane sync builders marshal them. Writers
+//     wrap mutations in Mutate; readers that walk or marshal deep values
+//     (including SaveDirty itself) hold the read side via View.
+//
+// Get/Set/Map/Touch alone do NOT take valueMu: replacing or reading a
+// top-level slot is safe under mu, but touching anything inside a value
+// from a goroutine requires View/Mutate.
 type Store struct {
 	baseDir string
 	data    map[string]any
 	dirty   map[string]bool
 	mu      sync.Mutex
+	valueMu sync.RWMutex
 }
 
 // DefaultBaseDir returns ~/.odac, the base directory shared with the Node
@@ -110,9 +125,31 @@ func (s *Store) Touch(key string) {
 	s.markDirty(key)
 }
 
+// View runs fn holding the value read-lock: safe to walk or JSON-marshal
+// deep config values while no Mutate is in flight. fn may call the plain
+// accessors (Get/Map/...) but must not call Mutate or save methods.
+func (s *Store) View(fn func()) {
+	s.valueMu.RLock()
+	defer s.valueMu.RUnlock()
+	fn()
+}
+
+// Mutate runs fn holding the value write-lock: the required wrapper for any
+// in-place mutation of deep config values (API command handlers). fn may
+// call the plain accessors including Touch, but must not call View, Mutate
+// or the save methods (persist after Mutate returns).
+func (s *Store) Mutate(fn func()) {
+	s.valueMu.Lock()
+	defer s.valueMu.Unlock()
+	fn()
+}
+
 // SaveDirty writes every dirty module file atomically. Modules that fail to
-// write stay dirty so a later save retries them.
+// write stay dirty so a later save retries them. Holds the value read-lock
+// for the duration: the marshal in writeModule walks live deep values.
 func (s *Store) SaveDirty() error {
+	s.valueMu.RLock()
+	defer s.valueMu.RUnlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var errs []error

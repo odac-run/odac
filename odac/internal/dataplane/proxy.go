@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,8 +175,22 @@ func (p *Proxy) syncConfig(retry int) {
 		return // socket not ready yet
 	}
 
-	payload := p.buildPayload(retry)
-	if err := postJSON(sock, "/config", payload); err != nil {
+	p.dockerWaitFirstSync(retry)
+
+	// Payload assembly and marshal run under the config value WRITE lock:
+	// resolveBackend caches container IPs back onto the live app entries
+	// (app.ip), so this is a mutation, not just a read. The send happens
+	// outside the lock.
+	var body []byte
+	var marshalErr error
+	p.cfg.Mutate(func() {
+		body, marshalErr = json.Marshal(p.buildPayload())
+	})
+	if marshalErr != nil {
+		p.log.Error(fmt.Sprintf("Failed to sync config to proxy: %s", marshalErr))
+		return
+	}
+	if err := postRaw(sock, "/config", body); err != nil {
 		if retry < syncRetries && retryable(err) {
 			p.log.Log(fmt.Sprintf("Config sync failed (%s). Retrying in 1s...", errCode(err)))
 			time.Sleep(p.retryDelay)
@@ -186,18 +201,32 @@ func (p *Proxy) syncConfig(retry int) {
 	}
 }
 
-func (p *Proxy) buildPayload(retry int) map[string]any {
+// dockerWaitFirstSync ports the boot guard: with container-network apps
+// present, the first attempt waits ≤3s for Docker so backends don't fall
+// back to 127.0.0.1. Runs before the value lock — it sleeps.
+func (p *Proxy) dockerWaitFirstSync(retry int) {
+	if retry != 0 || p.containers == nil {
+		return
+	}
+	hasContainer := false
+	p.cfg.View(func() {
+		apps, _ := p.cfg.Get("apps").([]any)
+		hasContainer = hasContainerApps(apps)
+	})
+	if !hasContainer {
+		return
+	}
+	deadline := time.Now().Add(p.dockerWait)
+	for !p.containers.Available() && time.Now().Before(deadline) {
+		time.Sleep(p.dockerPoll)
+	}
+}
+
+// buildPayload assembles the /config body. Caller holds cfg.Mutate (see
+// syncConfig).
+func (p *Proxy) buildPayload() map[string]any {
 	domains := p.cfg.Map("domains")
 	apps, _ := p.cfg.Get("apps").([]any)
-
-	// With container-network apps present, the first attempt waits for Docker
-	// so backends don't fall back to 127.0.0.1 during boot.
-	if retry == 0 && p.containers != nil && hasContainerApps(apps) {
-		deadline := time.Now().Add(p.dockerWait)
-		for !p.containers.Available() && time.Now().Before(deadline) {
-			time.Sleep(p.dockerPoll)
-		}
-	}
 
 	proxyDomains := map[string]any{}
 	for name, rec := range domains {

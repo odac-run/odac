@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,10 +13,18 @@ import (
 	"odac/internal/supervise"
 )
 
-// Mail is the Go port of server/src/Mail.js's process-management half:
-// supervise bin/odac-mail and push domain/TLS/IP config per
-// contracts/mail-control.md. Account CRUD, send() and DKIM generation stay
-// with the command handlers (task 3.3), as the contract assigns them.
+// DNSService is what Mail borrows from the DNS service: the detected
+// address set for the config payload and record creation for publishing
+// DKIM TXT keys (Node reads both off Odac.server('DNS')).
+type DNSService interface {
+	IPSource
+	Record(args ...map[string]any)
+}
+
+// Mail is the Go port of server/src/Mail.js: supervise bin/odac-mail, push
+// domain/TLS/IP config per contracts/mail-control.md, and run the
+// orchestrator-side command logic (account CRUD pass-through, send()
+// message assembly, DKIM generation on the check tick — mailcmd.go).
 //
 // Mail has no /ready endpoint and no waitForReady — it takes no part in the
 // SO_REUSEPORT overlap handover; System.stop() always stops it.
@@ -23,22 +32,23 @@ type Mail struct {
 	cfg  *config.Store
 	log  *logx.Logger
 	proc process
-	ips  IPSource // the DNS service; nil-safe
+	dns  DNSService // the DNS service; nil-safe
 
 	retryDelay time.Duration
 
 	syncMu sync.Mutex
 
-	mu     sync.Mutex
-	active bool
+	mu       sync.Mutex
+	active   bool
+	checking bool // Node's #checking re-entrance guard for the DKIM scan
 }
 
-// NewMail wires the service; ips is normally the *DNS service.
-func NewMail(cfg *config.Store, binDir string, ips IPSource) *Mail {
+// NewMail wires the service; dns is normally the *DNS service.
+func NewMail(cfg *config.Store, binDir string, dns DNSService) *Mail {
 	m := &Mail{
 		cfg:        cfg,
 		log:        logx.New("Mail"),
-		ips:        ips,
+		dns:        dns,
 		retryDelay: time.Second,
 	}
 	m.proc = supervise.New(supervise.Options{
@@ -74,16 +84,31 @@ func (m *Mail) Stop() {
 	m.proc.Stop()
 }
 
-// Check runs on the 1s tick: respawn the binary if it is gone. Node's
-// check() also drives DKIM key generation; that ports together with the mail
-// command handlers in task 3.3 (it needs DNS record CRUD, which lands there).
+// Check runs on the 1s tick, porting Mail.check(): respawn the binary if it
+// is gone, then generate DKIM keys for MX-enabled domains that lack them.
+// The checking flag is Node's #checking guard — overlapping ticks skip the
+// whole check while a DKIM pass is in flight. The respawn stays synchronous
+// (Node's spawnMail runs before the first await); the DKIM scan runs in a
+// goroutine, like the un-awaited async check() Node's tick fires.
 func (m *Mail) Check() {
 	m.mu.Lock()
-	active := m.active
-	m.mu.Unlock()
-	if active {
-		m.proc.Ensure()
+	if m.checking || !m.active {
+		m.mu.Unlock()
+		return
 	}
+	m.checking = true
+	m.mu.Unlock()
+
+	m.proc.Ensure()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			m.checking = false
+			m.mu.Unlock()
+		}()
+		m.dkimCheck()
+	}()
 }
 
 // SyncConfig pushes domains/TLS/IP data (Mail.js syncConfig).
@@ -103,39 +128,53 @@ func (m *Mail) syncConfig(retry int) {
 		return
 	}
 
-	dnsZones := m.cfg.Map("dns")
-	mailDomains := map[string]any{}
-	for name, rec := range m.cfg.Map("domains") {
-		record, _ := rec.(map[string]any) // nil map reads as absent keys below
-		mailDomains[name] = map[string]any{
-			"cert":       orMap(record["cert"]),
-			"mxEnabled":  zoneHasMX(dnsZones[name]), // exact-name zone only
-			"subdomains": orList(record["subdomain"]),
+	// Payload assembly and marshal run under the config value lock (the
+	// domain/zone/ssl maps are live and 3.3's handlers mutate them); the
+	// send happens outside it.
+	var body []byte
+	var marshalErr error
+	domainCount := 0
+	m.cfg.View(func() {
+		dnsZones := m.cfg.Map("dns")
+		mailDomains := map[string]any{}
+		for name, rec := range m.cfg.Map("domains") {
+			record, _ := rec.(map[string]any) // nil map reads as absent keys below
+			mailDomains[name] = map[string]any{
+				"cert":       orMap(record["cert"]),
+				"mxEnabled":  zoneHasMX(dnsZones[name]), // exact-name zone only
+				"subdomains": orList(record["subdomain"]),
+			}
 		}
-	}
 
-	var v4, v6 []IPEntry
-	primary := "127.0.0.1"
-	if m.ips != nil {
-		var p string
-		v4, v6, p = m.ips.IPInfo()
-		if p != "" {
-			primary = p
+		var v4, v6 []IPEntry
+		primary := "127.0.0.1"
+		if m.dns != nil {
+			var p string
+			v4, v6, p = m.dns.IPInfo()
+			if p != "" {
+				primary = p
+			}
 		}
+
+		hostname, _ := os.Hostname()
+		payload := map[string]any{
+			"accounts": []any{}, // reserved; accounts live in the Go binary's SQLite
+			"domains":  mailDomains,
+			"hostname": hostname,
+			"ips":      map[string]any{"ipv4": entries(v4), "ipv6": entries(v6), "primary": primary},
+			"ssl":      orMap(m.cfg.Get("ssl")),
+		}
+		domainCount = len(mailDomains)
+		body, marshalErr = json.Marshal(payload)
+	})
+	if marshalErr != nil {
+		m.log.Error(fmt.Sprintf("Failed to sync Mail config to Go binary: %s", marshalErr))
+		return
 	}
 
-	hostname, _ := os.Hostname()
-	payload := map[string]any{
-		"accounts": []any{}, // reserved; accounts live in the Go binary's SQLite
-		"domains":  mailDomains,
-		"hostname": hostname,
-		"ips":      map[string]any{"ipv4": entries(v4), "ipv6": entries(v6), "primary": primary},
-		"ssl":      orMap(m.cfg.Get("ssl")),
-	}
+	m.log.Log("Mail: Syncing %d domains to Go binary", domainCount)
 
-	m.log.Log("Mail: Syncing %d domains to Go binary", len(mailDomains))
-
-	if err := postJSON(sock, "/config", payload); err != nil {
+	if err := postRaw(sock, "/config", body); err != nil {
 		if retry < syncRetries && retryable(err) {
 			m.log.Log(fmt.Sprintf("Mail config sync failed (%s). Retrying in 1s...", errCode(err)))
 			time.Sleep(m.retryDelay)

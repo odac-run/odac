@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,7 @@ type DNS struct {
 
 	retryDelay time.Duration
 	readyPoll  time.Duration
+	clock      func() time.Time // SOA-serial test injection; nil = time.Now
 
 	syncMu sync.Mutex
 
@@ -155,23 +157,34 @@ func (d *DNS) syncConfig(retry int) {
 		return
 	}
 
-	zones := d.cfg.Get("dns")
-	if !truthy(zones) {
-		zones = map[string]any{}
-	}
-	v4, v6, primary := d.IPInfo()
-	payload := map[string]any{
-		"ips":   map[string]any{"ipv4": entries(v4), "ipv6": entries(v6), "primary": primary},
-		"zones": zones,
-	}
-
+	// Payload assembly and marshal run under the config value lock (the
+	// zone maps are live and 3.3's handlers mutate them); the send happens
+	// outside it.
+	var body []byte
+	var marshalErr error
 	zoneCount := 0
-	if zm, ok := zones.(map[string]any); ok {
-		zoneCount = len(zm)
+	d.cfg.View(func() {
+		zones := d.cfg.Get("dns")
+		if !truthy(zones) {
+			zones = map[string]any{}
+		}
+		v4, v6, primary := d.IPInfo()
+		payload := map[string]any{
+			"ips":   map[string]any{"ipv4": entries(v4), "ipv6": entries(v6), "primary": primary},
+			"zones": zones,
+		}
+		if zm, ok := zones.(map[string]any); ok {
+			zoneCount = len(zm)
+		}
+		body, marshalErr = json.Marshal(payload)
+	})
+	if marshalErr != nil {
+		d.log.Error(fmt.Sprintf("Failed to sync DNS config to Go binary: %s", marshalErr))
+		return
 	}
 	d.log.Log("DNS: Syncing %d zones to Go binary", zoneCount)
 
-	if err := postJSON(sock, "/config", payload); err != nil {
+	if err := postRaw(sock, "/config", body); err != nil {
 		if retry < syncRetries && retryable(err) {
 			d.log.Log(fmt.Sprintf("DNS config sync failed (%s). Retrying in 1s...", errCode(err)))
 			time.Sleep(d.retryDelay)

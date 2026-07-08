@@ -94,6 +94,38 @@ func str(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+// jsString mirrors `${v}` / String(v) on decoded-JSON values: numbers render
+// without a trailing ".0", arrays join with "," (null elements as "", like
+// Array.prototype.join), objects become "[object Object]". Decoded JSON null
+// arrives as Go nil and renders "null".
+func jsString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case []any:
+		parts := make([]string, len(x))
+		for i, e := range x {
+			if e == nil {
+				continue // join renders null/undefined as ""
+			}
+			parts[i] = jsString(e)
+		}
+		return strings.Join(parts, ",")
+	case map[string]any:
+		return "[object Object]"
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 // orMap is JS `v || {}`.
 func orMap(v any) any {
 	if truthy(v) {

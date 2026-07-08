@@ -150,10 +150,25 @@ func (f *fakeResolver) GetIP(name string) (string, error) {
 	return "", errors.New("no such container")
 }
 
-// fakeIPSource implements IPSource.
+// fakeIPSource implements DNSService (IPSource + a recording Record).
 type fakeIPSource struct {
 	v4, v6  []IPEntry
 	primary string
+
+	mu      sync.Mutex
+	records []map[string]any
 }
 
 func (f *fakeIPSource) IPInfo() ([]IPEntry, []IPEntry, string) { return f.v4, f.v6, f.primary }
+
+func (f *fakeIPSource) Record(args ...map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.records = append(f.records, args...)
+}
+
+func (f *fakeIPSource) recorded() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.records...)
+}

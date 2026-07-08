@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-func newTestMail(t *testing.T, cs *controlServer, ips IPSource) (*Mail, *fakeProc) {
+func newTestMail(t *testing.T, cs *controlServer, dns DNSService) (*Mail, *fakeProc) {
 	t.Helper()
 	cfg := newStore(t)
-	m := NewMail(cfg, t.TempDir(), ips)
+	m := NewMail(cfg, t.TempDir(), dns)
 	fp := &fakeProc{running: true, socket: cs.sock}
 	m.proc = fp
 	m.retryDelay = 20 * time.Millisecond

@@ -303,6 +303,29 @@ func skipValue(dec *json.Decoder) {
 	}
 }
 
+// jsStringify renders one value like JS String(v): objects are
+// "[object Object]", arrays join with "," (null elements as ""), numbers
+// print without a trailing ".0". Cells holding objects really do show
+// "[object Object]" in Node (e.g. app.list PORTS) — byte parity keeps it.
+func jsStringify(v any) string {
+	switch x := v.(type) {
+	case map[string]any:
+		return "[object Object]"
+	case []any:
+		parts := make([]string, len(x))
+		for i, item := range x {
+			if item == nil {
+				continue // Array.prototype.join renders null/undefined as ""
+			}
+			parts[i] = jsStringify(item)
+		}
+		return strings.Join(parts, ",")
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	}
+	return fmt.Sprint(v)
+}
+
 // measureValue is the string Node sizes a column by: `String(val || ”)` on
 // the date-formatted row — falsy values measure as "" (they render as "-"),
 // arrays measure with a bare "," join (they render with ", ").
@@ -313,7 +336,7 @@ func measureValue(key string, v any) string {
 		}
 		parts := make([]string, len(arr))
 		for i, item := range arr {
-			parts[i] = fmt.Sprint(item)
+			parts[i] = jsStringify(item)
 		}
 		return strings.Join(parts, ",")
 	}
@@ -360,7 +383,7 @@ func detailValue(v any) string {
 	if arr, ok := v.([]any); ok {
 		parts := make([]string, len(arr))
 		for i, item := range arr {
-			parts[i] = fmt.Sprint(item)
+			parts[i] = jsStringify(item)
 		}
 		if s := strings.Join(parts, ", "); s != "" {
 			return s
@@ -368,10 +391,7 @@ func detailValue(v any) string {
 		return "-"
 	}
 
-	s := fmt.Sprint(v)
-	if f, ok := v.(float64); ok {
-		s = strconv.FormatFloat(f, 'f', -1, 64)
-	}
+	s := jsStringify(v)
 	if s == "" || s == "false" || s == "0" {
 		return "-"
 	}

@@ -54,6 +54,12 @@ func postJSON(socketPath, path string, payload any) error {
 	if err != nil {
 		return err
 	}
+	return postRaw(socketPath, path, body)
+}
+
+// postRaw is postJSON with a pre-marshaled body — the sync paths marshal
+// inside the config value lock and send outside it.
+func postRaw(socketPath, path string, body []byte) error {
 	resp, err := socketClient(socketPath, 0).Post("http://localhost"+path, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -61,6 +67,40 @@ func postJSON(socketPath, path string, payload any) error {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return nil
+}
+
+// requestJSON ports Mail.#apiRequest: any method, JSON body, any HTTP status
+// accepted, response body parsed as the module's JSON envelope ({success,
+// message, ...}). A non-JSON body yields a nil map — like Node, where
+// res?.success on a string is simply undefined.
+func requestJSON(socketPath, method, path string, payload any) (map[string]any, error) {
+	var body io.Reader
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, "http://localhost"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := socketClient(socketPath, 0).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var envelope map[string]any
+	json.Unmarshal(raw, &envelope)
+	return envelope, nil
 }
 
 // getStatus GETs path and returns the HTTP status code.

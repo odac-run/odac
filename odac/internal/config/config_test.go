@@ -201,3 +201,50 @@ func TestAutoSavePersistsDirtyModules(t *testing.T) {
 		t.Error("autosave kept writing after stop()")
 	}
 }
+
+// TestViewMutateSerializeWithSave hammers deep-value mutation against
+// SaveDirty's marshal — the exact race the 3.3 API handlers introduce.
+// Meaningful under -race: without the value lock this reports a data race
+// or a concurrent-map panic inside encoding/json.
+func TestViewMutateSerializeWithSave(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Set("dns", map[string]any{"zone": map[string]any{"records": []any{}}})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			s.Mutate(func() {
+				zone := s.Map("dns")["zone"].(map[string]any)
+				records := zone["records"].([]any)
+				zone["records"] = append(records, map[string]any{"i": i})
+				s.Touch("dns")
+			})
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		if err := s.SaveDirty(); err != nil {
+			t.Fatal(err)
+		}
+		s.View(func() {
+			zone := s.Map("dns")["zone"].(map[string]any)
+			_ = len(zone["records"].([]any))
+		})
+	}
+	<-done
+
+	if err := s.SaveDirty(); err != nil {
+		t.Fatal(err)
+	}
+	s.Reload()
+	zone, _ := s.Map("dns")["zone"].(map[string]any)
+	records, _ := zone["records"].([]any)
+	if len(records) != 200 {
+		t.Errorf("persisted records = %d, want 200", len(records))
+	}
+}

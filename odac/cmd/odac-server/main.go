@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"odac/internal/api"
 	"odac/internal/config"
 	"odac/internal/dataplane"
 	"odac/internal/logx"
@@ -47,13 +48,20 @@ func main() {
 	proxySvc := dataplane.NewProxy(cfg, binDir, nil) // container IP resolver lands with 3.4
 	mailSvc := dataplane.NewMail(cfg, binDir, dnsSvc)
 
+	apiSrv := api.NewServer(cfg)
+	apiSrv.Addr = os.Getenv("ODAC_API_ADDR") // test/smoke override only, like the CLI's
+	apiSrv.Init()                            // generates config.api.auth on first start
+
 	sys := system.New(cfg, system.Services{
 		Proxy: proxySvc,
 		DNS:   dnsSvc,
 		Mail:  mailSvc,
+		Api:   apiSrv,
 		// Remaining slots fill in as migration tasks land:
-		// Api (3.3), App (3.4), SSL (3.5), Hub (3.6).
+		// App (3.4), SSL (3.5), Hub (3.6).
 	}, system.NewStartupGate(baseDir))
+
+	registerActions(apiSrv, sys, dnsSvc, mailSvc)
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())
@@ -62,6 +70,39 @@ func main() {
 	log.Log("Odac server started")
 
 	select {} // run until the watchdog (or a signal) kills us
+}
+
+// registerActions wires the contract-0.1 action table for the services that
+// exist so far (task 3.3). The remaining actions — auth (3.6), update (3.7),
+// app.* (3.4), domain.* and ssl.renew (3.5) — answer unknown_action until
+// their tasks land; nothing flips to this server before 3.8 anyway.
+func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail) {
+	res := func(r api.Result) (*api.Result, error) { return &r, nil }
+
+	apiSrv.Register("dns.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(dnsSvc.List(a.At(0)))
+	})
+	apiSrv.Register("mail.create", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mailSvc.Create(a.At(0), a.At(1), a.At(2)))
+	})
+	apiSrv.Register("mail.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mailSvc.Delete(a.At(0)))
+	})
+	apiSrv.Register("mail.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mailSvc.List(a.At(0)))
+	})
+	apiSrv.Register("mail.password", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mailSvc.Password(a.At(0), a.At(1), a.At(2)))
+	})
+	apiSrv.Register("mail.send", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mailSvc.Send(a.At(0), a.Raw(0)))
+	})
+	// System.stop() returns nothing; the nil Result reproduces Node's
+	// {"id":"..."}-only final response for server.stop.
+	apiSrv.Register("server.stop", func(_ api.Args, _ api.Progress) (*api.Result, error) {
+		sys.Stop(false)
+		return nil, nil
+	})
 }
 
 // moduleBinDir locates the data-plane binaries (odac-proxy/dns/mail). They
