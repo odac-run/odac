@@ -22,6 +22,9 @@ global.Odac = {
     return {}
   }),
   server: jest.fn(module => {
+    if (module === 'Ports') {
+      return require('../../server/src/Ports')
+    }
     if (module === 'Api') {
       return {
         result: jest.fn((result, message, data) => ({result, success: result, message, data}))

@@ -505,7 +505,7 @@ class Container {
    * @param {string} name - Unique container name
    * @param {Object} options - Configuration options
    * @param {string} options.image - Docker image name
-   * @param {Array} options.ports - Array of port mappings [{host: 3000, container: 80}]
+   * @param {Array} options.ports - Array of published port mappings [{host: 3000, container: 80}]. Proxy-routed entries (host: 'proxy') are ignored.
    * @param {Array} options.volumes - Array of volume mappings [{host: '/path', container: '/data'}]
    * @param {Object} options.env - Environment variables {KEY: 'VALUE'}
    * @param {Array} options.cmd - Command to run (optional)
@@ -530,7 +530,11 @@ class Container {
     const exposedPorts = {}
 
     if (options.ports) {
+      const ports = Odac.server('Ports')
       for (const port of options.ports) {
+        // Defense in depth: a proxy-routed entry has no host binding to publish.
+        if (!ports.isPublished(port)) continue
+
         const portKey = `${port.container}/tcp`
         const bindIp = port.ip || '127.0.0.1'
         portBindings[portKey] = [{HostPort: String(port.host), HostIp: bindIp}]

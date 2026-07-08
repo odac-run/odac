@@ -26,7 +26,7 @@ class Deploy {
 
     if (!app.ports || app.ports.length === 0 || !app.ports[0].container) {
       log('Legacy App Fix: Assigning default port 3000 to app %s during %s', app.name, operation.toLowerCase())
-      app.ports = [{container: 3000}]
+      app.ports = [{host: Odac.server('Ports').PROXY, container: 3000}]
       api.saveApps()
     }
 

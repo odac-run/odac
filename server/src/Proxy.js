@@ -92,10 +92,11 @@ class OdacProxy {
     let useInternal = false
 
     if (app.ports && app.ports.length > 0) {
-      if (app.ports[0].host) {
-        port = parseInt(app.ports[0].host)
-      } else if (app.ports[0].container) {
-        port = parseInt(app.ports[0].container)
+      const primary = app.ports[0]
+      if (Odac.server('Ports').isPublished(primary)) {
+        port = parseInt(primary.host)
+      } else if (primary.container) {
+        port = parseInt(primary.container)
         useInternal = true
       }
     } else if (app.port) {
@@ -515,7 +516,7 @@ class OdacProxy {
 
     // Safety: If we have container apps, wait for Docker to be available
     // to prevent falling back to 127.0.0.1 during startup.
-    const hasContainerApps = apps.some(a => a.ports?.some(p => p.container && !p.host))
+    const hasContainerApps = apps.some(a => a.ports?.some(p => p.container && Odac.server('Ports').isProxy(p)))
     if (hasContainerApps && retryCount === 0) {
       const container = Odac.server('Container')
       let waits = 0
