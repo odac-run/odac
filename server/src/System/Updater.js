@@ -16,6 +16,11 @@ const UPDATE_CONTAINER_NAME = 'odac-update'
 const BACKUP_CONTAINER_NAME = 'odac-backup'
 const RUNNER_IMAGE = 'docker:cli'
 
+// Env vars the update cycle injects into the incoming container. They describe a
+// single handover, so they are stripped from the inherited env before the next
+// one is built — otherwise every update appends another copy.
+const UPDATE_ENV_KEYS = ['ODAC_UPDATE_MODE', 'ODAC_INSTANCE_ID', 'ODAC_PREVIOUS_INSTANCE_ID', 'ODAC_UPDATE_SOCKET_PATH', 'ODAC_LOG_NAME']
+
 class Updater {
   #updating = false
   #isUpdateMode = false
@@ -86,6 +91,14 @@ class Updater {
     if (process.env.ODAC_LOG_NAME && process.env.ODAC_LOG_NAME.includes('odac-update')) {
       console.log('ODAC_CMD:SWITCH_LOGS')
     }
+
+    // Self-heal a host left inconsistent by a crashed or rolled-back update.
+    // Identity first: #ensureRestartPolicy() looks the container up by name, so
+    // the name has to be ours again before the policy can be repaired. Both are
+    // idempotent and cheap — a no-op on healthy hosts.
+    await this.#ensureIdentity()
+    await this.#ensureRestartPolicy()
+
     this.#triggerReady()
   }
 
@@ -326,7 +339,7 @@ class Updater {
       const createOptions = {
         name: newName,
         Image: this.#image,
-        Env: env.filter(e => !e.startsWith('ODAC_UPDATE_MODE=') && !e.startsWith('ODAC_INSTANCE_ID=')),
+        Env: env.filter(e => !UPDATE_ENV_KEYS.some(k => e.startsWith(`${k}=`))),
         HostConfig: {
           Binds: binds,
           Privileged: true,
@@ -449,42 +462,72 @@ class Updater {
 
       // Monitoring: If socket closes before handover completion, Rollback!
       socket.on('close', async () => {
-        if (!handoverCompleted) {
-          log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
-          try {
-            await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
+        if (handoverCompleted) return
 
-            // Restart services immediately
-            if (!servicesRestarted) {
-              log('Restarting services for rollback...')
-              servicesRestarted = true
-              Odac.server('System').init() // Restart all services
-              log('Services restarted successfully')
-            }
+        log('CRITICAL: New container disconnected prematurely! Initiating ROLLBACK...')
 
-            // Clean up failed containers
-            try {
-              const newOne = this.#docker.getContainer(CONTAINER_NAME)
-              await newOne.remove({force: true})
-              log('Failed new container removed.')
-            } catch {
-              try {
-                const updateOne = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
-                await updateOne.remove({force: true})
-              } catch {
-                /* Ignore */
-              }
-            }
-
-            // Restore name
-            const myName = BACKUP_CONTAINER_NAME
-            const me = this.#docker.getContainer(myName)
-            await me.rename({name: CONTAINER_NAME})
-            log('Rollback successful: Restored self to "odac". Continuing operations.')
-          } catch (err) {
-            error('Rollback failed: %s', err.message)
-          }
+        // Tear this listener down before anything else. The rollback restarts our
+        // services through System.init(), which re-enters Updater.init(); if the
+        // socket were still listening, init() would find it, handshake with *this*
+        // process and drive takeOver() inside the old container — renaming us to
+        // 'odac-backup' and leaving no container named 'odac' at all.
+        clearTimeout(globalTimeout)
+        try {
+          server.close()
+        } catch {
+          /* Ignore */
         }
+        try {
+          fs.unlinkSync(socketPath)
+        } catch {
+          /* Ignore */
+        }
+
+        try {
+          await this.#fetchContainerLogs(UPDATE_CONTAINER_NAME)
+
+          // Establish who we are before removing anything: a rollback must never
+          // force-remove the container it is running inside. Before takeOver we
+          // still own 'odac' and the failed container is 'odac-update'; after
+          // takeOver we are 'odac-backup' and the failed one has claimed 'odac'.
+          const selfName = await this.#resolveSelfName()
+          const failedName = selfName === BACKUP_CONTAINER_NAME ? CONTAINER_NAME : UPDATE_CONTAINER_NAME
+
+          // Restart services immediately
+          if (!servicesRestarted) {
+            log('Restarting services for rollback...')
+            servicesRestarted = true
+            await Odac.server('System').init() // Restart all services
+            log('Services restarted successfully')
+          }
+
+          // Clean up the failed container
+          try {
+            await this.#docker.getContainer(failedName).remove({force: true})
+            log('Failed new container removed: %s', failedName)
+          } catch (e) {
+            if (e.statusCode !== 404) log('Warning: could not remove %s: %s', failedName, e.message)
+          }
+
+          // Restore our name, if takeOver already renamed us away from it
+          try {
+            await this.#docker.getContainer(BACKUP_CONTAINER_NAME).rename({name: CONTAINER_NAME})
+            log('Restored self to "%s".', CONTAINER_NAME)
+          } catch (e) {
+            if (e.statusCode !== 404) error('Failed to restore name: %s', e.message)
+          }
+
+          // takeOver() revoked our restart policy on the way out; take it back.
+          await this.#ensureRestartPolicy()
+          log('Rollback successful. Continuing operations.')
+        } catch (err) {
+          error('Rollback failed: %s', err.message)
+        }
+
+        // Unblock execute(), which is still awaiting the completion promise.
+        // Without this it hangs until the 5-minute global timeout, and #updating
+        // stays true — blocking every later update attempt.
+        rejectCompletion(new Error('Rolled back: new container disconnected prematurely'))
       })
 
       socket.on('data', async data => {
@@ -563,6 +606,115 @@ class Updater {
     })
   }
 
+  /**
+   * Best-effort resolution of the name of the container we are running inside.
+   *
+   * The usual "hostname is the container id" trick is useless here: the update
+   * container runs with NetworkMode 'host', so its hostname is the host's. We
+   * instead read the id out of the paths Docker injects into our mount table and
+   * cgroup, and fall back to "whichever update-cycle container is running".
+   *
+   * @returns {Promise<string|null>} Container name without the leading slash.
+   */
+  async #resolveSelfName() {
+    const probes = [
+      ['/proc/self/mountinfo', /\/docker\/containers\/([0-9a-f]{64})/],
+      ['/proc/self/cgroup', /[-/]docker[-/]([0-9a-f]{64})/]
+    ]
+
+    for (const [file, pattern] of probes) {
+      try {
+        const match = fs.readFileSync(file, 'utf8').match(pattern)
+        if (!match) continue
+        const info = await this.#docker.getContainer(match[1]).inspect()
+        return info.Name.replace(/^\//, '')
+      } catch {
+        /* Probe unavailable on this kernel/storage driver; try the next */
+      }
+    }
+
+    // Fallback: the live ODAC process necessarily inhabits one of the
+    // update-cycle containers, and only one of them is running — us.
+    for (const name of [CONTAINER_NAME, BACKUP_CONTAINER_NAME, UPDATE_CONTAINER_NAME]) {
+      try {
+        const info = await this.#docker.getContainer(name).inspect()
+        if (info.State?.Running) return name
+      } catch {
+        /* Not this one */
+      }
+    }
+
+    return null
+  }
+
+  /**
+   * Reclaims the 'odac' container name when a crashed or rolled-back update left
+   * it unowned.
+   *
+   * execute() resolves the current container strictly by name, so a host stranded
+   * under the name 'odac-backup' can never self-update again — every attempt dies
+   * on a 404 before it does anything. Reclaiming the name is what makes such a
+   * host recoverable without an operator running `docker rename` by hand.
+   */
+  async #ensureIdentity() {
+    if (!fs.existsSync('/.dockerenv')) return
+
+    try {
+      await this.#docker.getContainer(CONTAINER_NAME).inspect()
+      return // The name is owned; nothing to reclaim.
+    } catch (e) {
+      if (e.statusCode !== 404) {
+        error('Failed to inspect %s: %s', CONTAINER_NAME, e.message)
+        return
+      }
+    }
+
+    const selfName = await this.#resolveSelfName()
+    if (!selfName || selfName === CONTAINER_NAME) {
+      error('No container owns "%s" and self-identification failed. Rename manually.', CONTAINER_NAME)
+      return
+    }
+
+    try {
+      await this.#docker.getContainer(selfName).rename({name: CONTAINER_NAME})
+      log('Identity reclaimed: "%s" renamed to "%s".', selfName, CONTAINER_NAME)
+    } catch (e) {
+      error('Failed to reclaim identity from "%s": %s', selfName, e.message)
+    }
+  }
+
+  /**
+   * Ensures the live 'odac' container carries a persistent restart policy.
+   *
+   * The zero-downtime path deliberately creates the incoming container with
+   * RestartPolicy 'no' so Docker cannot resurrect it if the handover fails.
+   * Once that container renames itself to 'odac' it becomes the production
+   * instance and must adopt the persistent policy — `docker rename` moves the
+   * name, not the HostConfig. Without this the host reboots and 'odac' stays
+   * down while every other container comes back up.
+   *
+   * Only a missing/'no' policy is repaired, so an operator who deliberately
+   * chose 'always' keeps their choice.
+   */
+  async #ensureRestartPolicy() {
+    // Guard: outside a container there is no 'odac' container that is us.
+    if (!fs.existsSync('/.dockerenv')) return
+
+    try {
+      const container = this.#docker.getContainer(CONTAINER_NAME)
+      const info = await container.inspect()
+      const current = info.HostConfig?.RestartPolicy?.Name || 'no'
+
+      if (current !== 'no') return
+
+      await container.update({RestartPolicy: {Name: 'unless-stopped'}})
+      log('Restart policy repaired: "no" -> "unless-stopped"')
+    } catch (e) {
+      if (e.statusCode === 404) return
+      error('Failed to ensure restart policy: %s', e.message)
+    }
+  }
+
   async #selfDestruct() {
     log('Old container mission complete. Stopping overlap services and exiting.')
 
@@ -622,11 +774,37 @@ class Updater {
       }
     }
 
-    // 3. Rename self
+    // 3. Revoke the backup's restart policy *before* granting our own.
+    //
+    // Invariant: at most one container may carry a persistent restart policy at
+    // any instant. Proxy/DNS/Mail bind with SO_REUSEPORT, so two ODAC instances
+    // resurrected by Docker after a host reboot would not collide on ports —
+    // they would silently split traffic, run two Hub connections and two ACME
+    // clients. selfDestruct() also revokes this, but it only runs ~12s later
+    // after the stability check; a hard reboot inside that window must not find
+    // two auto-starting containers.
+    //
+    // The cost is a millisecond-wide gap where no container auto-starts. That
+    // is recoverable with `docker start odac` (init() then repairs the policy);
+    // a split brain is not.
+    try {
+      const backup = this.#docker.getContainer(backupName)
+      await backup.update({RestartPolicy: {Name: 'no'}})
+      log('Backup restart policy revoked.')
+    } catch (e) {
+      if (e.statusCode !== 404) error('Failed to revoke backup restart policy: %s', e.message)
+    }
+
+    // 4. Rename self
     try {
       const me = this.#docker.getContainer(UPDATE_CONTAINER_NAME)
       await me.rename({name: targetName})
       log('Renamed self to %s', targetName)
+
+      // 5. Adopt the persistent restart policy. Must happen *after* the rename:
+      // until we own the 'odac' name a failed handover should stay dead rather
+      // than be restarted by Docker as a half-migrated instance.
+      await this.#ensureRestartPolicy()
     } catch (e) {
       error('Failed to rename self: %s', e.message)
     }
@@ -689,6 +867,14 @@ class Updater {
         } else if (message === 'HANDOVER_COMPLETE') {
           clearTimeout(timeout)
           log('Update completed successfully.')
+
+          // We are the live instance now, not an updater. The container keeps
+          // ODAC_UPDATE_MODE=true in its env for the rest of its life (env cannot
+          // be rewritten on a running container), and Proxy/DNS/Mail read it on
+          // every start() to decide whether to adopt an existing process. Clear it
+          // in-process so a later restart adopts instead of blindly respawning.
+          delete process.env.ODAC_UPDATE_MODE
+
           // Signal Watchdog to switch to standard logs
           console.log('ODAC_CMD:SWITCH_LOGS')
           socket.end()
