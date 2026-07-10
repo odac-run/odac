@@ -117,6 +117,49 @@ describe('Proxy', () => {
     })
   })
 
+  describe('backend resolution', () => {
+    /** Syncs one domain bound to `app` and returns the routing the proxy was handed. */
+    const routingFor = async ports => {
+      mockConfig.config.apps = [{id: 1, name: 'web', ports}]
+      mockConfig.config.domains = {'a.com': {appId: 'web'}}
+      mockOdac.setMock('server', 'Container', {available: true, getIP: jest.fn().mockResolvedValue('172.17.0.5')})
+
+      mockFs.readFileSync.mockImplementation(() => {
+        throw {code: 'ENOENT'}
+      })
+      ProxyService.spawnProxy()
+      await ProxyService.syncConfig()
+
+      const post = mockOdac.core('Http').post.mock.calls.find(c => c[0].includes('/config'))
+      return post[1].domains['a.com']
+    }
+
+    test('routes a proxy entry over the container network', async () => {
+      const routing = await routingFor([{host: 'proxy', container: 3000}])
+
+      expect(routing.port).toBe(3000)
+      expect(routing.containerIP).toBe('172.17.0.5')
+    })
+
+    test('routes a published-only app over the host network', async () => {
+      const routing = await routingFor([{host: 8080, container: 3000}])
+
+      expect(routing.port).toBe(8080)
+      expect(routing.containerIP).toBe('127.0.0.1')
+    })
+
+    test('prefers the proxy entry over a published one that precedes it', async () => {
+      // The sentinel declares who owns routing; list order must not decide it.
+      const routing = await routingFor([
+        {host: 8080, container: 3000},
+        {host: 'proxy', container: 3000}
+      ])
+
+      expect(routing.port).toBe(3000)
+      expect(routing.containerIP).toBe('172.17.0.5')
+    })
+  })
+
   describe('lifecycle', () => {
     test('should spawn proxy in check if active', async () => {
       ProxyService.start()

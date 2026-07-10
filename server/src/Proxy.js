@@ -91,9 +91,11 @@ class OdacProxy {
     let host = '127.0.0.1'
     let useInternal = false
 
-    if (app.ports && app.ports.length > 0) {
-      const primary = app.ports[0]
-      if (Odac.server('Ports').isPublished(primary)) {
+    const ports = Odac.server('Ports')
+    const primary = ports.primary(app.ports)
+
+    if (primary) {
+      if (ports.isPublished(primary)) {
         port = parseInt(primary.host)
       } else if (primary.container) {
         port = parseInt(primary.container)

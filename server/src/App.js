@@ -190,13 +190,14 @@ class App {
 
     // Safety check for legacy apps without ports config
     let port = 3000
-    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
-      port = app.ports[0].container
+    const primary = Odac.server('Ports').primary(app.ports)
+    if (primary?.container) {
+      port = primary.container
     } else {
       // Legacy fix: If no port in config, assume 3000 and SAVE IT
       // so Proxy service can see it immediately
       log('Legacy App Fix: Assigning default port 3000 to app %s', app.name)
-      app.ports = [{host: Odac.server('Ports').PROXY, container: 3000}]
+      app.ports = [Odac.server('Ports').discovered(3000)]
       this.#saveApps()
     }
 
@@ -273,18 +274,18 @@ class App {
         // We give it 5 seconds (attempts < 5) to see if the expected port appears.
         if (attempts >= 5) {
           const ports = Odac.server('Ports')
-          const primary = app.ports?.[0]
+          const primary = ports.primary(app.ports)
 
-          // A published host binding is a contract the caller declared and Docker
-          // already applied at container create time. Rewriting the container port
-          // here would orphan that binding, so leave the config alone.
-          if (ports.isPublished(primary)) {
+          // Auto-discovery exists to correct a port ODAC guessed, never one that
+          // was declared. A published binding is already applied on the host, and
+          // a proxy entry the user or a recipe wrote is a setting they chose:
+          // rewriting either would silently undo it on the next restart.
+          if (!ports.isAuto(primary)) {
             log(
-              'Auto-Discovery: App %s listens on %s but publishes %s:%d. Keeping the declared binding.',
+              'Auto-Discovery: App %s listens on %s but its config declares %s. Keeping the declared port.',
               app.name,
               listeningPorts.join(','),
-              primary.host,
-              primary.container
+              primary ? primary.container : 'nothing'
             )
             return
           }
@@ -308,9 +309,9 @@ class App {
 
           log('Auto-Discovery: App %s is listening on port %d (expected %d). Updating config...', app.name, preferred, expectedPort)
 
-          // Correct only the primary entry; secondary mappings are untouched.
-          const rest = app.ports?.slice(1) || []
-          app.ports = [{host: ports.PROXY, container: preferred}, ...rest]
+          // Correct the guessed entry in place; it stays a guess, and every other
+          // mapping keeps both its position and its contents.
+          primary.container = preferred
 
           // Cache container IP for zero-downtime Proxy routing
           if (containerIP) app.ip = containerIP
@@ -1051,7 +1052,7 @@ class App {
    * rejects mappings that would silently collide, and auto-assigns host ports
    * when 'auto' is specified.
    * @param {string|number} id - App id, name, or file
-   * @param {Array<{host: number|string, container: number}>} ports - New port mappings
+   * @param {Array<{host: number|string, container: number, public?: boolean}>} ports - New port mappings
    * @returns {object} Api.result
    */
   async setPorts(id, ports) {
@@ -1066,7 +1067,8 @@ class App {
 
     // Validate each port mapping. Both sides are mandatory: an entry with no host
     // is ambiguous now that proxy ownership has an explicit spelling.
-    const {PROXY} = Odac.server('Ports')
+    const portsApi = Odac.server('Ports')
+    const {PROXY} = portsApi
     for (const entry of ports) {
       if (!entry || typeof entry !== 'object') {
         return Odac.server('Api').result(false, __('Invalid port entry. Expected {host, container}.'))
@@ -1086,6 +1088,16 @@ class App {
         if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
           return Odac.server('Api').result(false, __('Invalid host port: %s. Must be 1-65535, "auto", or "%s".', entry.host, PROXY))
         }
+      }
+
+      // A public entry reaches the internet, so an unparseable flag must fail
+      // loudly rather than fall back to either interpretation.
+      const isPublic = portsApi.parsePublic(entry.public)
+      if (isPublic === null) {
+        return Odac.server('Api').result(false, __('Invalid public flag: %s. Must be true or false.', entry.public))
+      }
+      if (isPublic && entry.host === PROXY) {
+        return Odac.server('Api').result(false, __('A "%s" port cannot be public. Give it a host port to publish it.', PROXY))
       }
     }
 
@@ -1686,9 +1698,12 @@ class App {
    * @returns {Promise<number>} Resolved container port
    */
   async #resolveContainerPort(app) {
+    const ports = Odac.server('Ports')
+
     // Priority 1: Already configured
-    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
-      return app.ports[0].container
+    const primary = ports.primary(app.ports)
+    if (primary?.container) {
+      return primary.container
     }
 
     // Priority 2: Auto-detect from Docker image EXPOSE
@@ -1698,7 +1713,7 @@ class App {
         if (exposed && exposed.length > 0) {
           const detected = exposed[0]
           log('Port Auto-Detect: Discovered port %d from image EXPOSE for app %s', detected, app.name)
-          app.ports = [{host: Odac.server('Ports').PROXY, container: detected}]
+          app.ports = [ports.discovered(detected)]
           this.#saveApps()
           return detected
         }
@@ -1709,7 +1724,7 @@ class App {
 
     // Priority 3: Fallback to default
     log('Port Auto-Detect: No port info available for app %s. Assigning default 3000.', app.name)
-    app.ports = [{host: Odac.server('Ports').PROXY, container: 3000}]
+    app.ports = [ports.discovered(3000)]
     this.#saveApps()
     return 3000
   }
@@ -1939,27 +1954,22 @@ class App {
   /**
    * Finds a mapping set that Docker or the Proxy would resolve ambiguously.
    * Each of these would otherwise be swallowed silently rather than surfaced:
-   *  - two proxy entries: only ports[0] is routed, the other is dead metadata.
-   *  - duplicate container ports: PortBindings is keyed by container port, so
-   *    the later entry overwrites the earlier one.
+   *  - two proxy entries: only one can be routed, the other is dead metadata.
    *  - duplicate host ports: Docker refuses the bind at container create time.
+   *
+   * A container port may legitimately repeat: the proxy reaches it over the
+   * container network while Docker publishes it on the host, and Docker accepts
+   * several host bindings for one container port.
    *
    * @param {Array<{host: number|string, container: number|string}>} ports - Validated entries
    * @returns {string|false} Localized error message, or false when the set is sound
    */
   #findPortCollision(ports) {
     const {PROXY} = Odac.server('Ports')
-    const seenContainer = new Set()
     const seenHost = new Set()
     let proxyCount = 0
 
     for (const entry of ports) {
-      const containerPort = Number(entry.container)
-      if (seenContainer.has(containerPort)) {
-        return __('Duplicate container port: %s. Each container port may be mapped once.', entry.container)
-      }
-      seenContainer.add(containerPort)
-
       if (entry.host === PROXY) {
         if (++proxyCount > 1) {
           return __('Only one port may be routed by the proxy. Publish the others on a host port.')
@@ -1986,17 +1996,18 @@ class App {
    * callers may still omit it), and coerces ports to numbers so downstream
    * readiness checks (`listeningPorts.includes(port)`) compare like with like.
    *
-   * @param {Array<{host?: number|string, container: number|string}>} recipePorts - Raw entries
-   * @returns {Promise<Array<{host: number|string, container: number}>>} Canonical entries
+   * @param {Array<{host?: number|string, container: number|string, public?: boolean}>} recipePorts - Raw entries
+   * @returns {Promise<Array<{host: number|string, container: number, public?: boolean}>>} Canonical entries
    */
   async #preparePorts(recipePorts) {
     if (!recipePorts) return []
 
-    const {PROXY} = Odac.server('Ports')
+    const ports = Odac.server('Ports')
+    const {PROXY} = ports
     // Auto-assigned ports are not bound yet, so #isPortInUse cannot see them.
     // Track them here or two 'auto' entries would resolve to the same port.
     const assigned = new Set()
-    const ports = []
+    const prepared = []
 
     for (const port of recipePorts) {
       let host = port.host ?? PROXY
@@ -2004,10 +2015,16 @@ class App {
       else if (host !== PROXY) host = Number(host)
 
       if (host !== PROXY) assigned.add(host)
-      ports.push({host, container: Number(port.container)})
+
+      const entry = {host, container: Number(port.container)}
+      // Only stamp the flag when it is on: an absent `public` already means
+      // loopback, so writing `false` everywhere would churn every stored config.
+      if (host !== PROXY && ports.parsePublic(port.public) === true) entry.public = true
+
+      prepared.push(entry)
     }
 
-    return ports
+    return prepared
   }
 
   // Private: Port Management
