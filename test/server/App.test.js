@@ -1469,7 +1469,9 @@ describe('App', () => {
       mockConfig.apps = [{id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{container: 3000}]}]
 
       await App.init()
-      mockGetListeningPorts.mockResolvedValue([5678])
+      // Name-scoped for the same reason as the auto-discovery runApp helper:
+      // a stale poller from an earlier test must not see an HTTP-answering port.
+      mockGetListeningPorts.mockImplementation(async name => (name === 'web' ? [5678] : []))
       http.httpPorts = new Set([5678])
 
       jest.useFakeTimers({doNotFake: ['setImmediate', 'nextTick']})
@@ -1506,7 +1508,12 @@ describe('App', () => {
     // A listening port answers the HTTP probe unless the test says otherwise.
     const runApp = async (app, listeningPorts, httpPorts = listeningPorts) => {
       mockConfig.apps = [app]
-      mockGetListeningPorts.mockResolvedValue(listeningPorts)
+      // Scoped to this app's name: earlier tests leave #pollForPort chains armed
+      // on real 1s timers (apps stay portless until the probe confirms, so their
+      // pollers survive 5+ attempts), and under full-suite load one can fire
+      // mid-test. Handing it listening ports would let it adopt one and clobber
+      // this test's config via #saveApps; an empty answer keeps it idle.
+      mockGetListeningPorts.mockImplementation(async name => (name === app.name ? listeningPorts : []))
       http.httpPorts = new Set(httpPorts)
 
       // #pollForPort re-arms itself with setTimeout; fake them so the 5-attempt
