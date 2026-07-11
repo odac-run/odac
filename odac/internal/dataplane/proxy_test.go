@@ -296,6 +296,85 @@ func TestProxyDockerWaitBeforeFirstSync(t *testing.T) {
 	}
 }
 
+// TestProxyPortsSentinelResolution covers the dev-branch Ports semantics
+// (5a23c38/db7cdb2): host:'proxy' marks an entry proxy-routed, Ports.primary
+// prefers the first proxy-routed entry over a published one, and a published
+// primary routes to its host port.
+func TestProxyPortsSentinelResolution(t *testing.T) {
+	cs := newControlServer(t)
+	resolver := &fakeResolver{ips: map[string]string{"sentinel": "10.5.0.7", "mixed": "10.5.0.8"}}
+	resolver.available.Store(true)
+	p, _ := newTestProxy(t, cs, resolver)
+
+	p.cfg.Set("apps", []any{
+		map[string]any{"name": "sentinel", "id": "s1",
+			"ports": []any{map[string]any{"host": "proxy", "container": float64(3001)}}},
+		map[string]any{"name": "mixed", "id": "s2",
+			"ports": []any{
+				map[string]any{"host": "8080", "container": float64(80)},
+				map[string]any{"host": "proxy", "container": float64(3000)},
+			}},
+		map[string]any{"name": "published", "id": "s3",
+			"ports": []any{map[string]any{"host": "9090", "container": float64(80), "public": true}}},
+		map[string]any{"name": "proxynoport", "id": "s4",
+			"ports": []any{map[string]any{"host": "proxy"}}},
+	})
+	p.cfg.Set("domains", map[string]any{
+		"sentinel.test":  map[string]any{"appId": "sentinel"},
+		"mixed.test":     map[string]any{"appId": "mixed"},
+		"published.test": map[string]any{"appId": "published"},
+		"noport.test":    map[string]any{"appId": "proxynoport"},
+	})
+
+	p.SyncConfig()
+	payload := cs.nextConfig(t)
+	domains, _ := payload["domains"].(map[string]any)
+
+	want := map[string]map[string]any{
+		"sentinel.test": { // host:'proxy' → container network
+			"domain": "sentinel.test", "port": float64(3001), "containerIP": "10.5.0.7", "container": "10.5.0.7",
+			"subdomain": []any{}, "cert": map[string]any{},
+		},
+		"mixed.test": { // primary = first PROXY-routed entry, not ports[0]
+			"domain": "mixed.test", "port": float64(3000), "containerIP": "10.5.0.8", "container": "10.5.0.8",
+			"subdomain": []any{}, "cert": map[string]any{},
+		},
+		"published.test": { // published primary → host port, host network
+			"domain": "published.test", "port": float64(9090), "containerIP": "127.0.0.1",
+			"subdomain": []any{}, "cert": map[string]any{},
+		},
+	}
+	if len(domains) != len(want) { // proxynoport: proxy entry without container → skipped
+		t.Errorf("payload has %d domains (%v), want %d", len(domains), keys(domains), len(want))
+	}
+	for name, wantEntry := range want {
+		got, _ := domains[name].(map[string]any)
+		if !reflect.DeepEqual(got, map[string]any(wantEntry)) {
+			t.Errorf("domains[%q] =\n%#v\nwant\n%#v", name, got, wantEntry)
+		}
+	}
+}
+
+// hasContainerApps must treat the 'proxy' sentinel like a missing host
+// (Ports.isProxy), and a published container port as NOT container-network.
+func TestHasContainerAppsSentinel(t *testing.T) {
+	mk := func(entry map[string]any) []any {
+		return []any{map[string]any{"name": "a", "ports": []any{entry}}}
+	}
+	if !hasContainerApps(mk(map[string]any{"host": "proxy", "container": float64(3000)})) {
+		t.Error("host:'proxy' + container should count as a container app")
+	}
+	if !hasContainerApps(mk(map[string]any{"container": float64(3000)})) {
+		t.Error("legacy missing host + container should count as a container app")
+	}
+	if hasContainerApps(mk(map[string]any{"host": "8080", "container": float64(3000)})) {
+		t.Error("published entry should NOT count as a container app")
+	}
+	if hasContainerApps(mk(map[string]any{"host": "proxy"})) {
+		t.Error("proxy entry without a container port should NOT count")
+	}
+}
+
 func keys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

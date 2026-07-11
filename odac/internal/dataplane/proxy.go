@@ -322,19 +322,21 @@ type backendInfo struct {
 	internal bool
 }
 
-// resolveBackend ports #resolveAppBackend: first of ports[0].host (host
-// network) → ports[0].container (container network) → app.port → app.http;
-// no port → nil, domain skipped. Container-network backends resolve the
-// container IP, falling back to the cached app.ip.
+// resolveBackend ports #resolveAppBackend (dev 5a23c38/db7cdb2 semantics):
+// Ports.primary picks the first proxy-routed entry (missing host or the
+// 'proxy' sentinel), else ports[0]; a published primary routes to its host
+// port, a proxy-routed one to its container port over the container network;
+// then app.port → app.http; no port → nil, domain skipped. Container-network
+// backends resolve the container IP, falling back to the cached app.ip.
 func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
 	port, host, internal := 0, "127.0.0.1", false
 
-	if ports, _ := app["ports"].([]any); len(ports) > 0 {
-		p0, _ := ports[0].(map[string]any)
-		if truthy(p0["host"]) {
-			port = jsParseInt(p0["host"])
-		} else if truthy(p0["container"]) {
-			port = jsParseInt(p0["container"])
+	ports, _ := app["ports"].([]any)
+	if primary := primaryPort(ports); primary != nil {
+		if portIsPublished(primary) {
+			port = jsParseInt(primary["host"])
+		} else if truthy(primary["container"]) {
+			port = jsParseInt(primary["container"])
 			internal = true
 		}
 	} else if truthy(app["port"]) {
@@ -397,7 +399,36 @@ func findAppByName(apps []any, name string) map[string]any {
 	return nil
 }
 
-// hasContainerApps ports apps.some(a => a.ports?.some(p => p.container && !p.host)).
+// portIsProxy ports Ports.isProxy: a missing/falsy host or the 'proxy'
+// sentinel marks the entry as reverse-proxy routed (legacy entries persisted
+// before the sentinel existed omit host entirely).
+func portIsProxy(entry map[string]any) bool {
+	return entry != nil && (!truthy(entry["host"]) || entry["host"] == "proxy")
+}
+
+// portIsPublished ports Ports.isPublished: handed to Docker as a host binding.
+func portIsPublished(entry map[string]any) bool {
+	return entry != nil && !portIsProxy(entry)
+}
+
+// primaryPort ports Ports.primary: the first proxy-routed entry, else the
+// first entry (an app may publish a port and also sit behind the proxy, and
+// the dashboard does not guarantee an order between the two); nil when there
+// are none.
+func primaryPort(ports []any) map[string]any {
+	for _, pp := range ports {
+		if pm, _ := pp.(map[string]any); portIsProxy(pm) {
+			return pm
+		}
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	pm, _ := ports[0].(map[string]any)
+	return pm
+}
+
+// hasContainerApps ports apps.some(a => a.ports?.some(p => p.container && Ports.isProxy(p))).
 func hasContainerApps(apps []any) bool {
 	for _, a := range apps {
 		app, _ := a.(map[string]any)
@@ -407,7 +438,7 @@ func hasContainerApps(apps []any) bool {
 		ports, _ := app["ports"].([]any)
 		for _, pp := range ports {
 			pm, _ := pp.(map[string]any)
-			if pm != nil && truthy(pm["container"]) && !truthy(pm["host"]) {
+			if pm != nil && truthy(pm["container"]) && portIsProxy(pm) {
 				return true
 			}
 		}
