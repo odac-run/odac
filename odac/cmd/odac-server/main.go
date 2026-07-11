@@ -22,6 +22,7 @@ import (
 	"odac/internal/api"
 	"odac/internal/config"
 	"odac/internal/dataplane"
+	"odac/internal/docker"
 	"odac/internal/logx"
 	"odac/internal/system"
 )
@@ -43,9 +44,26 @@ func main() {
 		log.Error("Config autosave failed:", err.Error())
 	})
 
+	// Docker client (Container.js port). Availability is probed once here,
+	// exactly like Node's constructor-time ping; a docker-less host keeps a
+	// non-nil but unavailable client and every operation no-ops.
+	containers, err := docker.Connect(docker.Options{
+		HostRoot: os.Getenv("ODAC_HOST_ROOT"),
+		LogsRoot: filepath.Join(baseDir, "logs"),
+	})
+	if err != nil {
+		// Client construction only fails on malformed DOCKER_HOST-style env;
+		// treat it like an unreachable daemon (Node would too).
+		log.Error("Docker client initialization failed:", err.Error())
+	}
+
 	binDir := moduleBinDir()
 	dnsSvc := dataplane.NewDNS(cfg, binDir)
-	proxySvc := dataplane.NewProxy(cfg, binDir, nil) // container IP resolver lands with 3.4
+	var containerIPs dataplane.ContainerIPs
+	if containers != nil {
+		containerIPs = containers
+	}
+	proxySvc := dataplane.NewProxy(cfg, binDir, containerIPs)
 	mailSvc := dataplane.NewMail(cfg, binDir, dnsSvc)
 
 	apiSrv := api.NewServer(cfg)

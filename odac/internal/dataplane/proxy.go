@@ -11,6 +11,7 @@ import (
 
 	"odac/internal/config"
 	"odac/internal/logx"
+	"odac/internal/ports"
 	"odac/internal/supervise"
 )
 
@@ -331,9 +332,9 @@ type backendInfo struct {
 func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
 	port, host, internal := 0, "127.0.0.1", false
 
-	ports, _ := app["ports"].([]any)
-	if primary := primaryPort(ports); primary != nil {
-		if portIsPublished(primary) {
+	portList, _ := app["ports"].([]any)
+	if primary := ports.Primary(portList); primary != nil {
+		if ports.IsPublished(primary) {
 			port = jsParseInt(primary["host"])
 		} else if truthy(primary["container"]) {
 			port = jsParseInt(primary["container"])
@@ -399,35 +400,6 @@ func findAppByName(apps []any, name string) map[string]any {
 	return nil
 }
 
-// portIsProxy ports Ports.isProxy: a missing/falsy host or the 'proxy'
-// sentinel marks the entry as reverse-proxy routed (legacy entries persisted
-// before the sentinel existed omit host entirely).
-func portIsProxy(entry map[string]any) bool {
-	return entry != nil && (!truthy(entry["host"]) || entry["host"] == "proxy")
-}
-
-// portIsPublished ports Ports.isPublished: handed to Docker as a host binding.
-func portIsPublished(entry map[string]any) bool {
-	return entry != nil && !portIsProxy(entry)
-}
-
-// primaryPort ports Ports.primary: the first proxy-routed entry, else the
-// first entry (an app may publish a port and also sit behind the proxy, and
-// the dashboard does not guarantee an order between the two); nil when there
-// are none.
-func primaryPort(ports []any) map[string]any {
-	for _, pp := range ports {
-		if pm, _ := pp.(map[string]any); portIsProxy(pm) {
-			return pm
-		}
-	}
-	if len(ports) == 0 {
-		return nil
-	}
-	pm, _ := ports[0].(map[string]any)
-	return pm
-}
-
 // hasContainerApps ports apps.some(a => a.ports?.some(p => p.container && Ports.isProxy(p))).
 func hasContainerApps(apps []any) bool {
 	for _, a := range apps {
@@ -435,10 +407,10 @@ func hasContainerApps(apps []any) bool {
 		if app == nil {
 			continue
 		}
-		ports, _ := app["ports"].([]any)
-		for _, pp := range ports {
+		portList, _ := app["ports"].([]any)
+		for _, pp := range portList {
 			pm, _ := pp.(map[string]any)
-			if pm != nil && truthy(pm["container"]) && portIsProxy(pm) {
+			if pm != nil && truthy(pm["container"]) && ports.IsProxy(pm) {
 				return true
 			}
 		}
