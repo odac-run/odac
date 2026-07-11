@@ -3,6 +3,7 @@ const {log, error} = Odac.core('Log', false).init('Hub')
 const nodeCrypto = require('crypto')
 
 const {WebSocketClient, MessageSigner} = require('./Hub/WebSocket')
+const TerminalManager = require('./Hub/Terminal')
 
 const HUB_URL = process.env.ODAC_HUB_URL || 'https://hub.odac.run'
 const HUB_WS_URL = HUB_URL.replace(/^http/, 'ws') + '/ws'
@@ -10,9 +11,14 @@ const HUB_WS_URL = HUB_URL.replace(/^http/, 'ws') + '/ws'
 class Hub {
   #active = false
   #logSubs = new Map()
+  #terminals
 
   constructor() {
     this.ws = new WebSocketClient()
+    this.#terminals = new TerminalManager({
+      wsUrl: HUB_WS_URL,
+      getToken: () => this.#getHubConfig()?.token
+    })
 
     // Commands and Tasks
     this.commands = {
@@ -232,6 +238,12 @@ class Hub {
           return {success: true, message: 'Unsubscribed from build logs'}
         }
       },
+      'terminal.open': {
+        fn: payload => this.#terminals.open(payload)
+      },
+      'terminal.close': {
+        fn: payload => this.#terminals.close(payload)
+      },
       'system.update': {
         fn: () => Odac.server('System').update()
       }
@@ -248,6 +260,7 @@ class Hub {
       onDisconnect: () => {
         log('[Hub] Disconnected from Cloud. Cleaning up active log streams...')
         this.#unsubscribeAllLogs()
+        this.#terminals.closeAll()
       }
     })
   }
@@ -260,6 +273,7 @@ class Hub {
 
   stop() {
     this.#active = false
+    this.#terminals.closeAll()
     this.ws.disconnect()
     log('Hub Service stopped')
   }

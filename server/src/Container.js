@@ -6,6 +6,7 @@ const NODE_IMAGE = 'node:lts-alpine'
 
 const Builder = require('./Container/Builder')
 const Logger = require('./Container/Logger')
+const Terminal = require('./Container/Terminal')
 
 class Container {
   #docker
@@ -428,6 +429,59 @@ class Container {
     } catch (err) {
       throw new Error(`Failed to exec command in ${name}: ${err.message}`)
     }
+  }
+
+  /**
+   * Opens an interactive shell inside a managed app's container.
+   *
+   * Takes an APP name, never a raw container name or id: the caller is ultimately the Hub,
+   * and resolving through the app list is what keeps a spoofed command from opening a shell
+   * in a container odac does not manage — including odac's own, which mounts the Docker
+   * socket and would hand over the host.
+   *
+   * @param {string} appName
+   * @param {Object} [options] - Passed through to Terminal (onData, onExit, cols, rows, …)
+   * @param {boolean} [options.allowPrivileged] - Permit a shell in a --privileged container
+   * @returns {Promise<Terminal>} An opened session
+   */
+  async createTerminalSession(appName, options = {}) {
+    if (!this.available) throw new Error('Docker is not available')
+
+    const res = await Odac.server('App').list()
+    const apps = res?.result ? res.data : []
+
+    if (!Array.isArray(apps) || !apps.some(app => app.name === appName)) {
+      throw new Error(`Unknown app: ${appName}`)
+    }
+
+    // One inspect answers all three gates below: running, privileged, and which user the app
+    // itself runs as.
+    let info
+    try {
+      info = await this.#docker.getContainer(appName).inspect()
+    } catch (e) {
+      if (e.statusCode === 404) throw new Error(`Container ${appName} is not running`)
+      throw e
+    }
+
+    if (!info.State?.Running) {
+      throw new Error(`Container ${appName} is not running`)
+    }
+
+    // A shell in a --privileged container has the host's devices and kernel capabilities: it is
+    // a host shell in container clothing. Refuse unless the operator has explicitly opted in.
+    if (info.HostConfig?.Privileged && !options.allowPrivileged) {
+      throw new Error(`Refusing a terminal in privileged container ${appName}`)
+    }
+
+    // Run as the app's own user rather than root. An image that declares USER gets that user;
+    // one that runs as root still can, but only because the image chose to — we never hand out
+    // more than the app already holds. An explicit option wins for the rare operator who needs
+    // to override.
+    const user = options.user || info.Config?.User || undefined
+
+    const terminal = new Terminal(this.#docker, appName, {...options, user})
+    return terminal.open()
   }
 
   /**

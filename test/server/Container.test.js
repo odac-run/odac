@@ -1,5 +1,7 @@
 const Ports = require('../../server/src/Ports')
 
+const mockApp = {list: jest.fn()}
+
 // Mock Odac before requiring Container: its module scope calls Odac.core('Log').
 global.Odac = {
   core: jest.fn(name => {
@@ -9,6 +11,7 @@ global.Odac = {
   }),
   server: jest.fn(name => {
     if (name === 'Ports') return Ports
+    if (name === 'App') return mockApp
     return {}
   })
 }
@@ -100,5 +103,102 @@ describe('Container.runApp() port publishing', () => {
 
     expect(config.HostConfig.PortBindings).toEqual({})
     expect(config.ExposedPorts).toEqual({})
+  })
+})
+
+describe('Container.createTerminalSession()', () => {
+  const {PassThrough} = require('stream')
+
+  let containerMock
+
+  const appList = names => ({result: true, data: names.map(name => ({name}))})
+
+  beforeEach(() => {
+    containerMock = {
+      inspect: jest.fn().mockResolvedValue({State: {Running: true}}),
+      exec: jest.fn(async options => {
+        if (!options.Tty) {
+          const stream = new PassThrough()
+          stream.end()
+          return {start: async () => stream}
+        }
+        return {
+          start: jest.fn().mockResolvedValue(new PassThrough()),
+          inspect: jest.fn().mockResolvedValue({Running: false, ExitCode: 0}),
+          resize: jest.fn()
+        }
+      })
+    }
+    mockDocker.getContainer.mockReturnValue(containerMock)
+    mockApp.list.mockResolvedValue(appList(['web', 'api']))
+  })
+
+  afterAll(() => {
+    mockDocker.getContainer.mockReturnValue({
+      stop: jest.fn().mockRejectedValue({statusCode: 404}),
+      remove: jest.fn().mockRejectedValue({statusCode: 404}),
+      inspect: jest.fn().mockRejectedValue({statusCode: 404})
+    })
+  })
+
+  test('opens a TTY session for a managed, running app', async () => {
+    // Timers off: the default idle/lifetime timers would outlive the test run.
+    const terminal = await Container.createTerminalSession('web', {cols: 100, rows: 30, idleTimeout: 0, maxLifetime: 0})
+
+    expect(terminal.container).toBe('web')
+    expect(containerMock.exec).toHaveBeenCalledWith(expect.objectContaining({Tty: true, ConsoleSize: [30, 100]}))
+  })
+
+  test('refuses a container that is not a managed app', async () => {
+    // The odac container itself mounts the Docker socket: a shell in it is host root.
+    await expect(Container.createTerminalSession('odac')).rejects.toThrow('Unknown app: odac')
+    expect(containerMock.exec).not.toHaveBeenCalled()
+  })
+
+  test('refuses an app that is not running', async () => {
+    containerMock.inspect.mockResolvedValue({State: {Running: false}})
+
+    await expect(Container.createTerminalSession('web')).rejects.toThrow('is not running')
+    expect(containerMock.exec).not.toHaveBeenCalled()
+  })
+
+  test('refuses when the app list cannot be read', async () => {
+    mockApp.list.mockResolvedValue({result: false})
+
+    await expect(Container.createTerminalSession('web')).rejects.toThrow('Unknown app: web')
+    expect(containerMock.exec).not.toHaveBeenCalled()
+  })
+
+  test('refuses a shell in a privileged container', async () => {
+    // A --privileged container has host devices and kernel caps: a shell in it is host root.
+    containerMock.inspect.mockResolvedValue({State: {Running: true}, HostConfig: {Privileged: true}})
+
+    await expect(Container.createTerminalSession('web')).rejects.toThrow('privileged')
+    expect(containerMock.exec).not.toHaveBeenCalled()
+  })
+
+  test('allows a privileged container only when explicitly opted in', async () => {
+    containerMock.inspect.mockResolvedValue({State: {Running: true}, HostConfig: {Privileged: true}})
+
+    const terminal = await Container.createTerminalSession('web', {allowPrivileged: true, idleTimeout: 0, maxLifetime: 0})
+
+    expect(terminal.container).toBe('web')
+    expect(containerMock.exec).toHaveBeenCalledWith(expect.objectContaining({Tty: true}))
+  })
+
+  test('defaults the exec to the app user rather than root', async () => {
+    containerMock.inspect.mockResolvedValue({State: {Running: true}, Config: {User: 'app'}})
+
+    await Container.createTerminalSession('web', {idleTimeout: 0, maxLifetime: 0})
+
+    expect(containerMock.exec).toHaveBeenCalledWith(expect.objectContaining({User: 'app'}))
+  })
+
+  test('an explicit user overrides the container user', async () => {
+    containerMock.inspect.mockResolvedValue({State: {Running: true}, Config: {User: 'app'}})
+
+    await Container.createTerminalSession('web', {user: 'root', idleTimeout: 0, maxLifetime: 0})
+
+    expect(containerMock.exec).toHaveBeenCalledWith(expect.objectContaining({User: 'root'}))
   })
 })
