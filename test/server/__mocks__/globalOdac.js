@@ -76,6 +76,9 @@ class MockOdac {
 
     // Default mocks for server modules
     const serverMocks = {
+      // Pure, stateless value object — the real implementation *is* the contract
+      // exercised wherever ports are read or written.
+      Ports: require('../../../server/src/Ports'),
       Api: {
         init: jest.fn(),
         start: jest.fn(),
