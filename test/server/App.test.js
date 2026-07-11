@@ -19,6 +19,37 @@ jest.mock('fs', () => ({
   }))
 }))
 
+// Auto-discovery probes container ports over HTTP. `httpPorts` names the ports
+// that answer; every other port refuses the connection, the way a database does.
+jest.mock('http', () => {
+  const {EventEmitter} = require('events')
+
+  const mock = {
+    httpPorts: new Set(),
+    request(options, onResponse) {
+      const req = new EventEmitter()
+      req.destroy = jest.fn()
+      req.end = () => {
+        // nextTick, not setImmediate: the discovery tests run on fake timers, which
+        // flush microtasks between ticks but never turn the event loop's check phase.
+        process.nextTick(() => {
+          if (mock.httpPorts.has(options.port)) {
+            onResponse({destroy: jest.fn()})
+          } else {
+            req.emit('error', new Error('ECONNREFUSED'))
+          }
+        })
+      }
+
+      return req
+    }
+  }
+
+  return mock
+})
+
+const http = require('http')
+
 let App
 
 describe('App', () => {
@@ -26,6 +57,8 @@ describe('App', () => {
   let mockRunApp
   let mockCloneRepo
   let mockGetListeningPorts
+  let mockGetIP
+  let mockGetImageExposedPorts
 
   beforeEach(() => {
     // Reset config for each test
@@ -33,6 +66,9 @@ describe('App', () => {
     mockRunApp = jest.fn()
     mockCloneRepo = jest.fn()
     mockGetListeningPorts = jest.fn(() => [3000]) // Default: pass the readiness probe
+    mockGetIP = jest.fn(() => '10.0.0.5') // Mock IP to prevent infinite loop
+    mockGetImageExposedPorts = jest.fn(() => [])
+    http.httpPorts = new Set()
 
     // Mock global translation
     global.__ = msg => msg
@@ -70,11 +106,11 @@ describe('App', () => {
             list: jest.fn(() => []),
             getStats: jest.fn(),
             getStatus: jest.fn(() => Promise.resolve({running: false, restarts: 0})),
-            getIP: jest.fn(() => '10.0.0.5'), // Mock IP to prevent infinite loop
+            getIP: mockGetIP,
             getListeningPorts: mockGetListeningPorts,
             remove: jest.fn(),
             fetchRepo: jest.fn(),
-            getImageExposedPorts: jest.fn(() => []),
+            getImageExposedPorts: mockGetImageExposedPorts,
             logs: jest.fn().mockResolvedValue({}),
             docker: {
               getContainer: jest.fn(() => ({
@@ -481,7 +517,7 @@ describe('App', () => {
       // Manual envs
       expect(result.data.manual.NODE_ENV).toBe('production')
       expect(result.data.manual.API_KEY).toBe('***')
-      expect(result.data.manual.DB_PASS).toBe('***')
+      expect(result.data.manual.DB_PASS).toBe('password123') // pass is not masked
 
       // Linked section (empty initially)
       expect(result.data.linked).toEqual([])
@@ -535,7 +571,7 @@ describe('App', () => {
       expect(resolvedRes.data.linked).toHaveLength(1)
       expect(resolvedRes.data.linked[0].app).toBe('app-db')
       expect(resolvedRes.data.linked[0].env.POSTGRES_USER).toBe('admin')
-      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('***')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('db-secret-password')
     })
 
     test('unlinkEnv should remove link', async () => {
@@ -1434,6 +1470,7 @@ describe('App', () => {
 
       await App.init()
       mockGetListeningPorts.mockResolvedValue([5678])
+      http.httpPorts = new Set([5678])
 
       jest.useFakeTimers({doNotFake: ['setImmediate', 'nextTick']})
       try {
@@ -1466,9 +1503,11 @@ describe('App', () => {
     // #pollForPort waits 5 attempts (1s apart) before rewriting the config.
     const POLL_SETTLE_MS = 7000
 
-    const runApp = async (app, listeningPorts) => {
+    // A listening port answers the HTTP probe unless the test says otherwise.
+    const runApp = async (app, listeningPorts, httpPorts = listeningPorts) => {
       mockConfig.apps = [app]
       mockGetListeningPorts.mockResolvedValue(listeningPorts)
+      http.httpPorts = new Set(httpPorts)
 
       // #pollForPort re-arms itself with setTimeout; fake them so the 5-attempt
       // grace period is instant. setImmediate stays real — check() awaits one.
@@ -1594,6 +1633,93 @@ describe('App', () => {
       )
 
       expect(ports).toEqual([{host: 'proxy', container: 3000}])
+    })
+
+    test('should not adopt a lone port that does not speak HTTP', async () => {
+      // A database app binds 5432 and nothing else. Adopting it would hand the
+      // proxy a backend that can never serve a request, so the guess stands.
+      const ports = await runApp(
+        {id: 1, name: 'db', type: 'container', image: 'postgres', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5432],
+        []
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 3000, auto: true}])
+    })
+
+    test('should adopt the HTTP port when the app also listens on a database port', async () => {
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'app', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5432, 8000],
+        [8000]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 8000, auto: true}])
+    })
+
+    test('should keep polling until a listening port starts answering HTTP', async () => {
+      // The app binds its socket before it serves, so the first probes fail.
+      mockConfig.apps = [
+        {id: 1, name: 'web', type: 'container', image: 'app', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]}
+      ]
+      mockGetListeningPorts.mockResolvedValue([5678])
+      http.httpPorts = new Set()
+
+      jest.useFakeTimers({doNotFake: ['setImmediate', 'nextTick']})
+      try {
+        await App.check()
+        await jest.advanceTimersByTimeAsync(POLL_SETTLE_MS)
+
+        expect(mockConfig.apps[0].ports).toEqual([{host: 'proxy', container: 3000, auto: true}])
+
+        http.httpPorts = new Set([5678])
+        await jest.advanceTimersByTimeAsync(POLL_SETTLE_MS)
+      } finally {
+        jest.useRealTimers()
+      }
+
+      expect(mockConfig.apps[0].ports).toEqual([{host: 'proxy', container: 5678, auto: true}])
+    })
+
+    test('should fall back to a well-known port when the container IP is unknown', async () => {
+      // No IP means no probe. Guessing beats leaving the app unroutable.
+      mockGetIP.mockResolvedValue(null)
+
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'app', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5432, 8080],
+        []
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 8080, auto: true}])
+    })
+
+    test('should give a database app no port mapping at all', async () => {
+      // A recipe that ships no ports leaves the app with none. MariaDB EXPOSEs 3306
+      // and binds it, but nothing there speaks HTTP, so the proxy has no business
+      // claiming it — and a `proxy: 3306` row the proxy can never route is worse
+      // than no row.
+      mockGetImageExposedPorts.mockResolvedValue([3306])
+
+      const ports = await runApp({id: 1, name: 'db', type: 'container', image: 'mariadb', active: true}, [3306], [])
+
+      expect(ports).toBeUndefined()
+      expect(mockRunApp.mock.calls[0][1].env.PORT).toBe('3306')
+    })
+
+    test('should write the proxy mapping for a portless app once a port answers HTTP', async () => {
+      const ports = await runApp({id: 1, name: 'web', type: 'container', image: 'app', active: true}, [8080], [8080])
+
+      expect(ports).toEqual([{host: 'proxy', container: 8080, auto: true}])
+    })
+
+    test('should not write a mapping from the image EXPOSE alone', async () => {
+      // EXPOSE is metadata, not evidence: the mapping waits for the probe.
+      mockGetImageExposedPorts.mockResolvedValue([8080])
+
+      const ports = await runApp({id: 1, name: 'web', type: 'container', image: 'app', active: true}, [], [])
+
+      expect(ports).toBeUndefined()
     })
 
     test('should hand Docker only the published ports', async () => {
