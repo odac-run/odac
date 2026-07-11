@@ -18,7 +18,7 @@ const SCRIPT_RUNNERS = {
   '.rb': {image: 'ruby:alpine', cmd: 'ruby', local: 'ruby'},
   '.sh': {image: 'alpine:latest', cmd: 'sh', local: 'sh'}
 }
-const SENSITIVE_KEY_PATTERN = /cert|key|pass|salt|secret|token/i
+const SENSITIVE_KEY_PATTERN = /cert|key|salt|secret|token/i
 
 class App {
   #apps = []
@@ -867,7 +867,7 @@ class App {
   /**
    * Returns the environment variables for a specific app in structured format.
    * Manual envs and linked app envs are returned separately for frontend display.
-   * Sensitive values (pass, key, secret, token, cert, salt) are masked.
+   * Sensitive values (key, secret, token, cert, salt) are masked.
    * @param {string|number} id - App id, name, or file
    * @returns {object} Api.result with { manual: {}, linked: [{app, env}] }
    */

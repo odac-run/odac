@@ -481,7 +481,7 @@ describe('App', () => {
       // Manual envs
       expect(result.data.manual.NODE_ENV).toBe('production')
       expect(result.data.manual.API_KEY).toBe('***')
-      expect(result.data.manual.DB_PASS).toBe('***')
+      expect(result.data.manual.DB_PASS).toBe('password123') // pass is not masked
 
       // Linked section (empty initially)
       expect(result.data.linked).toEqual([])
@@ -535,7 +535,7 @@ describe('App', () => {
       expect(resolvedRes.data.linked).toHaveLength(1)
       expect(resolvedRes.data.linked[0].app).toBe('app-db')
       expect(resolvedRes.data.linked[0].env.POSTGRES_USER).toBe('admin')
-      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('***')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('db-secret-password')
     })
 
     test('unlinkEnv should remove link', async () => {
