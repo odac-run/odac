@@ -1,3 +1,24 @@
+### ⚙️ Engine Tuning
+
+- enhance port management and public flag handling
+
+### ✨ What's New
+
+- enhance port management with explicit proxy handling and validation
+- Implement terminal management in Hub
+
+### 🛠️ Fixes & Improvements
+
+- gate port auto-discovery on an HTTP probe, not a guess
+- update sensitive key masking in App and tests
+- **updater:** keep the odac container recoverable across updates and crashes
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - improve log rotation handling to prevent stream write errors during rotation
