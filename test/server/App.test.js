@@ -63,7 +63,7 @@ describe('App', () => {
   beforeEach(() => {
     // Reset config for each test
     mockConfig = {}
-    mockRunApp = jest.fn()
+    mockRunApp = jest.fn().mockResolvedValue(true)
     mockCloneRepo = jest.fn()
     mockGetListeningPorts = jest.fn(() => [3000]) // Default: pass the readiness probe
     mockGetIP = jest.fn(() => '10.0.0.5') // Mock IP to prevent infinite loop
