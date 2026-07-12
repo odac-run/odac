@@ -627,6 +627,12 @@ class Container {
       await this.#ensureNetwork(networkName)
 
       log(`Starting app container ${name} (${options.image})...`)
+
+      if (isCancelled && isCancelled()) {
+        log(`Container creation for ${name} aborted before image pull.`)
+        return false
+      }
+
       if (activeLogger) activeLogger.startPhase('pull_image')
       await this.ensureImage(options.image, activeLogger)
       if (activeLogger) activeLogger.endPhase('pull_image', true)
@@ -665,6 +671,12 @@ class Container {
       }
 
       const container = await this.#docker.createContainer(containerConfig)
+
+      if (isCancelled && isCancelled()) {
+        log(`Container creation for ${name} aborted before starting. Removing created container.`)
+        await container.remove({force: true}).catch(() => {})
+        return false
+      }
 
       await container.start()
       if (activeLogger) activeLogger.endPhase('start_new_container', true)

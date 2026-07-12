@@ -769,6 +769,16 @@ class Updater {
         const backup = this.#docker.getContainer(backupName)
         await backup.remove({force: true})
         log('Previous backup removed.')
+      } else {
+        try {
+          const leftover = this.#docker.getContainer(targetName)
+          await leftover.remove({force: true})
+          log('Leftover target container removed.')
+        } catch (err) {
+          if (err.statusCode !== 404) {
+            log('Warning: Could not remove leftover target container: %s', err.message)
+          }
+        }
       }
     } catch (e) {
       if (e.statusCode !== 404) {

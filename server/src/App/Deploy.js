@@ -44,6 +44,14 @@ class Deploy {
     await runGreenContainer()
     if (logCtrl) logCtrl.endPhase('start_new_container', true)
 
+    if (app._deleted) {
+      await Odac.server('Container').stop(greenContainerName)
+      await Odac.server('Container').remove(greenContainerName)
+      await this.cleanupGreenArtifacts(greenContainerName)
+      log('Blue-Green deploy aborted after green container start: App %s was deleted', app.name)
+      return
+    }
+
     api.set(app.id, {status: 'switching'})
 
     let expectedPort = 3000
@@ -111,6 +119,14 @@ class Deploy {
 
     await Odac.server('Container').stop(app.name)
     await Odac.server('Container').remove(app.name)
+
+    if (app._deleted) {
+      await Odac.server('Container').stop(greenContainerName)
+      await Odac.server('Container').remove(greenContainerName)
+      await this.cleanupGreenArtifacts(greenContainerName)
+      log('Blue-Green deploy aborted before rename: App %s was deleted', app.name)
+      return
+    }
 
     const greenRuntimeLog = api.logStreams.get(greenContainerName)
     if (greenRuntimeLog && typeof greenRuntimeLog.end === 'function') greenRuntimeLog.end()

@@ -244,7 +244,8 @@ class App {
 
     if (app._deleted) return
 
-    await Odac.server('Container').runApp(app.name, runOptions, null, () => app._deleted)
+    const started = await Odac.server('Container').runApp(app.name, runOptions, null, () => app._deleted)
+    if (!started) return
 
     // Start Runtime Logging
     await this.#attachLogger(app)
@@ -764,7 +765,7 @@ class App {
       }
       if (logCtrl) logCtrl.endPhase(gitPhase, true)
 
-      if (app._deleted) throw new Error('App was deleted during git fetch phase.')
+      if (app._deleted) return Odac.server('Api').result(false, 'App was deleted during git fetch phase.')
 
       // Step 2: Rebuild image (app still running on old image)
       this.#set(app.id, {status: 'building'})
@@ -776,7 +777,7 @@ class App {
         subscribe: logCtrl.subscribe
       })
 
-      if (app._deleted) throw new Error('App was deleted during build phase.')
+      if (app._deleted) return Odac.server('Api').result(false, 'App was deleted during build phase.')
 
       // Check if Zero-Downtime Deployment (ZDD) is applicable.
       // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
@@ -1651,7 +1652,8 @@ class App {
 
     if (app._deleted) return
 
-    await container.runApp(app.name, runOptions, logCtrl, () => app._deleted)
+    const started = await container.runApp(app.name, runOptions, logCtrl, () => app._deleted)
+    if (!started) return
 
     await this.#attachLogger(app)
 
