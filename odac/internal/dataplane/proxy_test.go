@@ -1,10 +1,14 @@
 package dataplane
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -381,4 +385,99 @@ func keys(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// acmeServer fakes the proxy's /acme/challenge endpoints (contract 0.3),
+// recording bodies and answering a scripted status.
+type acmeServer struct {
+	sock   string
+	mu     sync.Mutex
+	posts  []map[string]any
+	dels   []map[string]any
+	status int
+}
+
+func newACMEServer(t *testing.T) *acmeServer {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "odacacme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	as := &acmeServer{sock: filepath.Join(dir, "proxy.sock"), status: http.StatusOK}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/acme/challenge", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		as.mu.Lock()
+		if r.Method == http.MethodDelete {
+			as.dels = append(as.dels, body)
+		} else {
+			as.posts = append(as.posts, body)
+		}
+		status := as.status
+		as.mu.Unlock()
+		w.WriteHeader(status)
+	})
+
+	l, err := net.Listen("unix", as.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	return as
+}
+
+func TestProxySetACMEChallenge(t *testing.T) {
+	as := newACMEServer(t)
+	cfg := newStore(t)
+	p := NewProxy(cfg, t.TempDir(), nil)
+	p.proc = &fakeProc{running: true, socket: as.sock}
+
+	if err := p.SetACMEChallenge("tok-1", "tok-1.thumb"); err != nil {
+		t.Fatalf("SetACMEChallenge: %v", err)
+	}
+	as.mu.Lock()
+	posts := append([]map[string]any(nil), as.posts...)
+	as.mu.Unlock()
+	if len(posts) != 1 || posts[0]["token"] != "tok-1" || posts[0]["keyAuthorization"] != "tok-1.thumb" {
+		t.Fatalf("posts = %v", posts)
+	}
+
+	// Non-200 propagates (the SSL module falls back to DNS-01 on it).
+	as.mu.Lock()
+	as.status = http.StatusBadRequest
+	as.mu.Unlock()
+	err := p.SetACMEChallenge("tok-2", "x")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// Proxy not running → error without a request.
+	p.proc = &fakeProc{running: false, socket: as.sock}
+	if err := p.SetACMEChallenge("tok-3", "x"); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProxyDeleteACMEChallenge(t *testing.T) {
+	as := newACMEServer(t)
+	cfg := newStore(t)
+	p := NewProxy(cfg, t.TempDir(), nil)
+	p.proc = &fakeProc{running: true, socket: as.sock}
+
+	p.DeleteACMEChallenge("tok-1")
+	as.mu.Lock()
+	dels := append([]map[string]any(nil), as.dels...)
+	as.mu.Unlock()
+	if len(dels) != 1 || dels[0]["token"] != "tok-1" {
+		t.Fatalf("dels = %v", dels)
+	}
+
+	// Best-effort: no proxy, no panic, no request.
+	p.proc = &fakeProc{running: false}
+	p.DeleteACMEChallenge("tok-2")
 }

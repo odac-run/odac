@@ -63,9 +63,10 @@ func (f *fakeProc) counts() (ensures, stops int) {
 
 // controlServer fakes a data-plane control API on a unix socket.
 type controlServer struct {
-	sock    string
-	configs chan []byte
-	ready   atomic.Int32
+	sock      string
+	configs   chan []byte
+	sslClears chan []byte
+	ready     atomic.Int32
 }
 
 func newControlServer(t *testing.T) *controlServer {
@@ -77,8 +78,9 @@ func newControlServer(t *testing.T) *controlServer {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	cs := &controlServer{
-		sock:    filepath.Join(dir, "mod.sock"),
-		configs: make(chan []byte, 16),
+		sock:      filepath.Join(dir, "mod.sock"),
+		configs:   make(chan []byte, 16),
+		sslClears: make(chan []byte, 16),
 	}
 	cs.ready.Store(http.StatusOK)
 
@@ -86,6 +88,11 @@ func newControlServer(t *testing.T) *controlServer {
 	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		cs.configs <- body
+		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/ssl/clear", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		cs.sslClears <- body
 		w.Write([]byte("OK"))
 	})
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {

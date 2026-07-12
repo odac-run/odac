@@ -263,8 +263,14 @@ func TestServerAPIRoundTrip(t *testing.T) {
 		t.Errorf("app.list = result %s data %s", resp["result"], resp["data"])
 	}
 
-	// ssl.renew stays unregistered until task 3.5.
-	resp = call(`{"auth":"` + auth + `","action":"ssl.renew","data":[]}`)
+	// domain.list is registered since 3.5; an empty install answers [].
+	resp = call(`{"auth":"` + auth + `","action":"domain.list","data":[]}`)
+	if string(resp["result"]) != "true" || string(resp["data"]) != "[]" {
+		t.Errorf("domain.list = result %s data %s", resp["result"], resp["data"])
+	}
+
+	// auth stays unregistered until task 3.6.
+	resp = call(`{"auth":"` + auth + `","action":"auth","data":[]}`)
 	if string(resp["message"]) != `"unknown_action"` {
 		t.Errorf("unregistered action = %s", resp["message"])
 	}

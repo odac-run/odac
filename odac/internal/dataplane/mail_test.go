@@ -125,3 +125,38 @@ func TestMailLifecycle(t *testing.T) {
 		t.Errorf("Check after Stop respawned (%d ensures)", e)
 	}
 }
+
+func TestMailClearSSLCache(t *testing.T) {
+	cs := newControlServer(t)
+	m, fp := newTestMail(t, cs, nil)
+
+	m.ClearSSLCache("example.com")
+	select {
+	case raw := <-cs.sslClears:
+		if string(raw) != `{"domain":"example.com"}` {
+			t.Fatalf("payload = %s", raw)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no /ssl/clear request received")
+	}
+
+	// "" clears everything (Node: domain || '').
+	m.ClearSSLCache("")
+	select {
+	case raw := <-cs.sslClears:
+		if string(raw) != `{"domain":""}` {
+			t.Fatalf("payload = %s", raw)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no /ssl/clear request received")
+	}
+
+	// A stopped binary is a silent no-op.
+	fp.running = false
+	m.ClearSSLCache("example.com")
+	select {
+	case raw := <-cs.sslClears:
+		t.Fatalf("unexpected request: %s", raw)
+	case <-time.After(100 * time.Millisecond):
+	}
+}

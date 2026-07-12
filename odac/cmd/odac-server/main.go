@@ -25,6 +25,7 @@ import (
 	"odac/internal/config"
 	"odac/internal/dataplane"
 	"odac/internal/docker"
+	"odac/internal/domains"
 	"odac/internal/logx"
 	"odac/internal/system"
 )
@@ -72,16 +73,22 @@ func main() {
 	apiSrv.Addr = os.Getenv("ODAC_API_ADDR") // test/smoke override only, like the CLI's
 	apiSrv.Init()                            // generates config.api.auth on first start
 
+	// Domain + SSL managers (task 3.5). SSL rides the 1s check tick; Domain
+	// fills appmgr's DomainDeleter seam for app-delete cascades.
+	sslSvc := domains.NewSSL(cfg, dnsSvc, proxySvc, mailSvc)
+	domainSvc := domains.NewDomain(cfg, dnsSvc, sslSvc, proxySvc, mailSvc)
+
 	// App manager (task 3.4e). Skipped only when the Docker client could not
 	// even be constructed (malformed DOCKER_HOST-style env) — an unreachable
 	// daemon still yields a client, and appmgr no-ops like Node does.
-	// Hub and Domains seams stay nil until tasks 3.6/3.5 land.
+	// The Hub seam stays nil until task 3.6 lands.
 	var appMgr *appmgr.Manager
 	if containers != nil {
 		appMgr = appmgr.New(cfg, filepath.Join(baseDir, "logs"), appmgr.Deps{
-			Docker: containers,
-			Api:    apiSrv,
-			Proxy:  proxySvc,
+			Docker:  containers,
+			Api:     apiSrv,
+			Proxy:   proxySvc,
+			Domains: domainSvc,
 		})
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
 	}
@@ -91,15 +98,15 @@ func main() {
 		DNS:   dnsSvc,
 		Mail:  mailSvc,
 		Api:   apiSrv,
-		// Remaining slots fill in as migration tasks land:
-		// SSL (3.5), Hub (3.6).
+		SSL:   sslSvc,
+		// The Hub slot fills in with task 3.6.
 	}
 	if appMgr != nil {
 		svc.App = appMgr
 	}
 	sys := system.New(cfg, svc, system.NewStartupGate(baseDir))
 
-	registerActions(apiSrv, sys, dnsSvc, mailSvc, appMgr)
+	registerActions(apiSrv, sys, dnsSvc, mailSvc, appMgr, domainSvc, sslSvc)
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())
@@ -111,10 +118,10 @@ func main() {
 }
 
 // registerActions wires the contract-0.1 action table for the services that
-// exist so far (tasks 3.3 + 3.4). The remaining actions — auth (3.6),
-// update (3.7), domain.* and ssl.renew (3.5) — answer unknown_action until
-// their tasks land; nothing flips to this server before 3.8 anyway.
-func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager) {
+// exist so far (tasks 3.3 + 3.4 + 3.5). The remaining actions — auth (3.6),
+// update (3.7) — answer unknown_action until their tasks land; nothing flips
+// to this server before 3.8 anyway.
+func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, sslSvc *domains.SSL) {
 	res := func(r api.Result) (*api.Result, error) { return &r, nil }
 
 	if appMgr != nil {
@@ -164,6 +171,18 @@ func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.D
 
 	apiSrv.Register("dns.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(dnsSvc.List(a.At(0)))
+	})
+	apiSrv.Register("domain.add", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(domainSvc.Add(a.At(0), a.At(1)))
+	})
+	apiSrv.Register("domain.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(domainSvc.Delete(a.At(0), a.At(1) == true))
+	})
+	apiSrv.Register("domain.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(domainSvc.List(a.At(0)))
+	})
+	apiSrv.Register("ssl.renew", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(sslSvc.Renew(a.At(0)))
 	})
 	apiSrv.Register("mail.create", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(mailSvc.Create(a.At(0), a.At(1), a.At(2)))

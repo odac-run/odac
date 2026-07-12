@@ -2,7 +2,9 @@ package dataplane
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -172,6 +174,47 @@ func (p *Proxy) PurgeCacheForApp(appID any) {
 	sort.Strings(targets) // map order is random; Node walked insertion order
 	for _, domain := range targets {
 		p.PurgeCache(domain)
+	}
+}
+
+// SetACMEChallenge ports setACMEChallenge(): push an HTTP-01 challenge token
+// to the proxy via POST /acme/challenge (contract 0.3) so it answers
+// /.well-known/acme-challenge/<token> on port 80. Unlike the other pushes
+// this one PROPAGATES failure — the SSL module must fall back to DNS-01 when
+// the proxy cannot serve the token (Node throws on !== 200 the same way).
+func (p *Proxy) SetACMEChallenge(token, keyAuthorization string) error {
+	if !p.proc.Running() {
+		return errors.New("Proxy process not running")
+	}
+	sock := p.proc.SocketPath()
+	if _, err := os.Stat(sock); err != nil {
+		return errors.New("Proxy API not available")
+	}
+
+	status, err := requestStatus(sock, "POST", "/acme/challenge",
+		map[string]any{"keyAuthorization": keyAuthorization, "token": token})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("Proxy returned HTTP %d for ACME challenge", status)
+	}
+	return nil
+}
+
+// DeleteACMEChallenge ports deleteACMEChallenge(): best-effort removal of a
+// served HTTP-01 token via DELETE /acme/challenge. Failures only log — the
+// token expires with the proxy's own TTL anyway.
+func (p *Proxy) DeleteACMEChallenge(token string) {
+	if !p.proc.Running() {
+		return
+	}
+	sock := p.proc.SocketPath()
+	if _, err := os.Stat(sock); err != nil {
+		return
+	}
+	if _, err := requestStatus(sock, "DELETE", "/acme/challenge", map[string]any{"token": token}); err != nil {
+		p.log.Error("Failed to delete ACME challenge token: %s", err.Error())
 	}
 }
 

@@ -103,6 +103,27 @@ func requestJSON(socketPath, method, path string, payload any) (map[string]any, 
 	return envelope, nil
 }
 
+// requestStatus sends a JSON request and returns only the HTTP status code —
+// for callers that gate on status (the ACME challenge push validates 200).
+func requestStatus(socketPath, method, path string, payload any) (int, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequest(method, "http://localhost"+path, bytes.NewReader(raw))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := socketClient(socketPath, 0).Do(req)
+	if err != nil {
+		return 0, err
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
 // getStatus GETs path and returns the HTTP status code.
 func getStatus(socketPath, path string, timeout time.Duration) (int, error) {
 	resp, err := socketClient(socketPath, timeout).Get("http://localhost" + path)

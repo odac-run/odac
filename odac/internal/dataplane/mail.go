@@ -111,6 +111,23 @@ func (m *Mail) Check() {
 	}()
 }
 
+// ClearSSLCache ports clearSSLCache(): tell the mail binary to drop its
+// cached TLS context for domain ("" = all) via POST /ssl/clear (contract
+// 0.5). Invoked by the SSL module after cert renewal and by Domain deletes;
+// a missing/silent binary is fine — the cache dies with the process.
+func (m *Mail) ClearSSLCache(domain string) {
+	if !m.proc.Running() {
+		return
+	}
+	sock := m.proc.SocketPath()
+	if _, err := os.Stat(sock); err != nil {
+		return
+	}
+	if err := postJSON(sock, "/ssl/clear", map[string]any{"domain": domain}); err != nil {
+		m.log.Error("Failed to clear SSL cache: %s", err.Error())
+	}
+}
+
 // SyncConfig pushes domains/TLS/IP data (Mail.js syncConfig).
 func (m *Mail) SyncConfig() {
 	m.syncMu.Lock()
