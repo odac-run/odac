@@ -117,6 +117,16 @@ func (s *Store) Set(key string, value any) {
 	s.markDirty(key)
 }
 
+// Delete removes a top-level key and marks its owning module dirty, the
+// port of `delete config.hub` (Hub credential invalidation) — the module
+// file persists without the key on the next save.
+func (s *Store) Delete(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, key)
+	s.markDirty(key)
+}
+
 // Touch marks the module owning key as dirty. Use after mutating a value
 // obtained from Map/Get in place.
 func (s *Store) Touch(key string) {

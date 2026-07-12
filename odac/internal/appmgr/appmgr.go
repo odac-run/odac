@@ -449,6 +449,13 @@ func (m *Manager) generateUniqueNameLocked(baseName string) string {
 
 // ---- shared service shims (nil-tolerant Odac.server(...) lookups) ----
 
+// SetHub fills the Hub seam after construction: the Hub client depends on
+// the Manager (its command table calls App methods), so the two are wired
+// in two steps — Node's DI registry resolved the same cycle lazily. Must be
+// called before System.Init starts the tick (no lock: single-threaded
+// startup wiring).
+func (m *Manager) SetHub(hub Hub) { m.deps.Hub = hub }
+
 func (m *Manager) hubTrigger(event string) {
 	if m.deps.Hub != nil {
 		m.deps.Hub.Trigger(event)

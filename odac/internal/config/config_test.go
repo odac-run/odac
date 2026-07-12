@@ -248,3 +248,37 @@ func TestViewMutateSerializeWithSave(t *testing.T) {
 		t.Errorf("persisted records = %d, want 200", len(records))
 	}
 }
+
+// TestDelete ports `delete config.hub` (Hub credential invalidation): the
+// key vanishes from the store and from the persisted module file.
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Set("hub", map[string]any{"token": "tok", "secret": "sec"})
+	if err := s.SaveDirty(); err != nil {
+		t.Fatal(err)
+	}
+
+	s.Delete("hub")
+	if s.Get("hub") != nil {
+		t.Fatal("hub still readable after Delete")
+	}
+	if err := s.SaveDirty(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "config", "hub.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := parsed["hub"]; exists {
+		t.Fatalf("hub persisted after Delete: %s", raw)
+	}
+}

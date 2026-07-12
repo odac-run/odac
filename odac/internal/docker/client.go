@@ -61,6 +61,7 @@ type API interface {
 	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error)
 	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
+	ContainerExecResize(ctx context.Context, execID string, options container.ResizeOptions) error
 	ImageInspectWithRaw(ctx context.Context, imageID string) (image.InspectResponse, []byte, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
 	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
@@ -122,6 +123,10 @@ type Client struct {
 	mu           sync.Mutex
 	activeBuilds map[string]bool
 	buildLoggers map[string]*applog.Logger
+
+	// appNames resolves managed app names for CreateTerminalSession
+	// (injected by main; see SetAppNames).
+	appNames func() []string
 }
 
 // Options configures New.

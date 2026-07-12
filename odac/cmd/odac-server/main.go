@@ -26,7 +26,9 @@ import (
 	"odac/internal/dataplane"
 	"odac/internal/docker"
 	"odac/internal/domains"
+	"odac/internal/hub"
 	"odac/internal/logx"
+	"odac/internal/sysinfo"
 	"odac/internal/system"
 )
 
@@ -81,7 +83,6 @@ func main() {
 	// App manager (task 3.4e). Skipped only when the Docker client could not
 	// even be constructed (malformed DOCKER_HOST-style env) — an unreachable
 	// daemon still yields a client, and appmgr no-ops like Node does.
-	// The Hub seam stays nil until task 3.6 lands.
 	var appMgr *appmgr.Manager
 	if containers != nil {
 		appMgr = appmgr.New(cfg, filepath.Join(baseDir, "logs"), appmgr.Deps{
@@ -93,20 +94,60 @@ func main() {
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
 	}
 
+	// Hub client (task 3.6). SysUpdate stays nil until 3.7 lands the
+	// updater; app/container slots stay nil on docker-less hosts.
+	sysInfo := sysinfo.New(func() bool { return containers != nil && containers.Available() })
+	hubURL := os.Getenv("ODAC_HUB_URL")
+	if hubURL == "" {
+		hubURL = hub.DefaultURL
+	}
+	hubDeps := hub.Deps{
+		DNS:     dnsSvc,
+		Domain:  domainSvc,
+		Proxy:   proxySvc,
+		SysInfo: sysInfo.Get,
+	}
+	if appMgr != nil {
+		hubDeps.App = appMgr
+	}
+	if containers != nil {
+		hubDeps.Container = hubContainers{containers}
+		// Terminal sessions validate the target against the managed-app
+		// list (Node went through App.list(); only the names are consulted).
+		containers.SetAppNames(func() []string {
+			var names []string
+			cfg.View(func() {
+				apps, _ := cfg.Get("apps").([]any)
+				for _, item := range apps {
+					if app, _ := item.(map[string]any); app != nil {
+						if name, _ := app["name"].(string); name != "" {
+							names = append(names, name)
+						}
+					}
+				}
+			})
+			return names
+		})
+	}
+	hubSvc := hub.New(cfg, hubURL, hubDeps)
+	if appMgr != nil {
+		appMgr.SetHub(hubSvc) // closes the 3.4e seam (triggers + recipe fetch)
+	}
+
 	svc := system.Services{
 		Proxy: proxySvc,
 		DNS:   dnsSvc,
 		Mail:  mailSvc,
 		Api:   apiSrv,
 		SSL:   sslSvc,
-		// The Hub slot fills in with task 3.6.
+		Hub:   hubSvc,
 	}
 	if appMgr != nil {
 		svc.App = appMgr
 	}
 	sys := system.New(cfg, svc, system.NewStartupGate(baseDir))
 
-	registerActions(apiSrv, sys, dnsSvc, mailSvc, appMgr, domainSvc, sslSvc)
+	registerActions(apiSrv, sys, dnsSvc, mailSvc, appMgr, domainSvc, sslSvc, hubSvc)
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())
@@ -117,12 +158,29 @@ func main() {
 	select {} // run until the watchdog (or a signal) kills us
 }
 
+// hubContainers adapts *docker.Client to hub.ContainerService — Go cannot
+// covary CreateTerminalSession's concrete *docker.Terminal return into the
+// interface's hub.TerminalExec.
+type hubContainers struct{ *docker.Client }
+
+func (h hubContainers) CreateTerminalSession(appName string, opts docker.TerminalOptions) (hub.TerminalExec, error) {
+	t, err := h.Client.CreateTerminalSession(appName, opts)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
 // registerActions wires the contract-0.1 action table for the services that
-// exist so far (tasks 3.3 + 3.4 + 3.5). The remaining actions — auth (3.6),
-// update (3.7) — answer unknown_action until their tasks land; nothing flips
+// exist so far (tasks 3.3 + 3.4 + 3.5 + 3.6). The remaining action —
+// update (3.7) — answers unknown_action until its task lands; nothing flips
 // to this server before 3.8 anyway.
-func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, sslSvc *domains.SSL) {
+func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, sslSvc *domains.SSL, hubSvc *hub.Hub) {
 	res := func(r api.Result) (*api.Result, error) { return &r, nil }
+
+	apiSrv.Register("auth", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(hubSvc.Auth(a.At(0)))
+	})
 
 	if appMgr != nil {
 		// argStr renders an argument the way Node's string coercions saw it,

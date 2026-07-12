@@ -211,6 +211,10 @@ func (f *fakeAPI) ContainerExecInspect(_ context.Context, execID string) (contai
 	return container.ExecInspect{ExitCode: f.execCodes[cmd]}, nil
 }
 
+func (f *fakeAPI) ContainerExecResize(context.Context, string, container.ResizeOptions) error {
+	return nil
+}
+
 func (f *fakeAPI) ImageInspectWithRaw(_ context.Context, id string) (image.InspectResponse, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

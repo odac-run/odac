@@ -1,0 +1,204 @@
+{
+  "sign": [
+    {
+      "name": "task-envelope",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"app.list\",\"data\":{\"result\":true,\"message\":null,\"data\":[]},\"timestamp\":1752300000}",
+      "payload_canonical": "{\"type\":\"app.list\",\"data\":{\"result\":true,\"message\":null,\"data\":[]},\"timestamp\":1752300000}",
+      "signature": "f82b2069f47ca8a3fb7c1293096384ef7f981d41837424aeb1a7f3e711c3d90b"
+    },
+    {
+      "name": "with-id",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"id\":\"req-42\",\"type\":\"command.response\",\"data\":{\"id\":\"req-42\",\"success\":true,\"message\":\"ok\"},\"timestamp\":1752300001}",
+      "payload_canonical": "{\"id\":\"req-42\",\"type\":\"command.response\",\"data\":{\"id\":\"req-42\",\"success\":true,\"message\":\"ok\"},\"timestamp\":1752300001}",
+      "signature": "92e6ce68a81a3473dbcd14a8180a19e7dd3706e8623b7da95e011026241d340d"
+    },
+    {
+      "name": "empty-id-is-falsy",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"id\":\"\",\"type\":\"ping\",\"data\":{},\"timestamp\":1752300002}",
+      "payload_canonical": "{\"type\":\"ping\",\"data\":{},\"timestamp\":1752300002}",
+      "signature": "c45941c53ab08950fb43ebe680340fb4bb87d0387bab7e0e542020415b990d65"
+    },
+    {
+      "name": "zero-id-is-falsy",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"id\":0,\"type\":\"ping\",\"data\":{},\"timestamp\":1752300003}",
+      "payload_canonical": "{\"type\":\"ping\",\"data\":{},\"timestamp\":1752300003}",
+      "signature": "f6105b52fc790a32c2a8e2f1cdcc35237dcb9d4897a3b42e1f1846668ccb919f"
+    },
+    {
+      "name": "numeric-id",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"id\":7,\"type\":\"ping\",\"data\":{},\"timestamp\":1752300004}",
+      "payload_canonical": "{\"id\":7,\"type\":\"ping\",\"data\":{},\"timestamp\":1752300004}",
+      "signature": "567facb093000eb086ccc676886543440c7ebc6dc4a10f67515feb20928d06b3"
+    },
+    {
+      "name": "null-data",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":null,\"timestamp\":1752300005}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":null,\"timestamp\":1752300005}",
+      "signature": "a23b5bdaff9d2ec97e8c58ad612566264100fc60ab4e04f602ee7d5a4eb7851e"
+    },
+    {
+      "name": "string-data",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":\"plain <html> & 'quotes' \\\"dquotes\\\"\",\"timestamp\":1752300006}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":\"plain <html> & 'quotes' \\\"dquotes\\\"\",\"timestamp\":1752300006}",
+      "signature": "0ece6c76f8ee692375db0ec9c552efaec99938e267f8c310389608bba2bb789f"
+    },
+    {
+      "name": "bool-data",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":true,\"timestamp\":1752300007}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":true,\"timestamp\":1752300007}",
+      "signature": "c54c3aa9192d6b8bfcec4e1f74a663456ce2b65be9d3bd35e327742877412cf2"
+    },
+    {
+      "name": "unicode",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":{\"text\":\"çğüşöı 中文 🙂 <tag> & sep line end\",\"emoji\":\"👩‍👩‍👧‍👦\"},\"timestamp\":1752300008}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":{\"text\":\"çğüşöı 中文 🙂 <tag> & sep line end\",\"emoji\":\"👩‍👩‍👧‍👦\"},\"timestamp\":1752300008}",
+      "signature": "9172f10d47dd2febfe2bb7a27943ae078573180ad6ebeb9ed6d4fc4f7cd65c99"
+    },
+    {
+      "name": "control-chars",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":{\"raw\":\"a\\b\\t\\n\\f\\rz \\u0001\\u001f\"},\"timestamp\":1752300009}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":{\"raw\":\"a\\b\\t\\n\\f\\rz \\u0001\\u001f\"},\"timestamp\":1752300009}",
+      "signature": "683695827cf5524c7a73d631fd3c837bc312b269c3e766168be0c883e753d8df"
+    },
+    {
+      "name": "numbers",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":[0.1,1e+21,1e-7,0,9007199254740992,9007199254740991,123.456,100000000000000000000,5e-324,1.7976931348623157e+308,0.000001,0.000001,100,-42.5,2e+21,3.5e-8],\"timestamp\":1752300010}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":[0.1,1e+21,1e-7,0,9007199254740992,9007199254740991,123.456,100000000000000000000,5e-324,1.7976931348623157e+308,0.000001,0.000001,100,-42.5,2e+21,3.5e-8],\"timestamp\":1752300010}",
+      "signature": "33f30f28f5c057914da340e3f789a744bf84365b5cc3fd657c55d3df59f9959d"
+    },
+    {
+      "name": "integer-like-keys",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"noop\",\"data\":{\"2\":\"b\",\"10\":\"a\",\"4294967294\":\"z\",\"name\":\"x\",\"01\":\"y\",\"4294967295\":\"w\"},\"timestamp\":1752300011}",
+      "payload_canonical": "{\"type\":\"noop\",\"data\":{\"2\":\"b\",\"10\":\"a\",\"4294967294\":\"z\",\"name\":\"x\",\"01\":\"y\",\"4294967295\":\"w\"},\"timestamp\":1752300011}",
+      "signature": "929986b77434696e7a5d0970a8924c2f99bc7b4f98f7ab1f40240eafdfc105e5"
+    },
+    {
+      "name": "nested",
+      "secret": "fixture-secret-0123456789abcdef",
+      "message_json": "{\"type\":\"command\",\"data\":{\"action\":\"app.create\",\"payload\":{\"name\":\"shop\",\"env\":{\"A\":\"1\",\"B\":null},\"list\":[[1,[2.5,\"x\"]],{}]}},\"timestamp\":1752300012}",
+      "payload_canonical": "{\"type\":\"command\",\"data\":{\"action\":\"app.create\",\"payload\":{\"name\":\"shop\",\"env\":{\"A\":\"1\",\"B\":null},\"list\":[[1,[2.5,\"x\"]],{}]}},\"timestamp\":1752300012}",
+      "signature": "36ba0a7fcbcd719986a85b4f1b60373485f06e570dbe9c435cd62ab6440a2668"
+    }
+  ],
+  "verify": [
+    {
+      "name": "task-envelope",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"f82b2069f47ca8a3fb7c1293096384ef7f981d41837424aeb1a7f3e711c3d90b\",\"timestamp\":1752300000,\"data\":{\"result\":true,\"message\":null,\"data\":[]},\"type\":\"app.list\"}",
+      "timestamp": 1752300000
+    },
+    {
+      "name": "with-id",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"92e6ce68a81a3473dbcd14a8180a19e7dd3706e8623b7da95e011026241d340d\",\"timestamp\":1752300001,\"data\":{\"id\":\"req-42\",\"success\":true,\"message\":\"ok\"},\"type\":\"command.response\",\"id\":\"req-42\"}",
+      "timestamp": 1752300001
+    },
+    {
+      "name": "empty-id-is-falsy",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"c45941c53ab08950fb43ebe680340fb4bb87d0387bab7e0e542020415b990d65\",\"timestamp\":1752300002,\"data\":{},\"type\":\"ping\",\"id\":\"\"}",
+      "timestamp": 1752300002
+    },
+    {
+      "name": "zero-id-is-falsy",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"f6105b52fc790a32c2a8e2f1cdcc35237dcb9d4897a3b42e1f1846668ccb919f\",\"timestamp\":1752300003,\"data\":{},\"type\":\"ping\",\"id\":0}",
+      "timestamp": 1752300003
+    },
+    {
+      "name": "numeric-id",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"567facb093000eb086ccc676886543440c7ebc6dc4a10f67515feb20928d06b3\",\"timestamp\":1752300004,\"data\":{},\"type\":\"ping\",\"id\":7}",
+      "timestamp": 1752300004
+    },
+    {
+      "name": "null-data",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"a23b5bdaff9d2ec97e8c58ad612566264100fc60ab4e04f602ee7d5a4eb7851e\",\"timestamp\":1752300005,\"data\":null,\"type\":\"noop\"}",
+      "timestamp": 1752300005
+    },
+    {
+      "name": "string-data",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"0ece6c76f8ee692375db0ec9c552efaec99938e267f8c310389608bba2bb789f\",\"timestamp\":1752300006,\"data\":\"plain <html> & 'quotes' \\\"dquotes\\\"\",\"type\":\"noop\"}",
+      "timestamp": 1752300006
+    },
+    {
+      "name": "bool-data",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"c54c3aa9192d6b8bfcec4e1f74a663456ce2b65be9d3bd35e327742877412cf2\",\"timestamp\":1752300007,\"data\":true,\"type\":\"noop\"}",
+      "timestamp": 1752300007
+    },
+    {
+      "name": "unicode",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"9172f10d47dd2febfe2bb7a27943ae078573180ad6ebeb9ed6d4fc4f7cd65c99\",\"timestamp\":1752300008,\"data\":{\"text\":\"çğüşöı 中文 🙂 <tag> & sep line end\",\"emoji\":\"👩‍👩‍👧‍👦\"},\"type\":\"noop\"}",
+      "timestamp": 1752300008
+    },
+    {
+      "name": "control-chars",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"683695827cf5524c7a73d631fd3c837bc312b269c3e766168be0c883e753d8df\",\"timestamp\":1752300009,\"data\":{\"raw\":\"a\\b\\t\\n\\f\\rz \\u0001\\u001f\"},\"type\":\"noop\"}",
+      "timestamp": 1752300009
+    },
+    {
+      "name": "numbers",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"33f30f28f5c057914da340e3f789a744bf84365b5cc3fd657c55d3df59f9959d\",\"timestamp\":1752300010,\"data\":[0.1,1e+21,1e-7,0,9007199254740992,9007199254740991,123.456,100000000000000000000,5e-324,1.7976931348623157e+308,0.000001,0.000001,100,-42.5,2e+21,3.5e-8],\"type\":\"noop\"}",
+      "timestamp": 1752300010
+    },
+    {
+      "name": "integer-like-keys",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"929986b77434696e7a5d0970a8924c2f99bc7b4f98f7ab1f40240eafdfc105e5\",\"timestamp\":1752300011,\"data\":{\"2\":\"b\",\"10\":\"a\",\"4294967294\":\"z\",\"name\":\"x\",\"01\":\"y\",\"4294967295\":\"w\"},\"type\":\"noop\"}",
+      "timestamp": 1752300011
+    },
+    {
+      "name": "nested",
+      "secret": "fixture-secret-0123456789abcdef",
+      "wire": "{\"signature\":\"36ba0a7fcbcd719986a85b4f1b60373485f06e570dbe9c435cd62ab6440a2668\",\"timestamp\":1752300012,\"data\":{\"action\":\"app.create\",\"payload\":{\"name\":\"shop\",\"env\":{\"A\":\"1\",\"B\":null},\"list\":[[1,[2.5,\"x\"]],{}]}},\"type\":\"command\"}",
+      "timestamp": 1752300012
+    }
+  ],
+  "numbers": {
+    "0": "0",
+    "1": "1",
+    "100": "100",
+    "299792458": "299792458",
+    "-0": "0",
+    "-1": "-1",
+    "0.1": "0.1",
+    "123.456": "123.456",
+    "1e2": "100",
+    "1e20": "100000000000000000000",
+    "1e21": "1e+21",
+    "2e21": "2e+21",
+    "1e-6": "0.000001",
+    "0.000001": "0.000001",
+    "1e-7": "1e-7",
+    "3.5e-8": "3.5e-8",
+    "9007199254740991": "9007199254740991",
+    "9007199254740992": "9007199254740992",
+    "9007199254740993": "9007199254740992",
+    "5e-324": "5e-324",
+    "1.7976931348623157e308": "1.7976931348623157e+308",
+    "-42.5": "-42.5",
+    "2.998e8": "299800000",
+    "1234567890123456789012": "1.2345678901234568e+21",
+    "0.30000000000000004": "0.30000000000000004",
+    "9.999999999999999e20": "999999999999999900000",
+    "1.5e-5": "0.000015"
+  }
+}

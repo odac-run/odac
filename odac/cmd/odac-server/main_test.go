@@ -194,7 +194,11 @@ func TestServerAPIRoundTrip(t *testing.T) {
 	probe.Close()
 
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "ODAC_API_ADDR="+apiAddr)
+	// ODAC_HUB_URL points at a dead local port so the auth action answers
+	// its deterministic connection-refused failure instead of dialing the
+	// real cloud.
+	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "ODAC_API_ADDR="+apiAddr,
+		"ODAC_HUB_URL=http://127.0.0.1:9")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -269,8 +273,16 @@ func TestServerAPIRoundTrip(t *testing.T) {
 		t.Errorf("domain.list = result %s data %s", resp["result"], resp["data"])
 	}
 
-	// auth stays unregistered until task 3.6.
-	resp = call(`{"auth":"` + auth + `","action":"auth","data":[]}`)
+	// auth is registered now (3.6): the dead ODAC_HUB_URL answers the
+	// Node-parity connection-refused shape {result:false, message:null,
+	// data:{}} (the thrown Error instance stringifies to {}).
+	resp = call(`{"auth":"` + auth + `","action":"auth","data":["e2ecode123"]}`)
+	if string(resp["result"]) != "false" || string(resp["message"]) != "null" || string(resp["data"]) != "{}" {
+		t.Errorf("auth = result %s message %s data %s", resp["result"], resp["message"], resp["data"])
+	}
+
+	// update stays unregistered until task 3.7.
+	resp = call(`{"auth":"` + auth + `","action":"update","data":[]}`)
 	if string(resp["message"]) != `"unknown_action"` {
 		t.Errorf("unregistered action = %s", resp["message"])
 	}
