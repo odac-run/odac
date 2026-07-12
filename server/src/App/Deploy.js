@@ -20,6 +20,11 @@ class Deploy {
     const {logCtrl = null, operation = 'Redeploy', runGreenContainer, setStarting = false} = options
     const api = this.#api
 
+    if (app._deleted) {
+      log('Blue-Green deploy aborted: App %s was deleted', app.name)
+      return
+    }
+
     if (typeof runGreenContainer !== 'function') {
       throw new Error('Blue-Green deploy requires a runGreenContainer function.')
     }
