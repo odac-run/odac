@@ -24,9 +24,10 @@ class Deploy {
       throw new Error('Blue-Green deploy requires a runGreenContainer function.')
     }
 
-    if (!app.ports || app.ports.length === 0 || !app.ports[0].container) {
+    const ports = Odac.server('Ports')
+    if (!ports.primary(app.ports)?.container) {
       log('Legacy App Fix: Assigning default port 3000 to app %s during %s', app.name, operation.toLowerCase())
-      app.ports = [{container: 3000}]
+      app.ports = [ports.discovered(3000)]
       api.saveApps()
     }
 
@@ -41,8 +42,9 @@ class Deploy {
     api.set(app.id, {status: 'switching'})
 
     let expectedPort = 3000
-    if (app.ports && app.ports.length > 0 && app.ports[0].container) {
-      expectedPort = app.ports[0].container
+    const primary = ports.primary(app.ports)
+    if (primary?.container) {
+      expectedPort = primary.container
     }
 
     let isReady = false

@@ -453,7 +453,7 @@ class Create {
             manual: env.manual || Array.isArray(env.linked) ? env.manual || {} : env,
             linked: env.manual || Array.isArray(env.linked) ? env.linked || [] : linked || []
           },
-          ports: [{container: parseInt(detectedPort)}],
+          ports: [{host: Odac.server('Ports').PROXY, container: parseInt(detectedPort)}],
           dev,
           active: true,
           created: Date.now(),

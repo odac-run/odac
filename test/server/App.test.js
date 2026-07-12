@@ -19,18 +19,56 @@ jest.mock('fs', () => ({
   }))
 }))
 
+// Auto-discovery probes container ports over HTTP. `httpPorts` names the ports
+// that answer; every other port refuses the connection, the way a database does.
+jest.mock('http', () => {
+  const {EventEmitter} = require('events')
+
+  const mock = {
+    httpPorts: new Set(),
+    request(options, onResponse) {
+      const req = new EventEmitter()
+      req.destroy = jest.fn()
+      req.end = () => {
+        // nextTick, not setImmediate: the discovery tests run on fake timers, which
+        // flush microtasks between ticks but never turn the event loop's check phase.
+        process.nextTick(() => {
+          if (mock.httpPorts.has(options.port)) {
+            onResponse({destroy: jest.fn()})
+          } else {
+            req.emit('error', new Error('ECONNREFUSED'))
+          }
+        })
+      }
+
+      return req
+    }
+  }
+
+  return mock
+})
+
+const http = require('http')
+
 let App
 
 describe('App', () => {
   let mockConfig
   let mockRunApp
   let mockCloneRepo
+  let mockGetListeningPorts
+  let mockGetIP
+  let mockGetImageExposedPorts
 
   beforeEach(() => {
     // Reset config for each test
     mockConfig = {}
     mockRunApp = jest.fn()
     mockCloneRepo = jest.fn()
+    mockGetListeningPorts = jest.fn(() => [3000]) // Default: pass the readiness probe
+    mockGetIP = jest.fn(() => '10.0.0.5') // Mock IP to prevent infinite loop
+    mockGetImageExposedPorts = jest.fn(() => [])
+    http.httpPorts = new Set()
 
     // Mock global translation
     global.__ = msg => msg
@@ -52,6 +90,9 @@ describe('App', () => {
         return {}
       }),
       server: jest.fn(module => {
+        if (module === 'Ports') {
+          return require('../../server/src/Ports')
+        }
         if (module === 'Container') {
           return {
             available: true,
@@ -65,11 +106,11 @@ describe('App', () => {
             list: jest.fn(() => []),
             getStats: jest.fn(),
             getStatus: jest.fn(() => Promise.resolve({running: false, restarts: 0})),
-            getIP: jest.fn(() => '10.0.0.5'), // Mock IP to prevent infinite loop
-            getListeningPorts: jest.fn(() => [3000]), // Mock to pass readiness probe
+            getIP: mockGetIP,
+            getListeningPorts: mockGetListeningPorts,
             remove: jest.fn(),
             fetchRepo: jest.fn(),
-            getImageExposedPorts: jest.fn(() => []),
+            getImageExposedPorts: mockGetImageExposedPorts,
             logs: jest.fn().mockResolvedValue({}),
             docker: {
               getContainer: jest.fn(() => ({
@@ -476,7 +517,7 @@ describe('App', () => {
       // Manual envs
       expect(result.data.manual.NODE_ENV).toBe('production')
       expect(result.data.manual.API_KEY).toBe('***')
-      expect(result.data.manual.DB_PASS).toBe('***')
+      expect(result.data.manual.DB_PASS).toBe('password123') // pass is not masked
 
       // Linked section (empty initially)
       expect(result.data.linked).toEqual([])
@@ -530,7 +571,7 @@ describe('App', () => {
       expect(resolvedRes.data.linked).toHaveLength(1)
       expect(resolvedRes.data.linked[0].app).toBe('app-db')
       expect(resolvedRes.data.linked[0].env.POSTGRES_USER).toBe('admin')
-      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('***')
+      expect(resolvedRes.data.linked[0].env.POSTGRES_PASSWORD).toBe('db-secret-password')
     })
 
     test('unlinkEnv should remove link', async () => {
@@ -1143,6 +1184,579 @@ describe('App', () => {
       })
       expect(result.success).toBe(false)
       expect(result.message).toMatch(/Missing template name/)
+    })
+  })
+
+  describe('setPorts()', () => {
+    beforeEach(() => {
+      mockConfig.apps = [{id: 1, name: 'web', type: 'container', image: 'nginx', ports: [{host: 'proxy', container: 3000}]}]
+    })
+
+    const ports = () => mockConfig.apps[0].ports
+
+    test('should reject an unknown app', async () => {
+      const result = await App.setPorts('ghost', [{host: 'proxy', container: 3000}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/not found/)
+    })
+
+    test('should reject a non-array payload', async () => {
+      const result = await App.setPorts('web', {host: 'proxy', container: 3000})
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Expected an array/)
+    })
+
+    test('should reject an entry with a missing container port', async () => {
+      const result = await App.setPorts('web', [{host: 8080}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/must have a container port/)
+    })
+
+    test('should reject an entry with an empty container port', async () => {
+      const result = await App.setPorts('web', [{host: 8080, container: ''}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/must have a container port/)
+    })
+
+    test('should reject an entry with a missing host', async () => {
+      const result = await App.setPorts('web', [{container: 3000}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/must have a host port/)
+    })
+
+    test('should reject an entry with an empty host', async () => {
+      const result = await App.setPorts('web', [{host: '', container: 3000}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/must have a host port/)
+    })
+
+    test('should reject an out-of-range host port', async () => {
+      const result = await App.setPorts('web', [{host: 70000, container: 3000}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Invalid host port/)
+    })
+
+    test('should reject an out-of-range container port', async () => {
+      const result = await App.setPorts('web', [{host: 8080, container: 0}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Invalid container port/)
+    })
+
+    test('should reject a garbage host value', async () => {
+      const result = await App.setPorts('web', [{host: 'internal', container: 3000}])
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Invalid host port/)
+    })
+
+    test('should not mutate the app when validation fails', async () => {
+      await App.setPorts('web', [{container: 3000}])
+      expect(ports()).toEqual([{host: 'proxy', container: 3000}])
+    })
+
+    test('should accept the proxy sentinel and keep the port off Docker', async () => {
+      const result = await App.setPorts('web', [{host: 'proxy', container: 8000}])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([{host: 'proxy', container: 8000}])
+    })
+
+    test('should accept a published host binding', async () => {
+      const result = await App.setPorts('web', [{host: 8080, container: 3000}])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([{host: 8080, container: 3000}])
+    })
+
+    test('should coerce string ports to numbers so readiness probes compare correctly', async () => {
+      await App.setPorts('web', [{host: '8080', container: '3000'}])
+
+      expect(ports()).toEqual([{host: 8080, container: 3000}])
+    })
+
+    test('should resolve an auto host port', async () => {
+      await App.setPorts('web', [{host: 'auto', container: 3000}])
+
+      expect(ports()[0].host).toBeGreaterThanOrEqual(30000)
+      expect(ports()[0].container).toBe(3000)
+    })
+
+    test('should support mixing published and proxy-routed entries', async () => {
+      const result = await App.setPorts('web', [
+        {host: 'proxy', container: 3000},
+        {host: 9000, container: 9000}
+      ])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([
+        {host: 'proxy', container: 3000},
+        {host: 9000, container: 9000}
+      ])
+    })
+
+    test('should reject a second proxy-routed entry', async () => {
+      const result = await App.setPorts('web', [
+        {host: 'proxy', container: 3000},
+        {host: 'proxy', container: 4000}
+      ])
+
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Only one port may be routed by the proxy/)
+    })
+
+    test('should accept one container port published on two host ports', async () => {
+      const result = await App.setPorts('web', [
+        {host: 8080, container: 3000},
+        {host: 9090, container: 3000}
+      ])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([
+        {host: 8080, container: 3000},
+        {host: 9090, container: 3000}
+      ])
+    })
+
+    test('should accept the same container port routed by the proxy and published', async () => {
+      // The proxy reaches the container over the docker network; publishing DNATs
+      // a host port to the same listener. The two paths never collide.
+      const result = await App.setPorts('web', [
+        {host: 'proxy', container: 3000},
+        {host: 8080, container: 3000}
+      ])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([
+        {host: 'proxy', container: 3000},
+        {host: 8080, container: 3000}
+      ])
+    })
+
+    test('should reject duplicate host ports', async () => {
+      const result = await App.setPorts('web', [
+        {host: 8080, container: 3000},
+        {host: 8080, container: 4000}
+      ])
+
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Duplicate host port/)
+    })
+
+    test('should resolve two auto host ports to distinct ports', async () => {
+      const result = await App.setPorts('web', [
+        {host: 'auto', container: 3000},
+        {host: 'auto', container: 4000}
+      ])
+
+      expect(result.success).toBe(true)
+      expect(ports()[0].host).not.toBe(ports()[1].host)
+    })
+
+    test('should not leave the app mutated when a collision is rejected', async () => {
+      await App.setPorts('web', [
+        {host: 'proxy', container: 3000},
+        {host: 'proxy', container: 4000}
+      ])
+
+      expect(ports()).toEqual([{host: 'proxy', container: 3000}])
+    })
+
+    // Hub delivers commands as JSON over WebSocket, so every value arrives as a
+    // string. app.port.set forwards payload.ports to setPorts verbatim.
+    test('should accept a Hub-shaped payload where every value is a string', async () => {
+      const payload = JSON.parse('{"name":"web","ports":[{"host":"proxy","container":"3000"},{"host":"8080","container":"8080"}]}')
+
+      const result = await App.setPorts(payload.name, payload.ports)
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([
+        {host: 'proxy', container: 3000},
+        {host: 8080, container: 8080}
+      ])
+    })
+
+    test('should reject a Hub payload with a missing ports key rather than throwing', async () => {
+      const payload = JSON.parse('{"name":"web"}')
+
+      const result = await App.setPorts(payload.name, payload.ports)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Expected an array/)
+    })
+
+    test('should persist the public flag on a published port', async () => {
+      const result = await App.setPorts('web', [{host: 3307, container: 3306, public: true}])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([{host: 3307, container: 3306, public: true}])
+    })
+
+    test('should omit the public flag when the port stays on loopback', async () => {
+      // An absent flag already means loopback; writing `public: false` into every
+      // stored config would churn them for nothing.
+      const result = await App.setPorts('web', [
+        {host: 3307, container: 3306, public: false},
+        {host: 8080, container: 8080}
+      ])
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([
+        {host: 3307, container: 3306},
+        {host: 8080, container: 8080}
+      ])
+    })
+
+    test('should mark an auto-assigned host port public', async () => {
+      const result = await App.setPorts('web', [{host: 'auto', container: 3306, public: true}])
+
+      expect(result.success).toBe(true)
+      expect(ports()[0].public).toBe(true)
+      expect(typeof ports()[0].host).toBe('number')
+    })
+
+    test('should reject a public proxy port', async () => {
+      const result = await App.setPorts('web', [{host: 'proxy', container: 3000, public: true}])
+
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/cannot be public/)
+    })
+
+    test('should reject a public flag that is not a boolean', async () => {
+      const result = await App.setPorts('web', [{host: 3307, container: 3306, public: 'yes'}])
+
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/Invalid public flag/)
+    })
+
+    test('should not leave the app mutated when the public flag is rejected', async () => {
+      await App.setPorts('web', [{host: 3307, container: 3306, public: 1}])
+
+      expect(ports()).toEqual([{host: 'proxy', container: 3000}])
+    })
+
+    // The dashboard checkbox may serialize as a string on its way through Hub.
+    test('should accept a Hub-shaped public flag sent as a string', async () => {
+      const payload = JSON.parse('{"name":"web","ports":[{"host":"3307","container":"3306","public":"true"}]}')
+
+      const result = await App.setPorts(payload.name, payload.ports)
+
+      expect(result.success).toBe(true)
+      expect(ports()).toEqual([{host: 3307, container: 3306, public: true}])
+    })
+
+    test('should not read a stringified false as public', async () => {
+      const payload = JSON.parse('{"name":"web","ports":[{"host":"3307","container":"3306","public":"false"}]}')
+
+      const result = await App.setPorts(payload.name, payload.ports)
+
+      expect(result.success).toBe(true)
+      expect(ports()[0].public).toBeUndefined()
+    })
+  })
+
+  describe('legacy port migration', () => {
+    test('should stamp the proxy sentinel onto host-less entries on load', async () => {
+      mockConfig.apps = [{id: 1, name: 'web', type: 'container', ports: [{container: 3000}]}]
+
+      await App.init()
+
+      const {data: apps} = await App.list(true)
+      expect(apps[0].ports[0]).toEqual({host: 'proxy', container: 3000, auto: true})
+    })
+
+    test('should let auto-discovery correct a migrated legacy entry', async () => {
+      // Before the marker existed these were correctable; migration must not
+      // quietly freeze them on a port the app never binds.
+      mockConfig.apps = [{id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{container: 3000}]}]
+
+      await App.init()
+      mockGetListeningPorts.mockResolvedValue([5678])
+      http.httpPorts = new Set([5678])
+
+      jest.useFakeTimers({doNotFake: ['setImmediate', 'nextTick']})
+      try {
+        await App.check()
+        await jest.advanceTimersByTimeAsync(7000)
+      } finally {
+        jest.useRealTimers()
+      }
+
+      expect(mockConfig.apps[0].ports[0]).toEqual({host: 'proxy', container: 5678, auto: true})
+    })
+
+    test('should leave published entries alone on load', async () => {
+      mockConfig.apps = [{id: 1, name: 'web', type: 'container', ports: [{host: 8080, container: 3000}]}]
+
+      await App.init()
+
+      const {data: apps} = await App.list(true)
+      expect(apps[0].ports[0]).toEqual({host: 8080, container: 3000})
+    })
+
+    test('should tolerate apps with no ports at all', async () => {
+      mockConfig.apps = [{id: 1, name: 'web', type: 'script'}]
+
+      await expect(App.init()).resolves.not.toThrow()
+    })
+  })
+
+  describe('runtime port auto-discovery', () => {
+    // #pollForPort waits 5 attempts (1s apart) before rewriting the config.
+    const POLL_SETTLE_MS = 7000
+
+    // A listening port answers the HTTP probe unless the test says otherwise.
+    const runApp = async (app, listeningPorts, httpPorts = listeningPorts) => {
+      mockConfig.apps = [app]
+      mockGetListeningPorts.mockResolvedValue(listeningPorts)
+      http.httpPorts = new Set(httpPorts)
+
+      // #pollForPort re-arms itself with setTimeout; fake them so the 5-attempt
+      // grace period is instant. setImmediate stays real — check() awaits one.
+      jest.useFakeTimers({doNotFake: ['setImmediate', 'nextTick']})
+      try {
+        await App.check()
+        await jest.advanceTimersByTimeAsync(POLL_SETTLE_MS)
+      } finally {
+        jest.useRealTimers()
+      }
+
+      return mockConfig.apps[0].ports
+    }
+
+    test('should adopt the observed port for a guessed proxy entry', async () => {
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5678]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 5678, auto: true}])
+    })
+
+    test('should keep correcting a guess it already corrected once', async () => {
+      // The entry stays a guess after a correction, or a wrong first guess would
+      // freeze the app on a port it never binds.
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 'proxy', container: 5678, auto: true}]},
+        [8080]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 8080, auto: true}])
+    })
+
+    test('should not clobber a published host binding when the app listens elsewhere', async () => {
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 8080, container: 3000}]},
+        [5678]
+      )
+
+      expect(ports).toEqual([{host: 8080, container: 3000}])
+    })
+
+    test('should preserve secondary mappings when correcting the primary entry', async () => {
+      const ports = await runApp(
+        {
+          id: 1,
+          name: 'web',
+          type: 'container',
+          image: 'n8n',
+          active: true,
+          ports: [
+            {host: 'proxy', container: 3000, auto: true},
+            {host: 9000, container: 9000}
+          ]
+        },
+        [5678]
+      )
+
+      expect(ports).toEqual([
+        {host: 'proxy', container: 5678, auto: true},
+        {host: 9000, container: 9000}
+      ])
+    })
+
+    test('should correct the proxy entry wherever it sits in the list', async () => {
+      const ports = await runApp(
+        {
+          id: 1,
+          name: 'web',
+          type: 'container',
+          image: 'n8n',
+          active: true,
+          ports: [
+            {host: 9000, container: 9000},
+            {host: 'proxy', container: 3000, auto: true}
+          ]
+        },
+        [5678]
+      )
+
+      expect(ports).toEqual([
+        {host: 9000, container: 9000},
+        {host: 'proxy', container: 5678, auto: true}
+      ])
+    })
+
+    test('should leave the config alone when the app listens where expected', async () => {
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 'proxy', container: 3000}]},
+        [3000]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 3000}])
+    })
+
+    test('should honour a user-chosen proxy port the app actually listens on', async () => {
+      // User moved the proxy port 3000 -> 5000 and restarted; the app binds both.
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 'proxy', container: 5000}]},
+        [3000, 5000]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 5000}])
+    })
+
+    test('should not overwrite a user-chosen proxy port the app never binds', async () => {
+      // The choice is unroutable, but it is the user's. Silently healing it would
+      // undo the port they just saved from the dashboard on the next restart.
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 'proxy', container: 5000}]},
+        [3000]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 5000}])
+    })
+
+    test('should not adopt a port for an entry a recipe declared', async () => {
+      // Recipe ports go through #preparePorts, which never stamps `auto`.
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'n8n', active: true, ports: [{host: 'proxy', container: 3000}]},
+        [5678]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 3000}])
+    })
+
+    test('should not adopt a lone port that does not speak HTTP', async () => {
+      // A database app binds 5432 and nothing else. Adopting it would hand the
+      // proxy a backend that can never serve a request, so the guess stands.
+      const ports = await runApp(
+        {id: 1, name: 'db', type: 'container', image: 'postgres', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5432],
+        []
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 3000, auto: true}])
+    })
+
+    test('should adopt the HTTP port when the app also listens on a database port', async () => {
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'app', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5432, 8000],
+        [8000]
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 8000, auto: true}])
+    })
+
+    test('should keep polling until a listening port starts answering HTTP', async () => {
+      // The app binds its socket before it serves, so the first probes fail.
+      mockConfig.apps = [
+        {id: 1, name: 'web', type: 'container', image: 'app', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]}
+      ]
+      mockGetListeningPorts.mockResolvedValue([5678])
+      http.httpPorts = new Set()
+
+      jest.useFakeTimers({doNotFake: ['setImmediate', 'nextTick']})
+      try {
+        await App.check()
+        await jest.advanceTimersByTimeAsync(POLL_SETTLE_MS)
+
+        expect(mockConfig.apps[0].ports).toEqual([{host: 'proxy', container: 3000, auto: true}])
+
+        http.httpPorts = new Set([5678])
+        await jest.advanceTimersByTimeAsync(POLL_SETTLE_MS)
+      } finally {
+        jest.useRealTimers()
+      }
+
+      expect(mockConfig.apps[0].ports).toEqual([{host: 'proxy', container: 5678, auto: true}])
+    })
+
+    test('should fall back to a well-known port when the container IP is unknown', async () => {
+      // No IP means no probe. Guessing beats leaving the app unroutable.
+      mockGetIP.mockResolvedValue(null)
+
+      const ports = await runApp(
+        {id: 1, name: 'web', type: 'container', image: 'app', active: true, ports: [{host: 'proxy', container: 3000, auto: true}]},
+        [5432, 8080],
+        []
+      )
+
+      expect(ports).toEqual([{host: 'proxy', container: 8080, auto: true}])
+    })
+
+    test('should give a database app no port mapping at all', async () => {
+      // A recipe that ships no ports leaves the app with none. MariaDB EXPOSEs 3306
+      // and binds it, but nothing there speaks HTTP, so the proxy has no business
+      // claiming it — and a `proxy: 3306` row the proxy can never route is worse
+      // than no row.
+      mockGetImageExposedPorts.mockResolvedValue([3306])
+
+      const ports = await runApp({id: 1, name: 'db', type: 'container', image: 'mariadb', active: true}, [3306], [])
+
+      expect(ports).toBeUndefined()
+      expect(mockRunApp.mock.calls[0][1].env.PORT).toBe('3306')
+    })
+
+    test('should write the proxy mapping for a portless app once a port answers HTTP', async () => {
+      const ports = await runApp({id: 1, name: 'web', type: 'container', image: 'app', active: true}, [8080], [8080])
+
+      expect(ports).toEqual([{host: 'proxy', container: 8080, auto: true}])
+    })
+
+    test('should not write a mapping from the image EXPOSE alone', async () => {
+      // EXPOSE is metadata, not evidence: the mapping waits for the probe.
+      mockGetImageExposedPorts.mockResolvedValue([8080])
+
+      const ports = await runApp({id: 1, name: 'web', type: 'container', image: 'app', active: true}, [], [])
+
+      expect(ports).toBeUndefined()
+    })
+
+    test('should hand Docker only the published ports', async () => {
+      await runApp(
+        {
+          id: 1,
+          name: 'web',
+          type: 'container',
+          image: 'nginx',
+          active: true,
+          ports: [
+            {host: 'proxy', container: 3000},
+            {host: 9000, container: 9000}
+          ]
+        },
+        [3000]
+      )
+
+      const runOptions = mockRunApp.mock.calls[0][1]
+      expect(runOptions.ports).toEqual([{host: 9000, container: 9000}])
+    })
+
+    test('should carry the public flag through to Docker', async () => {
+      await runApp(
+        {
+          id: 1,
+          name: 'db',
+          type: 'container',
+          image: 'mysql',
+          active: true,
+          ports: [{host: 3307, container: 3306, public: true}]
+        },
+        [3306]
+      )
+
+      const runOptions = mockRunApp.mock.calls[0][1]
+      expect(runOptions.ports).toEqual([{host: 3307, container: 3306, public: true}])
     })
   })
 })

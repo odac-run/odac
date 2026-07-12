@@ -6,6 +6,7 @@ const NODE_IMAGE = 'node:lts-alpine'
 
 const Builder = require('./Container/Builder')
 const Logger = require('./Container/Logger')
+const Terminal = require('./Container/Terminal')
 
 class Container {
   #docker
@@ -431,6 +432,59 @@ class Container {
   }
 
   /**
+   * Opens an interactive shell inside a managed app's container.
+   *
+   * Takes an APP name, never a raw container name or id: the caller is ultimately the Hub,
+   * and resolving through the app list is what keeps a spoofed command from opening a shell
+   * in a container odac does not manage — including odac's own, which mounts the Docker
+   * socket and would hand over the host.
+   *
+   * @param {string} appName
+   * @param {Object} [options] - Passed through to Terminal (onData, onExit, cols, rows, …)
+   * @param {boolean} [options.allowPrivileged] - Permit a shell in a --privileged container
+   * @returns {Promise<Terminal>} An opened session
+   */
+  async createTerminalSession(appName, options = {}) {
+    if (!this.available) throw new Error('Docker is not available')
+
+    const res = await Odac.server('App').list()
+    const apps = res?.result ? res.data : []
+
+    if (!Array.isArray(apps) || !apps.some(app => app.name === appName)) {
+      throw new Error(`Unknown app: ${appName}`)
+    }
+
+    // One inspect answers all three gates below: running, privileged, and which user the app
+    // itself runs as.
+    let info
+    try {
+      info = await this.#docker.getContainer(appName).inspect()
+    } catch (e) {
+      if (e.statusCode === 404) throw new Error(`Container ${appName} is not running`)
+      throw e
+    }
+
+    if (!info.State?.Running) {
+      throw new Error(`Container ${appName} is not running`)
+    }
+
+    // A shell in a --privileged container has the host's devices and kernel capabilities: it is
+    // a host shell in container clothing. Refuse unless the operator has explicitly opted in.
+    if (info.HostConfig?.Privileged && !options.allowPrivileged) {
+      throw new Error(`Refusing a terminal in privileged container ${appName}`)
+    }
+
+    // Run as the app's own user rather than root. An image that declares USER gets that user;
+    // one that runs as root still can, but only because the image chose to — we never hand out
+    // more than the app already holds. An explicit option wins for the rare operator who needs
+    // to override.
+    const user = options.user || info.Config?.User || undefined
+
+    const terminal = new Terminal(this.#docker, appName, {...options, user})
+    return terminal.open()
+  }
+
+  /**
    * Creates and starts a container
    * @param {string} name - Container and Domain name
    * @param {number} port - External port (Host Port)
@@ -505,7 +559,7 @@ class Container {
    * @param {string} name - Unique container name
    * @param {Object} options - Configuration options
    * @param {string} options.image - Docker image name
-   * @param {Array} options.ports - Array of port mappings [{host: 3000, container: 80}]
+   * @param {Array} options.ports - Array of published port mappings [{host: 3000, container: 80, public: false}]. Proxy-routed entries (host: 'proxy') are ignored. A container port may repeat across entries. Entries bind to 127.0.0.1 unless `public` is true.
    * @param {Array} options.volumes - Array of volume mappings [{host: '/path', container: '/data'}]
    * @param {Object} options.env - Environment variables {KEY: 'VALUE'}
    * @param {Array} options.cmd - Command to run (optional)
@@ -530,10 +584,22 @@ class Container {
     const exposedPorts = {}
 
     if (options.ports) {
+      const ports = Odac.server('Ports')
       for (const port of options.ports) {
+        // Defense in depth: a proxy-routed entry has no host binding to publish.
+        if (!ports.isPublished(port)) continue
+
         const portKey = `${port.container}/tcp`
-        const bindIp = port.ip || '127.0.0.1'
-        portBindings[portKey] = [{HostPort: String(port.host), HostIp: bindIp}]
+        if (ports.isPublic(port)) {
+          log('Publishing %s port %s on every interface (public).', name, port.host)
+        }
+
+        // Append: Docker takes a list of host bindings per container port, so a
+        // single container port may be published on several host ports.
+        const binding = {HostPort: String(port.host), HostIp: ports.bindIp(port)}
+        if (portBindings[portKey]) portBindings[portKey].push(binding)
+        else portBindings[portKey] = [binding]
+
         exposedPorts[portKey] = {}
       }
     }
