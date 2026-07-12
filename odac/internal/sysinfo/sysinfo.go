@@ -27,7 +27,7 @@ import (
 
 // Version mirrors package.json's "version"; TestVersionMatchesPackageJSON
 // fails on drift.
-const Version = "1.10.1"
+const Version = "1.11.0"
 
 // Info assembles system inventory. containerEngine reports Docker
 // availability (Node: Odac.server('Container').available).

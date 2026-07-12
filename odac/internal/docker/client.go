@@ -316,10 +316,13 @@ func (c *Client) pullFailed(imageName string, logw io.Writer, err error) error {
 // RunApp ports Container.runApp: force-replace any container with this
 // name, assemble Binds/Devices/PortBindings, ensure the shared network and
 // image, create and start. Only published port entries reach Docker; public
-// ones bind every interface, the rest loopback.
-func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog) error {
+// ones bind every interface, the rest loopback. isCancelled (optional) is
+// consulted at three points — before the image pull, after it, and between
+// create and start (the created container is removed) — and aborts the run;
+// the bool reports whether the container actually started.
+func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCancelled func() bool) (bool, error) {
 	if !c.available {
-		return nil
+		return false, nil
 	}
 	ctx := context.Background()
 
@@ -364,15 +367,29 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog) erro
 	c.ensureNetwork(ctx, networkName)
 
 	c.log.Log("Starting app container %s (%s)...", name, options.Image)
+
+	if isCancelled != nil && isCancelled() {
+		c.log.Log("Container creation for %s aborted before image pull.", name)
+		return false, nil
+	}
+
 	if buildLog != nil {
 		buildLog.StartPhase("pull_image")
 	}
 	if err := c.EnsureImage(options.Image, writerOrNil(buildLog)); err != nil {
 		c.log.Error("Failed to start app container %s: %s", name, err.Error())
-		return err
+		return false, err
 	}
 	if buildLog != nil {
 		buildLog.EndPhase("pull_image", true)
+	}
+
+	if isCancelled != nil && isCancelled() {
+		c.log.Log("Container creation for %s aborted: operation was cancelled.", name)
+		return false, nil
+	}
+
+	if buildLog != nil {
 		buildLog.StartPhase("start_new_container")
 	}
 
@@ -393,17 +410,25 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog) erro
 	}
 
 	created, err := c.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
-	if err == nil {
-		err = c.api.ContainerStart(ctx, created.ID, container.StartOptions{})
-	}
 	if err != nil {
 		c.log.Error("Failed to start app container %s: %s", name, err.Error())
-		return err
+		return false, err
+	}
+
+	if isCancelled != nil && isCancelled() {
+		c.log.Log("Container creation for %s aborted before starting. Removing created container.", name)
+		c.api.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+		return false, nil
+	}
+
+	if err := c.api.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+		c.log.Error("Failed to start app container %s: %s", name, err.Error())
+		return false, err
 	}
 	if buildLog != nil {
 		buildLog.EndPhase("start_new_container", true)
 	}
-	return nil
+	return true, nil
 }
 
 // envList renders an env map as KEY=VALUE strings in sorted key order.

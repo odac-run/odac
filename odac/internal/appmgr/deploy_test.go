@@ -269,6 +269,221 @@ func TestRedeployWithDomainsUsesBlueGreen(t *testing.T) {
 	}
 }
 
+// ---- delete cancellation (dev 8a399e6 + a4c6285; Node shipped these
+// checkpoints without jest coverage — these tests are the spec) ----
+
+// TestDeleteAbortsInFlightRunApp: a delete lands while runApp is under way —
+// the isCancelled callback flips, the container never starts and no runtime
+// logger is attached to the corpse.
+func TestDeleteAbortsInFlightRunApp(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "victim", "type": "container", "image": "app",
+		"active": true, "status": "running",
+	}})
+
+	block := make(chan struct{})
+	fx.dock.mu.Lock()
+	fx.dock.runBlock = block
+	fx.dock.mu.Unlock()
+
+	fx.m.Check()
+	waitFor(t, "run to reach runApp", func() bool { return fx.dock.runCallCount() == 1 })
+
+	r := fx.m.Delete(float64(1), false)
+	if !r.Status {
+		t.Fatalf("delete failed: %v", r.Message)
+	}
+
+	if call := fx.dock.runCallAt(0); call.isCancelled == nil || !call.isCancelled() {
+		t.Fatal("isCancelled must report true after delete")
+	}
+
+	close(block)
+	fx.waitIdle(t)
+
+	if fx.dock.IsRunning("victim") {
+		t.Fatal("cancelled container reported running")
+	}
+	fx.m.mu.Lock()
+	_, hasStream := fx.m.logStreams["victim"]
+	fx.m.mu.Unlock()
+	if hasStream {
+		t.Fatal("log stream attached to a deleted app")
+	}
+	if fx.appCount() != 0 {
+		t.Fatalf("app not removed: %d left", fx.appCount())
+	}
+}
+
+// TestRunSkipsWhenFlaggedDeleted: the pre-runApp checkpoint — a flagged app
+// never reaches Docker, and the flag itself never reaches persisted config.
+func TestRunSkipsWhenFlaggedDeleted(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "flagged", "type": "container", "image": "app", "active": true,
+	}})
+	fx.cfg.Mutate(func() {
+		fx.m.getLocked(float64(1))["_deleted"] = true
+	})
+
+	fx.m.run(float64(1), nil)
+	fx.waitIdle(t)
+
+	if got := fx.dock.runCallCount(); got != 0 {
+		t.Fatalf("runApp called %d times for a deleted app", got)
+	}
+
+	// _deleted is ephemeral (Go deviation: saveApps strips it so a crash in
+	// the delete window can never brick the app on disk).
+	fx.m.set(float64(1), map[string]any{"status": "stopped"}) // forces a save
+	if _, present := fx.app(0)["_deleted"]; present {
+		t.Fatal("_deleted leaked into persisted config")
+	}
+}
+
+func TestRedeployAbortsWhenDeletedDuringGitFetch(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	// A .git dir routes redeploy through FetchRepo instead of a fresh clone.
+	if err := os.MkdirAll(filepath.Join(fx.m.appsPath(), "web", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fx.dock.mu.Lock()
+	fx.dock.fetchHook = func() { fx.m.Delete(float64(1), false) }
+	fx.dock.mu.Unlock()
+
+	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
+	if r.Status || jsString(r.Message) != "App was deleted during git fetch phase." {
+		t.Fatalf("r = %v %q", r.Status, jsString(r.Message))
+	}
+	fx.waitIdle(t)
+
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.buildCalls) != 0 {
+		t.Fatalf("build ran after abort: %v", fx.dock.buildCalls)
+	}
+}
+
+func TestRedeployAbortsWhenDeletedDuringBuild(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	fx.dock.mu.Lock()
+	fx.dock.buildHook = func() { fx.m.Delete(float64(1), false) }
+	fx.dock.mu.Unlock()
+
+	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
+	if r.Status || jsString(r.Message) != "App was deleted during build phase." {
+		t.Fatalf("r = %v %q", r.Status, jsString(r.Message))
+	}
+	fx.waitIdle(t)
+
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.runCalls) != 0 || len(fx.dock.renames) != 0 {
+		t.Fatalf("deploy proceeded after abort: %v %v", fx.dock.runCalls, fx.dock.renames)
+	}
+}
+
+// TestBlueGreenEntryGuardWhenFlaggedDeleted: performBlueGreenDeploy bails at
+// entry — the green container is never started.
+func TestBlueGreenEntryGuardWhenFlaggedDeleted(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	fx.cfg.Mutate(func() {
+		fx.m.getLocked(float64(1))["_deleted"] = true
+	})
+
+	// Node quirk preserved: the abort is silent, Restart still reports the
+	// zero-downtime success message.
+	r := fx.m.Restart(float64(1))
+	if !r.Status {
+		t.Fatalf("restart = %v %v", r.Status, r.Message)
+	}
+	fx.waitIdle(t)
+
+	if got := fx.dock.runCallCount(); got != 0 {
+		t.Fatalf("green container started for a deleted app: %d runs", got)
+	}
+}
+
+// TestBlueGreenAbortsAfterGreenStartWhenDeleted: the delete lands while the
+// green container is coming up — the green is stopped, removed and its
+// artifacts swept; nothing is renamed.
+func TestBlueGreenAbortsAfterGreenStartWhenDeleted(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	fx.dock.mu.Lock()
+	fx.dock.runHook = func(string) { fx.m.Delete(float64(1), false) }
+	fx.dock.mu.Unlock()
+
+	// Node quirk preserved: redeploy itself still reports success.
+	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
+	if !r.Status {
+		t.Fatalf("redeploy = %v %v", r.Status, r.Message)
+	}
+	fx.waitIdle(t)
+
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.runCalls) != 1 {
+		t.Fatalf("runCalls = %v", fx.dock.runCalls)
+	}
+	greenName := fx.dock.runCalls[0].name
+	stopped, removed := false, false
+	for _, s := range fx.dock.stopped {
+		if s == greenName {
+			stopped = true
+		}
+	}
+	for _, rm := range fx.dock.removed {
+		if rm == greenName {
+			removed = true
+		}
+	}
+	if !stopped || !removed {
+		t.Fatalf("green not cleaned: stopped=%v removed=%v", fx.dock.stopped, fx.dock.removed)
+	}
+	if len(fx.dock.renames) != 0 {
+		t.Fatalf("rename after abort: %v", fx.dock.renames)
+	}
+}
+
+// TestBlueGreenAbortsBeforeRenameWhenDeleted: the delete lands in the switch
+// window (blue already stopped) — the green must NOT be renamed into the
+// deleted app's name.
+func TestBlueGreenAbortsBeforeRenameWhenDeleted(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	deleted := false
+	fx.dock.mu.Lock()
+	fx.dock.stopHook = func(name string) {
+		// Fires on the deploy's own Stop(web); the nested Stop from Delete
+		// re-enters on the same goroutine — the flag stops the recursion.
+		if name == "web" && !deleted {
+			deleted = true
+			fx.m.Delete(float64(1), false)
+		}
+	}
+	fx.dock.mu.Unlock()
+
+	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
+	if !r.Status {
+		t.Fatalf("redeploy = %v %v", r.Status, r.Message)
+	}
+	fx.waitIdle(t)
+
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.renames) != 0 {
+		t.Fatalf("deleted app's green was renamed: %v", fx.dock.renames)
+	}
+	greenName := fx.dock.runCalls[0].name
+	removedGreen := false
+	for _, rm := range fx.dock.removed {
+		if rm == greenName {
+			removedGreen = true
+		}
+	}
+	if !removedGreen {
+		t.Fatalf("green not removed: %v", fx.dock.removed)
+	}
+}
+
 func TestStopEndsAppAndLogStream(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{
 		"id": float64(1), "name": "web", "type": "container", "image": "app", "active": true,

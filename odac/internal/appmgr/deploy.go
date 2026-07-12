@@ -26,6 +26,22 @@ type deployOptions struct {
 // container, wait for TCP+HTTP readiness, flip the proxy, drain, then retire
 // the blue container and rename green into its place.
 func (m *Manager) performBlueGreenDeploy(id any, greenName string, options deployOptions) error {
+	// Entry guard: a delete that raced the build wins outright (the name is
+	// read in the same View; it comes back empty only when the app already
+	// vanished from the working set — Node logs the captured object's name).
+	entryName := ""
+	entryDeleted := true
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			entryName, _ = app["name"].(string)
+			entryDeleted = app["_deleted"] == true
+		}
+	})
+	if entryDeleted {
+		m.dlog.Log("Blue-Green deploy aborted: App %s was deleted", entryName)
+		return nil
+	}
+
 	if options.runGreenContainer == nil {
 		return errors.New("Blue-Green deploy requires a runGreenContainer function.")
 	}
@@ -65,6 +81,14 @@ func (m *Manager) performBlueGreenDeploy(id any, greenName string, options deplo
 	}
 	if options.logCtrl != nil {
 		options.logCtrl.EndPhase("start_new_container", true)
+	}
+
+	if m.appDeleted(id) {
+		m.deps.Docker.Stop(greenName)
+		m.deps.Docker.Remove(greenName)
+		m.cleanupGreenArtifacts(greenName)
+		m.dlog.Log("Blue-Green deploy aborted after green container start: App %s was deleted", appName)
+		return nil
 	}
 
 	m.set(id, map[string]any{"status": "switching"})
@@ -144,6 +168,14 @@ func (m *Manager) performBlueGreenDeploy(id any, greenName string, options deplo
 
 	m.deps.Docker.Stop(appName)
 	m.deps.Docker.Remove(appName)
+
+	if m.appDeleted(id) {
+		m.deps.Docker.Stop(greenName)
+		m.deps.Docker.Remove(greenName)
+		m.cleanupGreenArtifacts(greenName)
+		m.dlog.Log("Blue-Green deploy aborted before rename: App %s was deleted", appName)
+		return nil
+	}
 
 	m.endLogStream(greenName)
 

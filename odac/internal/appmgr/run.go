@@ -222,8 +222,16 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 	// Fix volume permissions before starting the app container.
 	m.fixVolumePermissions(s.volumes)
 
-	if err := m.deps.Docker.RunApp(s.name, runOptions, nil); err != nil {
+	if m.appDeleted(id) {
+		return nil
+	}
+
+	started, err := m.deps.Docker.RunApp(s.name, runOptions, nil, func() bool { return m.appDeleted(id) })
+	if err != nil {
 		return err
+	}
+	if !started {
+		return nil
 	}
 
 	if err := m.attachLogger(s.name); err != nil {
@@ -340,8 +348,17 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 	if logCtrl != nil {
 		buildLog = logCtrl
 	}
-	if err := m.deps.Docker.RunApp(s.name, runOptions, buildLog); err != nil {
+
+	if m.appDeleted(id) {
+		return nil
+	}
+
+	started, err := m.deps.Docker.RunApp(s.name, runOptions, buildLog, func() bool { return m.appDeleted(id) })
+	if err != nil {
 		return err
+	}
+	if !started {
+		return nil
 	}
 
 	if err := m.attachLogger(s.name); err != nil {
@@ -523,7 +540,8 @@ func (m *Manager) runScriptContainer(id any) error {
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 
-	return m.deps.Docker.RunApp(s.name, runOptions, nil)
+	_, err := m.deps.Docker.RunApp(s.name, runOptions, nil, nil)
+	return err
 }
 
 // applyPrivilege ports #applyPrivilege.

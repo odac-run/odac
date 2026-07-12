@@ -150,6 +150,16 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 
 	m.log.Log("Deleting app %s (force-cleanup any in-flight blue/green containers)", name)
 
+	// Flag the live object first (app._deleted = true) so in-flight flows
+	// abandon at their next appDeleted checkpoint. In-memory only, never
+	// persisted — a crash mid-delete must not brick the app on disk (Node
+	// could persist the flag if a #saveApps raced the window; not replicated).
+	m.cfg.Mutate(func() {
+		if app := m.getLocked(id); app != nil {
+			app["_deleted"] = true
+		}
+	})
+
 	// The user has double-confirmed in the UI — delete must succeed
 	// regardless of restart/redeploy/create state. Releasing in-flight locks
 	// lets concurrent flows abandon gracefully; their set() calls become
@@ -496,10 +506,18 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 	logCtrl.EndPhase(gitPhase, true)
 
+	if m.appDeleted(idNum) {
+		return res(false, "App was deleted during git fetch phase.")
+	}
+
 	// Step 2: rebuild the image (app still running on the old one).
 	m.set(idNum, map[string]any{"status": "building"})
 	if err := m.deps.Docker.Build(appDir, imageName, name, logCtrl); err != nil {
 		return fail(err)
+	}
+
+	if m.appDeleted(idNum) {
+		return res(false, "App was deleted during build phase.")
 	}
 
 	if m.hasDomainsFor(name, idNum) {

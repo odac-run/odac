@@ -25,8 +25,9 @@ func init() { lang.SetLocale("en-US") }
 // ---- fake Docker ----
 
 type runCall struct {
-	name    string
-	options docker.RunOptions
+	name        string
+	options     docker.RunOptions
+	isCancelled func() bool
 }
 
 type fakeDocker struct {
@@ -41,11 +42,16 @@ type fakeDocker struct {
 
 	runCalls  []runCall
 	runErr    func(name string) error
-	runBlock  chan struct{} // when set, RunApp waits for it
+	runBlock  chan struct{}     // when set, RunApp waits for it
+	runHook   func(name string) // fires inside RunApp before its cancel check
 	stopped   []string
+	stopHook  func(name string) // fires inside Stop, before recording
 	removed   []string
 	renames   [][2]string
 	renameErr error
+
+	fetchHook func() // fires inside FetchRepo
+	buildHook func() // fires inside Build
 
 	cloneCalls [][2]string // url, branch
 	cloneErr   error
@@ -78,22 +84,30 @@ func (f *fakeDocker) Available() bool {
 	return f.available
 }
 
-func (f *fakeDocker) RunApp(name string, options docker.RunOptions, _ docker.BuildLog) error {
+func (f *fakeDocker) RunApp(name string, options docker.RunOptions, _ docker.BuildLog, isCancelled func() bool) (bool, error) {
 	f.mu.Lock()
-	f.runCalls = append(f.runCalls, runCall{name: name, options: options})
+	f.runCalls = append(f.runCalls, runCall{name: name, options: options, isCancelled: isCancelled})
 	block := f.runBlock
 	runErr := f.runErr
+	runHook := f.runHook
 	f.mu.Unlock()
 	if block != nil {
 		<-block
 	}
+	if runHook != nil {
+		runHook(name)
+	}
 	if runErr != nil {
-		return runErr(name)
+		return false, runErr(name)
+	}
+	// The real RunApp consults isCancelled before starting the container.
+	if isCancelled != nil && isCancelled() {
+		return false, nil
 	}
 	f.mu.Lock()
 	f.running[name] = true
 	f.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 func (f *fakeDocker) runCallCount() int {
@@ -109,6 +123,12 @@ func (f *fakeDocker) runCallAt(i int) runCall {
 }
 
 func (f *fakeDocker) Stop(name string) {
+	f.mu.Lock()
+	hook := f.stopHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook(name)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, name)
@@ -209,16 +229,25 @@ func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) erro
 
 func (f *fakeDocker) FetchRepo(url, branch, _, _, _ string, _ docker.BuildLog) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.fetchCalls = append(f.fetchCalls, [2]string{url, branch})
+	hook := f.fetchHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return nil
 }
 
 func (f *fakeDocker) Build(_, imageName, _ string, _ docker.BuildLog) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.buildCalls = append(f.buildCalls, imageName)
-	return f.buildErr
+	hook := f.buildHook
+	err := f.buildErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return err
 }
 
 func (f *fakeDocker) RegisterBuildLogger(appName string, _ *applog.Logger) {

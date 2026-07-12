@@ -31,9 +31,9 @@ func TestAvailability(t *testing.T) {
 	if c.Available() {
 		t.Error("ping failure should mean unavailable")
 	}
-	// Unavailable clients no-op instead of calling the API.
-	if err := c.RunApp("x", RunOptions{Image: "img"}, nil); err != nil {
-		t.Errorf("RunApp while unavailable should be a nil no-op, got %v", err)
+	// Unavailable clients no-op instead of calling the API (Node: return false).
+	if started, err := c.RunApp("x", RunOptions{Image: "img"}, nil, nil); started || err != nil {
+		t.Errorf("RunApp while unavailable should be a (false, nil) no-op, got (%v, %v)", started, err)
 	}
 	if len(f2.created) != 0 {
 		t.Error("no container should be created while unavailable")
@@ -59,7 +59,7 @@ func TestRunAppPortAssembly(t *testing.T) {
 	f.images["img"] = image.InspectResponse{}
 	c := newTestClient(t, f)
 
-	err := c.RunApp("myapp", RunOptions{
+	started, err := c.RunApp("myapp", RunOptions{
 		Image: "img",
 		Ports: []map[string]any{
 			{"host": "proxy", "container": 3000.0},                 // skipped: proxy-routed
@@ -72,9 +72,12 @@ func TestRunAppPortAssembly(t *testing.T) {
 		Env:     map[string]string{"B": "2", "A": "1"},
 		Cmd:     []string{"run", "it"},
 		User:    "root",
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !started {
+		t.Error("successful RunApp must report started=true")
 	}
 
 	if len(f.created) != 1 {
@@ -147,12 +150,85 @@ func TestRunAppPrivileged(t *testing.T) {
 	f := newFakeAPI()
 	f.images["img"] = image.InspectResponse{}
 	c := newTestClient(t, f)
-	if err := c.RunApp("p", RunOptions{Image: "img", Privileged: true}, nil); err != nil {
+	if _, err := c.RunApp("p", RunOptions{Image: "img", Privileged: true}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !f.created[0].HostConfig.Privileged {
 		t.Error("privileged flag lost")
 	}
+}
+
+// TestRunAppCancellation pins the three isCancelled checkpoints from dev
+// 8a399e6 + a4c6285 (no jest coverage there — this is the spec): before the
+// image pull, after it, and between create and start, where the created
+// container is force-removed.
+func TestRunAppCancellation(t *testing.T) {
+	runUntil := func(cancelAt int) (*fakeAPI, bool, error) {
+		f := newFakeAPI()
+		f.images["img"] = image.InspectResponse{}
+		c := newTestClient(t, f)
+		checks := 0
+		started, err := c.RunApp("app", RunOptions{Image: "img"}, nil, func() bool {
+			checks++
+			return checks >= cancelAt
+		})
+		return f, started, err
+	}
+
+	t.Run("before image pull", func(t *testing.T) {
+		f, started, err := runUntil(1)
+		if started || err != nil {
+			t.Fatalf("got (%v, %v), want (false, nil)", started, err)
+		}
+		if len(f.created) != 0 || len(f.started) != 0 {
+			t.Errorf("created/started after cancel: %v %v", f.created, f.started)
+		}
+	})
+
+	t.Run("after image pull", func(t *testing.T) {
+		f, started, err := runUntil(2)
+		if started || err != nil {
+			t.Fatalf("got (%v, %v), want (false, nil)", started, err)
+		}
+		if len(f.created) != 0 || len(f.started) != 0 {
+			t.Errorf("created/started after cancel: %v %v", f.created, f.started)
+		}
+	})
+
+	t.Run("between create and start", func(t *testing.T) {
+		f, started, err := runUntil(3)
+		if started || err != nil {
+			t.Fatalf("got (%v, %v), want (false, nil)", started, err)
+		}
+		if len(f.created) != 1 {
+			t.Fatalf("created = %v", f.created)
+		}
+		if len(f.started) != 0 {
+			t.Errorf("cancelled container was started: %v", f.started)
+		}
+		// The orphan is force-removed by its fresh ID (the name-keyed remove
+		// at the top of RunApp is the force-replace, not this).
+		id := f.created[0].ID
+		removedByID := false
+		for _, rm := range f.removed {
+			if rm == id {
+				removedByID = true
+			}
+		}
+		if !removedByID {
+			t.Errorf("created container %s not removed: %v", id, f.removed)
+		}
+	})
+
+	t.Run("never cancelled runs to completion", func(t *testing.T) {
+		f, started, err := runUntil(99)
+		if !started || err != nil {
+			t.Fatalf("got (%v, %v), want (true, nil)", started, err)
+		}
+		if len(f.started) != 1 {
+			t.Errorf("started = %v", f.started)
+		}
+	})
 }
 
 func TestEnsureImagePullsOnlyWhenMissing(t *testing.T) {

@@ -54,7 +54,7 @@ var _ Docker = (*docker.Client)(nil)
 
 type Docker interface {
 	Available() bool
-	RunApp(name string, options docker.RunOptions, buildLog docker.BuildLog) error
+	RunApp(name string, options docker.RunOptions, buildLog docker.BuildLog, isCancelled func() bool) (bool, error)
 	Stop(name string)
 	Remove(name string)
 	Rename(oldName, newName string) error
@@ -355,6 +355,23 @@ func (m *Manager) getLocked(id any) map[string]any {
 	return nil
 }
 
+// appDeleted reports whether the app was deleted mid-flight: Delete flags
+// the live object with _deleted before its cleanup. Node's checkpoints read
+// the flag off the app object captured at flow start — but #saveApps
+// rebuilds objects, so a captured reference can silently miss the flag
+// (same class as the 3.4e adoption race, not replicated); re-fetching by id
+// at decision time sees the current object, and an app already gone from
+// the working set counts as deleted (only Delete removes apps).
+func (m *Manager) appDeleted(id any) bool {
+	deleted := true
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			deleted = app["_deleted"] == true
+		}
+	})
+	return deleted
+}
+
 // setLocked ports #set: merge updates into the app and persist. Caller
 // holds cfg.Mutate. A nil value deletes nothing — it is stored like Node's
 // explicit null (saveApps strips the ephemeral ones anyway).
@@ -378,8 +395,11 @@ func (m *Manager) set(id any, updates map[string]any) bool {
 }
 
 // ephemeralFields are stripped by saveApps on every persist (contract
-// config-schema.md).
-var ephemeralFields = []string{"_appIdentity", "status", "pid", "uptime", "build", "health", "ip", "started"}
+// config-schema.md). _deleted is Go-only in this list: Node leaves the flag
+// on the object #saveApps copies, so a save racing the delete window could
+// persist it and brick the app after a crash — stripping it keeps the flag
+// strictly in-memory.
+var ephemeralFields = []string{"_appIdentity", "_deleted", "status", "pid", "uptime", "build", "health", "ip", "started"}
 
 // saveAppsLocked ports #saveApps: rebuild ephemeral-stripped copies into the
 // config store. The working set keeps the live (unstripped) maps — Node
