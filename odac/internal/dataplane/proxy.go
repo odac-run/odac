@@ -114,6 +114,67 @@ func (p *Proxy) Check() {
 	}
 }
 
+// PurgeCache ports purgeCache(): flush the proxy's static-asset cache via
+// POST /cache/purge (contract 0.3) — whole cache when domain is empty.
+// Returns the purged entry count; transport errors log and return 0 like
+// Node's catch.
+func (p *Proxy) PurgeCache(domain string) int {
+	sock := p.proc.SocketPath()
+	if _, err := os.Stat(sock); err != nil {
+		return 0 // proxy not running / socket gone (Node: !#proxyProcess)
+	}
+
+	payload := map[string]any{}
+	if domain != "" {
+		payload["domain"] = domain
+	}
+
+	envelope, err := requestJSON(sock, "POST", "/cache/purge", payload)
+	if err != nil {
+		p.log.Error("Failed to purge cache: %s", err.Error())
+		return 0
+	}
+	purged := 0
+	if n, ok := envelope["purged"].(float64); ok {
+		purged = int(n)
+	}
+	if purged > 0 {
+		suffix := ""
+		if domain != "" {
+			suffix = " for " + domain
+		}
+		p.log.Log("Cache purged: " + fmt.Sprintf("%d", purged) + " entries" + suffix)
+	}
+	return purged
+}
+
+// PurgeCacheForApp ports purgeCacheForApp(): purge every domain mapped to
+// the app (matched by name or id, whichever config.domains recorded).
+// Deviation from Node (deliberate): Node's `if (!appId) return` also skips
+// the numeric id 0 — the FIRST app ever created (ids start at 0) never got
+// its cache purged. Only nil/"" no-op here.
+func (p *Proxy) PurgeCacheForApp(appID any) {
+	if appID == nil || appID == "" {
+		return
+	}
+
+	var targets []string
+	p.cfg.View(func() {
+		domains, _ := p.cfg.Get("domains").(map[string]any)
+		for domainName, rec := range domains {
+			record, _ := rec.(map[string]any)
+			if record != nil && record["appId"] == appID {
+				targets = append(targets, domainName)
+			}
+		}
+	})
+
+	sort.Strings(targets) // map order is random; Node walked insertion order
+	for _, domain := range targets {
+		p.PurgeCache(domain)
+	}
+}
+
 // SetTunnels ports setTunnels(): the Hub always sends the complete list, so
 // this is a full replace — missing entries are deletions. Persists
 // config.tunnels and syncs immediately. Returns the configured count; the

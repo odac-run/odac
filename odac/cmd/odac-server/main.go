@@ -15,11 +15,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"odac/internal/api"
+	"odac/internal/appmgr"
 	"odac/internal/config"
 	"odac/internal/dataplane"
 	"odac/internal/docker"
@@ -70,16 +72,34 @@ func main() {
 	apiSrv.Addr = os.Getenv("ODAC_API_ADDR") // test/smoke override only, like the CLI's
 	apiSrv.Init()                            // generates config.api.auth on first start
 
-	sys := system.New(cfg, system.Services{
+	// App manager (task 3.4e). Skipped only when the Docker client could not
+	// even be constructed (malformed DOCKER_HOST-style env) — an unreachable
+	// daemon still yields a client, and appmgr no-ops like Node does.
+	// Hub and Domains seams stay nil until tasks 3.6/3.5 land.
+	var appMgr *appmgr.Manager
+	if containers != nil {
+		appMgr = appmgr.New(cfg, filepath.Join(baseDir, "logs"), appmgr.Deps{
+			Docker: containers,
+			Api:    apiSrv,
+			Proxy:  proxySvc,
+		})
+		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
+	}
+
+	svc := system.Services{
 		Proxy: proxySvc,
 		DNS:   dnsSvc,
 		Mail:  mailSvc,
 		Api:   apiSrv,
 		// Remaining slots fill in as migration tasks land:
-		// App (3.4), SSL (3.5), Hub (3.6).
-	}, system.NewStartupGate(baseDir))
+		// SSL (3.5), Hub (3.6).
+	}
+	if appMgr != nil {
+		svc.App = appMgr
+	}
+	sys := system.New(cfg, svc, system.NewStartupGate(baseDir))
 
-	registerActions(apiSrv, sys, dnsSvc, mailSvc)
+	registerActions(apiSrv, sys, dnsSvc, mailSvc, appMgr)
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())
@@ -91,11 +111,56 @@ func main() {
 }
 
 // registerActions wires the contract-0.1 action table for the services that
-// exist so far (task 3.3). The remaining actions — auth (3.6), update (3.7),
-// app.* (3.4), domain.* and ssl.renew (3.5) — answer unknown_action until
+// exist so far (tasks 3.3 + 3.4). The remaining actions — auth (3.6),
+// update (3.7), domain.* and ssl.renew (3.5) — answer unknown_action until
 // their tasks land; nothing flips to this server before 3.8 anyway.
-func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail) {
+func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager) {
 	res := func(r api.Result) (*api.Result, error) { return &r, nil }
+
+	if appMgr != nil {
+		// argStr renders an argument the way Node's string coercions saw it,
+		// with JS null/undefined staying empty (falsy) rather than "null".
+		argStr := func(v any) string {
+			if v == nil {
+				return ""
+			}
+			if s, ok := v.(string); ok {
+				return s
+			}
+			return fmt.Sprint(v)
+		}
+
+		apiSrv.Register("app.create", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.Create(a.At(0)), nil
+		})
+		apiSrv.Register("app.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			purge := true // Node: delete(id, {purge = true} = {})
+			if opts, ok := a.At(1).(map[string]any); ok {
+				if v, present := opts["purge"]; present {
+					purge = v == true
+				}
+			}
+			return appMgr.Delete(a.At(0), purge), nil
+		})
+		apiSrv.Register("app.device.add", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.DeviceAdd(a.At(0), argStr(a.At(1)), argStr(a.At(2))), nil
+		})
+		apiSrv.Register("app.device.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.DeviceDelete(a.At(0), argStr(a.At(1))), nil
+		})
+		apiSrv.Register("app.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.List(a.At(0) == true), nil
+		})
+		apiSrv.Register("app.privileged", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetPrivileged(a.At(0), argStr(a.At(1))), nil
+		})
+		apiSrv.Register("app.restart", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.Restart(a.At(0)), nil
+		})
+		apiSrv.Register("app.start", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.Start(argStr(a.At(0))), nil
+		})
+	}
 
 	apiSrv.Register("dns.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(dnsSvc.List(a.At(0)))

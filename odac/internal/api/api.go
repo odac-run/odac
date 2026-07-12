@@ -127,6 +127,13 @@ func (s *Server) SocketPath() string {
 	return filepath.Join(s.cfg.BaseDir(), "run", "api.sock")
 }
 
+// HostSocketDir ports Api's hostSocketDir getter: the run directory holding
+// api.sock, mounted read-only into api-enabled app containers (Container's
+// ResolveHostPath translates it for the Docker daemon under DooD).
+func (s *Server) HostSocketDir() string {
+	return filepath.Dir(s.SocketPath())
+}
+
 // Init ports Api.init(): ensure config.api exists, generate the root auth
 // token on first start (32 random bytes, hex), preload domain tokens.
 func (s *Server) Init() {
