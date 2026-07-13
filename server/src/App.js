@@ -242,7 +242,10 @@ class App {
     // Fix volume permissions before starting the app container.
     await this.#fixVolumePermissions(volumes)
 
-    await Odac.server('Container').runApp(app.name, runOptions)
+    if (app._deleted) return
+
+    const started = await Odac.server('Container').runApp(app.name, runOptions, null, () => app._deleted)
+    if (!started) return
 
     // Start Runtime Logging
     await this.#attachLogger(app)
@@ -507,6 +510,8 @@ class App {
 
     log('Deleting app %s (force-cleanup any in-flight blue/green containers)', app.name)
 
+    app._deleted = true
+
     // User has already double-confirmed in the UI — delete must succeed regardless of
     // restart/redeploy/create state. Releasing in-flight locks lets concurrent flows
     // abandon gracefully; mid-flight #set() calls become no-ops once we drop the app
@@ -760,6 +765,8 @@ class App {
       }
       if (logCtrl) logCtrl.endPhase(gitPhase, true)
 
+      if (app._deleted) return Odac.server('Api').result(false, 'App was deleted during git fetch phase.')
+
       // Step 2: Rebuild image (app still running on old image)
       this.#set(app.id, {status: 'building'})
       await Odac.server('Container').build(appDir, imageName, app.name, {
@@ -769,6 +776,8 @@ class App {
         finalize: () => {}, // Delay finalization until deployment is complete
         subscribe: logCtrl.subscribe
       })
+
+      if (app._deleted) return Odac.server('Api').result(false, 'App was deleted during build phase.')
 
       // Check if Zero-Downtime Deployment (ZDD) is applicable.
       // ZDD requires the Proxy to route traffic, meaning the app must have at least one domain.
@@ -1641,7 +1650,10 @@ class App {
 
     this.#applyPrivilege(app, runOptions)
 
-    await container.runApp(app.name, runOptions, logCtrl)
+    if (app._deleted) return
+
+    const started = await container.runApp(app.name, runOptions, logCtrl, () => app._deleted)
+    if (!started) return
 
     await this.#attachLogger(app)
 

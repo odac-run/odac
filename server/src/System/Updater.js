@@ -19,7 +19,14 @@ const RUNNER_IMAGE = 'docker:cli'
 // Env vars the update cycle injects into the incoming container. They describe a
 // single handover, so they are stripped from the inherited env before the next
 // one is built — otherwise every update appends another copy.
-const UPDATE_ENV_KEYS = ['ODAC_UPDATE_MODE', 'ODAC_INSTANCE_ID', 'ODAC_PREVIOUS_INSTANCE_ID', 'ODAC_UPDATE_SOCKET_PATH', 'ODAC_LOG_NAME']
+const UPDATE_ENV_KEYS = [
+  'ODAC_UPDATE_MODE',
+  'ODAC_INSTANCE_ID',
+  'ODAC_PREVIOUS_INSTANCE_ID',
+  'ODAC_UPDATE_SOCKET_PATH',
+  'ODAC_LOG_NAME',
+  'ODAC_PREVIOUS_CONTAINER_NAME'
+]
 
 class Updater {
   #updating = false
@@ -138,7 +145,18 @@ class Updater {
       return Odac.server('Api').result(false, 'Update already in progress')
     }
     this.#updating = true
-    const available = await this.#checkForUpdates()
+
+    let available
+    try {
+      available = await this.#checkForUpdates()
+    } catch (e) {
+      // A failing check (registry unreachable, docker pull error) must release the
+      // latch — otherwise the first network hiccup blocks updates until restart.
+      this.#updating = false
+      error('Update check failed: %s', e.message)
+      return Odac.server('Api').result(false, `Update check failed: ${e.message}`)
+    }
+
     if (!available) {
       log('System is up to date.')
       this.#updating = false
@@ -316,7 +334,7 @@ class Updater {
 
     try {
       // 1. Get current container info
-      const containerId = CONTAINER_NAME
+      const containerId = (await this.#resolveSelfName()) || CONTAINER_NAME
       const container = this.#docker.getContainer(containerId)
       const info = await container.inspect()
 
@@ -358,6 +376,7 @@ class Updater {
         createOptions.Env.push('ODAC_INSTANCE_ID=' + require('crypto').randomUUID())
         const currentInstanceId = process.env.ODAC_INSTANCE_ID || 'default'
         createOptions.Env.push(`ODAC_PREVIOUS_INSTANCE_ID=${currentInstanceId}`)
+        createOptions.Env.push(`ODAC_PREVIOUS_CONTAINER_NAME=${containerId}`)
         createOptions.Env.push(`ODAC_UPDATE_SOCKET_PATH=${this.#socketPath}`)
         // Use separate log file for update process
         createOptions.Env.push(`ODAC_LOG_NAME=.${newName}`)
@@ -405,7 +424,7 @@ class Updater {
         log('Spawning runner container to perform swap...')
 
         // Command: Wait 5s, Stop Old, Remove Old, Rename New, Start New
-        const cmd = `sleep 5 && docker stop ${CONTAINER_NAME} && docker rm ${CONTAINER_NAME} && docker rename ${UPDATE_CONTAINER_NAME} ${CONTAINER_NAME} && docker start ${CONTAINER_NAME}`
+        const cmd = `sleep 5 && docker stop ${containerId} && docker rm ${containerId} && docker rename ${UPDATE_CONTAINER_NAME} ${CONTAINER_NAME} && docker start ${CONTAINER_NAME}`
 
         const runnerOptions = {
           Image: RUNNER_IMAGE, // Lightweight docker client
@@ -617,6 +636,16 @@ class Updater {
    * @returns {Promise<string|null>} Container name without the leading slash.
    */
   async #resolveSelfName() {
+    const hostName = os.hostname()
+    if (/^[0-9a-f]{12}$/.test(hostName)) {
+      try {
+        const info = await this.#docker.getContainer(hostName).inspect()
+        return info.Name.replace(/^\//, '')
+      } catch {
+        /* Not this one */
+      }
+    }
+
     const probes = [
       ['/proc/self/mountinfo', /\/docker\/containers\/([0-9a-f]{64})/],
       ['/proc/self/cgroup', /[-/]docker[-/]([0-9a-f]{64})/]
@@ -743,30 +772,47 @@ class Updater {
     log('Taking over container identity...')
     const targetName = CONTAINER_NAME
     const backupName = BACKUP_CONTAINER_NAME
+    const previousName = process.env.ODAC_PREVIOUS_CONTAINER_NAME || targetName
 
     // 1. Remove existing backup if any
     try {
-      const backup = this.#docker.getContainer(backupName)
-      await backup.remove({force: true})
-      log('Previous backup removed.')
+      if (previousName !== backupName) {
+        const backup = this.#docker.getContainer(backupName)
+        await backup.remove({force: true})
+        log('Previous backup removed.')
+      } else {
+        try {
+          const leftover = this.#docker.getContainer(targetName)
+          await leftover.remove({force: true})
+          log('Leftover target container removed.')
+        } catch (err) {
+          if (err.statusCode !== 404) {
+            log('Warning: Could not remove leftover target container: %s', err.message)
+          }
+        }
+      }
     } catch (e) {
       if (e.statusCode !== 404) {
         log('Warning cleaning backup: %s', e.message)
       }
     }
 
-    // 2. Rename old 'odac' to 'odac-backup'
+    // 2. Rename old container to backup
     try {
-      const oldContainer = this.#docker.getContainer(targetName)
-      await oldContainer.rename({name: backupName})
-      log('Old container renamed to backup.')
+      if (previousName !== backupName) {
+        const oldContainer = this.#docker.getContainer(previousName)
+        await oldContainer.rename({name: backupName})
+        log('Old container renamed to backup.')
+      } else {
+        log('Old container is already named backup.')
+      }
     } catch (e) {
-      // Ignore 404 if 'odac' doesn't exist
+      // Ignore 404 if old container doesn't exist
       if (e.statusCode !== 404) {
-        // If rename fails, try to remove it to clear the name 'odac'
+        // If rename fails, try to remove it to clear the name
         log('Warning: Could not rename old container to backup: %s. Attempting force remove.', e.message)
         try {
-          const oldContainer = this.#docker.getContainer(targetName)
+          const oldContainer = this.#docker.getContainer(previousName)
           await oldContainer.remove({force: true})
         } catch (err) {
           log('Critical: Failed to remove old container: %s', err.message)
@@ -934,10 +980,9 @@ class Updater {
 
   async #getLocalImageId() {
     try {
-      // Find the ID of the currently running 'odac' container
-      // This assumes the container name is 'odac'
-      const {stdout} = await execAsync(`docker inspect --format='{{.Image}}' ${CONTAINER_NAME}`)
-      return stdout.trim()
+      const selfName = (await this.#resolveSelfName()) || CONTAINER_NAME
+      const info = await this.#docker.getContainer(selfName).inspect()
+      return info.Image
     } catch (e) {
       log('Could not get local image ID: %s', e.message)
       return null
@@ -989,8 +1034,8 @@ class Updater {
 
   async #getRemoteImageId() {
     try {
-      const {stdout} = await execAsync(`docker inspect --format='{{.Id}}' ${this.#image}`)
-      return stdout.trim()
+      const info = await this.#docker.getImage(this.#image).inspect()
+      return info.Id
     } catch (e) {
       log('Could not get remote image ID: %s', e.message)
       return null

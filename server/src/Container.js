@@ -567,7 +567,7 @@ class Container {
    * @param {boolean} options.privileged - Run in Docker Privileged mode (optional). SECURITY: full host device/kernel access.
    * @param {Object} [activeLogger] - Optional logger instance
    */
-  async runApp(name, options, activeLogger = null) {
+  async runApp(name, options, activeLogger = null, isCancelled = null) {
     if (!this.available) return false
 
     await this.remove(name)
@@ -627,9 +627,20 @@ class Container {
       await this.#ensureNetwork(networkName)
 
       log(`Starting app container ${name} (${options.image})...`)
+
+      if (isCancelled && isCancelled()) {
+        log(`Container creation for ${name} aborted before image pull.`)
+        return false
+      }
+
       if (activeLogger) activeLogger.startPhase('pull_image')
       await this.ensureImage(options.image, activeLogger)
       if (activeLogger) activeLogger.endPhase('pull_image', true)
+
+      if (isCancelled && isCancelled()) {
+        log(`Container creation for ${name} aborted: operation was cancelled.`)
+        return false
+      }
 
       if (activeLogger) activeLogger.startPhase('start_new_container')
       const containerConfig = {
@@ -660,6 +671,12 @@ class Container {
       }
 
       const container = await this.#docker.createContainer(containerConfig)
+
+      if (isCancelled && isCancelled()) {
+        log(`Container creation for ${name} aborted before starting. Removing created container.`)
+        await container.remove({force: true}).catch(() => {})
+        return false
+      }
 
       await container.start()
       if (activeLogger) activeLogger.endPhase('start_new_container', true)
