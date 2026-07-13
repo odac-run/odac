@@ -431,4 +431,18 @@ describe('Updater', () => {
       await expect(execPromise).rejects.toThrow()
     })
   })
+
+  describe('update latch', () => {
+    // The exec mock in this harness makes every `docker pull` fail, which is the
+    // real-world case being reproduced: an unreachable registry.
+    test('a failing update check releases the latch instead of blocking every later attempt', async () => {
+      const first = await Updater.start()
+      expect(first.result).toBe(false)
+
+      // Pre-fix, #updating stayed true forever and this came back as
+      // 'Update already in progress' until the container was restarted.
+      const second = await Updater.start()
+      expect(second.message).not.toMatch(/already in progress/i)
+    })
+  })
 })

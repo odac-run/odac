@@ -15,8 +15,11 @@ class System {
     Odac.server('Hub')
     Odac.server('Container')
 
-    await Updater.init()
-
+    // Registered *before* init(): in update mode init() does not resolve until the
+    // handover is complete, but the updater fires ready as soon as the old instance
+    // ACKs the handshake. Registering after the await would leave that ACK with no
+    // listeners and delay every service until the handover finished — i.e. the exact
+    // downtime the overlap protocol exists to avoid.
     Updater.onReady(() => {
       Odac.server('Proxy').start()
       Odac.server('DNS').start()
@@ -26,6 +29,8 @@ class System {
         Odac.server('Api').start()
       }, 1000)
     })
+
+    await Updater.init()
 
     setTimeout(() => {
       this.#checkInterval = setInterval(() => {

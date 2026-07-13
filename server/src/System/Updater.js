@@ -145,7 +145,18 @@ class Updater {
       return Odac.server('Api').result(false, 'Update already in progress')
     }
     this.#updating = true
-    const available = await this.#checkForUpdates()
+
+    let available
+    try {
+      available = await this.#checkForUpdates()
+    } catch (e) {
+      // A failing check (registry unreachable, docker pull error) must release the
+      // latch — otherwise the first network hiccup blocks updates until restart.
+      this.#updating = false
+      error('Update check failed: %s', e.message)
+      return Odac.server('Api').result(false, `Update check failed: ${e.message}`)
+    }
+
     if (!available) {
       log('System is up to date.')
       this.#updating = false
