@@ -30,7 +30,7 @@
     "odac": "bin/odac"
   },
   "dependencies": {
-    "dockerode": "^4.0.9",
+    "dockerode": "^5.0.0",
     "find-process": "^2.0.0",
     "selfsigned": "^2.4.1",
     "ssh2": "^1.15.0",
