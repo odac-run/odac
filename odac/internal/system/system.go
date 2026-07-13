@@ -20,11 +20,8 @@
 package system
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -62,9 +59,9 @@ type Services struct {
 	Hub   StartStopChecker // 3.6
 }
 
-// Updater gates service startup: Init may block for the update handshake
-// (task 3.7); OnReady fires its callback immediately when already ready.
-// NewStartupGate provides the 3.1 normal-startup implementation.
+// Updater gates service startup: Init may block for the update handshake;
+// OnReady fires its callback immediately when already ready. The production
+// implementation is internal/updater (task 3.7).
 type Updater interface {
 	Init() error
 	OnReady(func())
@@ -103,12 +100,21 @@ func New(cfg *config.Store, svc Services, updater Updater) *System {
 // Init ports System.init(): records pid/started (and refreshes server.os/arch
 // with Node-compatible values — core/Config.js does this at every init), runs
 // the updater gate, and schedules service startup and the check tick.
+//
+// Deviation from Node (deliberate, task 3.7 — see STATE.md): the ready
+// callback registers BEFORE the updater gate runs. In update mode the real
+// updater's Init blocks until the handover completes, but ready fires at
+// HANDSHAKE_ACK — the services must start THEN, spawning fresh Proxy/DNS
+// that overlap the old instance via SO_REUSEPORT (lifecycle.md's message
+// table). System.js registers onReady only after awaiting Updater.init(), so
+// its ACK-time triggerReady() fires with zero callbacks and services
+// actually start only after HANDOVER_COMPLETE — reintroducing ~12s of the
+// downtime the SO_REUSEPORT machinery was built to remove (its ACK-branch
+// waitForReady always times out against never-started services). On the
+// normal-startup path the flip is invisible: ready triggers inside Init and
+// the callback runs synchronously either way.
 func (s *System) Init() error {
 	s.recordServerInfo()
-
-	if err := s.updater.Init(); err != nil {
-		return err
-	}
 
 	s.updater.OnReady(func() {
 		start(s.svc.Proxy)
@@ -119,6 +125,10 @@ func (s *System) Init() error {
 			start(s.svc.Api)
 		})
 	})
+
+	if err := s.updater.Init(); err != nil {
+		return err
+	}
 
 	s.afterFunc(s.tickDelay, s.startTick)
 	return nil
@@ -238,81 +248,5 @@ func stop(v Stopper) {
 func check(v Checker) {
 	if v != nil {
 		v.Check()
-	}
-}
-
-// StartupGate is the 3.1 normal-startup half of Updater.init() in
-// server/src/System/Updater.js; the update-mode handshake half lands with
-// task 3.7 and replaces this type. Behavior:
-//
-//   - An existing update socket normally means "we are the NEW instance of an
-//     update". The handshake is not implemented yet, so the gate logs a loud
-//     warning and continues as a normal startup WITHOUT unlinking the socket
-//     (Node only unlinks after a failed connect attempt). A live OLD instance
-//     waiting on it will time out (5 min) and roll back — safe.
-//   - After a crashed update attempt was restarted normally, ODAC_LOG_NAME
-//     still points at the update log: print the bare ODAC_CMD:SWITCH_LOGS
-//     marker on stdout so the watchdog switches back to standard log files.
-type StartupGate struct {
-	socketPath string
-	log        *logx.Logger
-
-	mu        sync.Mutex
-	ready     bool
-	callbacks []func()
-}
-
-// NewStartupGate builds the gate for a base dir (usually ~/.odac).
-func NewStartupGate(baseDir string) *StartupGate {
-	return &StartupGate{
-		socketPath: filepath.Join(baseDir, "run", "update.sock"),
-		log:        logx.New("Updater"),
-	}
-}
-
-// Init implements the normal-startup path of Updater.init().
-func (g *StartupGate) Init() error {
-	if _, err := os.Stat(g.socketPath); err == nil {
-		g.log.Warn("Update socket found but the Go updater is not implemented yet (task 3.7); continuing as normal startup")
-	}
-
-	// Node: process.env.ODAC_LOG_NAME.includes('odac-update')
-	if strings.Contains(os.Getenv("ODAC_LOG_NAME"), "odac-update") {
-		// Bare marker, no module prefix — the watchdog scans raw stdout
-		// chunks for it (Node: console.log('ODAC_CMD:SWITCH_LOGS')).
-		fmt.Fprintln(logx.Stdout, "ODAC_CMD:SWITCH_LOGS")
-	}
-
-	g.triggerReady()
-	return nil
-}
-
-// OnReady ports Updater.onReady: immediate call when already ready.
-func (g *StartupGate) OnReady(cb func()) {
-	g.mu.Lock()
-	if g.ready {
-		g.mu.Unlock()
-		cb()
-		return
-	}
-	g.callbacks = append(g.callbacks, cb)
-	g.mu.Unlock()
-}
-
-func (g *StartupGate) triggerReady() {
-	g.mu.Lock()
-	if g.ready {
-		g.mu.Unlock()
-		return
-	}
-	g.ready = true
-	cbs := g.callbacks
-	g.callbacks = nil
-	g.mu.Unlock()
-	// Node wraps each callback in try/catch (log + continue). Go policy
-	// (PLAN.md 3.1 trap note): no recover — a panicking startup callback
-	// must crash the process so the watchdog restarts it clean.
-	for _, cb := range cbs {
-		cb()
 	}
 }

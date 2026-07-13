@@ -1,7 +1,6 @@
 package system
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"odac/internal/config"
-	"odac/internal/logx"
 )
 
 // recorder logs every Start/Stop/Check call into a shared ordered trace.
@@ -62,6 +60,38 @@ func (f *fakeService) Start() { f.tr.add(f.name + ".start") }
 func (f *fakeService) Stop()  { f.tr.add(f.name + ".stop") }
 func (f *fakeService) Check() { f.tr.add(f.name + ".check") }
 
+// testGate is a minimal Updater: Init triggers ready synchronously, like the
+// real updater's normal-startup path (the handshake paths are exercised in
+// internal/updater's own suite).
+type testGate struct {
+	mu        sync.Mutex
+	ready     bool
+	callbacks []func()
+}
+
+func (g *testGate) Init() error {
+	g.mu.Lock()
+	g.ready = true
+	cbs := g.callbacks
+	g.callbacks = nil
+	g.mu.Unlock()
+	for _, cb := range cbs {
+		cb()
+	}
+	return nil
+}
+
+func (g *testGate) OnReady(cb func()) {
+	g.mu.Lock()
+	if g.ready {
+		g.mu.Unlock()
+		cb()
+		return
+	}
+	g.callbacks = append(g.callbacks, cb)
+	g.mu.Unlock()
+}
+
 func newTestSystem(t *testing.T, tr *trace) (*System, Services) {
 	t.Helper()
 	cfg, err := config.Open(t.TempDir())
@@ -77,7 +107,7 @@ func newTestSystem(t *testing.T, tr *trace) (*System, Services) {
 		Api:   &fakeService{"api", tr},
 		Hub:   &fakeService{"hub", tr},
 	}
-	s := New(cfg, svc, NewStartupGate(t.TempDir()))
+	s := New(cfg, svc, &testGate{})
 	s.startupDelay = 10 * time.Millisecond
 	s.tickDelay = 20 * time.Millisecond
 	s.tickEvery = 5 * time.Millisecond
@@ -236,7 +266,7 @@ func TestNilServicesSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg, Services{}, NewStartupGate(t.TempDir()))
+	s := New(cfg, Services{}, &testGate{})
 	s.startupDelay = 5 * time.Millisecond
 	s.tickDelay = 5 * time.Millisecond
 	s.tickEvery = 5 * time.Millisecond
@@ -253,7 +283,7 @@ func TestRecordServerInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg, Services{}, NewStartupGate(t.TempDir()))
+	s := New(cfg, Services{}, &testGate{})
 	before := time.Now().UnixMilli()
 	if err := s.Init(); err != nil {
 		t.Fatal(err)
@@ -304,78 +334,6 @@ func TestNodeVocabulary(t *testing.T) {
 	}
 }
 
-func TestStartupGateSwitchLogs(t *testing.T) {
-	out := &bytes.Buffer{}
-	oldOut := logx.Stdout
-	logx.Stdout = out
-	t.Cleanup(func() { logx.Stdout = oldOut })
-
-	t.Setenv("ODAC_LOG_NAME", ".odac-update")
-	g := NewStartupGate(t.TempDir())
-	if err := g.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := out.String(), "ODAC_CMD:SWITCH_LOGS\n"; got != want {
-		t.Errorf("stdout = %q, want bare marker %q", got, want)
-	}
-}
-
-func TestStartupGateNoSwitchLogsOnNormalName(t *testing.T) {
-	out := &bytes.Buffer{}
-	oldOut := logx.Stdout
-	logx.Stdout = out
-	t.Cleanup(func() { logx.Stdout = oldOut })
-
-	t.Setenv("ODAC_LOG_NAME", ".odac")
-	if err := NewStartupGate(t.TempDir()).Init(); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), "SWITCH_LOGS") {
-		t.Errorf("unexpected SWITCH_LOGS on normal log name: %q", out.String())
-	}
-}
-
-func TestStartupGateWarnsOnExistingSocket(t *testing.T) {
-	errBuf := &bytes.Buffer{}
-	oldErr := logx.Stderr
-	logx.Stderr = errBuf
-	t.Cleanup(func() { logx.Stderr = oldErr })
-	t.Setenv("ODAC_LOG_NAME", "")
-
-	base := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(base, "run"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sock := filepath.Join(base, "run", "update.sock")
-	if err := os.WriteFile(sock, nil, 0o666); err != nil {
-		t.Fatal(err)
-	}
-
-	ready := false
-	g := NewStartupGate(base)
-	g.OnReady(func() { ready = true })
-	if err := g.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if !ready {
-		t.Error("gate did not become ready despite socket (3.1 stub must continue as normal startup)")
-	}
-	if !strings.Contains(errBuf.String(), "task 3.7") {
-		t.Errorf("expected 3.7 warning on stderr, got: %q", errBuf.String())
-	}
-	if _, err := os.Stat(sock); err != nil {
-		t.Error("stub unlinked the socket — it must leave it in place")
-	}
-}
-
-func TestOnReadyAfterReadyFiresImmediately(t *testing.T) {
-	g := NewStartupGate(t.TempDir())
-	if err := g.Init(); err != nil {
-		t.Fatal(err)
-	}
-	fired := false
-	g.OnReady(func() { fired = true })
-	if !fired {
-		t.Error("OnReady after ready did not fire immediately")
-	}
-}
+// The StartupGate tests that lived here moved with the type: task 3.7
+// replaced the 3.1 gate with internal/updater, whose suite covers the
+// SWITCH_LOGS marker, socket handling and OnReady semantics.

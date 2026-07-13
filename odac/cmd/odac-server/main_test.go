@@ -281,8 +281,10 @@ func TestServerAPIRoundTrip(t *testing.T) {
 		t.Errorf("auth = result %s message %s data %s", resp["result"], resp["message"], resp["data"])
 	}
 
-	// update stays unregistered until task 3.7.
-	resp = call(`{"auth":"` + auth + `","action":"update","data":[]}`)
+	// Every Node action is registered as of 3.7 — a fabricated name is the
+	// unknown-action probe now (Node answers the same for any unknown name).
+	// `update` itself is NOT probed here: it would docker-pull for real.
+	resp = call(`{"auth":"` + auth + `","action":"no.such.action","data":[]}`)
 	if string(resp["message"]) != `"unknown_action"` {
 		t.Errorf("unregistered action = %s", resp["message"])
 	}

@@ -6,8 +6,8 @@
 // Lifecycle notes (parity with Node, see contracts/lifecycle.md):
 //   - No signal handlers, like Node: SIGTERM/SIGINT kill the process; the
 //     watchdog treats any non-zero exit as a crash and restarts. Config loss
-//     is bounded by the 500ms autosave; explicit ForceSave happens only in
-//     the update handover (task 3.7).
+//     is bounded by the 500ms autosave — Node has no exit-time save either
+//     (the update handover exits via process.exit(0) mid-interval too).
 //   - No panic recovery: Node's uncaughtException handler logs and exits 1.
 //     A Go panic prints its stack and exits 2 — same watchdog outcome.
 //     Node's global ECONNRESET/EPIPE swallowing needs no equivalent: those
@@ -30,6 +30,7 @@ import (
 	"odac/internal/logx"
 	"odac/internal/sysinfo"
 	"odac/internal/system"
+	"odac/internal/updater"
 )
 
 func main() {
@@ -94,8 +95,22 @@ func main() {
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
 	}
 
-	// Hub client (task 3.6). SysUpdate stays nil until 3.7 lands the
-	// updater; app/container slots stay nil on docker-less hosts.
+	// Updater (task 3.7): zero-downtime self-update. It owns its own SDK
+	// client like Node's Updater constructs its own dockerode instance; a
+	// docker-less host degrades to an always-failing client (update checks
+	// answer like Node's would against a dead socket).
+	updDocker, uerr := updater.ConnectDocker()
+	if uerr != nil {
+		log.Error("Updater docker client initialization failed:", uerr.Error())
+	}
+	upd := updater.New(baseDir, updater.Deps{
+		Docker: updDocker,
+		Proxy:  proxySvc,
+		DNS:    dnsSvc,
+	})
+
+	// Hub client (task 3.6); app/container slots stay nil on docker-less
+	// hosts. system.update delegates to the updater like System.update().
 	sysInfo := sysinfo.New(func() bool { return containers != nil && containers.Available() })
 	hubURL := os.Getenv("ODAC_HUB_URL")
 	if hubURL == "" {
@@ -106,6 +121,13 @@ func main() {
 		Domain:  domainSvc,
 		Proxy:   proxySvc,
 		SysInfo: sysInfo.Get,
+		SysUpdate: func() (any, error) {
+			r, err := upd.Start()
+			if err != nil {
+				return nil, err
+			}
+			return r, nil
+		},
 	}
 	if appMgr != nil {
 		hubDeps.App = appMgr
@@ -145,9 +167,10 @@ func main() {
 	if appMgr != nil {
 		svc.App = appMgr
 	}
-	sys := system.New(cfg, svc, system.NewStartupGate(baseDir))
+	sys := system.New(cfg, svc, upd)
+	upd.SetSystem(sys) // closes the System↔Updater cycle (rollback re-Init)
 
-	registerActions(apiSrv, sys, dnsSvc, mailSvc, appMgr, domainSvc, sslSvc, hubSvc)
+	registerActions(apiSrv, sys, upd, dnsSvc, mailSvc, appMgr, domainSvc, sslSvc, hubSvc)
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())
@@ -171,15 +194,22 @@ func (h hubContainers) CreateTerminalSession(appName string, opts docker.Termina
 	return t, nil
 }
 
-// registerActions wires the contract-0.1 action table for the services that
-// exist so far (tasks 3.3 + 3.4 + 3.5 + 3.6). The remaining action —
-// update (3.7) — answers unknown_action until its task lands; nothing flips
-// to this server before 3.8 anyway.
-func registerActions(apiSrv *api.Server, sys *system.System, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, sslSvc *domains.SSL, hubSvc *hub.Hub) {
+// registerActions wires the full contract-0.1 action table (complete as of
+// task 3.7 — every action in Node's Api.js #commands is registered).
+func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Updater, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, sslSvc *domains.SSL, hubSvc *hub.Hub) {
 	res := func(r api.Result) (*api.Result, error) { return &r, nil }
 
 	apiSrv.Register("auth", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(hubSvc.Auth(a.At(0)))
+	})
+	// Node: update → System.update() → Updater.start(). A returned error
+	// renders as result(false, message), matching Node's thrown path.
+	apiSrv.Register("update", func(_ api.Args, _ api.Progress) (*api.Result, error) {
+		r, err := upd.Start()
+		if err != nil {
+			return nil, err
+		}
+		return &r, nil
 	})
 
 	if appMgr != nil {
