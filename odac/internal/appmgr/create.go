@@ -105,6 +105,10 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 		return res(false, __("Could not find recipe for %s: %s", appType, err.Error()))
 	}
 
+	if imageOverride, _ := cfg["image"].(string); imageOverride != "" {
+		recipe["image"] = imageOverride
+	}
+
 	// Template detection: multi-app stacks are delegated to the template
 	// handler.
 	recipeName, _ := recipe["name"].(string)

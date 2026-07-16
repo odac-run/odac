@@ -357,6 +357,24 @@ func TestRecipeContainerDirectiveSingleApp(t *testing.T) {
 	}
 }
 
+func TestRecipeImageOverride(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{
+		"name": "redis", "image": "redis:alpine",
+		"env": map[string]any{},
+	})
+
+	r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "myredis", "image": "redis:7-bookworm"})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	if img := fx.dock.runCallAt(0).options.Image; img != "redis:7-bookworm" {
+		t.Fatalf("image = %q, want the override", img)
+	}
+}
+
 func TestTemplateTypedDirectives(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{
