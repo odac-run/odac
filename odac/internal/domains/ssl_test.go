@@ -616,3 +616,15 @@ func TestSelfSignedGenerationAndReuse(t *testing.T) {
 		t.Fatal("self-signed cert regenerated while still valid")
 	}
 }
+
+func TestAcmeDirectoryEnvOverride(t *testing.T) {
+	t.Setenv("ODAC_ACME_URL", "https://acme-staging-v02.api.letsencrypt.org/directory")
+	if got := acmeDirectory(); got != "https://acme-staging-v02.api.letsencrypt.org/directory" {
+		t.Fatalf("acmeDirectory() = %q, want the env override", got)
+	}
+
+	t.Setenv("ODAC_ACME_URL", "")
+	if got := acmeDirectory(); got != letsEncryptURL {
+		t.Fatalf("acmeDirectory() = %q, want production default", got)
+	}
+}

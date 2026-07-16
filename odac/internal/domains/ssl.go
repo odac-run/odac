@@ -79,6 +79,18 @@ type SSL struct {
 	queued     map[string]bool
 }
 
+// acmeDirectory picks the ACME directory URL. ODAC_ACME_URL overrides it
+// (no Node equivalent — Node hardcodes production). It exists for the 3.8
+// staging host, where cert issue/renew must run for real against the Let's
+// Encrypt staging endpoint without burning production rate limits. Unset in
+// production.
+func acmeDirectory() string {
+	if url := os.Getenv("ODAC_ACME_URL"); url != "" {
+		return url
+	}
+	return letsEncryptURL
+}
+
 // NewSSL wires the manager; certDir derives from the config base dir.
 func NewSSL(cfg *config.Store, dns DNSService, proxy ProxyService, mail MailService) *SSL {
 	s := &SSL{
@@ -93,8 +105,9 @@ func NewSSL(cfg *config.Store, dns DNSService, proxy ProxyService, mail MailServ
 		processing: map[string]*sslRun{},
 		queued:     map[string]bool{},
 	}
+	directory := acmeDirectory()
 	s.newClient = func() (acmeOrderer, error) {
-		return newACMEClient(s.certDir, letsEncryptURL, nil, s.log)
+		return newACMEClient(s.certDir, directory, nil, s.log)
 	}
 	return s
 }
