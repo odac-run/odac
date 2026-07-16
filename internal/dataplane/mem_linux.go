@@ -10,7 +10,7 @@ import (
 
 // memInfo returns total and used physical memory in bytes like Node's
 // os.totalmem()/freemem() pair. The proxy uses it only as a cache-sizing
-// hint (UpdateMemory in server/proxy).
+// hint (UpdateMemory in internal/proxy).
 func memInfo() (total, used uint64) {
 	raw, err := os.ReadFile("/proc/meminfo")
 	if err != nil {

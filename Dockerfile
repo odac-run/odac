@@ -2,20 +2,14 @@
 FROM golang:1.25-alpine AS go-builder
 WORKDIR /build
 # Copy Go source
-COPY server/proxy ./server/proxy
-COPY server/dns ./server/dns
-COPY server/mail ./server/mail
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-# Build static binary
+# Build static binaries
 # -ldflags="-s -w" reduces binary size by stripping debug symbols
-RUN cd server/proxy && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-proxy
-RUN cd server/dns && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-dns
-RUN cd server/mail && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-mail
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-proxy ./cmd/odac-proxy
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-dns ./cmd/odac-dns
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-mail ./cmd/odac-mail
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-watchdog ./cmd/odac-watchdog
 
 # Stage 1: Build Node.js Native Dependencies
