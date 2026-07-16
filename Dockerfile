@@ -5,7 +5,9 @@ WORKDIR /build
 COPY server/proxy ./server/proxy
 COPY server/dns ./server/dns
 COPY server/mail ./server/mail
-COPY odac ./odac
+COPY go.mod go.sum ./
+COPY cmd ./cmd
+COPY internal ./internal
 # Build static binary
 # -ldflags="-s -w" reduces binary size by stripping debug symbols
 RUN cd server/proxy && \
@@ -14,8 +16,7 @@ RUN cd server/dns && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-dns
 RUN cd server/mail && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-mail
-RUN cd odac && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-watchdog ./cmd/odac-watchdog
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-watchdog ./cmd/odac-watchdog
 
 # Stage 1: Build Node.js Native Dependencies
 FROM node:22-alpine AS node-builder
