@@ -53,7 +53,7 @@ class Create {
 
   async #fromRecipe(config) {
     const api = this.#api
-    const {app: appType, name: customName} = config
+    const {app: appType, name: customName, image: imageOverride} = config
 
     if (!appType) {
       log('createFromRecipe: Missing app type')
@@ -69,6 +69,10 @@ class Create {
     } catch (e) {
       error('createFromRecipe: Failed to fetch recipe: %s', e)
       return Odac.server('Api').result(false, __('Could not find recipe for %s: %s', appType, e))
+    }
+
+    if (imageOverride) {
+      recipe.image = imageOverride
     }
 
     // Template Detection: Multi-app stacks (e.g. WordPress + MariaDB) are delegated to the template handler
