@@ -1,15 +1,9 @@
-# Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-yarn.lock
-pnpm-lock.yaml
+# Build output (all six binaries land here)
+bin/
 
-# Test Coverage
-coverage/
-.nyc_output/
+# Release pipeline scratch (written by @semantic-release/exec, CI-only)
+.release-version
+node_modules/
 
 # Logs
 logs
@@ -38,24 +32,11 @@ temp/
 *.swp
 *.swo
 
-# Jest cache
-jest-cache/
-jest-*
-
-# TypeScript
-*.tsbuildinfo
-
 # Kiro
 .kiro/specs/*
+.kiro/hooks
 
-# Binaries
-bin/odac-proxy
-bin/odac-dns
-bin/odac-watchdog
-
+# Local runtime state / secrets
 .secret/
 .odac/
 docker-compose.dev.yml
-
-bin/odac-mail
-.kiro/hooks

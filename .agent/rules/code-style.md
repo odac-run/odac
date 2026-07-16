@@ -2,7 +2,7 @@
 trigger: always_on
 ---
 
-- **Linting:** After making changes, always check for and resolve any lint errors.
-- **Testing:** After making significant changes, always run the tests (`npm test` or equivalent) to ensure no regressions. Resolve any errors found.
+- **Formatting & Vet:** After making changes, always run `gofmt` (no diffs allowed) and `go vet ./...`; resolve any findings.
+- **Testing:** After making significant changes, always run the tests (`go test ./...`) to ensure no regressions. Resolve any errors found.
 - **Comments:** Minimize code comments; use them only when absolutely necessary to explain complex logic. Always write code comments in **English**.
-- **Imports:** Always place `require` statements at the very top of the file. Do not use `require` inside functions or blocks.
+- **Imports:** Use standard `import` blocks at the top of the file, grouped stdlib / external / `odac/...` (goimports order).

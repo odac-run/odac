@@ -22,30 +22,48 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, 'ODAC v') || github.event_name == 'workflow_dispatch'"
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
+      # Node here is CI tooling for semantic-release only — the project itself
+      # is pure Go (the release version lives in internal/sysinfo/sysinfo.go
+      # and is bumped by @semantic-release/exec, see .releaserc.js).
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '24'
-      
-      - name: Install dependencies
-        run: npm install
-      
+
+      # No package.json in the repo: install semantic-release and the
+      # non-bundled plugins directly into the workspace so plugin resolution
+      # from .releaserc.js works. (commit-analyzer / release-notes-generator /
+      # github ship with semantic-release itself.)
+      - name: Install semantic-release
+        run: >
+          npm install --no-save
+          semantic-release@^24
+          @semantic-release/changelog@^6
+          @semantic-release/exec@^7
+          @semantic-release/git@^10
+          conventional-changelog-conventionalcommits@^9
+
       - name: Semantic Release
         id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
-      
+
+      # .release-version is written by the exec plugin's prepareCmd only when a
+      # release was actually cut; everything below is skipped otherwise.
       - name: Get version
         id: version
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+        run: |
+          if [ -f .release-version ]; then
+            echo "version=$(cat .release-version)" >> $GITHUB_OUTPUT
+          fi
 
       - name: Checkout Actions
         if: steps.version.outputs.version != ''
@@ -80,28 +98,33 @@ jobs:
           body_path: RELEASE_NOTE.md
           draft: false
           prerelease: false
-      
+
       - name: Set up QEMU
+        if: steps.version.outputs.version != ''
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
+        if: steps.version.outputs.version != ''
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
+        if: steps.version.outputs.version != ''
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      
+
       - name: Login to GitHub Container Registry
+        if: steps.version.outputs.version != ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Docker meta
         id: meta
+        if: steps.version.outputs.version != ''
         uses: docker/metadata-action@v5
         with:
           images: |
@@ -112,8 +135,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}},value=${{ steps.version.outputs.version }}
             type=raw,value=latest
-      
+
       - name: Build and push Docker image
+        if: steps.version.outputs.version != ''
         uses: docker/build-push-action@v6
         with:
           context: .

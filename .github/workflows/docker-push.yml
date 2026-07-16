@@ -9,7 +9,7 @@ on:
         default: true
         type: boolean
       version:
-        description: 'Version override (e.g. 1.2.3). Leave empty to use package.json version.'
+        description: 'Version override (e.g. 1.2.3). Leave empty to use sysinfo.Version from the source tree.'
         required: false
         type: string
 
@@ -39,7 +39,8 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
           else
-            VERSION="$(node -p "require('./package.json').version")"
+            # Release version source of truth (see internal/sysinfo/sysinfo.go)
+            VERSION="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/sysinfo/sysinfo.go)"
           fi
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
