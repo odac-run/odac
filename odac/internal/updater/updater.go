@@ -111,15 +111,24 @@ type Updater struct {
 
 // New wires an Updater for a base dir (usually ~/.odac). A nil deps.Docker
 // degrades to an always-failing client, like dockerode on a socket-less host.
+//
+// ODAC_IMAGE overrides the update image tag (no Node equivalent — Node
+// hardcodes it). It exists for the 3.8 staging cutover, where the whole
+// pull → compare → create pipeline must run for real against a local
+// registry instead of Docker Hub. Unset in production.
 func New(baseDir string, deps Deps) *Updater {
 	if deps.Docker == nil {
 		deps.Docker = unavailableDocker{}
+	}
+	image := os.Getenv("ODAC_IMAGE")
+	if image == "" {
+		image = defaultImage
 	}
 	return &Updater{
 		baseDir:          baseDir,
 		deps:             deps,
 		log:              logx.New("Updater"),
-		image:            defaultImage,
+		image:            image,
 		platform:         runtime.GOOS,
 		hostname:         func() string { h, _ := os.Hostname(); return h },
 		readFile:         os.ReadFile,

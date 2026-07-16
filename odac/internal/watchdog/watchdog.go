@@ -100,6 +100,9 @@ type Watchdog struct {
 
 	childMu sync.Mutex
 	child   *os.Process
+
+	// Test seam; production value is stopSupervised.
+	reap func(pid int)
 }
 
 // New creates a watchdog that runs serverCmd (argv form) as its supervised
@@ -117,6 +120,7 @@ func New(cfg *config.Store, serverCmd []string) *Watchdog {
 		logS:      stream{flushed: -1},
 		errS:      stream{flushed: -1},
 		logName:   logName,
+		reap:      stopSupervised,
 	}
 }
 
@@ -274,6 +278,15 @@ func (w *Watchdog) consume(r io.Reader, isErr bool) {
 //
 // Node also walked config.websites here, but no module file ever persists
 // that key, so a fresh process can never observe it — dropped as dead code.
+//
+// Deviation from Node (found in the 3.8 staging rehearsal): in update mode
+// the reaping is skipped entirely. The NEW instance shares the config volume
+// AND the pid namespace with the still-live OLD instance, so server.watchdog
+// and server.pid are the handshake peer, not stale leftovers — reaping them
+// kills the OLD's pid-1, docker restarts it, and its reincarnation reads
+// THIS watchdog's freshly recorded pid and kills the NEW right back (mutual
+// murder, observed live). Node has the same flaw, only partially masked by
+// Process.stop's name=='node' guard; documented in lifecycle.md.
 func (w *Watchdog) startupChecks() {
 	srv := w.cfg.Map("server")
 	if srv == nil {
@@ -281,17 +294,19 @@ func (w *Watchdog) startupChecks() {
 		w.cfg.Set("server", srv)
 	}
 
-	if pid := intVal(srv["watchdog"]); pid > 0 && pid != os.Getpid() {
-		stopSupervised(pid)
-	}
-	if pid := intVal(srv["pid"]); pid > 0 {
-		stopSupervised(pid)
-	}
-	if apps, ok := w.cfg.Get("apps").([]any); ok {
-		for _, a := range apps {
-			if app, ok := a.(map[string]any); ok {
-				if pid := intVal(app["pid"]); pid > 0 {
-					stopSupervised(pid)
+	if os.Getenv("ODAC_UPDATE_MODE") != "true" {
+		if pid := intVal(srv["watchdog"]); pid > 0 && pid != os.Getpid() {
+			w.reap(pid)
+		}
+		if pid := intVal(srv["pid"]); pid > 0 {
+			w.reap(pid)
+		}
+		if apps, ok := w.cfg.Get("apps").([]any); ok {
+			for _, a := range apps {
+				if app, ok := a.(map[string]any); ok {
+					if pid := intVal(app["pid"]); pid > 0 {
+						w.reap(pid)
+					}
 				}
 			}
 		}

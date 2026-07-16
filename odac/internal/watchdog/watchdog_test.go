@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"odac/internal/config"
 )
 
 func TestStreamIncrementalAppend(t *testing.T) {
@@ -131,5 +133,39 @@ func TestIsoNowShape(t *testing.T) {
 	// JS Date.toISOString() shape: 2026-07-02T10:12:13.456Z
 	if len(got) != 24 || got[10] != 'T' || got[23] != 'Z' || got[19] != '.' {
 		t.Errorf("isoNow() = %q, not ISO-8601 ms UTC", got)
+	}
+}
+
+// The startup reap must not run in update mode: the pids in the shared
+// config belong to the LIVE old instance during a zero-downtime update
+// (shared volume + host pid namespace), not to stale leftovers. Reaping
+// them kills the handshake peer — found live in the 3.8 staging rehearsal.
+func TestStartupChecksSkipsReapInUpdateMode(t *testing.T) {
+	newWatchdog := func(t *testing.T) (*Watchdog, *[]int) {
+		t.Helper()
+		cfg, err := config.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Set("server", map[string]any{"watchdog": 11111, "pid": 22222})
+		cfg.Set("apps", []any{map[string]any{"pid": 33333}})
+		var reaped []int
+		w := New(cfg, []string{"true"})
+		w.reap = func(pid int) { reaped = append(reaped, pid) }
+		return w, &reaped
+	}
+
+	t.Setenv("ODAC_UPDATE_MODE", "true")
+	w, reaped := newWatchdog(t)
+	w.startupChecks()
+	if len(*reaped) != 0 {
+		t.Fatalf("update mode reaped %v, want none", *reaped)
+	}
+
+	os.Unsetenv("ODAC_UPDATE_MODE")
+	w, reaped = newWatchdog(t)
+	w.startupChecks()
+	if len(*reaped) != 3 {
+		t.Fatalf("normal mode reaped %v, want [11111 22222 33333]", *reaped)
 	}
 }

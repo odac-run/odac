@@ -465,3 +465,19 @@ func TestBuildFromSourceCloneAndBuild(t *testing.T) {
 		t.Fatal("download path must be removed after a successful build")
 	}
 }
+
+// ODAC_IMAGE overrides the update image tag (staging seam, no Node
+// equivalent — see New's doc comment). Unset, the Docker Hub default holds.
+func TestImageEnvOverride(t *testing.T) {
+	t.Setenv("ODAC_IMAGE", "localhost:5000/odac:staging")
+	fx := newFixture(t)
+	if fx.u.image != "localhost:5000/odac:staging" {
+		t.Fatalf("image = %q, want the ODAC_IMAGE override", fx.u.image)
+	}
+
+	os.Unsetenv("ODAC_IMAGE")
+	fx = newFixture(t)
+	if fx.u.image != defaultImage {
+		t.Fatalf("image = %q, want %q", fx.u.image, defaultImage)
+	}
+}
