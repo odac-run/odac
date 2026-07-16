@@ -131,6 +131,44 @@ func TestRunStatusOffline(t *testing.T) {
 	}
 }
 
+func TestRunHealthcheck(t *testing.T) {
+	// Live listener → 0; closed port → 1. Either way nothing on stdout and
+	// no boot attempt (a probe must not restart the server it is checking).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	a, out, _ := testApp(t, ln.Addr().String())
+	a.boot = func() { t.Fatal("healthcheck must not boot the server") }
+	if code := a.run([]string{"healthcheck"}); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("healthcheck wrote to stdout: %q", out)
+	}
+
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := dead.Addr().String()
+	dead.Close()
+
+	a, out, errOut := testApp(t, deadAddr)
+	a.boot = func() { t.Fatal("healthcheck must not boot the server") }
+	if code := a.run([]string{"healthcheck"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("healthcheck wrote to stdout: %q", out)
+	}
+	if !strings.Contains(errOut.String(), "unreachable") {
+		t.Errorf("stderr = %q", errOut)
+	}
+}
+
 func TestRunUnknownCommand(t *testing.T) {
 	a, out, _ := testApp(t, "127.0.0.1:0")
 	if code := a.run([]string{"frobnicate"}); code != 1 {

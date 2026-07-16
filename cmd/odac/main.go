@@ -60,6 +60,17 @@ func apiAddr() string {
 }
 
 func (a *app) run(args []string) int {
+	if len(args) == 1 && args[0] == "healthcheck" {
+		// Docker HEALTHCHECK probe (not part of the Node surface): exit 0
+		// when the server accepts connections. No banner, no boot attempt —
+		// a health probe must never restart what it is checking.
+		if apiproto.Ping(a.client.Addr, apiproto.DefaultDialTimeout) {
+			return 0
+		}
+		fmt.Fprintln(a.errOut, "odac server unreachable at "+a.client.Addr)
+		return 1
+	}
+
 	fmt.Fprintln(a.out, "\n "+color("ODAC", ansiMagenta)+" \n")
 
 	// Cli.init boots the server before dispatching any command.
