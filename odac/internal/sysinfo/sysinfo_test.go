@@ -9,25 +9,6 @@ import (
 	"odac/internal/jscanon"
 )
 
-// TestVersionMatchesPackageJSON is the drift guard: the embedded Version
-// must track the repo's package.json (same policy as the 2.4 locale
-// catalogs).
-func TestVersionMatchesPackageJSON(t *testing.T) {
-	raw, err := os.ReadFile("../../../package.json")
-	if err != nil {
-		t.Fatalf("read package.json: %v", err)
-	}
-	var pkg struct {
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(raw, &pkg); err != nil {
-		t.Fatal(err)
-	}
-	if pkg.Version != Version {
-		t.Fatalf("sysinfo.Version = %s but package.json says %s — update version.go/sysinfo.go", Version, pkg.Version)
-	}
-}
-
 // TestGetShape pins the field set and Node's literal key order.
 func TestGetShape(t *testing.T) {
 	info := New(func() bool { return true }).Get()

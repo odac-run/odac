@@ -25,8 +25,8 @@ import (
 	"odac/internal/jscanon"
 )
 
-// Version mirrors package.json's "version"; TestVersionMatchesPackageJSON
-// fails on drift.
+// Version is the release version — the single source of truth since 4.1
+// removed package.json (it used to mirror it, guarded by a drift test).
 const Version = "1.11.0"
 
 // Info assembles system inventory. containerEngine reports Docker
