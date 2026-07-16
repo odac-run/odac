@@ -1,4 +1,7 @@
-package main
+// Package netutil holds the small helpers the data-plane binaries
+// (odac-proxy, odac-dns, odac-mail) used to inline per-binary while they
+// were independent Go modules. Single module since 4.3 → shared for real.
+package netutil
 
 import (
 	"os"
@@ -6,12 +9,9 @@ import (
 	"sync"
 )
 
-// Keep this file in sync with cmd/odac-mail/logrotate.go and
-// cmd/odac-dns/logrotate.go. Inlined per-binary on purpose: the three
-// services have independent go.mod's so a shared module is more pain than
-// duplicating ~50 lines.
-
-type rotateWriter struct {
+// RotateWriter is an io.Writer that appends to path and renames it to
+// path+".1" once it grows past maxBytes (size checked every ~4KiB written).
+type RotateWriter struct {
 	mu         sync.Mutex
 	path       string
 	f          *os.File
@@ -19,7 +19,7 @@ type rotateWriter struct {
 	sinceCheck int64
 }
 
-func newRotateWriter(path string, maxBytes int64) (*rotateWriter, error) {
+func NewRotateWriter(path string, maxBytes int64) (*RotateWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
@@ -27,10 +27,10 @@ func newRotateWriter(path string, maxBytes int64) (*rotateWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &rotateWriter{path: path, f: f, maxBytes: maxBytes}, nil
+	return &RotateWriter{path: path, f: f, maxBytes: maxBytes}, nil
 }
 
-func (w *rotateWriter) Write(p []byte) (int, error) {
+func (w *RotateWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

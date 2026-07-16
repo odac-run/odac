@@ -17,9 +17,8 @@
 //     POSIX resolves from the same variables. C/POSIX or nothing set (the
 //     usual Windows case) means en-US.
 //
-// The files under locale/ are copies of the repo-root locale/ directory (the
-// source of truth until the Phase 4 repo restructure); TestCatalogsMatchRepo
-// fails when they drift.
+// The files under locale/ are the catalogs' single home since the 4.4
+// restructure (the repo-root locale/ copy they used to mirror is gone).
 package lang
 
 import (

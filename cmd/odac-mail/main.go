@@ -42,12 +42,13 @@ import (
 	imapserver "odac/internal/mail/imap"
 	smtpserver "odac/internal/mail/smtp"
 	"odac/internal/mail/storage"
+	"odac/internal/netutil"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	if home, err := os.UserHomeDir(); err == nil {
-		if w, e := newRotateWriter(filepath.Join(home, ".odac", "logs", "mail.log"), 50*1024*1024); e == nil {
+		if w, e := netutil.NewRotateWriter(filepath.Join(home, ".odac", "logs", "mail.log"), 50*1024*1024); e == nil {
 			log.SetOutput(w)
 		}
 	}

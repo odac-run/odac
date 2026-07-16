@@ -1,8 +1,6 @@
 package lang
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -103,38 +101,5 @@ func TestDetect(t *testing.T) {
 			t.Errorf("Detect(LC_ALL=%q LC_MESSAGES=%q LANG=%q) = %q, want %q",
 				tc.lcAll, tc.lcMessages, tc.lang, got, tc.want)
 		}
-	}
-}
-
-// TestCatalogsMatchRepo guards the embedded copies against drifting from the
-// repo-root locale/ directory, the source of truth until the Phase 4
-// restructure. Skipped outside a full repo checkout.
-func TestCatalogsMatchRepo(t *testing.T) {
-	repoLocale := filepath.Join("..", "..", "..", "locale")
-	if _, err := os.Stat(repoLocale); err != nil {
-		t.Skip("repo-root locale/ not present")
-	}
-	repoFiles, err := filepath.Glob(filepath.Join(repoLocale, "*.json"))
-	if err != nil || len(repoFiles) == 0 {
-		t.Fatalf("globbing repo locale/: %v (%d files)", err, len(repoFiles))
-	}
-	for _, repoFile := range repoFiles {
-		name := filepath.Base(repoFile)
-		want, err := os.ReadFile(repoFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := catalogFS.ReadFile("locale/" + name)
-		if err != nil {
-			t.Errorf("locale/%s exists in repo but is not embedded: %v", name, err)
-			continue
-		}
-		if string(got) != string(want) {
-			t.Errorf("embedded locale/%s differs from repo copy — re-run: cp locale/*.json odac/internal/lang/locale/", name)
-		}
-	}
-	embedded, _ := catalogFS.ReadDir("locale")
-	if len(embedded) != len(repoFiles) {
-		t.Errorf("embedded %d catalogs, repo has %d", len(embedded), len(repoFiles))
 	}
 }

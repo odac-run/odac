@@ -34,6 +34,7 @@ import (
 
 	"odac/internal/dns/api"
 	"odac/internal/dns/resolver"
+	"odac/internal/netutil"
 )
 
 // fallbackPorts are tried in order when port 53 is unavailable.
@@ -43,7 +44,7 @@ var fallbackPorts = []int{5353, 1053, 8053}
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	if home, err := os.UserHomeDir(); err == nil {
-		if w, e := newRotateWriter(filepath.Join(home, ".odac", "logs", "dns.log"), 50*1024*1024); e == nil {
+		if w, e := netutil.NewRotateWriter(filepath.Join(home, ".odac", "logs", "dns.log"), 50*1024*1024); e == nil {
 			log.SetOutput(w)
 		}
 	}

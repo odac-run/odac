@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"odac/internal/netutil"
 	"odac/internal/proxy/api"
 	"odac/internal/proxy/config"
 	"odac/internal/proxy/proxy"
@@ -29,7 +30,7 @@ import (
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
 func listen(network, address string) (net.Listener, error) {
 	lc := net.ListenConfig{
-		Control: setSocketOptions,
+		Control: netutil.SetSocketOptions,
 	}
 	return lc.Listen(context.Background(), network, address)
 }
@@ -37,7 +38,7 @@ func listen(network, address string) (net.Listener, error) {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	if home, err := os.UserHomeDir(); err == nil {
-		if w, e := newRotateWriter(filepath.Join(home, ".odac", "logs", "proxy.log"), 50*1024*1024); e == nil {
+		if w, e := netutil.NewRotateWriter(filepath.Join(home, ".odac", "logs", "proxy.log"), 50*1024*1024); e == nil {
 			log.SetOutput(w)
 		}
 	}
@@ -231,14 +232,14 @@ func main() {
 		},
 	}
 
-	// Bind the UDP :443 socket ourselves with SO_REUSEPORT (via setSocketOptions),
+	// Bind the UDP :443 socket ourselves with SO_REUSEPORT (via netutil.SetSocketOptions),
 	// exactly like the TCP listeners above. quic-go's h3Server.ListenAndServe()
 	// does a plain net.ListenUDP without SO_REUSEPORT, so during a zero-downtime
 	// update the new process cannot bind UDP :443 while the old process still holds
 	// it ("address already in use"). It would then log the error and never retry,
 	// leaving HTTP/3 silently down for the lifetime of the new process. Binding via
 	// ListenPacket + h3Server.Serve() lets the old and new sockets overlap.
-	udpConn, err := (&net.ListenConfig{Control: setSocketOptions}).
+	udpConn, err := (&net.ListenConfig{Control: netutil.SetSocketOptions}).
 		ListenPacket(context.Background(), "udp", ":443")
 	if err != nil {
 		// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
