@@ -1,0 +1,70 @@
+name: Vulnerability Check
+
+# govulncheck runs only on PRs. Weekly dependency freshness is Dependabot's job
+# (see .github/dependabot.yml); running both on a schedule would be redundant.
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Must satisfy the root go.mod directive; setup-go installs the latest
+          # matching patch, so standard-library advisories fixed in a newer 1.25.x
+          # are resolved by the build toolchain itself.
+          go-version: '1.25'
+
+      # Reachability-aware scan. The gate is "fixable-only": it fails only when a
+      # vulnerability is BOTH reachable from our code AND has an upstream fix
+      # available. Findings with no fix yet (e.g. docker/docker, Fixed:N/A) are
+      # printed but do not block — otherwise the gate would be permanently red on
+      # issues we cannot resolve. Bump the module the moment a fix ships and the
+      # gate turns it into a hard failure automatically.
+      - name: Run govulncheck (fixable-only gate)
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+
+          # JSON stream exits 0 even when vulnerabilities exist, so we decide
+          # pass/fail ourselves from the findings below.
+          govulncheck -format json ./... > govulncheck.json
+
+          echo "== Reachable vulnerabilities =="
+          jq -s -r '
+            [.[] | select(.finding.trace[0].function != null) | .finding]
+            | group_by(.osv) | .[] | .[0]
+            | "  \(.osv)  module=\(.trace[0].module)  fixed=\(.fixed_version // "N/A")"
+          ' govulncheck.json
+          echo "==============================="
+
+          # A finding is reachable when trace[0] pins a called function, and
+          # fixable when fixed_version is set.
+          fixable=$(jq -s '
+            [.[]
+             | select(.finding.trace[0].function != null)
+             | .finding
+             | select(.fixed_version != null and .fixed_version != "")
+             | .osv] | unique
+          ' govulncheck.json)
+
+          count=$(printf '%s' "$fixable" | jq 'length')
+          if [ "$count" -gt 0 ]; then
+            echo "::error::$count reachable vulnerability(ies) have an available fix — bump the affected module(s):"
+            printf '%s' "$fixable" | jq -r '.[] | "  " + .'
+            echo "Reproduce locally with: govulncheck ./..."
+            exit 1
+          fi
+          echo "No fixable, reachable vulnerabilities. OK."
