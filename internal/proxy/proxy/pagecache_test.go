@@ -14,6 +14,18 @@ func newTestPageCache() (*PageCache, *CacheManager) {
 	return pc, cm
 }
 
+// withIP returns a copy of req with a distinct source IP, used to simulate a
+// second client when confirming page-cache stability (promotion requires two
+// distinct client IPs to have seen the identical body).
+func withIP(req *http.Request, ip string) *http.Request {
+	r := req.Clone(req.Context())
+	r.RemoteAddr = ip + ":40000"
+	return r
+}
+
+// secondClient is the distinct IP used to confirm stability in tests.
+const secondClient = "203.0.113.9"
+
 func TestParseTTL(t *testing.T) {
 	tests := []struct {
 		header string
@@ -123,8 +135,8 @@ func TestPageCache_PutAndGet(t *testing.T) {
 		t.Error("Should not serve after first Put (not stable)")
 	}
 
-	// Second Put with same body — confirmed stable
-	pc.Put("example.com", "/landing", req, resp, body, 3600*time.Second)
+	// Second Put from a distinct client, same body — confirmed stable
+	pc.Put("example.com", "/landing", withIP(req, secondClient), resp, body, 3600*time.Second)
 
 	entry := pc.Get("example.com", "/landing", req)
 	if entry == nil {
@@ -184,16 +196,16 @@ func TestPageCache_VaryVariants(t *testing.T) {
 		},
 	}
 
-	// Store HTML variant (no X-Odac header) — two puts for stability
+	// Store HTML variant (no X-Odac header) — two distinct clients for stability
 	htmlReq := httptest.NewRequest("GET", "http://example.com/about", nil)
 	pc.Put("example.com", "/about", htmlReq, htmlResp, htmlBody, 60*time.Second)
-	pc.Put("example.com", "/about", htmlReq, htmlResp, htmlBody, 60*time.Second)
+	pc.Put("example.com", "/about", withIP(htmlReq, secondClient), htmlResp, htmlBody, 60*time.Second)
 
-	// Store JSON variant (X-Odac: ajax) — two puts for stability
+	// Store JSON variant (X-Odac: ajax) — two distinct clients for stability
 	ajaxReq := httptest.NewRequest("GET", "http://example.com/about", nil)
 	ajaxReq.Header.Set("X-Odac", "ajax")
 	pc.Put("example.com", "/about", ajaxReq, jsonResp, jsonBody, 60*time.Second)
-	pc.Put("example.com", "/about", ajaxReq, jsonResp, jsonBody, 60*time.Second)
+	pc.Put("example.com", "/about", withIP(ajaxReq, secondClient), jsonResp, jsonBody, 60*time.Second)
 
 	// Get HTML variant
 	entry := pc.Get("example.com", "/about", htmlReq)
@@ -211,6 +223,91 @@ func TestPageCache_VaryVariants(t *testing.T) {
 	}
 	if string(entry.body) != string(jsonBody) {
 		t.Errorf("JSON body mismatch: %q", entry.body)
+	}
+}
+
+func TestPageCache_CookiedRequestNotCached(t *testing.T) {
+	pc, cm := newTestPageCache()
+	defer cm.Stop()
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Content-Type": []string{"text/html"},
+			"X-Odac-Cache": []string{"3600"},
+		},
+	}
+	body := []byte("<html>Welcome Alice</html>")
+
+	// Two puts from distinct IPs, but both carry a Cookie — a cookied response
+	// may be per-user, so it must never enter the cache.
+	for _, ip := range []string{"198.51.100.1", "198.51.100.2"} {
+		req := httptest.NewRequest("GET", "http://example.com/panel", nil)
+		req.RemoteAddr = ip + ":40000"
+		req.Header.Set("Cookie", "sid="+ip)
+		pc.Put("example.com", "/panel", req, resp, body, 3600*time.Second)
+	}
+
+	anon := httptest.NewRequest("GET", "http://example.com/panel", nil)
+	if pc.Get("example.com", "/panel", anon) != nil {
+		t.Error("Cookied responses must not be cached (cross-user leak)")
+	}
+}
+
+func TestPageCache_SameClientDoesNotStabilize(t *testing.T) {
+	pc, cm := newTestPageCache()
+	defer cm.Stop()
+
+	req := httptest.NewRequest("GET", "http://example.com/page", nil)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Content-Type": []string{"text/html"},
+			"X-Odac-Cache": []string{"3600"},
+		},
+	}
+	body := []byte("<html>Welcome Alice</html>")
+
+	// Same client (same IP) reloading its own page twice must NOT stabilize —
+	// otherwise one user could pin their personalized page for everyone.
+	pc.Put("example.com", "/page", req, resp, body, 3600*time.Second)
+	pc.Put("example.com", "/page", req, resp, body, 3600*time.Second)
+
+	if pc.Get("example.com", "/page", req) != nil {
+		t.Error("A single client must not be able to stabilize an entry")
+	}
+
+	// A second, distinct client with the same body promotes it.
+	pc.Put("example.com", "/page", withIP(req, secondClient), resp, body, 3600*time.Second)
+	if pc.Get("example.com", "/page", req) == nil {
+		t.Error("Two distinct clients with identical body should stabilize")
+	}
+}
+
+func TestPageCache_ServesStableEntryToCookiedClient(t *testing.T) {
+	pc, cm := newTestPageCache()
+	defer cm.Stop()
+
+	req := httptest.NewRequest("GET", "http://example.com/home", nil)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Content-Type": []string{"text/html"},
+			"X-Odac-Cache": []string{"3600"},
+		},
+	}
+	body := []byte("<html>Public Home</html>")
+
+	// Stabilize from two anonymous clients.
+	pc.Put("example.com", "/home", req, resp, body, 3600*time.Second)
+	pc.Put("example.com", "/home", withIP(req, secondClient), resp, body, 3600*time.Second)
+
+	// A cookied request still receives the (proven-anonymous) cached body —
+	// this is what keeps caching useful for sites that set benign cookies.
+	cookied := httptest.NewRequest("GET", "http://example.com/home", nil)
+	cookied.Header.Set("Cookie", "_ga=123")
+	if pc.Get("example.com", "/home", cookied) == nil {
+		t.Error("Stable anonymous entry should be served to cookied clients too")
 	}
 }
 
@@ -252,9 +349,9 @@ func TestPageCache_TTLExpiration(t *testing.T) {
 
 	body := []byte("<html>test</html>")
 
-	// Put twice for stability, with a real TTL
+	// Two distinct clients for stability, with a real TTL
 	pc.Put("example.com", "/page", req, resp, body, 1*time.Second)
-	pc.Put("example.com", "/page", req, resp, body, 1*time.Second)
+	pc.Put("example.com", "/page", withIP(req, secondClient), resp, body, 1*time.Second)
 
 	// Should be stable and serveable now
 	entry := pc.Get("example.com", "/page", req)
@@ -285,9 +382,9 @@ func TestPageCache_Purge(t *testing.T) {
 	}
 
 	pc.Put("example.com", "/page", req, resp, []byte("<html>test</html>"), 3600*time.Second)
-	pc.Put("example.com", "/page", req, resp, []byte("<html>test</html>"), 3600*time.Second)
+	pc.Put("example.com", "/page", withIP(req, secondClient), resp, []byte("<html>test</html>"), 3600*time.Second)
 	pc.Put("other.com", "/page", req, resp, []byte("<html>other</html>"), 3600*time.Second)
-	pc.Put("other.com", "/page", req, resp, []byte("<html>other</html>"), 3600*time.Second)
+	pc.Put("other.com", "/page", withIP(req, secondClient), resp, []byte("<html>other</html>"), 3600*time.Second)
 
 	count := pc.Purge("example.com")
 	if count != 1 {

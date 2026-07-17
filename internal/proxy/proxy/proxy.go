@@ -1193,7 +1193,11 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 			return
 		}
 
-		p.pages.Put(host, originalReq.URL.Path, originalReq, resp, body, newTTL)
+		// Feed Put the cookieless revalidation request (req), not originalReq:
+		// the backend fetch above carried no cookies, so `body` is the
+		// anonymous variant and is safe to cache. originalReq may be cookied,
+		// which Put would (correctly) reject.
+		p.pages.Put(host, originalReq.URL.Path, req, resp, body, newTTL)
 		debugLog("[PageCache] Revalidated (200, updated): %s%s", host, originalReq.URL.Path)
 	}
 }

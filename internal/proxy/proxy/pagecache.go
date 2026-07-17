@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"hash/fnv"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,9 +51,10 @@ type pageEntry struct {
 	lastMod    string
 	size       int
 	statusCode int
-	stable     bool          // True after two consecutive identical responses
+	stable     bool          // True after two distinct clients saw the same body
 	ttl        time.Duration // App-specified TTL from X-Odac-Cache
 	createdAt  int64         // Unix nano
+	firstIP    string        // Source IP of the first observation (pre-stable)
 
 	lastAccess      atomic.Int64
 	hitCount        atomic.Int64
@@ -91,6 +93,15 @@ type PageCache struct {
 // NewPageCache creates a page cache that shares memory limits with the asset cache.
 func NewPageCache(cm *CacheManager) *PageCache {
 	return &PageCache{cache: cm}
+}
+
+// clientIP returns the source IP of a request (without the port), used to tell
+// two observations apart when deciding whether a body is safe to promote.
+func clientIP(r *http.Request) string {
+	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return ip
+	}
+	return r.RemoteAddr
 }
 
 // pageKey builds a cache key from host + path + vary variant.
@@ -241,6 +252,15 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 		return
 	}
 
+	// Only anonymous (cookieless) requests may populate the page cache. A
+	// request carrying cookies can receive per-user HTML; caching that body
+	// would let it be served to other users (a cross-user data leak). A
+	// cookieless response is, by construction, not personalized by session, so
+	// it is safe to share with everyone — including cookied users on a hit.
+	if r.Header.Get("Cookie") != "" {
+		return
+	}
+
 	if len(body) > pageMaxBodySize || len(body) == 0 {
 		return
 	}
@@ -268,18 +288,23 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 	key := pageKey(host, urlPath, variant)
 
 	newHash := hashBody(body)
+	ip := clientIP(r)
 
 	// Stability check: if an entry already exists, compare body hashes.
-	// Two consecutive identical responses = stable (safe to serve from cache).
-	// Different body = dynamic content (e.g. CSRF tokens), don't promote to stable.
+	// Two identical responses from DISTINCT clients = stable (safe to serve).
+	// Different body = dynamic content (e.g. CSRF tokens), don't promote.
 	if existing, loaded := pc.entries.Load(key); loaded {
 		entry := existing.(*pageEntry)
 		if entry.bodyHash == newHash {
-			// Same content confirmed — promote to stable
-			if !entry.stable {
+			// Promote to stable only once a second, distinct client (different
+			// source IP) has produced the identical body. A single client
+			// reloading its own page must never stabilize a response — that is
+			// exactly how one user's page would otherwise be pinned and served
+			// to everyone.
+			if !entry.stable && ip != entry.firstIP {
 				entry.stable = true
 				entry.lastAccess.Store(time.Now().UnixNano())
-				debugLog("[PageCache] Stability confirmed: %s", key)
+				debugLog("[PageCache] Stability confirmed (2 clients): %s", key)
 			}
 			return
 		}
@@ -310,9 +335,10 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 		headers:    headers,
 		lastMod:    resp.Header.Get("Last-Modified"),
 		size:       len(body),
-		stable:     false, // Needs second identical response to confirm
+		stable:     false, // Needs a second, distinct client to confirm
 		statusCode: resp.StatusCode,
 		ttl:        ttl,
+		firstIP:    ip,
 	}
 	entry.lastAccess.Store(now.UnixNano())
 	entry.hitCount.Store(1)
