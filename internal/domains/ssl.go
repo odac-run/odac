@@ -109,7 +109,40 @@ func NewSSL(cfg *config.Store, dns DNSService, proxy ProxyService, mail MailServ
 	s.newClient = func() (acmeOrderer, error) {
 		return newACMEClient(s.certDir, directory, nil, s.log)
 	}
+	hardenCertDir(s.certDir)
 	return s
+}
+
+// writeKeyFile writes a PEM private key with owner-only (0600) permissions.
+// os.WriteFile applies its mode only when creating a new file, so an existing
+// world-readable key rewritten in place would keep its old bits — the explicit
+// Chmod makes the tightening unconditional.
+func writeKeyFile(path, keyPEM string) error {
+	if err := os.WriteFile(path, []byte(keyPEM), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
+// hardenCertDir tightens permissions on the certificate directory (0700) and
+// every private key it already holds (0600). Runs once at startup so keys
+// issued by an earlier build — written world-readable — become owner-only
+// immediately instead of waiting for their next renewal.
+func hardenCertDir(certDir string) {
+	if _, err := os.Stat(certDir); err != nil {
+		return
+	}
+	_ = os.Chmod(certDir, 0o700)
+	entries, err := os.ReadDir(certDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".key") {
+			continue
+		}
+		_ = os.Chmod(filepath.Join(certDir, e.Name()), 0o600)
+	}
 }
 
 func (s *SSL) spawn(fn func()) {
@@ -533,13 +566,13 @@ func (s *SSL) self() {
 		s.log.Error("Failed to generate self-signed certificate: %s", err.Error())
 		return
 	}
-	if err := os.MkdirAll(s.certDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.certDir, 0o700); err != nil {
 		s.log.Error("Failed to generate self-signed certificate: %s", err.Error())
 		return
 	}
 	keyFile := filepath.Join(s.certDir, "odac.key")
 	crtFile := filepath.Join(s.certDir, "odac.crt")
-	if err := os.WriteFile(keyFile, []byte(keyPEM), 0o644); err != nil {
+	if err := writeKeyFile(keyFile, keyPEM); err != nil {
 		s.log.Error("Failed to generate self-signed certificate: %s", err.Error())
 		return
 	}
@@ -571,11 +604,11 @@ func (s *SSL) saveCertificate(domain, keyPEM, certPEM string) {
 
 	keyFile := filepath.Join(s.certDir, domain+".key")
 	crtFile := filepath.Join(s.certDir, domain+".crt")
-	if err := os.MkdirAll(s.certDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.certDir, 0o700); err != nil {
 		s.log.Error("Failed to save SSL certificate for domain %s: %s", domain, err.Error())
 		return
 	}
-	if err := os.WriteFile(keyFile, []byte(keyPEM), 0o644); err != nil {
+	if err := writeKeyFile(keyFile, keyPEM); err != nil {
 		s.log.Error("Failed to save SSL certificate for domain %s: %s", domain, err.Error())
 		return
 	}

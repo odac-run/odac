@@ -96,7 +96,7 @@ func loadOrCreateAccountKey(certDir string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(certDir, 0o755); err != nil {
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
 		return nil, err
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})

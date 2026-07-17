@@ -133,6 +133,63 @@ func certRecord(expiry float64, keyPath, certPath string, subdomains ...any) map
 
 // ─── check() ────────────────────────────────────────────────────────────
 
+func TestCheckWritesKeysOwnerOnly(t *testing.T) {
+	fx := newSSLFixture(t)
+	fx.setDomains(map[string]any{
+		"expired.com": certRecord(nowMs()-100000, "", ""),
+	})
+
+	fx.s.Check()
+	fx.waitIdle(t)
+
+	// Both the self-signed bootstrap key and the per-domain ACME key must be
+	// written owner-only so a sibling process/UID cannot read them.
+	for _, name := range []string{"odac.key", "expired.com.key"} {
+		info, err := os.Stat(filepath.Join(fx.s.certDir, name))
+		if err != nil {
+			t.Fatalf("%s missing: %v", name, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s mode = %o, want 600", name, perm)
+		}
+	}
+	if info, err := os.Stat(fx.s.certDir); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("certDir mode = %o, want 700", perm)
+	}
+}
+
+func TestHardenCertDirTightensExistingKeys(t *testing.T) {
+	dir := t.TempDir()
+	certDir := filepath.Join(dir, "cert", "ssl")
+	if err := os.MkdirAll(certDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate keys left world-readable by an earlier build.
+	keyFile := filepath.Join(certDir, "old.example.com.key")
+	crtFile := filepath.Join(certDir, "old.example.com.crt")
+	if err := os.WriteFile(keyFile, []byte("key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(crtFile, []byte("crt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hardenCertDir(certDir)
+
+	if info, _ := os.Stat(keyFile); info.Mode().Perm() != 0o600 {
+		t.Errorf("key mode = %o, want 600", info.Mode().Perm())
+	}
+	if info, _ := os.Stat(certDir); info.Mode().Perm() != 0o700 {
+		t.Errorf("certDir mode = %o, want 700", info.Mode().Perm())
+	}
+	// Public cert files are left untouched.
+	if info, _ := os.Stat(crtFile); info.Mode().Perm() != 0o644 {
+		t.Errorf("cert mode = %o, want 644 (unchanged)", info.Mode().Perm())
+	}
+}
+
 func TestCheckRenewsExpiredCertificates(t *testing.T) {
 	fx := newSSLFixture(t)
 	fx.setDomains(map[string]any{
