@@ -87,6 +87,9 @@ func TestCreateFromGitValidation(t *testing.T) {
 	t.Run("path traversal name", func(t *testing.T) {
 		check(t, map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "../evil"}, "Invalid app name")
 	})
+	t.Run("command injection name", func(t *testing.T) {
+		check(t, map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "x;touch /pwned"}, "Invalid app name")
+	})
 	t.Run("duplicate name", func(t *testing.T) {
 		fx := newFixture(t, []any{map[string]any{"id": float64(1), "name": "taken"}})
 		r := fx.m.Create(map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "taken"})
@@ -354,6 +357,48 @@ func TestRecipeContainerDirectiveSingleApp(t *testing.T) {
 	env := fx.dock.runCallAt(0).options.Env
 	if env["HOSTNAME"] != "myredis" || env["MODE"] != "standalone" {
 		t.Fatalf("env = %v", env)
+	}
+}
+
+func TestCreateRejectsUnsafeNames(t *testing.T) {
+	t.Run("recipe malicious name", func(t *testing.T) {
+		fx := newFixture(t, []any{})
+		fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine", "env": map[string]any{}})
+		r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "x;touch /pwned"})
+		if r.Status || !strings.Contains(jsString(r.Message), "Invalid app name") {
+			t.Fatalf("expected rejection, got %+v", r)
+		}
+	})
+	t.Run("template malicious container name", func(t *testing.T) {
+		fx := newFixture(t, []any{})
+		r := fx.m.Create(map[string]any{
+			"type": "template",
+			"name": "stack",
+			"apps": map[string]any{
+				"db": map[string]any{"image": "postgres:alpine", "container": "evil$(id)"},
+			},
+		})
+		if r.Status || !strings.Contains(jsString(r.Message), "Invalid app name") {
+			t.Fatalf("expected rejection, got %+v", r)
+		}
+	})
+}
+
+func TestValidAppName(t *testing.T) {
+	valid := []string{"myapp", "my-app", "App123", "a", strings.Repeat("a", 63)}
+	for _, n := range valid {
+		if !validAppName(n) {
+			t.Errorf("validAppName(%q) = false, want true", n)
+		}
+	}
+	invalid := []string{
+		"", "../evil", "x;touch", "a b", "evil$(id)", "back`tick`",
+		"a/b", "-lead", ".", "..", "under_score", strings.Repeat("a", 64),
+	}
+	for _, n := range invalid {
+		if validAppName(n) {
+			t.Errorf("validAppName(%q) = true, want false", n)
+		}
 	}
 }
 

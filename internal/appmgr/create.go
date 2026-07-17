@@ -21,7 +21,20 @@ var (
 	// uses (fromGit's own validation allows ftp/rsync too).
 	createDispatchGitRE = regexp.MustCompile(`^(https?|git|ssh)://`)
 	nonNameCharsRE      = regexp.MustCompile(`[^a-zA-Z0-9-]`)
+	// validAppNameRE bounds app / container names to the exact character set
+	// the name generator itself produces ([A-Za-z0-9-]). It excludes every
+	// shell metacharacter and path separator, so a name is safe both to
+	// interpolate into the `docker build -t <image>` command (builder.go) and
+	// to join into a filesystem path (filepath.Join) without traversal.
+	validAppNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$`)
 )
+
+// validAppName reports whether name is safe to use as a container name, an
+// image tag component, and an on-disk app directory. Enforced at every app
+// creation entry point (recipe, template, git).
+func validAppName(name string) bool {
+	return validAppNameRE.MatchString(name)
+}
 
 // Create ports Create.create: dispatch on config shape. config is either a
 // string (recipe name or git URL) or a decoded JSON object.
@@ -129,6 +142,11 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 		exists = m.getLocked(name) != nil
 	})
 	m.clog.Log("createFromRecipe: Using name: %s", name)
+
+	if !validAppName(name) {
+		m.clog.Log("createFromRecipe: Invalid app name: %s", name)
+		return res(false, __("Invalid app name."))
+	}
 
 	if exists {
 		m.clog.Log("createFromRecipe: App %s already exists", name)
@@ -273,6 +291,10 @@ func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps m
 			containerName, _ := appDef["container"].(string)
 			if containerName == "" {
 				containerName = m.generateUniqueNameLocked(baseName + "-" + key)
+			}
+			if !validAppName(containerName) {
+				conflict = res(false, __("Invalid app name."))
+				return
 			}
 			if m.getLocked(containerName) != nil {
 				conflict = res(false, __("App %s already exists", containerName))
@@ -482,6 +504,12 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 	if name == "" {
 		return res(false, __("Missing app name"))
 	}
+	// Validate the app name: blocks path traversal and shell metacharacters
+	// that would otherwise be interpolated into "odac-app-"+name and passed to
+	// the `docker build -t` command run with host docker.sock access.
+	if !validAppName(name) {
+		return res(false, __("Invalid app name."))
+	}
 
 	exists := false
 	m.cfg.View(func() { exists = m.getLocked(name) != nil })
@@ -496,11 +524,6 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 	logger := m.getLoggerInstance(name)
 	m.deps.Docker.RegisterBuildLogger(name, logger)
 	defer m.deps.Docker.UnregisterBuildLogger(name)
-
-	// Validate the app name to prevent path traversal.
-	if filepath.Base(name) != name {
-		return res(false, __("Invalid app name."))
-	}
 
 	appDir := filepath.Join(m.appsPath(), name)
 	m.clog.Log("createFromGit: App directory: %s", appDir)

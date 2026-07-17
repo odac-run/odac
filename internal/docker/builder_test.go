@@ -229,6 +229,21 @@ func TestBuildRejectsParallelSameImage(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsUnsafeImageName(t *testing.T) {
+	f := newFakeAPI()
+	c := newTestClient(t, f)
+
+	src := writeFiles(t, map[string]string{"Dockerfile": "FROM scratch"})
+	err := c.Build(src, "img;touch /pwned", "x", nil)
+	if err == nil || !strings.Contains(err.Error(), "Invalid image name") {
+		t.Errorf("err = %v, want Invalid image name", err)
+	}
+	// A shell-injecting name must never reach the daemon.
+	if len(f.created) != 0 {
+		t.Errorf("created %d containers, want 0", len(f.created))
+	}
+}
+
 func TestBuildSelfCreatedLoggerFinalizes(t *testing.T) {
 	f := newFakeAPI()
 	f.images[packagerImage] = image.InspectResponse{}

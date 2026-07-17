@@ -21,6 +21,12 @@ import (
 // the source bind-mounted, packaging talks to the host daemon through a
 // socket-mounted docker:cli container.
 
+// safeImageRef guards the `docker build -t <imageName>` shell interpolation
+// in packageImage/packageCustom. It permits the full image-reference set
+// (registry/repo:tag) but rejects every shell metacharacter and whitespace,
+// so imageName can never break out of the build command.
+var safeImageRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$`)
+
 // versionResolver extracts a Docker tag suffix from a project version file.
 type versionResolver struct {
 	file         string
@@ -254,6 +260,13 @@ type BuildContext struct {
 func (c *Client) Build(sourceDir, imageName, appName string, buildLog BuildLog) error {
 	if !c.available {
 		return fmt.Errorf("Docker is not available")
+	}
+	// Defense-in-depth: imageName is interpolated into the `docker build -t`
+	// shell command in packageImage/packageCustom, so reject any value
+	// carrying shell metacharacters or whitespace before it reaches the
+	// builder. Callers (appmgr) also validate app names at their source.
+	if !safeImageRef.MatchString(imageName) {
+		return fmt.Errorf("Invalid image name: %q", imageName)
 	}
 
 	c.mu.Lock()
