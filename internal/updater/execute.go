@@ -214,6 +214,25 @@ func (u *Updater) execute() error {
 	return nil
 }
 
+// defaultLogConfig matches docker-compose.yml's logging block. Applied by
+// inheritLogConfig when the old container has no explicit log options, so
+// installs predating log rotation pick it up on their next update instead of
+// growing unbounded json-file logs forever.
+var defaultLogConfig = LogConfig{
+	Type:   "json-file",
+	Config: map[string]string{"max-size": "10m", "max-file": "3"},
+}
+
+// inheritLogConfig carries a deliberate log setup (custom driver or explicit
+// options) over to the new container verbatim; daemon-default logging is
+// upgraded to defaultLogConfig.
+func inheritLogConfig(old LogConfig) LogConfig {
+	if len(old.Config) == 0 && (old.Type == "" || old.Type == "json-file") {
+		return defaultLogConfig
+	}
+	return old
+}
+
 func (u *Updater) executeInner() error {
 	// 1. Get current container info. Resolve our own identity (2189336): a
 	// container running under a non-canonical name can still update.
@@ -256,6 +275,7 @@ func (u *Updater) executeInner() error {
 		CapAdd:        []string{"NET_ADMIN", "NET_BIND_SERVICE"},
 		RestartPolicy: "unless-stopped", // default policy for production
 		Tty:           true,
+		LogConfig:     inheritLogConfig(info.LogConfig),
 	}
 
 	if u.platform == "linux" {

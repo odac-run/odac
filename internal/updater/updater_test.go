@@ -408,6 +408,55 @@ func TestNonLinuxSwapRunnerCommand(t *testing.T) {
 	}
 }
 
+func TestUpdateAppliesDefaultLogRotation(t *testing.T) {
+	// Installs predating log rotation run with daemon-default logging
+	// (json-file, no opts) — the recreated container must pick up the
+	// compose-standard rotation instead of carrying the unbounded default.
+	fx := newFixture(t)
+	fx.u.platform = "darwin"
+	fx.w.world["odac"] = &fakeContainer{
+		policy: "unless-stopped", running: true,
+		logConfig: LogConfig{Type: "json-file"},
+	}
+
+	if err := fx.u.execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := fx.w.container("odac-update")
+	if c == nil {
+		t.Fatal("odac-update was not created")
+	}
+	if c.logConfig.Type != "json-file" ||
+		c.logConfig.Config["max-size"] != "10m" || c.logConfig.Config["max-file"] != "3" {
+		t.Fatalf("logConfig = %+v, want json-file with max-size=10m max-file=3", c.logConfig)
+	}
+}
+
+func TestUpdatePreservesCustomLogConfig(t *testing.T) {
+	// A deliberate operator setup (custom driver or explicit json-file
+	// options) must survive the update verbatim.
+	fx := newFixture(t)
+	fx.u.platform = "darwin"
+	custom := LogConfig{Type: "syslog", Config: map[string]string{"tag": "odac"}}
+	fx.w.world["odac"] = &fakeContainer{
+		policy: "unless-stopped", running: true,
+		logConfig: custom,
+	}
+
+	if err := fx.u.execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := fx.w.container("odac-update")
+	if c == nil {
+		t.Fatal("odac-update was not created")
+	}
+	if c.logConfig.Type != "syslog" || c.logConfig.Config["tag"] != "odac" {
+		t.Fatalf("logConfig = %+v, want the custom syslog config preserved", c.logConfig)
+	}
+}
+
 // --- build-from-source (beta channel) ---
 
 func TestBuildFromSourceFailsWithoutHostBind(t *testing.T) {

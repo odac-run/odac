@@ -27,6 +27,7 @@ type ContainerInfo struct {
 	Image         string // the image ID (sha256:…), not the tag
 	PortBindings  nat.PortMap
 	Mounts        []MountPoint
+	LogConfig     LogConfig
 }
 
 // MountPoint is the named-volume fallback #resolveHostBind walks.
@@ -34,6 +35,13 @@ type MountPoint struct {
 	Name        string
 	Source      string
 	Destination string
+}
+
+// LogConfig mirrors HostConfig.LogConfig (log driver + its options). Zero
+// value means "daemon default", same as Docker's own semantics.
+type LogConfig struct {
+	Type   string
+	Config map[string]string
 }
 
 // CreateOptions mirrors the dockerode createContainer options the updater
@@ -52,6 +60,7 @@ type CreateOptions struct {
 	PidMode       string
 	AutoRemove    bool
 	PortBindings  nat.PortMap
+	LogConfig     LogConfig // zero value = daemon default (sidecar/runner containers)
 }
 
 // Docker is the updater's view of the daemon, shaped 1:1 after the dockerode
@@ -106,6 +115,7 @@ func (d *sdkDocker) Inspect(name string) (ContainerInfo, error) {
 		info.Binds = resp.HostConfig.Binds
 		info.RestartPolicy = string(resp.HostConfig.RestartPolicy.Name)
 		info.PortBindings = resp.HostConfig.PortBindings
+		info.LogConfig = LogConfig{Type: resp.HostConfig.LogConfig.Type, Config: resp.HostConfig.LogConfig.Config}
 	}
 	if resp.State != nil {
 		info.Running = resp.State.Running
@@ -131,6 +141,7 @@ func (d *sdkDocker) Create(opts CreateOptions) (string, error) {
 		NetworkMode:  container.NetworkMode(opts.NetworkMode),
 		PidMode:      container.PidMode(opts.PidMode),
 		PortBindings: opts.PortBindings,
+		LogConfig:    container.LogConfig{Type: opts.LogConfig.Type, Config: opts.LogConfig.Config},
 	}
 	if opts.RestartPolicy != "" {
 		host.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyMode(opts.RestartPolicy)}

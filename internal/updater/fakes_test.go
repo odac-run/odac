@@ -32,6 +32,7 @@ type fakeContainer struct {
 	image        string
 	mounts       []MountPoint
 	portBindings nat.PortMap
+	logConfig    LogConfig
 }
 
 type fakeWorld struct {
@@ -110,6 +111,7 @@ func (w *fakeWorld) Inspect(name string) (ContainerInfo, error) {
 		Image:         c.image,
 		PortBindings:  c.portBindings,
 		Mounts:        append([]MountPoint(nil), c.mounts...),
+		LogConfig:     c.logConfig,
 	}, nil
 }
 
@@ -126,6 +128,7 @@ func (w *fakeWorld) Create(opts CreateOptions) (string, error) {
 		env:          append([]string(nil), opts.Env...),
 		binds:        append([]string(nil), opts.Binds...),
 		portBindings: opts.PortBindings,
+		logConfig:    opts.LogConfig,
 	}
 	w.push(fmt.Sprintf("create:%s:policy=%s", name, opts.RestartPolicy))
 	w.mu.Unlock()
