@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,8 +59,9 @@ func Marshal(v any) ([]byte, error) {
 // Append appends the V8-canonical JSON encoding of v to dst.
 //
 // Supported values: nil, bool, string, numeric types, json.Number,
-// json.RawMessage (re-canonicalized), Obj, map[string]any, []any and
-// slices of the former.
+// json.RawMessage (re-canonicalized), Obj, string-keyed maps, and slices or
+// arrays of the former ([]any, []int, []string, …). []byte is rejected: it
+// has no JSON.stringify equivalent, so passing one is always a caller bug.
 func Append(dst []byte, v any) ([]byte, error) {
 	switch val := v.(type) {
 	case nil:
@@ -105,8 +107,56 @@ func Append(dst []byte, v any) ([]byte, error) {
 	case []any:
 		return appendArray(dst, val)
 	default:
-		return dst, fmt.Errorf("jscanon: unsupported type %T", v)
+		return appendReflect(dst, v)
 	}
+}
+
+// appendReflect handles the long tail the typed switch doesn't: other slice
+// types ([]int, []string, []Obj, …), string-keyed maps of any value type,
+// and named basic types. Anything else (structs, channels, []byte — which
+// has no JSON.stringify equivalent) is rejected so a payload shape the Node
+// Hub could never have produced fails loudly instead of signing quietly.
+func appendReflect(dst []byte, v any) ([]byte, error) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Bool:
+		return Append(dst, rv.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return appendNumber(dst, float64(rv.Int())), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return appendNumber(dst, float64(rv.Uint())), nil
+	case reflect.Float32, reflect.Float64:
+		return appendNumber(dst, rv.Float()), nil
+	case reflect.String:
+		return appendString(dst, rv.String()), nil
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return dst, fmt.Errorf("jscanon: unsupported type %T", v)
+		}
+		dst = append(dst, '[')
+		var err error
+		for i := 0; i < rv.Len(); i++ {
+			if i > 0 {
+				dst = append(dst, ',')
+			}
+			if dst, err = Append(dst, rv.Index(i).Interface()); err != nil {
+				return dst, err
+			}
+		}
+		return append(dst, ']'), nil
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return dst, fmt.Errorf("jscanon: unsupported type %T", v)
+		}
+		fields := make(Obj, 0, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			fields = append(fields, Field{K: iter.Key().String(), V: iter.Value().Interface()})
+		}
+		sort.Slice(fields, func(i, j int) bool { return fields[i].K < fields[j].K })
+		return appendObj(dst, fields)
+	}
+	return dst, fmt.Errorf("jscanon: unsupported type %T", v)
 }
 
 // Canon re-canonicalizes raw JSON text into V8-canonical form.

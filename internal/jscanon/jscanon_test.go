@@ -119,6 +119,18 @@ func TestMarshalValues(t *testing.T) {
 		{"map-sorted", map[string]any{"b": 1, "a": 2, "10": 3}, `{"10":3,"a":2,"b":1}`},
 		{"raw", json.RawMessage(`{"k":1e-07}`), `{"k":1e-7}`},
 		{"json-number", json.Number("9007199254740993"), `9007199254740992`},
+		// Typed slices/maps reach the hub payloads unwrapped (app.list's
+		// health []int, networks []string — the v2 "creating" hang).
+		{"int-slice", []int{80, 443, 3000}, `[80,443,3000]`},
+		{"empty-int-slice", []int{}, `[]`},
+		{"nil-int-slice", []int(nil), `[]`},
+		{"string-slice", []string{"odac", "bridge"}, `["odac","bridge"]`},
+		{"float-slice", []float64{0.5, 1e21}, `[0.5,1e+21]`},
+		{"obj-slice", []Obj{{{K: "a", V: 1}}}, `[{"a":1}]`},
+		{"nested-typed", map[string]any{"health": []int{1, 0}}, `{"health":[1,0]}`},
+		{"string-map", map[string]string{"b": "2", "a": "1"}, `{"a":"1","b":"2"}`},
+		{"named-string", jsonKind("x"), `"x"`},
+		{"named-int-slice", []jsonInt{7}, `[7]`},
 	}
 	for _, tc := range cases {
 		got, err := Marshal(tc.in)
@@ -134,7 +146,19 @@ func TestMarshalValues(t *testing.T) {
 	if _, err := Marshal(struct{}{}); err == nil {
 		t.Error("Marshal accepted an unsupported type")
 	}
+	if _, err := Marshal([]byte("raw")); err == nil {
+		t.Error("Marshal accepted []byte")
+	}
+	if _, err := Marshal(map[int]any{1: "x"}); err == nil {
+		t.Error("Marshal accepted a non-string-keyed map")
+	}
 }
+
+// jsonKind/jsonInt exercise named basic types through the reflect fallback.
+type (
+	jsonKind string
+	jsonInt  int
+)
 
 func TestNumberToStringEdges(t *testing.T) {
 	// Hand-picked values whose V8 renderings are pinned by the Node-run

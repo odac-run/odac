@@ -525,7 +525,14 @@ func (h *Hub) handleMessage(raw []byte) {
 		if !jsTruthy(requestID) {
 			requestID = msg["requestId"]
 		}
-		h.processCommand(action, data["payload"], requestID)
+		// Fire-and-forget like Node (processCommand is called without await
+		// there). handleMessage runs on the websocket read loop, and
+		// coder/websocket only services incoming ping/pong control frames
+		// while a Read is in flight — a long command (app.create builds for
+		// minutes) run inline would starve the heartbeat into terminating a
+		// healthy connection, and would also delay every command sent in the
+		// meantime (e.g. app.build_logs.on during that same build).
+		go h.processCommand(action, data["payload"], requestID)
 	}
 }
 
