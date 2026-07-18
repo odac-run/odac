@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
@@ -681,15 +682,16 @@ func (s *SSL) handleSSLError(domain string, err error) {
 	msg := err.Error()
 	var dnsErr *net.DNSError
 	switch {
+	// logx.Error does no %-substitution (Node parity), so render first.
 	case strings.Contains(msg, "validateStatus"):
-		s.log.Error("SSL certificate request failed for domain %s (Attempt %d). Next retry in %ds. Reason: HTTP validation error.",
-			domain, count, secs)
+		s.log.Error(fmt.Sprintf("SSL certificate request failed for domain %s (Attempt %d). Next retry in %ds. Reason: HTTP validation error.",
+			domain, count, secs))
 	case errors.As(err, &dnsErr) || errors.Is(err, syscall.ECONNREFUSED):
-		s.log.Error("SSL request failed for domain %s (Attempt %d). Next retry in %ds. Network issue: %s",
-			domain, count, secs, msg)
+		s.log.Error(fmt.Sprintf("SSL request failed for domain %s (Attempt %d). Next retry in %ds. Network issue: %s",
+			domain, count, secs, msg))
 	default:
-		s.log.Error("SSL request failed for domain %s (Attempt %d). Next retry in %ds. Error: %s",
-			domain, count, secs, msg)
+		s.log.Error(fmt.Sprintf("SSL request failed for domain %s (Attempt %d). Next retry in %ds. Error: %s",
+			domain, count, secs, msg))
 	}
 }
 

@@ -7,6 +7,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -151,6 +152,9 @@ func (c *wsClient) send(payload []byte) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+		// Node dropped silently; keep the drop but not the silence — a
+		// systematic write failure is otherwise invisible in the logs.
+		c.log.Log("WebSocket write failed (%s bytes): %s", fmt.Sprint(len(payload)), err.Error())
 		return false
 	}
 	return true
@@ -160,7 +164,7 @@ func (c *wsClient) readLoop(conn *websocket.Conn, once *sync.Once) {
 	for {
 		_, data, err := conn.Read(context.Background())
 		if err != nil {
-			c.handleClose(conn, once)
+			c.handleClose(conn, once, err)
 			return
 		}
 		if c.onMessage != nil {
@@ -204,7 +208,7 @@ func (c *wsClient) heartbeat(conn *websocket.Conn, once *sync.Once) {
 	}
 }
 
-func (c *wsClient) handleClose(conn *websocket.Conn, once *sync.Once) {
+func (c *wsClient) handleClose(conn *websocket.Conn, once *sync.Once, cause error) {
 	once.Do(func() {
 		conn.CloseNow()
 		c.mu.Lock()
@@ -213,7 +217,18 @@ func (c *wsClient) handleClose(conn *websocket.Conn, once *sync.Once) {
 		}
 		c.scheduleReconnectLocked()
 		c.mu.Unlock()
-		c.log.Log("WebSocket disconnected")
+		// The cause distinguishes "peer sent close 1008: bad signature" from
+		// a local read failure — without it a server-side rejection and a
+		// dropped TCP conn log identically and are undebuggable.
+		if cause != nil {
+			if status := websocket.CloseStatus(cause); status != -1 {
+				c.log.Log("WebSocket disconnected (close %s: %s)", fmt.Sprint(int(status)), cause.Error())
+			} else {
+				c.log.Log("WebSocket disconnected (%s)", cause.Error())
+			}
+		} else {
+			c.log.Log("WebSocket disconnected")
+		}
 		if c.onDisconnect != nil {
 			c.onDisconnect()
 		}
