@@ -1,5 +1,21 @@
 ### ⚙️ Engine Tuning
 
+- improve app deletion handling during container lifecycle and deployment phases
+
+### 🛠️ Fixes & Improvements
+
+- enable dynamic container identification and tracking to support non-static container names during updates
+- ensure updater latch is released on failed update checks and adjust service startup timing in update mode
+- prevent app operations and container creation if the app is marked as deleted
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ⚙️ Engine Tuning
+
 - enhance port management and public flag handling
 
 ### ✨ What's New
