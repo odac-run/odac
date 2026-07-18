@@ -57,6 +57,8 @@ type Docker interface {
 	RunApp(name string, options docker.RunOptions, buildLog docker.BuildLog, isCancelled func() bool) (bool, error)
 	Stop(name string)
 	Remove(name string)
+	RemoveImage(imageName string)
+	PruneDanglingImages()
 	Rename(oldName, newName string) error
 	StreamLogs(name string, stdout, stderr io.Writer) (stop func(), err error)
 	IsRunning(name string) bool

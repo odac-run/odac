@@ -261,6 +261,10 @@ func TestRedeployWithDomainsUsesBlueGreen(t *testing.T) {
 	if len(fx.dock.renames) != 1 || fx.dock.renames[0][1] != "web" {
 		t.Fatalf("renames = %v", fx.dock.renames)
 	}
+	// Dangling layers from the rebuild's retag are swept after the switch.
+	if !fx.dock.prunedImages {
+		t.Fatal("dangling images not pruned after successful redeploy")
+	}
 	// Cache purged for the app after the switch.
 	fx.proxy.mu.Lock()
 	defer fx.proxy.mu.Unlock()

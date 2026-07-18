@@ -40,15 +40,17 @@ type fakeDocker struct {
 	running   map[string]bool
 	status    map[string]docker.Status
 
-	runCalls  []runCall
-	runErr    func(name string) error
-	runBlock  chan struct{}     // when set, RunApp waits for it
-	runHook   func(name string) // fires inside RunApp before its cancel check
-	stopped   []string
-	stopHook  func(name string) // fires inside Stop, before recording
-	removed   []string
-	renames   [][2]string
-	renameErr error
+	runCalls      []runCall
+	runErr        func(name string) error
+	runBlock      chan struct{}     // when set, RunApp waits for it
+	runHook       func(name string) // fires inside RunApp before its cancel check
+	stopped       []string
+	stopHook      func(name string) // fires inside Stop, before recording
+	removed       []string
+	removedImages []string
+	prunedImages  bool
+	renames       [][2]string
+	renameErr     error
 
 	fetchHook func() // fires inside FetchRepo
 	buildHook func() // fires inside Build
@@ -139,6 +141,18 @@ func (f *fakeDocker) Remove(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removed = append(f.removed, name)
+}
+
+func (f *fakeDocker) RemoveImage(imageName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedImages = append(f.removedImages, imageName)
+}
+
+func (f *fakeDocker) PruneDanglingImages() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prunedImages = true
 }
 
 func (f *fakeDocker) Rename(oldName, newName string) error {
@@ -665,6 +679,11 @@ func TestDeleteCascadesDomains(t *testing.T) {
 	}
 	if fx.appCount() != 0 {
 		t.Fatalf("app not removed")
+	}
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.removedImages) != 1 || fx.dock.removedImages[0] != "odac-app-delete-me" {
+		t.Fatalf("app image not removed: %v", fx.dock.removedImages)
 	}
 }
 

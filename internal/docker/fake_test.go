@@ -11,6 +11,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -67,6 +68,9 @@ type fakeAPI struct {
 
 	netConnects    [][2]string
 	netDisconnects [][2]string
+
+	removedImages []string
+	prunedImages  bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -235,6 +239,24 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ image.PullOptions) 
 	// The image becomes "local" after a pull.
 	f.images[ref] = image.InspectResponse{}
 	return io.NopCloser(bytes.NewReader([]byte(body))), nil
+}
+
+func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOptions) ([]image.DeleteResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.images[id]; !ok {
+		return nil, notFoundErr{"No such image: " + id}
+	}
+	delete(f.images, id)
+	f.removedImages = append(f.removedImages, id)
+	return []image.DeleteResponse{{Deleted: id}}, nil
+}
+
+func (f *fakeAPI) ImagesPrune(context.Context, filters.Args) (image.PruneReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prunedImages = true
+	return image.PruneReport{}, nil
 }
 
 func (f *fakeAPI) NetworkList(context.Context, network.ListOptions) ([]network.Summary, error) {

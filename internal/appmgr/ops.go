@@ -173,6 +173,9 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 
 	if m.deps.Docker.Available() {
 		m.deps.Docker.Remove(name)
+		// Container.js left the built image behind; repeated create/delete
+		// then leaked one odac-app-<name> image per app until the disk filled.
+		m.deps.Docker.RemoveImage("odac-app-" + name)
 	}
 
 	// Sweep Blue-Green companions left behind by an in-flight ZDD deploy —
@@ -587,6 +590,12 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	if len(updates) > 0 {
 		m.set(idNum, updates)
 	}
+
+	// The rebuild retagged odac-app-<name> onto fresh layers, orphaning the
+	// previous image as an untagged (<none>) dangling entry. Sweep those now
+	// that the new container is live — Docker skips any image still in use, so
+	// this never touches a running app.
+	m.deps.Docker.PruneDanglingImages()
 
 	m.hubTrigger("app.list")
 	logCtrl.Finalize(true)

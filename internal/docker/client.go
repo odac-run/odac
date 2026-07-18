@@ -28,6 +28,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -64,6 +65,8 @@ type API interface {
 	ContainerExecResize(ctx context.Context, execID string, options container.ResizeOptions) error
 	ImageInspectWithRaw(ctx context.Context, imageID string) (image.InspectResponse, []byte, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error)
+	ImagesPrune(ctx context.Context, pruneFilter filters.Args) (image.PruneReport, error)
 	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
@@ -477,6 +480,44 @@ func (c *Client) Remove(name string) {
 		if !client.IsErrNotFound(err) {
 			c.log.Error("Failed to remove container %s: %s", name, err.Error())
 		}
+	}
+}
+
+// RemoveImage deletes an app's built image (odac-app-<name>) so that
+// create/delete churn does not leak orphaned images onto the host disk —
+// Container.js only ever removed the container, letting images pile up until
+// the engine filled the disk. Force covers the tag still being referenced by
+// stopped containers we already removed; PruneChildren clears the now-untagged
+// parent layers. A 404 (image never built, or already gone) is not an error.
+func (c *Client) RemoveImage(imageName string) {
+	if !c.available {
+		return
+	}
+	if _, err := c.api.ImageRemove(context.Background(), imageName, image.RemoveOptions{
+		Force:         true,
+		PruneChildren: true,
+	}); err != nil {
+		if !client.IsErrNotFound(err) {
+			c.log.Error("Failed to remove image %s: %s", imageName, err.Error())
+		}
+	}
+}
+
+// PruneDanglingImages removes untagged (<none>) images — the layers orphaned
+// every time a redeploy retags odac-app-<name> onto a freshly built image.
+// Docker never prunes an image still referenced by a container, so this is
+// safe to call after a successful deploy. Mirrors `docker image prune -f`.
+func (c *Client) PruneDanglingImages() {
+	if !c.available {
+		return
+	}
+	report, err := c.api.ImagesPrune(context.Background(), filters.NewArgs(filters.Arg("dangling", "true")))
+	if err != nil {
+		c.log.Error("Failed to prune dangling images: %s", err.Error())
+		return
+	}
+	if report.SpaceReclaimed > 0 {
+		c.log.Log("Pruned %d dangling image(s), reclaimed %d bytes", len(report.ImagesDeleted), report.SpaceReclaimed)
 	}
 }
 
