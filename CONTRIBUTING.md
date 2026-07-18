@@ -37,12 +37,13 @@ Our development process follows a branching model similar to Git Flow. This help
 2.  **Making Changes:**
     *   Make your code changes, ensuring you follow the project's coding standards.
     *   Add tests for any new code.
-    *   Ensure all tests pass (`npm test`) and the code lints correctly.
+    *   Ensure the code builds and all tests pass: `go build ./...` and `go test ./...`.
+    *   Ensure the code is clean: `gofmt -l .` must print nothing and `go vet ./...` must pass.
 
 3.  **Committing Changes:**
     *   This project uses **Conventional Commits**. This is a requirement for our automated release process.
     *   Your commit messages must be in the format: `<type>(<scope>): <subject>`.
-        *   **type:** `feat` (new feature), `fix` (bug fix), `docs`, `style`, `refactor`, `test`, `chore`.
+        *   **type:** `feat` (new feature), `fix` (bug fix), `perf`, `docs`, `style`, `refactor`, `test`, `chore`.
         *   **scope:** (Optional) The part of the project you're working on (e.g., `server`, `framework`).
     *   Example: `feat(server): add rate limiting to API endpoints`
 
@@ -56,7 +57,7 @@ The `main` branch is only updated by merging `dev` into it during a new release.
 
 ## Code Style
 
-All JavaScript must adhere to the style defined in the `.prettierrc` file. The linter will automatically check this.
+All Go code must be `gofmt`-formatted and pass `go vet ./...`. CI checks both on every pull request.
 
 ---
 
