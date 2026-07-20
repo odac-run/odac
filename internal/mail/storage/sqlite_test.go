@@ -3,8 +3,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -304,4 +306,64 @@ func TestMessageExpunge(t *testing.T) {
 // ns is a test helper for creating sql.NullString values.
 func ns(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
+}
+
+func TestMessageStoreFlags(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Two messages get UIDs 1 and 2; a third UID 3 is a control that must stay empty.
+	for i := 0; i < 3; i++ {
+		if err := store.MessageStore(ctx, &MessageRow{Email: "u@e.com", Mailbox: "INBOX", Flags: ns("[]")}); err != nil {
+			t.Fatalf("MessageStore failed: %v", err)
+		}
+	}
+
+	flagsFor := func(uid int64) string {
+		msgs, err := store.MessageFetch(ctx, "u@e.com", "INBOX", uid, uid)
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("fetch uid %d failed: %v (%d rows)", uid, err, len(msgs))
+		}
+		return msgs[0].Flags.String
+	}
+
+	// add: applies only to the targeted UIDs, leaving UID 3 untouched.
+	if err := store.MessageStoreFlags(ctx, "u@e.com", []int64{1, 2}, "add", []string{"seen"}); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+	for _, uid := range []int64{1, 2} {
+		if !strings.Contains(flagsFor(uid), "seen") {
+			t.Errorf("uid %d should have 'seen', got %q", uid, flagsFor(uid))
+		}
+	}
+	if strings.Contains(flagsFor(3), "seen") {
+		t.Errorf("uid 3 must be untouched, got %q", flagsFor(3))
+	}
+
+	// remove: drops the flag from UID 1 only.
+	if err := store.MessageStoreFlags(ctx, "u@e.com", []int64{1}, "remove", []string{"seen"}); err != nil {
+		t.Fatalf("remove failed: %v", err)
+	}
+	if strings.Contains(flagsFor(1), "seen") {
+		t.Errorf("uid 1 should no longer have 'seen', got %q", flagsFor(1))
+	}
+	if !strings.Contains(flagsFor(2), "seen") {
+		t.Errorf("uid 2 should still have 'seen', got %q", flagsFor(2))
+	}
+
+	// set: replaces the whole flag list, and a value with a quote must not break JSON.
+	if err := store.MessageStoreFlags(ctx, "u@e.com", []int64{2}, "set", []string{`weird"flag`, "deleted"}); err != nil {
+		t.Fatalf("set failed: %v", err)
+	}
+	got := flagsFor(2)
+	if !strings.Contains(got, "deleted") || !strings.Contains(got, `weird`) {
+		t.Errorf("uid 2 flags after set = %q", got)
+	}
+	// Stored value must be valid JSON (quote correctly escaped by json.Marshal).
+	var parsed []string
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Errorf("stored flags are not valid JSON: %q (%v)", got, err)
+	}
 }

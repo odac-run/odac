@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -441,11 +442,15 @@ func (s *Store) MessageStoreFlags(ctx context.Context, email string, uids []int6
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var uidStrs []string
-	for _, uid := range uids {
-		uidStrs = append(uidStrs, fmt.Sprintf("%d", uid))
+	// Build a parameterized IN clause (?,?,...) with the UIDs as bound args so no
+	// user/data-derived value is ever concatenated into the SQL text.
+	placeholders := make([]string, len(uids))
+	uidArgs := make([]any, len(uids))
+	for i, uid := range uids {
+		placeholders[i] = "?"
+		uidArgs[i] = uid
 	}
-	inClause := strings.Join(uidStrs, ",")
+	inClause := strings.Join(placeholders, ",")
 
 	for _, flag := range flags {
 		switch action {
@@ -454,8 +459,9 @@ func (s *Store) MessageStoreFlags(ctx context.Context, email string, uids []int6
 				SET flags = JSON_INSERT(flags, '$[#]', ?)
 				WHERE email = ? AND uid IN (%s)
 				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
-			_, err := s.db.ExecContext(ctx, query, flag, email, flag)
-			if err != nil {
+			args := append([]any{flag, email}, uidArgs...)
+			args = append(args, flag)
+			if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 				return fmt.Errorf("flag add failed: %w", err)
 			}
 		case "remove":
@@ -463,22 +469,21 @@ func (s *Store) MessageStoreFlags(ctx context.Context, email string, uids []int6
 				SET flags = (SELECT JSON_GROUP_ARRAY(value) FROM JSON_EACH(flags) WHERE value != ?)
 				WHERE email = ? AND uid IN (%s)
 				AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
-			_, err := s.db.ExecContext(ctx, query, flag, email, flag)
-			if err != nil {
+			args := append([]any{flag, email}, uidArgs...)
+			args = append(args, flag)
+			if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 				return fmt.Errorf("flag remove failed: %w", err)
 			}
 		case "set":
-			flagsJSON := "["
-			for i, f := range flags {
-				if i > 0 {
-					flagsJSON += ","
-				}
-				flagsJSON += `"` + f + `"`
-			}
-			flagsJSON += "]"
-			query := fmt.Sprintf(`UPDATE mail_received SET flags = ? WHERE email = ? AND uid IN (%s)`, inClause)
-			_, err := s.db.ExecContext(ctx, query, flagsJSON, email)
+			// Marshal flags into a JSON array so values containing quotes/backslashes
+			// can't produce malformed JSON.
+			flagsJSON, err := json.Marshal(flags)
 			if err != nil {
+				return fmt.Errorf("flag set failed: %w", err)
+			}
+			query := fmt.Sprintf(`UPDATE mail_received SET flags = ? WHERE email = ? AND uid IN (%s)`, inClause)
+			args := append([]any{string(flagsJSON), email}, uidArgs...)
+			if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 				return fmt.Errorf("flag set failed: %w", err)
 			}
 			return nil // set replaces all flags at once, no per-flag iteration needed
