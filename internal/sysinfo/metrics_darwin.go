@@ -50,6 +50,27 @@ func uptimeSeconds() float64 {
 	return time.Since(boot).Seconds()
 }
 
+// cpuTicks: aggregate CPU times need mach host_statistics (HOST_CPU_LOAD_INFO),
+// which is unreachable without cgo. Development platform — report unavailable
+// so cpuUsage() degrades to 0 (see the package comment).
+func cpuTicks() (idle, total int64, ok bool) { return 0, 0, false }
+
+// diskBytes reports the root filesystem's total and available bytes via
+// statfs; Bsize is uint32 on darwin, widened to match the linux collector.
+func diskBytes() (total, free int64) {
+	var st unix.Statfs_t
+	if unix.Statfs("/", &st) != nil {
+		return 0, 0
+	}
+	bs := int64(st.Bsize)
+	return int64(st.Blocks) * bs, int64(st.Bavail) * bs
+}
+
+// netStats: interface byte counters need getifaddrs/AF_LINK plumbing (Node
+// shelled out to netstat -ib). Development platform — report unavailable so
+// networkUsage() degrades to 0/0 (see the package comment).
+func netStats() (recv, sent int64, ok bool) { return 0, 0, false }
+
 func cpuModel() string {
 	if model, err := unix.Sysctl("machdep.cpu.brand_string"); err == nil && model != "" {
 		return model

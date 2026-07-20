@@ -15,4 +15,10 @@ func loadAvg() (l1, l2, l3 float64) { return 0, 0, 0 }
 
 func uptimeSeconds() float64 { return 0 }
 
+func cpuTicks() (idle, total int64, ok bool) { return 0, 0, false }
+
+func diskBytes() (total, free int64) { return 0, 0 }
+
+func netStats() (recv, sent int64, ok bool) { return 0, 0, false }
+
 func cpuModel() string { return "unknown" }

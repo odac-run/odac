@@ -21,6 +21,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"odac/internal/jscanon"
 )
@@ -33,11 +35,32 @@ const Version = "1.11.0"
 // availability (Node: Odac.server('Container').available).
 type Info struct {
 	containerEngine func() bool
+
+	// now is a clock seam (Node used Date.now() for the network window).
+	now func() time.Time
+
+	// CPU usage is a delta between successive samples (Node's getCpuUsage
+	// kept #lastCpuStats across calls); Stats() runs on the Hub's interval,
+	// so consecutive polls yield the busy fraction of that window. The first
+	// sample has no baseline and reports 0.
+	cpuMu     sync.Mutex
+	lastIdle  int64
+	lastTotal int64
+	hasCPU    bool
+
+	// Network bandwidth is a byte-delta divided by the elapsed window (Node's
+	// getNetworkUsage kept #lastNetworkStats/#lastNetworkTime). Same
+	// first-sample-is-0 rule as CPU.
+	netMu       sync.Mutex
+	lastRecv    int64
+	lastSent    int64
+	lastNetTime time.Time
+	hasNet      bool
 }
 
 // New builds an Info. engine may be nil (reports false).
 func New(engine func() bool) *Info {
-	return &Info{containerEngine: engine}
+	return &Info{containerEngine: engine, now: time.Now}
 }
 
 // Get ports getSystemInfo(): an insertion-ordered object matching Node's

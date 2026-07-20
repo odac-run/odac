@@ -69,6 +69,74 @@ func uptimeSeconds() float64 {
 	return up
 }
 
+// cpuTicks reads the aggregate "cpu" line of /proc/stat. idle mirrors
+// libuv/os.cpus() which counts only the idle column (not iowait); total is
+// the sum of every column. ok is false when the file is unreadable.
+func cpuTicks() (idle, total int64, ok bool) {
+	raw, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[0] != "cpu" {
+			continue
+		}
+		for i := 1; i < len(fields); i++ {
+			v, _ := strconv.ParseInt(fields[i], 10, 64)
+			total += v
+			if i == 4 { // idle column
+				idle = v
+			}
+		}
+		return idle, total, true
+	}
+	return 0, 0, false
+}
+
+// diskBytes reports the root filesystem's total and available bytes, matching
+// Node's `df -k /` (available blocks, so total-free is the used figure a
+// non-root process sees).
+func diskBytes() (total, free int64) {
+	var st unix.Statfs_t
+	if unix.Statfs("/", &st) != nil {
+		return 0, 0
+	}
+	bs := int64(st.Bsize)
+	return int64(st.Blocks) * bs, int64(st.Bavail) * bs
+}
+
+// netStats reads /proc/net/dev, returning the received/transmitted byte
+// counters of the first physical-looking interface (Node grepped
+// eth0|ens|enp and took the first match; loopback and virtual bridges are
+// skipped). ok is false when the file is unreadable or no interface matches.
+func netStats() (recv, sent int64, ok bool) {
+	raw, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		name, rest, found := strings.Cut(line, ":")
+		if !found {
+			continue // header rows have no colon
+		}
+		name = strings.TrimSpace(name)
+		if !(name == "eth0" || strings.HasPrefix(name, "ens") || strings.HasPrefix(name, "enp")) {
+			continue
+		}
+		// Receive columns: bytes packets errs drop fifo frame compressed
+		// multicast; Transmit bytes is the 9th field of rest.
+		fields := strings.Fields(rest)
+		if len(fields) < 9 {
+			return 0, 0, false
+		}
+		recv, _ = strconv.ParseInt(fields[0], 10, 64)
+		sent, _ = strconv.ParseInt(fields[8], 10, 64)
+		return recv, sent, true
+	}
+	return 0, 0, false
+}
+
 // cpuModel is os.cpus()[0].model: the first "model name" in /proc/cpuinfo.
 func cpuModel() string {
 	raw, err := os.ReadFile("/proc/cpuinfo")

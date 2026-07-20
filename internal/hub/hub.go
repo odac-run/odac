@@ -105,6 +105,7 @@ type Deps struct {
 	Proxy     ProxyService
 	Container ContainerService
 	SysInfo   func() jscanon.Obj
+	SysStats  func() jscanon.Obj
 	SysUpdate func() (any, error)
 }
 
@@ -802,6 +803,15 @@ func (h *Hub) buildCommands() {
 			return api.Res(true, h.deps.SysInfo()), nil
 		},
 		interval: 60 * time.Minute,
+	})
+	h.register("system.stats", &command{
+		fn: func(any) (any, error) {
+			if h.deps.SysStats == nil {
+				return nil, errors.New("System service is not available")
+			}
+			return api.Res(true, h.deps.SysStats()), nil
+		},
+		interval: 60 * time.Second,
 	})
 	h.register("app.logs.on", &command{fn: h.logsOn})
 	h.register("app.logs.off", &command{fn: h.logsOff})

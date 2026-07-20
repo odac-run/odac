@@ -389,6 +389,14 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 		SysInfo: func() jscanon.Obj {
 			return jscanon.Obj{{K: "arch", V: "arm64"}, {K: "version", V: "1.10.1"}}
 		},
+		SysStats: func() jscanon.Obj {
+			return jscanon.Obj{
+				{K: "cpu", V: 42},
+				{K: "disk", V: jscanon.Obj{{K: "used", V: 1}, {K: "total", V: 2}}},
+				{K: "memory", V: jscanon.Obj{{K: "used", V: 3}, {K: "total", V: 4}}},
+				{K: "network", V: jscanon.Obj{{K: "download", V: 5}, {K: "upload", V: 6}}},
+			}
+		},
 	}
 	if !fx.noApp {
 		deps.App = fx.app
@@ -1023,7 +1031,7 @@ func TestCommandTableOrder(t *testing.T) {
 		"app.env.delete", "app.env.link", "app.env.set", "app.env.unlink", "app.list",
 		"app.network.set", "app.port.set", "app.redeploy", "app.restart", "app.stats",
 		"app.volumes.set", "dns.add", "dns.delete", "dns.list", "domain.add",
-		"domain.delete", "domain.list", "proxy.tunnel", "system.info",
+		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
 		"app.logs.on", "app.logs.off", "app.build_logs.on", "app.build_logs.off",
 		"terminal.open", "terminal.close", "system.update",
 	}
@@ -1042,12 +1050,36 @@ func TestCommandTableOrder(t *testing.T) {
 	intervals := map[string]time.Duration{
 		"app.list": 30 * time.Minute, "app.stats": 60 * time.Second,
 		"dns.list": 60 * time.Minute, "domain.list": 30 * time.Minute,
-		"system.info": 60 * time.Minute,
+		"system.info": 60 * time.Minute, "system.stats": 60 * time.Second,
 	}
 	for name, want := range intervals {
 		if got := fx.h.commands[name].interval; got != want {
 			t.Errorf("%s interval = %v, want %v", name, got, want)
 		}
+	}
+}
+
+func TestSystemStats(t *testing.T) {
+	fx := newHubFixture(t)
+	res, err := fx.h.commands["system.stats"].fn(nil)
+	if err != nil {
+		t.Fatalf("system.stats: %v", err)
+	}
+	env, ok := res.(api.Result)
+	if !ok || !env.Status {
+		t.Fatalf("system.stats result: %+v", res)
+	}
+	stats, _ := env.Data.(jscanon.Obj)
+	if len(stats) != 4 || stats[0].K != "cpu" || stats[3].K != "network" {
+		t.Errorf("stats payload: %v", stats)
+	}
+}
+
+func TestSystemStatsUnavailable(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.h.deps.SysStats = nil
+	if _, err := fx.h.commands["system.stats"].fn(nil); err == nil {
+		t.Fatal("system.stats should fail when SysStats is nil")
 	}
 }
 

@@ -117,10 +117,11 @@ func main() {
 		hubURL = hub.DefaultURL
 	}
 	hubDeps := hub.Deps{
-		DNS:     dnsSvc,
-		Domain:  domainSvc,
-		Proxy:   proxySvc,
-		SysInfo: sysInfo.Get,
+		DNS:      dnsSvc,
+		Domain:   domainSvc,
+		Proxy:    proxySvc,
+		SysInfo:  sysInfo.Get,
+		SysStats: sysInfo.Stats,
 		SysUpdate: func() (any, error) {
 			r, err := upd.Start()
 			if err != nil {
