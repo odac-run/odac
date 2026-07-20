@@ -16,6 +16,9 @@ import (
 	"odac/internal/mail/auth"
 	"odac/internal/mail/limits"
 	"odac/internal/mail/storage"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 func (c *Connection) cmdCapability(tag string) {
@@ -1354,9 +1357,14 @@ func parseJSONFlags(flagsJSON string) []string {
 	if err := json.Unmarshal([]byte(flagsJSON), &raw); err != nil {
 		return nil
 	}
+	// language.Und keeps casing locale-independent (matching the old strings.Title
+	// behavior and avoiding locale-specific pitfalls such as the Turkish dotless-i);
+	// NoLower preserves any existing casing in the rest of the word. cases.Caser is
+	// not safe for concurrent use, so build one per call rather than sharing it.
+	titler := cases.Title(language.Und, cases.NoLower)
 	var flags []string
 	for _, f := range raw {
-		flags = append(flags, "\\"+strings.Title(f))
+		flags = append(flags, "\\"+titler.String(f))
 	}
 	return flags
 }
