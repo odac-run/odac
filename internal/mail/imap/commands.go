@@ -1288,9 +1288,19 @@ func splitArgs(s string) []string {
 	var parts []string
 	var current strings.Builder
 	inQuote := false
+	escaped := false
 
 	for _, ch := range s {
 		switch {
+		case escaped:
+			// RFC 3501: inside a quoted string a backslash escapes the next
+			// character (used for literal '"' and '\'). Preserve both runes raw
+			// so token boundaries stay correct; unquote decodes them later.
+			current.WriteRune(ch)
+			escaped = false
+		case ch == '\\' && inQuote:
+			current.WriteRune(ch)
+			escaped = true
 		case ch == '"':
 			inQuote = !inQuote
 			current.WriteRune(ch)
@@ -1310,10 +1320,30 @@ func splitArgs(s string) []string {
 }
 
 func unquote(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return s
 	}
-	return s
+	inner := s[1 : len(s)-1]
+	if !strings.Contains(inner, "\\") {
+		return inner
+	}
+	// Decode RFC 3501 quoted-string escapes: "\x" -> "x" for any escaped rune.
+	var b strings.Builder
+	b.Grow(len(inner))
+	escaped := false
+	for _, ch := range inner {
+		if escaped {
+			b.WriteRune(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		b.WriteRune(ch)
+	}
+	return b.String()
 }
 
 func parseJSONFlags(flagsJSON string) []string {

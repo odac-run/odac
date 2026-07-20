@@ -13,6 +13,10 @@ func TestSplitArgs(t *testing.T) {
 		{`INBOX`, []string{`INBOX`}},
 		{`"Sent Items" "New Folder"`, []string{`"Sent Items"`, `"New Folder"`}},
 		{`plain simple`, []string{`plain`, `simple`}},
+		// Escaped quote must not close the quoted string / split the token.
+		{`"user@example.com" "pa\"ss word"`, []string{`"user@example.com"`, `"pa\"ss word"`}},
+		// Escaped backslash before the closing quote stays a single token.
+		{`"back\\slash" INBOX`, []string{`"back\\slash"`, `INBOX`}},
 	}
 
 	for _, tt := range tests {
@@ -39,6 +43,9 @@ func TestUnquote(t *testing.T) {
 		{`INBOX`, `INBOX`},
 		{`""`, ``},
 		{`"a"`, `a`},
+		// Escaped characters are decoded per RFC 3501.
+		{`"pa\"ss"`, `pa"ss`},
+		{`"back\\slash"`, `back\slash`},
 	}
 
 	for _, tt := range tests {
