@@ -108,8 +108,8 @@ func context(s snapshot) string {
 	if s.memTotal > 0 {
 		availPct = s.memAvail * 100 / s.memTotal
 	}
-	return fmt.Sprintf("memAvail %d%%, psi %.1f, swapFill %d%%",
-		availPct, s.psiSomeAvg10, swapFillPct(s))
+	return fmt.Sprintf("memAvail %d%%, psi %.1f, swapFill %d%%, poolFill %d%%",
+		availPct, s.psiSomeAvg10, swapFillPct(s), poolFillPct(s))
 }
 
 // persist keeps /etc/fstab's managed block in sync with the live increment set

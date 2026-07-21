@@ -102,21 +102,48 @@ func decide(s snapshot, cfg Config, st *counters) decision {
 
 func (st *counters) reset() { st.growStreak, st.shrinkStreak = 0, 0 }
 
-// desiredBuffers is hotTiers+1: one empty increment beyond every demand tier
-// (RAM plus each odac swapfile) whose fill crosses fillThreshold. A PSI spike
-// counts RAM as hot even if the memAvail reading lags, so sudden pressure still
-// pulls a spare forward.
+// desiredBuffers returns how many increments we want: enough working capacity to
+// hold the current footprint below fillThreshold, plus one empty reserve on top.
+//
+// The footprint (poolUsed) is the honest non-reclaimable anonymous demand —
+// RAM used (MemTotal-MemAvailable, so page cache is not counted) plus everything
+// already on our swap. The kernel splits that demand between RAM and swap however
+// it likes; measuring the *sum* against pool capacity is what stops a footprint
+// spread thin across tiers from looking like slack (the bug where Linux offloads
+// to swap, RAM's memAvail recovers, and every tier reads below threshold at once).
+//
+// The working pool is RAM plus every increment except the top reserve, so we size
+// the working increments needed to keep fill under threshold, then add the +1
+// reserve. A PSI spike forces at least one spare beyond what we hold — sudden
+// pressure the memAvail figure has not caught yet — but never below the fill need.
 func desiredBuffers(s snapshot, fillThreshold int64, psiThreshold float64) int64 {
-	hot := int64(0)
-	if ramUsedPct(s) > fillThreshold || s.psiSomeAvg10 > psiThreshold {
-		hot++
-	}
-	for _, a := range s.areas {
-		if areaFillPct(a) > fillThreshold {
-			hot++
+	poolUsed := memUsedBytes(s) + sumAreasUsed(s.areas)
+	target := poolUsed * 100 / clampMin64(fillThreshold, 1) // working capacity to stay at threshold
+
+	// Grow the desired count until the working pool — RAM plus every increment
+	// except the top reserve spare — can hold the footprint at <= threshold. Each
+	// existing increment contributes its real size; any increment beyond the
+	// current set is estimated at the nominal step. desired always keeps 1 reserve.
+	workingCap := s.memTotal
+	desired := int64(1)
+	step := incrementStep(s)
+	for workingCap < target {
+		add := step
+		if idx := desired - 1; idx < int64(len(s.areas)) && s.areas[idx].size > 0 {
+			add = s.areas[idx].size
 		}
+		workingCap += add
+		desired++
 	}
-	return hot + 1
+	if desired < baselineFloor {
+		desired = baselineFloor
+	}
+	// PSI override: sudden pressure the memAvail figure has not caught yet forces
+	// at least one spare beyond what we hold, but never below the fill-based need.
+	if have := int64(len(s.areas)); s.psiSomeAvg10 > psiThreshold && desired < have+1 {
+		desired = have + 1
+	}
+	return desired
 }
 
 // plannedGrowSize returns the byte size of the next increment, honoring the
@@ -134,8 +161,14 @@ func plannedGrowSize(s snapshot, cfg Config, totalOdac int64) (int64, bool) {
 	if budget < minIncrement {
 		return 0, false
 	}
-	step := clamp64(s.memTotal/2, minIncrement, maxIncrementStep)
-	return min64(step, budget), true
+	return min64(incrementStep(s), budget), true
+}
+
+// incrementStep is the nominal size of one increment: half of RAM, clamped to
+// [minIncrement, maxIncrementStep]. Used both to plan a real grow and to size the
+// "working increments needed" estimate in desiredBuffers, so the two agree.
+func incrementStep(s snapshot) int64 {
+	return clamp64(s.memTotal/2, minIncrement, maxIncrementStep)
 }
 
 // plannedShrinkTarget picks the highest-index increment (LIFO) when it is a safe
@@ -160,7 +193,39 @@ func ramUsedPct(s snapshot) int64 {
 	if s.memTotal <= 0 {
 		return 0
 	}
-	return (s.memTotal - s.memAvail) * 100 / s.memTotal
+	return memUsedBytes(s) * 100 / s.memTotal
+}
+
+// memUsedBytes is non-reclaimable RAM: MemTotal-MemAvailable, so reclaimable page
+// cache does not count as "used" (mirrors the sysinfo memory-used fix).
+func memUsedBytes(s snapshot) int64 {
+	if u := s.memTotal - s.memAvail; u > 0 {
+		return u
+	}
+	return 0
+}
+
+// sumAreasUsed totals the pages currently held across this manager's swapfiles.
+func sumAreasUsed(areas []area) int64 {
+	var t int64
+	for _, a := range areas {
+		t += a.used
+	}
+	return t
+}
+
+// poolFillPct is the combined footprint (RAM used + all swap used) as a percent
+// of the working pool (RAM + every increment except the top reserve spare). It is
+// the single signal that drives grow/shrink; logged so a decision is explainable.
+func poolFillPct(s snapshot) int64 {
+	cap := s.memTotal + sumAreas(s.areas)
+	if n := len(s.areas); n > 0 {
+		cap -= s.areas[n-1].size // exclude the top reserve spare
+	}
+	if cap <= 0 {
+		return 0
+	}
+	return (memUsedBytes(s) + sumAreasUsed(s.areas)) * 100 / cap
 }
 
 func areaFillPct(a area) int64 {
@@ -203,4 +268,11 @@ func min64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func clampMin64(v, lo int64) int64 {
+	if v < lo {
+		return lo
+	}
+	return v
 }

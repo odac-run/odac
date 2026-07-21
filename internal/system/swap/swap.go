@@ -11,6 +11,7 @@
 package swap
 
 import (
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -27,8 +28,8 @@ const (
 )
 
 // swapPrefix is the absolute path stem for this manager's swapfiles in dir, e.g.
-// "/app/.odac/swap/swapfile.odac." — parseSwaps filters /proc/swaps by it and
-// nextPath appends the increment index. The swap directory is host-backed and
+// "/app/.odac/swap/swapfile.odac." — parseSwaps rebuilds each recognized area's
+// path from it and nextPath appends the increment index. The swap directory is host-backed and
 // configurable because on a containerized host the container root is overlayfs,
 // which the kernel refuses to swapon; the files must live on a real filesystem
 // (see swap_linux.go / SWAP_PLAN.md "container hosts").
@@ -171,10 +172,20 @@ func parsePressureSomeAvg10(raw []byte) float64 {
 	return 0
 }
 
-// parseSwaps returns the swap areas this manager owns (filename under prefix),
-// ascending by increment index. /proc/swaps columns are
-// "Filename Type Size Used Priority" with Size/Used in KB. A user's own swap and
-// swap partitions are ignored.
+// parseSwaps returns the swap areas this manager owns, ascending by increment
+// index. /proc/swaps columns are "Filename Type Size Used Priority" with
+// Size/Used in KB. A user's own swap and swap partitions are ignored.
+//
+// Ownership is decided by basename, not the full path: the increment name
+// swapfile.odac.<N> is this manager's exclusive stem. We deliberately do NOT
+// match the full directory prefix, because inside a container /proc/swaps can
+// render a bind-mounted swapfile under the mount's source root (e.g.
+// "/.odac/swap/swapfile.odac.1") instead of the path we created it at
+// ("/app/.odac/swap/swapfile.odac.1"). A full-path match there silently misses
+// our own swap and the manager loops forever trying to recreate the baseline
+// ("Text file busy"). For each match we rebuild the path as <prefix><N> — the
+// real, accessible path under our dir — so swapoff/rm never depend on how the
+// kernel happened to render the row.
 func parseSwaps(raw []byte, prefix string) []area {
 	var areas []area
 	for i, line := range strings.Split(string(raw), "\n") {
@@ -182,13 +193,21 @@ func parseSwaps(raw []byte, prefix string) []area {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 4 || !strings.HasPrefix(fields[0], prefix) {
+		if len(fields) < 4 {
 			continue
+		}
+		base := filepath.Base(fields[0])
+		idx := strings.TrimPrefix(base, swapBasename)
+		if idx == base { // no swapfile.odac. stem — not ours
+			continue
+		}
+		if _, err := strconv.Atoi(idx); err != nil {
+			continue // e.g. "swapfile.odac.bak" — not a numbered increment
 		}
 		size, _ := strconv.ParseInt(fields[2], 10, 64)
 		used, _ := strconv.ParseInt(fields[3], 10, 64)
 		areas = append(areas, area{
-			path: fields[0],
+			path: prefix + idx, // real path under our dir, not the /proc-rendered one
 			size: size * kib,
 			used: used * kib,
 		})

@@ -152,18 +152,41 @@ func TestDecideNeverShrinksBaseline(t *testing.T) {
 }
 
 func TestDecideHysteresisBandHolds(t *testing.T) {
-	// Two increments, top at 50% fill (between coolPct 40 and growHotPct 80):
-	// not hot enough to grow, not cool enough to reclaim → steady.
+	// Combined pool fill sits in the band between coolPct (40) and growHotPct
+	// (80): with two empty spares and ~50% working-pool fill, the grow math wants
+	// no more and the cool math does not see a surplus → steady, no flapping.
 	s := calmSnap()
+	s.memAvail = 3 * gib // 5 GiB used on 8 GiB → mid-band footprint
 	s.areas = []area{
 		{path: "/swapfile.odac.1", size: 2 * gib, used: 0},
-		{path: "/swapfile.odac.2", size: 2 * gib, used: pct(2*gib, 50)},
+		{path: "/swapfile.odac.2", size: 2 * gib, used: 0},
 	}
 	st := &counters{}
 	for i := 0; i < shrinkStreakNeeded+3; i++ {
 		if d := decide(s, defaultCfg(), st); d.action != hold {
 			t.Fatalf("hysteresis band should hold, got %v", d)
 		}
+	}
+}
+
+func TestDecideSplitPoolGrowsWhereTiersWouldMiss(t *testing.T) {
+	// The real bug this metric fixes: the kernel offloads to swap, so RAM's
+	// memAvail recovers and BOTH RAM (~80%) and the baseline swap (~50%) read
+	// below the 80% threshold individually — the old per-tier logic saw two cool
+	// tiers and held. The combined footprint (6.4G RAM + 2G swap = 8.4G on an
+	// 8G+4G working pool) is genuinely tight, so the pool metric grows a spare.
+	s := calmSnap()
+	s.memAvail = 8*gib - pct(8*gib, 80) // 80% RAM used, not > 80 individually
+	s.areas = []area{
+		{path: "/swapfile.odac.1", size: 4 * gib, used: pct(4*gib, 50)}, // 50% swap
+	}
+	// Sanity: neither tier is individually hot, yet the pool must be.
+	if ramUsedPct(s) > growHotPct || areaFillPct(s.areas[0]) > growHotPct {
+		t.Fatal("test setup wrong: a tier is individually hot")
+	}
+	d := growN(s, &counters{})
+	if d.action != grow {
+		t.Fatalf("split-but-full pool should grow a spare, got %v", d)
 	}
 }
 
@@ -243,22 +266,24 @@ func TestPlannedShrinkTargetSafety(t *testing.T) {
 
 func TestDesiredBuffersFormula(t *testing.T) {
 	s := calmSnap()
-	// Calm: no hot tier → want 1.
+	// Calm (2 GiB footprint on 8 GiB RAM): pool fits in RAM → want 1 baseline.
 	if got := desiredBuffers(s, growHotPct, growPSIThreshold); got != 1 {
 		t.Errorf("calm want = %d, want 1", got)
 	}
-	// RAM hot → want 2.
-	s.memAvail = pct(8*gib, 13)
+	// RAM footprint alone crosses the pool threshold → want 2 (baseline + spare).
+	s.memAvail = pct(8*gib, 13) // ~87% used
 	if got := desiredBuffers(s, growHotPct, growPSIThreshold); got != 2 {
 		t.Errorf("RAM hot want = %d, want 2", got)
 	}
-	// RAM hot + one hot swap → want 3.
+	// Footprint big enough to need two working increments plus the reserve → 3.
 	s.areas = []area{{path: "/swapfile.odac.1", size: gib, used: pct(gib, 90)}}
 	if got := desiredBuffers(s, growHotPct, growPSIThreshold); got != 3 {
 		t.Errorf("RAM+swap hot want = %d, want 3", got)
 	}
-	// PSI spike alone flags RAM hot even when memAvail looks fine.
+	// PSI spike forces one spare beyond what we hold even when the fill math is
+	// calm: baseline present, calm footprint, high PSI → want 2.
 	calm := calmSnap()
+	calm.areas = []area{{path: "/swapfile.odac.1", size: 2 * gib, used: 0}}
 	calm.psiSomeAvg10 = 50
 	if got := desiredBuffers(calm, growHotPct, growPSIThreshold); got != 2 {
 		t.Errorf("PSI-hot want = %d, want 2", got)

@@ -60,6 +60,27 @@ func TestParseSwaps(t *testing.T) {
 	}
 }
 
+func TestParseSwapsContainerPathRewrite(t *testing.T) {
+	// Inside a container, /proc/swaps renders our bind-mounted swapfile under the
+	// mount's source root ("/.odac/swap/...") instead of the path we created it at
+	// ("/app/.odac/swap/..."). Ownership must still be recognized by basename, and
+	// the area path rebuilt to the real, accessible path under our dir — otherwise
+	// the manager never sees its own baseline and loops recreating it (busy).
+	raw := []byte("Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n" +
+		"/.odac/swap/swapfile.odac.1             file\t1948572\t948480\t-2\n")
+	prefix := "/app/.odac/swap/swapfile.odac."
+	areas := parseSwaps(raw, prefix)
+	if len(areas) != 1 {
+		t.Fatalf("got %d areas, want 1 despite path rewrite: %+v", len(areas), areas)
+	}
+	if areas[0].path != "/app/.odac/swap/swapfile.odac.1" {
+		t.Errorf("path not rebuilt under dir: %q", areas[0].path)
+	}
+	if areas[0].size != 1948572*kib || areas[0].used != 948480*kib {
+		t.Errorf("size/used wrong: %+v", areas[0])
+	}
+}
+
 func TestIndexOf(t *testing.T) {
 	if indexOf("/swapfile.odac.7", "/swapfile.odac.") != 7 {
 		t.Error("indexOf .7")
