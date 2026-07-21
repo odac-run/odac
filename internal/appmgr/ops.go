@@ -786,8 +786,12 @@ func (m *Manager) SetVolumes(id any, volumes []any, payloadOK bool) *api.Result 
 }
 
 // prepareVolumes ports #prepareVolumes: normalize host-native paths back to
-// container-internal /app/... (DooD), resolve named volumes under the app
-// dir (creating them).
+// container-internal /app/... (DooD) and resolve named volumes under the app
+// dir. It only resolves paths — materialization (creating the host dir or
+// file) is deferred to fixVolumePermissions at run time, which classifies
+// each mount as file-vs-directory; pre-creating a named volume as a directory
+// here would defeat that classification (an existing host dir always reads as
+// a directory).
 func (m *Manager) prepareVolumes(recipeVolumes []map[string]any, appDir string) []any {
 	out := make([]any, 0, len(recipeVolumes))
 	hostRoot := os.Getenv("ODAC_HOST_ROOT")
@@ -803,9 +807,6 @@ func (m *Manager) prepareVolumes(recipeVolumes []map[string]any, appDir string) 
 		// resolved under the app's dedicated directory for isolation.
 		if host != "" && !filepath.IsAbs(host) {
 			host = filepath.Join(appDir, host)
-			if _, err := os.Stat(host); err != nil {
-				_ = os.MkdirAll(host, 0o755)
-			}
 		}
 
 		out = append(out, map[string]any{"host": host, "container": vol["container"]})

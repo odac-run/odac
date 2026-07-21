@@ -39,6 +39,7 @@ type fakeDocker struct {
 	exposed   map[string][]int // by image
 	running   map[string]bool
 	status    map[string]docker.Status
+	statDirs  map[string]bool // key: name\x00containerPath → isDir; absent = unknown
 
 	runCalls      []runCall
 	runErr        func(name string) error
@@ -232,6 +233,16 @@ func (f *fakeDocker) SetNetworks(string, []string) docker.SetNetworksResult {
 }
 
 func (f *fakeDocker) EnsureImage(string, io.Writer) error { return nil }
+
+func (f *fakeDocker) StatPathIsDir(name, containerPath string) (bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.statDirs == nil {
+		return false, false
+	}
+	isDir, ok := f.statDirs[name+"\x00"+containerPath]
+	return isDir, ok
+}
 
 func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) error {
 	f.mu.Lock()

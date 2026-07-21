@@ -53,6 +53,7 @@ type API interface {
 	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerStatPath(ctx context.Context, containerID, path string) (container.PathStat, error)
 	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error)
@@ -189,6 +190,22 @@ func (c *Client) ResolveHostPath(localPath string) string {
 		}
 	}
 	return localPath
+}
+
+// StatPathIsDir stats a path inside the named container's filesystem and
+// reports whether it is a directory. ok is false when Docker is unavailable,
+// the container is not present/running, or the path does not exist there —
+// callers treat !ok as "unknown" and fall back to other signals. Used to
+// classify a volume's file-vs-directory intent from the app's live container.
+func (c *Client) StatPathIsDir(name, containerPath string) (isDir bool, ok bool) {
+	if !c.available {
+		return false, false
+	}
+	stat, err := c.api.ContainerStatPath(context.Background(), name, containerPath)
+	if err != nil {
+		return false, false
+	}
+	return stat.Mode.IsDir(), true
 }
 
 // RegisterBuildLogger / UnregisterBuildLogger / SubscribeToBuildLogs /

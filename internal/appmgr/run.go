@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -220,7 +221,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 
 	// Fix volume permissions before starting the app container.
-	m.fixVolumePermissions(s.volumes)
+	m.fixVolumePermissions(s.name, s.volumes)
 
 	if m.appDeleted(id) {
 		return nil
@@ -332,7 +333,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		}
 	}
 
-	m.fixVolumePermissions(s.volumes)
+	m.fixVolumePermissions(s.name, s.volumes)
 
 	runOptions := docker.RunOptions{
 		Image:   s.image,
@@ -557,11 +558,47 @@ func (m *Manager) applyPrivilege(name, privileged string, runOptions *docker.Run
 	}
 }
 
-// fixVolumePermissions ports #fixVolumePermissions: chmod 0777 volume host
-// dirs under the apps path so any container user can write. Host-native
-// paths (ODAC_HOST_ROOT-prefixed) are normalized to container-internal
-// /app/... so the fs ops go through the existing bind mount.
-func (m *Manager) fixVolumePermissions(volumes []docker.Mount) {
+// mountIsFile decides whether the host side of a volume must be materialized
+// as a single file rather than a directory, so Docker bind-mounts a file (a
+// missing host path is otherwise auto-created as a directory). Signals, in
+// order: (1) a trailing '/' on the container path means directory; (2) an
+// already-materialized host path mirrors its own type; (3) the app's live
+// container mirrors whatever exists at that path; (4) otherwise fall back to
+// an extension heuristic (a basename with an extension is a file). name is
+// the container to probe in step 3; fsPath is the orchestrator-visible host
+// path to stat in step 2.
+func (m *Manager) mountIsFile(name, fsPath, container string) bool {
+	cPath := strings.TrimSuffix(container, ":ro")
+
+	// (1) explicit directory intent.
+	if strings.HasSuffix(cPath, "/") {
+		return false
+	}
+
+	// (2) host already exists: mirror its type (stable across redeploys).
+	if fi, err := os.Stat(fsPath); err == nil {
+		return !fi.IsDir()
+	}
+
+	// (3) the app's currently running container: mirror what lives there.
+	if m.deps.Docker != nil && name != "" {
+		if isDir, ok := m.deps.Docker.StatPathIsDir(name, cPath); ok {
+			return !isDir
+		}
+	}
+
+	// (4) create-time / no container: a basename with an extension is a file.
+	return path.Ext(path.Base(cPath)) != ""
+}
+
+// fixVolumePermissions ports #fixVolumePermissions: materialize each volume
+// host under the apps path and chmod it wide open so any container user can
+// write. Host-native paths (ODAC_HOST_ROOT-prefixed) are normalized to
+// container-internal /app/... so the fs ops go through the existing bind
+// mount. File-typed volumes (see mountIsFile) are created as an empty file
+// under an existing parent so Docker binds a file, not a directory. name is
+// the app's container, consulted to classify ambiguous mounts.
+func (m *Manager) fixVolumePermissions(name string, volumes []docker.Mount) {
 	if len(volumes) == 0 {
 		return
 	}
@@ -584,6 +621,27 @@ func (m *Manager) fixVolumePermissions(volumes []docker.Mount) {
 
 		if !strings.HasPrefix(filepath.Clean(fsPath), appsPath) {
 			m.log.Error("FixVolPerms: Skipping chmod on path outside app directory for security: %s", vol.Host)
+			continue
+		}
+
+		if m.mountIsFile(name, fsPath, vol.Container) {
+			if err := os.MkdirAll(filepath.Dir(fsPath), 0o755); err != nil {
+				m.log.Error("FixVolPerms: mkdir parent failed for %s: %s", fsPath, err.Error())
+				continue
+			}
+			if _, err := os.Stat(fsPath); os.IsNotExist(err) {
+				f, err := os.OpenFile(fsPath, os.O_CREATE, 0o666)
+				if err != nil {
+					m.log.Error("FixVolPerms: create file failed for %s: %s", fsPath, err.Error())
+					continue
+				}
+				f.Close()
+			}
+			if err := os.Chmod(fsPath, 0o666); err != nil {
+				m.log.Error("FixVolPerms: chmod failed for %s: %s", fsPath, err.Error())
+				continue
+			}
+			m.log.Log("FixVolPerms: Set 0666 on file %s (from %s)", fsPath, vol.Host)
 			continue
 		}
 

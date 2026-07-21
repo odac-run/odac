@@ -131,6 +131,10 @@ func (f *fakeAPI) ContainerInspect(_ context.Context, id string) (container.Insp
 	return container.InspectResponse{}, notFoundErr{"No such container: " + id}
 }
 
+func (f *fakeAPI) ContainerStatPath(_ context.Context, _, _ string) (container.PathStat, error) {
+	return container.PathStat{}, notFoundErr{"stat: no such path"}
+}
+
 func (f *fakeAPI) ContainerList(context.Context, container.ListOptions) ([]container.Summary, error) {
 	return []container.Summary{
 		{ID: "abcdef0123456789", Names: []string{"/one"}, Image: "img", State: "running", Status: "Up", Created: 5},

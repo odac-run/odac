@@ -69,6 +69,7 @@ type Docker interface {
 	GetImageExposedPorts(imageName string) []int
 	SetNetworks(name string, networks []string) docker.SetNetworksResult
 	EnsureImage(imageName string, logw io.Writer) error
+	StatPathIsDir(name, containerPath string) (isDir bool, ok bool)
 	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) error
 	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) error
 	Build(sourceDir, imageName, appName string, buildLog docker.BuildLog) error
