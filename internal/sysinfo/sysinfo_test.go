@@ -113,7 +113,7 @@ func TestHostPlatformVocabulary(t *testing.T) {
 func TestStatsShape(t *testing.T) {
 	stats := New(nil).Stats()
 
-	wantOrder := []string{"cpu", "disk", "memory", "network"}
+	wantOrder := []string{"cpu", "disk", "memory", "network", "swap"}
 	if len(stats) != len(wantOrder) {
 		t.Fatalf("stats has %d fields: %v", len(stats), stats)
 	}
@@ -134,7 +134,7 @@ func TestStatsShape(t *testing.T) {
 	if _, ok := parsed["cpu"].(float64); !ok {
 		t.Errorf("cpu not numeric: %s", raw)
 	}
-	for _, group := range []string{"disk", "memory"} {
+	for _, group := range []string{"disk", "memory", "swap"} {
 		m, ok := parsed[group].(map[string]any)
 		if !ok {
 			t.Fatalf("%s missing object: %s", group, raw)

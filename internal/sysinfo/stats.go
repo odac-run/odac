@@ -13,9 +13,11 @@ var (
 )
 
 // Stats reports live resource utilization for the Hub's system.stats task:
-// CPU load as an integer percent (0-100) plus memory and disk as used/total
-// byte counts. It mirrors the cpu/memory/disk slice of Node's System.status()
-// (getStatus never shipped a caller in Node, so this is the first live use).
+// CPU load as an integer percent (0-100) plus memory, disk and swap as
+// used/total byte counts. It mirrors the cpu/memory/disk slice of Node's
+// System.status() (getStatus never shipped a caller in Node, so this is the
+// first live use); swap is an ODAC addition surfacing the elastic swap manager
+// (internal/system/swap) for the dashboard.
 // Fields degrade to zero on platforms whose collectors are stubbed — the
 // production host is Linux; darwin covers development (see the package
 // comment). Keys are alphabetical to match jscanon's literal-order contract.
@@ -35,6 +37,12 @@ func (i *Info) Stats() jscanon.Obj {
 		diskUsed = 0
 	}
 
+	swapTotalKB, swapFreeKB := swapKB()
+	swapUsedKB := swapTotalKB - swapFreeKB
+	if swapUsedKB < 0 {
+		swapUsedKB = 0
+	}
+
 	return jscanon.Obj{
 		{K: "cpu", V: i.cpuUsage()},
 		{K: "disk", V: jscanon.Obj{
@@ -46,6 +54,10 @@ func (i *Info) Stats() jscanon.Obj {
 			{K: "total", V: totalKB * 1024},
 		}},
 		{K: "network", V: i.networkUsage()},
+		{K: "swap", V: jscanon.Obj{
+			{K: "used", V: swapUsedKB * 1024},
+			{K: "total", V: swapTotalKB * 1024},
+		}},
 	}
 }
 

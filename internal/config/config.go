@@ -33,6 +33,7 @@ var moduleKeys = map[string][]string{
 	"server":   {"server"},
 	"service":  {"services"},
 	"ssl":      {"ssl"},
+	"system":   {"swap"},
 }
 
 // Store holds the merged in-memory configuration.
@@ -301,6 +302,16 @@ func applyDefaults(c map[string]any) {
 					"blacklist": []any{},
 					"whitelist": []any{},
 					"rateLimit": map[string]any{"enabled": true, "windowMs": 60000, "max": 1000},
+				}
+			case "swap":
+				// Elastic swap manager (internal/system/swap); Linux-only at
+				// runtime.
+				c[k] = map[string]any{
+					"autoManage":    true,
+					"persist":       true,
+					"maxDiskPct":    25,
+					"maxIncrements": 8,
+					"allowShrink":   true,
 				}
 			default:
 				c[k] = map[string]any{}

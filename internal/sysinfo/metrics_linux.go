@@ -61,6 +61,29 @@ func parseMeminfoKB(raw []byte) (total, free, available int64) {
 	return total, free, available
 }
 
+// swapKB reports swap total/free from /proc/meminfo (already in KB). Zero when
+// the host has no swap or the file is unreadable — the same source the swap
+// manager acts on, surfaced for the system.stats dashboard.
+func swapKB() (total, free int64) {
+	raw, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "SwapTotal:":
+			total, _ = strconv.ParseInt(fields[1], 10, 64)
+		case "SwapFree:":
+			free, _ = strconv.ParseInt(fields[1], 10, 64)
+		}
+	}
+	return total, free
+}
+
 // loadAvg is os.loadavg(): /proc/loadavg's first three fields.
 func loadAvg() (l1, l2, l3 float64) {
 	raw, err := os.ReadFile("/proc/loadavg")

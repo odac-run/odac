@@ -37,6 +37,50 @@ func TestOpenAppliesDefaults(t *testing.T) {
 	if rl == nil || rl["windowMs"] != 60000 || rl["max"] != 1000 {
 		t.Errorf("firewall.rateLimit default = %v", rl)
 	}
+
+	sw := s.Map("swap")
+	if sw == nil || sw["autoManage"] != true || sw["persist"] != true ||
+		sw["allowShrink"] != true {
+		t.Errorf("swap default = %v, want autoManage/persist/allowShrink true", sw)
+	}
+	if sw["maxDiskPct"] != 25 || sw["maxIncrements"] != 8 {
+		t.Errorf("swap numeric defaults = %v", sw)
+	}
+}
+
+// TestSwapModulePersists confirms the swap object round-trips through the new
+// `system` module file (config/system.json owns the top-level `swap` key).
+func TestSwapModulePersists(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sw := s.Map("swap")
+	sw["maxIncrements"] = 4
+	s.Touch("swap")
+	if err := s.SaveDirty(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The swap key lives in system.json, not swap.json.
+	raw, err := os.ReadFile(filepath.Join(dir, "config", "system.json"))
+	if err != nil {
+		t.Fatalf("system.json not written: %v", err)
+	}
+	if !strings.Contains(string(raw), "\n    \"swap\": {") {
+		t.Errorf("system.json not wrapped as expected:\n%s", raw)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.Map("swap")
+	if v, _ := got["maxIncrements"].(float64); int(v) != 4 {
+		t.Errorf("reloaded swap.maxIncrements = %v, want 4", got["maxIncrements"])
+	}
 }
 
 func TestSaveFormatAndRoundTrip(t *testing.T) {

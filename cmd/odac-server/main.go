@@ -30,6 +30,7 @@ import (
 	"odac/internal/logx"
 	"odac/internal/sysinfo"
 	"odac/internal/system"
+	"odac/internal/system/swap"
 	"odac/internal/updater"
 )
 
@@ -164,6 +165,7 @@ func main() {
 		Api:   apiSrv,
 		SSL:   sslSvc,
 		Hub:   hubSvc,
+		Swap:  swap.New(cfg),
 	}
 	if appMgr != nil {
 		svc.App = appMgr

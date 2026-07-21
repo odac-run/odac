@@ -57,6 +57,7 @@ type Services struct {
 	Mail  StartStopChecker // 3.2
 	Api   StartStopper     // 3.3
 	Hub   StartStopChecker // 3.6
+	Swap  Checker          // elastic host-swap manager (Linux-only at runtime)
 }
 
 // Updater gates service startup: Init may block for the update handshake;
@@ -185,6 +186,7 @@ func (s *System) startTick() {
 				check(s.svc.Proxy)
 				check(s.svc.Mail)
 				check(s.svc.Hub)
+				check(s.svc.Swap)
 			}
 		}
 	}()

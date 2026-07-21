@@ -11,6 +11,8 @@ func kernelRelease() string { return "" }
 
 func memoryKB() (total, free, available int64) { return 0, 0, 0 }
 
+func swapKB() (total, free int64) { return 0, 0 }
+
 func loadAvg() (l1, l2, l3 float64) { return 0, 0, 0 }
 
 func uptimeSeconds() float64 { return 0 }

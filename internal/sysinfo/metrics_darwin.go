@@ -25,6 +25,11 @@ func memoryKB() (total, free, available int64) {
 	return total, 0, 0
 }
 
+// swapKB: darwin swap (vm.swapusage) is not reported here — development
+// platform, degrades to 0/0 like the free-memory collector (see the package
+// comment).
+func swapKB() (total, free int64) { return 0, 0 }
+
 // loadAvg reads vm.loadavg: struct loadavg { fixpt_t ldavg[3]; long fscale }.
 func loadAvg() (l1, l2, l3 float64) {
 	raw, err := unix.SysctlRaw("vm.loadavg")
