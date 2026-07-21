@@ -15,14 +15,14 @@ func kernelRelease() string {
 	return unix.ByteSliceToString(u.Release[:])
 }
 
-// memoryKB: total via hw.memsize; free is not exposed by sysctl without
-// mach host_statistics — reported as 0 (development platform; see the
+// memoryKB: total via hw.memsize; free/available are not exposed by sysctl
+// without mach host_statistics — reported as 0 (development platform; see the
 // package comment).
-func memoryKB() (total, free int64) {
+func memoryKB() (total, free, available int64) {
 	if mem, err := unix.SysctlUint64("hw.memsize"); err == nil {
 		total = int64(mem / 1024)
 	}
-	return total, 0
+	return total, 0, 0
 }
 
 // loadAvg reads vm.loadavg: struct loadavg { fixpt_t ldavg[3]; long fscale }.

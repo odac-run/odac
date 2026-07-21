@@ -73,7 +73,7 @@ func (i *Info) Get() jscanon.Obj {
 	}
 	distro := LinuxDistro()
 	platform := HostPlatform()
-	totalKB, freeKB := memoryKB()
+	totalKB, freeKB, _ := memoryKB()
 	l1, l2, l3 := loadAvg()
 	release := kernelRelease()
 

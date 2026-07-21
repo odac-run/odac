@@ -20,8 +20,11 @@ var (
 // production host is Linux; darwin covers development (see the package
 // comment). Keys are alphabetical to match jscanon's literal-order contract.
 func (i *Info) Stats() jscanon.Obj {
-	totalKB, freeKB := memoryKB()
-	usedKB := totalKB - freeKB
+	// used is total-available (not total-free): MemAvailable counts
+	// reclaimable cache as free, so this matches what htop/`free` call used.
+	// total-free would over-report used by the whole buffer/cache size.
+	totalKB, _, availKB := memoryKB()
+	usedKB := totalKB - availKB
 	if usedKB < 0 {
 		usedKB = 0
 	}

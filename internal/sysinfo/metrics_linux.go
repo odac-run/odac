@@ -17,26 +17,48 @@ func kernelRelease() string {
 	return unix.ByteSliceToString(u.Release[:])
 }
 
-// memoryKB ports Math.floor(os.totalmem()/1024) / freemem: /proc/meminfo
-// MemTotal/MemFree (already in KB).
-func memoryKB() (total, free int64) {
+// memoryKB reads /proc/meminfo (values already in KB). total is MemTotal and
+// free is MemFree (os.freemem() parity — the figure Get reports). available is
+// MemAvailable, the kernel's estimate of memory obtainable without swapping: it
+// counts reclaimable cache as free, so total-available is the honest "used"
+// that matches htop/`free`. MemFree over-reports used by the whole cache size.
+// On kernels before 3.14 (no MemAvailable) it falls back to Free+Buffers+Cached.
+func memoryKB() (total, free, available int64) {
 	raw, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
+	return parseMeminfoKB(raw)
+}
+
+// parseMeminfoKB is the pure /proc/meminfo parser behind memoryKB, split out so
+// the MemAvailable fallback is unit-testable without a live host.
+func parseMeminfoKB(raw []byte) (total, free, available int64) {
+	var buffers, cached int64
+	haveAvail := false
 	for _, line := range strings.Split(string(raw), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
+		v, _ := strconv.ParseInt(fields[1], 10, 64)
 		switch fields[0] {
 		case "MemTotal:":
-			total, _ = strconv.ParseInt(fields[1], 10, 64)
+			total = v
 		case "MemFree:":
-			free, _ = strconv.ParseInt(fields[1], 10, 64)
+			free = v
+		case "MemAvailable:":
+			available, haveAvail = v, true
+		case "Buffers:":
+			buffers = v
+		case "Cached:": // note: distinct from "SwapCached:"
+			cached = v
 		}
 	}
-	return total, free
+	if !haveAvail {
+		available = free + buffers + cached
+	}
+	return total, free, available
 }
 
 // loadAvg is os.loadavg(): /proc/loadavg's first three fields.
