@@ -62,15 +62,25 @@ func (i *Info) Stats() jscanon.Obj {
 }
 
 // networkUsage ports getNetworkUsage(): download/upload as bytes-per-second
-// averaged over the window since the previous sample. The first sample (or an
-// unreadable/rolled-back counter, e.g. an interface reset) reports 0/0, and
-// re-baselines — exactly like Node's guards.
+// averaged over the window since the previous sample. rx/tx carry the raw
+// cumulative received/transmitted byte counters behind those rates. The first
+// sample (or an unreadable/rolled-back counter, e.g. an interface reset)
+// reports 0/0 rates and re-baselines — exactly like Node's guards — while
+// rx/tx still surface the current absolute counters. Keys are alphabetical to
+// match jscanon's literal-order contract.
 func (i *Info) networkUsage() jscanon.Obj {
-	zero := jscanon.Obj{{K: "download", V: int64(0)}, {K: "upload", V: int64(0)}}
+	net := func(download, upload, rx, tx int64) jscanon.Obj {
+		return jscanon.Obj{
+			{K: "download", V: download},
+			{K: "rx", V: rx},
+			{K: "tx", V: tx},
+			{K: "upload", V: upload},
+		}
+	}
 
 	recv, sent, ok := netStatsFn()
 	if !ok {
-		return zero
+		return net(0, 0, 0, 0)
 	}
 
 	now := i.now()
@@ -79,7 +89,7 @@ func (i *Info) networkUsage() jscanon.Obj {
 
 	if !i.hasNet {
 		i.lastRecv, i.lastSent, i.lastNetTime, i.hasNet = recv, sent, now, true
-		return zero
+		return net(0, 0, recv, sent)
 	}
 
 	secs := now.Sub(i.lastNetTime).Seconds()
@@ -88,12 +98,13 @@ func (i *Info) networkUsage() jscanon.Obj {
 	i.lastRecv, i.lastSent, i.lastNetTime = recv, sent, now
 
 	if recvDiff < 0 || sentDiff < 0 || secs <= 0 {
-		return zero
+		return net(0, 0, recv, sent)
 	}
-	return jscanon.Obj{
-		{K: "download", V: int64(math.Round(float64(recvDiff) / secs))},
-		{K: "upload", V: int64(math.Round(float64(sentDiff) / secs))},
-	}
+	return net(
+		int64(math.Round(float64(recvDiff)/secs)),
+		int64(math.Round(float64(sentDiff)/secs)),
+		recv, sent,
+	)
 }
 
 // cpuUsage ports getCpuUsage(): the busy percentage between this sample and

@@ -156,6 +156,12 @@ func TestStatsShape(t *testing.T) {
 	if _, ok := net["upload"].(float64); !ok {
 		t.Errorf("network.upload not numeric: %s", raw)
 	}
+	if _, ok := net["rx"].(float64); !ok {
+		t.Errorf("network.rx not numeric: %s", raw)
+	}
+	if _, ok := net["tx"].(float64); !ok {
+		t.Errorf("network.tx not numeric: %s", raw)
+	}
 }
 
 // TestCpuUsageDelta covers Node's getCpuUsage guards: the first sample has no
@@ -215,27 +221,38 @@ func TestNetworkUsageDelta(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	i := &Info{now: func() time.Time { return clock }}
 
-	dl := func(o jscanon.Obj) int64 { return o[0].V.(int64) }
-	ul := func(o jscanon.Obj) int64 { return o[1].V.(int64) }
+	field := func(o jscanon.Obj, k string) int64 {
+		for _, kv := range o {
+			if kv.K == k {
+				return kv.V.(int64)
+			}
+		}
+		t.Fatalf("field %q missing in %v", k, o)
+		return 0
+	}
+	dl := func(o jscanon.Obj) int64 { return field(o, "download") }
+	ul := func(o jscanon.Obj) int64 { return field(o, "upload") }
+	rx := func(o jscanon.Obj) int64 { return field(o, "rx") }
+	tx := func(o jscanon.Obj) int64 { return field(o, "tx") }
 
-	// First sample: baseline only.
+	// First sample: baseline only — rates 0/0, but rx/tx surface the counters.
 	samples = []struct{ recv, sent int64 }{{recv: 1000, sent: 500}}
-	if o := i.networkUsage(); dl(o) != 0 || ul(o) != 0 {
-		t.Errorf("first sample = %v, want 0/0", o)
+	if o := i.networkUsage(); dl(o) != 0 || ul(o) != 0 || rx(o) != 1000 || tx(o) != 500 {
+		t.Errorf("first sample = %v, want 0/0 rate, 1000/500 rx/tx", o)
 	}
 
-	// 4s window, +8000 recv / +2000 sent → 2000 down, 500 up.
+	// 4s window, +8000 recv / +2000 sent → 2000 down, 500 up; rx/tx track totals.
 	clock = clock.Add(4 * time.Second)
 	samples = []struct{ recv, sent int64 }{{recv: 9000, sent: 2500}}
-	if o := i.networkUsage(); dl(o) != 2000 || ul(o) != 500 {
-		t.Errorf("window = %v, want 2000/500", o)
+	if o := i.networkUsage(); dl(o) != 2000 || ul(o) != 500 || rx(o) != 9000 || tx(o) != 2500 {
+		t.Errorf("window = %v, want 2000/500 rate, 9000/2500 rx/tx", o)
 	}
 
-	// Counter reset (interface reinit) → 0/0 guard.
+	// Counter reset (interface reinit) → 0/0 rate guard; rx/tx follow the new counters.
 	clock = clock.Add(2 * time.Second)
 	samples = []struct{ recv, sent int64 }{{recv: 10, sent: 5}}
-	if o := i.networkUsage(); dl(o) != 0 || ul(o) != 0 {
-		t.Errorf("reset = %v, want 0/0", o)
+	if o := i.networkUsage(); dl(o) != 0 || ul(o) != 0 || rx(o) != 10 || tx(o) != 5 {
+		t.Errorf("reset = %v, want 0/0 rate, 10/5 rx/tx", o)
 	}
 }
 
