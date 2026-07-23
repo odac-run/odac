@@ -60,6 +60,69 @@ func (linuxController) remove(path string) error {
 	return nil
 }
 
+// scan enumerates our swapfiles in dir. Size comes from the directory entry
+// because fallocate/dd give a swapfile its full length up front. A missing dir
+// is not an error.
+func (linuxController) scan(dir string) ([]diskFile, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil // nothing provisioned yet
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read swap dir %s: %w", dir, err)
+	}
+	prefix := swapPrefix(dir)
+	var files []diskFile
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		idx, ok := incrementIndex(e.Name())
+		if !ok {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		n, _ := strconv.Atoi(idx)
+		files = append(files, diskFile{path: prefix + idx, idx: n, size: info.Size()})
+	}
+	return files, nil
+}
+
+// activate reattaches an existing swapfile. One that outlived a reboot still
+// carries its mkswap header, so swapon alone restores it instantly; only if the
+// kernel rejects the header do we rebuild it and retry once. A file that fails
+// even then is corrupt, and the caller discards it.
+func (linuxController) activate(path string) error {
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	if err := run("swapon", path); err == nil {
+		return nil
+	}
+	if err := run("mkswap", path); err != nil {
+		return fmt.Errorf("mkswap %s: %w", path, err)
+	}
+	if err := run("swapon", path); err != nil {
+		return fmt.Errorf("swapon %s: %w", path, err)
+	}
+	return nil
+}
+
+// discard unlinks an inactive swapfile, reporting the bytes reclaimed.
+func (linuxController) discard(path string) (int64, error) {
+	var size int64
+	if fi, err := os.Stat(path); err == nil {
+		size = fi.Size()
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("rm %s: %w", path, err)
+	}
+	return size, nil
+}
+
 func (linuxController) syncFstab(paths []string) error {
 	const fstab = "/etc/fstab"
 	raw, err := os.ReadFile(fstab)

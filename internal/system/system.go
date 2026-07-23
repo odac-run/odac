@@ -45,6 +45,12 @@ type (
 		Stopper
 		Checker
 	}
+	// RestoreChecker is restored once at Init and checked on the tick: Restore
+	// must run before anything starts allocating.
+	RestoreChecker interface {
+		Restore()
+		Checker
+	}
 )
 
 // Services holds the orchestrator's service slots. Nil slots are skipped
@@ -57,7 +63,7 @@ type Services struct {
 	Mail  StartStopChecker // 3.2
 	Api   StartStopper     // 3.3
 	Hub   StartStopChecker // 3.6
-	Swap  Checker          // elastic host-swap manager (Linux-only at runtime)
+	Swap  RestoreChecker   // elastic host-swap manager (Linux-only at runtime)
 }
 
 // Updater gates service startup: Init may block for the update handshake;
@@ -118,6 +124,16 @@ func (s *System) Init() error {
 	s.recordServerInfo()
 
 	s.updater.OnReady(func() {
+		// Swap first, ahead of every service: after a reboot the swapfiles are
+		// on disk but the kernel has no swap, and service startup is the
+		// heaviest allocation burst. Inside the ready callback rather than
+		// before the updater gate, because in update mode that gate is the
+		// handshake — and the outgoing instance still runs its own swap manager
+		// until it stops its tick at HANDSHAKE_READY. Ready fires after that,
+		// so only one manager ever touches the host. Addition to System.js.
+		if s.svc.Swap != nil {
+			s.svc.Swap.Restore()
+		}
 		start(s.svc.Proxy)
 		start(s.svc.DNS)
 		start(s.svc.Hub)

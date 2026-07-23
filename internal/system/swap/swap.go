@@ -45,6 +45,27 @@ type area struct {
 	used int64
 }
 
+// diskFile is one of our swapfiles on disk, active or not — a reboot leaves the
+// file but drops the swap area.
+type diskFile struct {
+	path string
+	idx  int
+	size int64
+}
+
+// incrementIndex is the ownership rule: a name is ours only if it is exactly
+// swapfile.odac.<N> with N numeric. Anything else is never touched.
+func incrementIndex(name string) (string, bool) {
+	idx := strings.TrimPrefix(name, swapBasename)
+	if idx == name {
+		return "", false
+	}
+	if _, err := strconv.Atoi(idx); err != nil {
+		return "", false
+	}
+	return idx, true
+}
+
 // snapshot is the full input to a single decide() call: host memory, swap, and
 // disk state plus the pressure signal. All byte counts. ok is false when the
 // platform is unsupported or /proc was unreadable, in which case decide holds.
@@ -196,13 +217,9 @@ func parseSwaps(raw []byte, prefix string) []area {
 		if len(fields) < 4 {
 			continue
 		}
-		base := filepath.Base(fields[0])
-		idx := strings.TrimPrefix(base, swapBasename)
-		if idx == base { // no swapfile.odac. stem — not ours
+		idx, ok := incrementIndex(filepath.Base(fields[0]))
+		if !ok {
 			continue
-		}
-		if _, err := strconv.Atoi(idx); err != nil {
-			continue // e.g. "swapfile.odac.bak" — not a numbered increment
 		}
 		size, _ := strconv.ParseInt(fields[2], 10, 64)
 		used, _ := strconv.ParseInt(fields[3], 10, 64)

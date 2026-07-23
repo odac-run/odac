@@ -14,6 +14,13 @@ type controller interface {
 	open(path string, size int64) error
 	// remove takes a swapfile offline (swapoff) and deletes it.
 	remove(path string) error
+	// scan lists our swapfiles in dir, active or not.
+	scan(dir string) ([]diskFile, error)
+	// activate makes an existing swapfile live again (swapon), rebuilding its
+	// header if the kernel rejects it. Only called for paths not in /proc/swaps.
+	activate(path string) error
+	// discard deletes an inactive swapfile, returning the bytes reclaimed.
+	discard(path string) (int64, error)
 	// syncFstab rewrites the odac-managed block of /etc/fstab to exactly paths
 	// (empty clears it), leaving the user's own lines untouched.
 	syncFstab(paths []string) error
@@ -87,3 +94,7 @@ type noopController struct{}
 func (noopController) open(string, int64) error { return nil }
 func (noopController) remove(string) error      { return nil }
 func (noopController) syncFstab([]string) error { return nil }
+
+func (noopController) scan(string) ([]diskFile, error) { return nil, nil }
+func (noopController) activate(string) error           { return nil }
+func (noopController) discard(string) (int64, error)   { return 0, nil }

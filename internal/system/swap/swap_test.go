@@ -81,6 +81,18 @@ func TestParseSwapsContainerPathRewrite(t *testing.T) {
 	}
 }
 
+func TestIncrementIndex(t *testing.T) {
+	if idx, ok := incrementIndex("swapfile.odac.3"); !ok || idx != "3" {
+		t.Errorf("swapfile.odac.3 = %q %v, want 3 true", idx, ok)
+	}
+	// Nothing downstream may adopt or delete these.
+	for _, name := range []string{"swapfile.odac.bak", "swapfile.odac.", "myswap", "swapfile"} {
+		if _, ok := incrementIndex(name); ok {
+			t.Errorf("%q must not be recognized as an increment", name)
+		}
+	}
+}
+
 func TestIndexOf(t *testing.T) {
 	if indexOf("/swapfile.odac.7", "/swapfile.odac.") != 7 {
 		t.Error("indexOf .7")

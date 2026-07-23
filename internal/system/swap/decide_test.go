@@ -289,3 +289,87 @@ func TestDesiredBuffersFormula(t *testing.T) {
 		t.Errorf("PSI-hot want = %d, want 2", got)
 	}
 }
+
+func TestPlanReconcileAdoptsEverythingWithinCaps(t *testing.T) {
+	// Post-reboot: nothing active, two swapfiles on disk, plenty of room.
+	files := []diskFile{
+		{path: "/s/swapfile.odac.2", idx: 2, size: gib},
+		{path: "/s/swapfile.odac.1", idx: 1, size: gib},
+	}
+	adopt, discard := planReconcile(files, nil, defaultCfg())
+
+	if len(discard) != 0 {
+		t.Errorf("nothing should be discarded when the caps allow: %v", discard)
+	}
+	if len(adopt) != 2 || adopt[0] != "/s/swapfile.odac.1" || adopt[1] != "/s/swapfile.odac.2" {
+		t.Fatalf("adopt = %v, want baseline first then .2", adopt)
+	}
+}
+
+func TestPlanReconcileSortsNumericallyNotLexically(t *testing.T) {
+	// A directory listing gives .10 before .2, but the tail is what gets
+	// sacrificed when a cap bites, so the baseline must come first.
+	files := []diskFile{
+		{path: "/s/swapfile.odac.10", idx: 10, size: gib},
+		{path: "/s/swapfile.odac.2", idx: 2, size: gib},
+	}
+	adopt, _ := planReconcile(files, nil, defaultCfg())
+	if len(adopt) != 2 || adopt[0] != "/s/swapfile.odac.2" {
+		t.Errorf("adopt = %v, want .2 before .10", adopt)
+	}
+}
+
+func TestPlanReconcileHonorsIncrementCap(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.MaxIncrements = 2
+	files := []diskFile{
+		{path: "/s/swapfile.odac.1", idx: 1, size: gib},
+		{path: "/s/swapfile.odac.2", idx: 2, size: gib},
+		{path: "/s/swapfile.odac.3", idx: 3, size: gib},
+	}
+	adopt, discard := planReconcile(files, nil, cfg)
+	if len(adopt) != 2 {
+		t.Fatalf("adopt = %v, want the first 2", adopt)
+	}
+	if len(discard) != 1 || discard[0] != "/s/swapfile.odac.3" {
+		t.Errorf("the surplus increment should be discarded: %v", discard)
+	}
+}
+
+func TestPlanReconcileIgnoresDiskCap(t *testing.T) {
+	cfg := defaultCfg() // MaxDiskPct 25
+	// The live area alone already exceeds a 25% budget, and the disk is nearly
+	// full. It makes no difference: the leftover is allocated either way, so
+	// swapon costs nothing and deleting it would only trade swap for space that
+	// was never at stake. Shrink reclaims it later if it stays idle.
+	active := []area{{path: "/s/swapfile.odac.1", size: 8 * gib}}
+	files := []diskFile{
+		{path: "/s/swapfile.odac.1", idx: 1, size: 8 * gib},
+		{path: "/s/swapfile.odac.2", idx: 2, size: 8 * gib},
+	}
+	adopt, discard := planReconcile(files, active, cfg)
+	if len(adopt) != 1 || adopt[0] != "/s/swapfile.odac.2" {
+		t.Fatalf("adopt = %v, want the leftover regardless of the disk cap", adopt)
+	}
+	if len(discard) != 0 {
+		t.Errorf("nothing should be discarded for disk reasons: %v", discard)
+	}
+}
+
+func TestPlanReconcileCountsActiveTowardIncrementCap(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.MaxIncrements = 2
+	active := []area{{path: "/s/swapfile.odac.1", size: gib}}
+	files := []diskFile{
+		{path: "/s/swapfile.odac.1", idx: 1, size: gib},
+		{path: "/s/swapfile.odac.2", idx: 2, size: gib},
+		{path: "/s/swapfile.odac.3", idx: 3, size: gib},
+	}
+	adopt, discard := planReconcile(files, active, cfg)
+	if len(adopt) != 1 || adopt[0] != "/s/swapfile.odac.2" {
+		t.Fatalf("adopt = %v, want only .2 (the live .1 fills a slot)", adopt)
+	}
+	if len(discard) != 1 || discard[0] != "/s/swapfile.odac.3" {
+		t.Errorf("the count surplus should be discarded: %v", discard)
+	}
+}

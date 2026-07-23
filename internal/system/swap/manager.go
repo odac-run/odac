@@ -3,6 +3,7 @@ package swap
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"odac/internal/config"
@@ -53,8 +54,85 @@ func (m *Manager) Check() {
 
 	cfg := m.loadConfig()
 	dir := m.swapDir(cfg)
-	s := readSnapshot(dir)
+	s := m.sync(cfg, dir)
 	m.enact(decide(s, cfg, &m.st), s, cfg, dir)
+}
+
+// Restore reattaches the swap left on disk by the previous boot. Init calls it
+// before any service starts, so the host is not left on RAM alone while the
+// tick's grow confirmation counts to two. Idempotent with Check's reconcile.
+func (m *Manager) Restore() {
+	cfg := m.loadConfig()
+	m.sync(cfg, m.swapDir(cfg))
+}
+
+// sync reads live host state and reconciles the swap dir against it, returning
+// the snapshot decide should act on.
+func (m *Manager) sync(cfg Config, dir string) snapshot {
+	s := readSnapshot(dir)
+	if !m.reconcile(cfg, dir, s) {
+		return s
+	}
+	// Re-read, or decide still sees zero areas and opens a duplicate baseline on
+	// top of the swap just reattached.
+	s = readSnapshot(dir)
+	m.persist(cfg, pathsOf(s.areas))
+	return s
+}
+
+// reconcile brings the swap dir and the kernel back into agreement: our inactive
+// swapfiles are reattached, or dropped when a cap says they should not come
+// back. Reports whether anything changed. Runs every tick, not just at startup,
+// so it also cleans up after a shrink whose swapoff succeeded but whose unlink
+// failed.
+func (m *Manager) reconcile(cfg Config, dir string, s snapshot) bool {
+	if !cfg.AutoManage || !s.ok {
+		return false
+	}
+	files, err := m.ctl.scan(dir)
+	if err != nil {
+		m.log.Error(fmt.Sprintf("swap dir scan: %v", err))
+		return false
+	}
+	adopt, discard := planReconcile(files, s.areas, cfg)
+	if len(adopt) == 0 && len(discard) == 0 {
+		return false
+	}
+
+	changed := false
+	var restored []string
+	for _, path := range adopt {
+		if err := m.ctl.activate(path); err != nil {
+			// Dead disk — reclaim it instead of retrying the same failure forever.
+			m.log.Error(fmt.Sprintf("adopt %s failed, discarding: %v", path, err))
+			discard = append(discard, path)
+			continue
+		}
+		restored = append(restored, path)
+		changed = true
+	}
+	if len(restored) > 0 {
+		m.log.Log(fmt.Sprintf("restored %d swapfile(s) left by the previous boot: %s",
+			len(restored), strings.Join(restored, ", ")))
+	}
+
+	var freed int64
+	var dropped []string
+	for _, path := range discard {
+		n, err := m.ctl.discard(path)
+		if err != nil {
+			m.log.Error(fmt.Sprintf("discard %s: %v", path, err))
+			continue
+		}
+		freed += n
+		dropped = append(dropped, path)
+		changed = true
+	}
+	if len(dropped) > 0 {
+		m.log.Log(fmt.Sprintf("discarded %d swapfile(s), %d MiB reclaimed: %s — beyond the configured caps or unusable",
+			len(dropped), freed/mib, strings.Join(dropped, ", ")))
+	}
+	return changed
 }
 
 // loadConfig reads the live system.swap object under the store's read lock;

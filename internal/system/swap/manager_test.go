@@ -15,6 +15,11 @@ type fakeController struct {
 	removed []string
 	fstab   [][]string
 	openErr error
+
+	onDisk      []diskFile // what scan reports
+	activated   []string
+	discarded   []string
+	activateErr error
 }
 
 func (f *fakeController) open(path string, size int64) error {
@@ -32,6 +37,18 @@ func (f *fakeController) remove(path string) error {
 func (f *fakeController) syncFstab(paths []string) error {
 	f.fstab = append(f.fstab, append([]string(nil), paths...))
 	return nil
+}
+func (f *fakeController) scan(string) ([]diskFile, error) { return f.onDisk, nil }
+func (f *fakeController) activate(path string) error {
+	if f.activateErr != nil {
+		return f.activateErr
+	}
+	f.activated = append(f.activated, path)
+	return nil
+}
+func (f *fakeController) discard(path string) (int64, error) {
+	f.discarded = append(f.discarded, path)
+	return gib, nil
 }
 
 func newTestManager(t *testing.T, ctl controller) *Manager {
@@ -131,6 +148,81 @@ func TestManagerNoPersistWhenDisabled(t *testing.T) {
 	}
 	if len(f.fstab) != 0 {
 		t.Error("persist disabled: fstab must not be synced")
+	}
+}
+
+// rebootSnapshot is the state right after a reboot: no swap active, but our
+// swapfiles are still on disk.
+func rebootSnapshot() snapshot {
+	return snapshot{ok: true, memTotal: 2 * gib, memAvail: gib, freeDisk: 20 * gib}
+}
+
+func TestManagerReconcileAdoptsAfterReboot(t *testing.T) {
+	f := &fakeController{onDisk: []diskFile{
+		{path: "/swap/swapfile.odac.2", idx: 2, size: gib},
+		{path: "/swap/swapfile.odac.1", idx: 1, size: gib},
+	}}
+	m := newTestManager(t, f)
+
+	if !m.reconcile(defaultCfg(), "/swap", rebootSnapshot()) {
+		t.Fatal("reconcile should report a change")
+	}
+	// Both come back, baseline first, and nothing is deleted.
+	if len(f.activated) != 2 ||
+		f.activated[0] != "/swap/swapfile.odac.1" || f.activated[1] != "/swap/swapfile.odac.2" {
+		t.Errorf("both swapfiles should be adopted in index order: %+v", f.activated)
+	}
+	if len(f.discarded) != 0 {
+		t.Errorf("adoptable swapfiles must never be deleted: %+v", f.discarded)
+	}
+}
+
+func TestManagerReconcileLeavesActiveAlone(t *testing.T) {
+	f := &fakeController{onDisk: []diskFile{{path: "/swap/swapfile.odac.1", idx: 1, size: gib}}}
+	m := newTestManager(t, f)
+
+	s := rebootSnapshot()
+	s.areas = []area{{path: "/swap/swapfile.odac.1", size: gib}}
+
+	if m.reconcile(defaultCfg(), "/swap", s) {
+		t.Error("already-active swap needs no reconcile")
+	}
+	if len(f.activated) != 0 || len(f.discarded) != 0 {
+		t.Errorf("live swap must not be touched: %+v %+v", f.activated, f.discarded)
+	}
+}
+
+func TestManagerReconcileDiscardsCorrupt(t *testing.T) {
+	f := &fakeController{
+		onDisk:      []diskFile{{path: "/swap/swapfile.odac.1", idx: 1, size: gib}},
+		activateErr: errTest,
+	}
+	m := newTestManager(t, f)
+
+	// mkswap could not rescue it, so it is reclaimed instead of retried forever.
+	if !m.reconcile(defaultCfg(), "/swap", rebootSnapshot()) {
+		t.Fatal("a discard is still a change")
+	}
+	if len(f.discarded) != 1 || f.discarded[0] != "/swap/swapfile.odac.1" {
+		t.Errorf("unusable swapfile should be discarded: %+v", f.discarded)
+	}
+}
+
+func TestManagerReconcileSkippedWhenUnmanaged(t *testing.T) {
+	f := &fakeController{onDisk: []diskFile{{path: "/swap/swapfile.odac.1", idx: 1, size: gib}}}
+	m := newTestManager(t, f)
+
+	cfg := defaultCfg()
+	cfg.AutoManage = false
+	if m.reconcile(cfg, "/swap", rebootSnapshot()) {
+		t.Error("auto-manage off must reconcile nothing")
+	}
+	// An unreadable snapshot holds too, even with auto-manage on.
+	if m.reconcile(defaultCfg(), "/swap", snapshot{ok: false}) {
+		t.Error("no snapshot must reconcile nothing")
+	}
+	if len(f.activated) != 0 || len(f.discarded) != 0 {
+		t.Errorf("hands off the host: %+v %+v", f.activated, f.discarded)
 	}
 }
 

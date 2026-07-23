@@ -164,6 +164,51 @@ func plannedGrowSize(s snapshot, cfg Config, totalOdac int64) (int64, bool) {
 	return min64(incrementStep(s), budget), true
 }
 
+// planReconcile decides what to do with our swapfiles that the kernel is not
+// using — what a reboot leaves behind. Adopting is the default, and MaxDiskPct
+// deliberately does not gate it: the file is already allocated, so swapon costs
+// no disk at all, and deleting it would trade away swap capacity for space that
+// was never at stake. The disk cap governs creating new swap (plannedGrowSize);
+// a surplus that is genuinely idle is reclaimed by the ordinary shrink path
+// instead, one increment at a time and only once it is provably empty.
+//
+// MaxIncrements still gates, because the LIFO indexing depends on the count.
+// Lowest index first, so the baseline is the last thing sacrificed.
+func planReconcile(files []diskFile, active []area, cfg Config) (adopt, discard []string) {
+	live := make(map[string]bool, len(active))
+	for _, a := range active {
+		live[a.path] = true
+	}
+	var candidates []diskFile
+	for _, f := range files {
+		if !live[f.path] {
+			candidates = append(candidates, f)
+		}
+	}
+	sortFilesByIndex(candidates)
+
+	count := int64(len(active))
+	for _, f := range candidates {
+		if count >= cfg.MaxIncrements {
+			discard = append(discard, f.path)
+			continue
+		}
+		adopt = append(adopt, f.path)
+		count++
+	}
+	return adopt, discard
+}
+
+// sortFilesByIndex orders ascending by increment index: directory listings are
+// lexical, which would put .10 before .2.
+func sortFilesByIndex(files []diskFile) {
+	for i := 1; i < len(files); i++ {
+		for j := i; j > 0 && files[j-1].idx > files[j].idx; j-- {
+			files[j-1], files[j] = files[j], files[j-1]
+		}
+	}
+}
+
 // incrementStep is the nominal size of one increment: half of RAM, clamped to
 // [minIncrement, maxIncrementStep]. Used both to plan a real grow and to size the
 // "working increments needed" estimate in desiredBuffers, so the two agree.

@@ -277,6 +277,47 @@ func TestNilServicesSkipped(t *testing.T) {
 	s.Stop(false)                     // must not panic either
 }
 
+// fakeSwap is a Swap slot that traces Restore as well as Check.
+type fakeSwap struct {
+	name string
+	tr   *trace
+}
+
+func (f *fakeSwap) Restore() { f.tr.add(f.name + ".restore") }
+func (f *fakeSwap) Check()   { f.tr.add(f.name + ".check") }
+
+func TestSwapRestoredBeforeServicesStart(t *testing.T) {
+	tr := &trace{}
+	cfg, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg, Services{
+		Proxy: &fakeService{"proxy", tr},
+		Swap:  &fakeSwap{"swap", tr},
+	}, &testGate{})
+	s.startupDelay = 10 * time.Millisecond
+	s.tickDelay = 20 * time.Millisecond
+	s.tickEvery = 5 * time.Millisecond
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop(false)
+
+	// Restore runs inside the ready callback, ahead of every service: in update
+	// mode ready fires only after the outgoing instance stopped its own tick, so
+	// two swap managers never overlap.
+	ev := tr.snapshot()
+	ri, pi := indexOf(ev, "swap.restore"), indexOf(ev, "proxy.start")
+	if ri == -1 || pi == -1 || ri > pi {
+		t.Fatalf("swap must be restored before services start: %v", ev)
+	}
+	if tr.count("swap.check") != 0 {
+		t.Fatalf("no tick has run yet: %v", ev)
+	}
+	tr.waitFor(t, "swap.check")
+}
+
 func TestRecordServerInfo(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := config.Open(dir)
