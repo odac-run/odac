@@ -21,6 +21,12 @@ type DNSService interface {
 	Record(args ...map[string]any)
 }
 
+// HubService is the Hub surface Mail needs: account changes are pushed to
+// the cloud whoever made them (Hub command, CLI or API).
+type HubService interface {
+	Trigger(event string)
+}
+
 // Mail is the Go port of server/src/Mail.js: supervise bin/odac-mail, push
 // domain/TLS/IP config per contracts/mail-control.md, and run the
 // orchestrator-side command logic (account CRUD pass-through, send()
@@ -33,6 +39,7 @@ type Mail struct {
 	log  *logx.Logger
 	proc process
 	dns  DNSService // the DNS service; nil-safe
+	hub  HubService // filled by SetHub; nil-safe
 
 	retryDelay time.Duration
 
@@ -59,9 +66,29 @@ func NewMail(cfg *config.Store, binDir string, dns DNSService) *Mail {
 		BinDir:    binDir,
 		RunDir:    filepath.Join(cfg.BaseDir(), "run"),
 		Log:       m.log,
-		OnSync:    m.SyncConfig,
+		OnSync:    m.onProcessUp,
 	})
 	return m
+}
+
+// SetHub fills the Hub seam after construction: the Hub client's command
+// table calls Mail, so the two are wired in two steps. Must be called
+// before System.Init starts the tick (no lock: single-threaded startup).
+func (m *Mail) SetHub(hub HubService) { m.hub = hub }
+
+func (m *Mail) hubTrigger(event string) {
+	if m.hub != nil {
+		m.hub.Trigger(event)
+	}
+}
+
+// onProcessUp runs SyncDelay after every spawn/adopt. The account list is
+// pushed here too because the binary starts a second after the Hub does:
+// the Hub's own connect-time mail.list can land before this socket exists,
+// and the next scheduled one is an hour out.
+func (m *Mail) onProcessUp() {
+	m.SyncConfig()
+	m.hubTrigger("mail.list")
 }
 
 // Start ports start(): spawn/adopt the binary.

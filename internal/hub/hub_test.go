@@ -300,6 +300,44 @@ func (f *fakeProxy) SetTunnels(tunnels []dataplane.Tunnel) int {
 	return len(tunnels)
 }
 
+type fakeMail struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeMail) record(call string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, call)
+	f.mu.Unlock()
+}
+
+func (f *fakeMail) called() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func (f *fakeMail) Create(email, password, retype any) api.Result {
+	f.record("create:" + str(email) + ":" + str(password) + ":" + str(retype))
+	return api.Res(true, "created")
+}
+func (f *fakeMail) Delete(email any) api.Result {
+	f.record("delete:" + str(email))
+	return api.Res(true, "deleted")
+}
+func (f *fakeMail) List(domain any) api.Result {
+	f.record("list:" + str(domain))
+	return api.Res(true, "accounts")
+}
+func (f *fakeMail) ListAll() api.Result {
+	f.record("listall")
+	return api.Res(true, []any{map[string]any{"domain": "x.test", "email": "a@x.test"}})
+}
+func (f *fakeMail) Password(email, password, retype any) api.Result {
+	f.record("password:" + str(email) + ":" + str(password) + ":" + str(retype))
+	return api.Res(true, "changed")
+}
+
 type fakeContainer struct {
 	mu           sync.Mutex
 	stats        map[string]*docker.Stats
@@ -351,9 +389,11 @@ type hubFixture struct {
 	app    *fakeApp
 	dns    *fakeDNS
 	proxy  *fakeProxy
+	mail   *fakeMail
 	cont   *fakeContainer
 	dials  chan string
 	noApp  bool
+	noMail bool
 	noAuth bool
 }
 
@@ -365,6 +405,7 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 		app:   &fakeApp{},
 		dns:   &fakeDNS{},
 		proxy: &fakeProxy{},
+		mail:  &fakeMail{},
 		cont:  &fakeContainer{},
 		dials: make(chan string, 16),
 	}
@@ -401,6 +442,9 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 	if !fx.noApp {
 		deps.App = fx.app
 	}
+	if !fx.noMail {
+		deps.Mail = fx.mail
+	}
 
 	fx.h = New(cfg, fx.cloud.srv.URL, deps)
 	// Instrument the dial seam to count attempts while keeping the real
@@ -418,15 +462,18 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 }
 
 // connect starts the Hub, drives one Check to dial, and drains the initial
-// task pushes (returning their types in order). With no App service the
-// app.list push errors out and never sends, so only three arrive.
+// task pushes (returning their types in order). A missing service errors its
+// push out, so that one never arrives.
 func (fx *hubFixture) connect() []string {
 	fx.t.Helper()
 	fx.h.Start()
 	fx.h.Check()
-	expected := 4
+	expected := 5
 	if fx.noApp {
-		expected = 3
+		expected--
+	}
+	if fx.noMail {
+		expected--
 	}
 	var types []string
 	for i := 0; i < expected; i++ {
@@ -478,7 +525,7 @@ func TestConnectSendsInitialTasksAndBearer(t *testing.T) {
 	fx := newHubFixture(t)
 	types := fx.connect()
 
-	want := []string{"system.info", "app.list", "dns.list", "domain.list"}
+	want := []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list"}
 	for i, w := range want {
 		if types[i] != w {
 			t.Fatalf("initial pushes = %v, want %v", types, want)
@@ -846,6 +893,52 @@ func TestPayloadMappings(t *testing.T) {
 	}
 }
 
+func TestMailCommands(t *testing.T) {
+	fx := newHubFixture(t)
+	run := func(action string, payload any) {
+		t.Helper()
+		if _, err := fx.h.commands[action].fn(payload); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+	}
+
+	run("mail.create", map[string]any{"email": "a@x.test", "password": "p"})
+	run("mail.delete", map[string]any{"email": "a@x.test"})
+	run("mail.list", map[string]any{"domain": "x.test"})
+	run("mail.list", map[string]any{}) // no domain
+	run("mail.password", map[string]any{"email": "a@x.test", "password": "n"})
+
+	want := []string{
+		"create:a@x.test:p:p",
+		"delete:a@x.test",
+		"list:x.test",
+		"listall",
+		"password:a@x.test:n:n",
+	}
+	got := fx.mail.called()
+	if len(got) != len(want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("call %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+
+	if fx.h.commands["mail.send"] != nil {
+		t.Error("mail.send must not be reachable from the Hub")
+	}
+}
+
+func TestMailUnavailable(t *testing.T) {
+	fx := newHubFixture(t, func(f *hubFixture) { f.noMail = true })
+	for _, action := range []string{"mail.create", "mail.delete", "mail.list", "mail.password"} {
+		if _, err := fx.h.commands[action].fn(map[string]any{}); err == nil {
+			t.Errorf("%s should fail without a Mail service", action)
+		}
+	}
+}
+
 func TestLogSubscriptionBatching(t *testing.T) {
 	fx := newHubFixture(t)
 	fx.connect()
@@ -1033,7 +1126,8 @@ func TestCommandTableOrder(t *testing.T) {
 		"app.volumes.set", "dns.add", "dns.delete", "dns.list", "domain.add",
 		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
 		"app.logs.on", "app.logs.off", "app.build_logs.on", "app.build_logs.off",
-		"terminal.open", "terminal.close", "system.update",
+		"terminal.open", "terminal.close", "mail.create", "mail.delete", "mail.list",
+		"mail.password", "system.update",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1050,6 +1144,7 @@ func TestCommandTableOrder(t *testing.T) {
 	intervals := map[string]time.Duration{
 		"app.list": 30 * time.Minute, "app.stats": 60 * time.Second,
 		"dns.list": 60 * time.Minute, "domain.list": 30 * time.Minute,
+		"mail.list":   60 * time.Minute,
 		"system.info": 60 * time.Minute, "system.stats": 60 * time.Second,
 	}
 	for name, want := range intervals {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -127,8 +128,25 @@ func TestAccountList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountList failed: %v", err)
 	}
-	if len(accounts) != 2 {
-		t.Errorf("expected 2 accounts for example.com, got %d", len(accounts))
+	want := []AccountEntry{
+		{Domain: "example.com", Email: "a@example.com"},
+		{Domain: "example.com", Email: "b@example.com"},
+	}
+	if !reflect.DeepEqual(accounts, want) {
+		t.Errorf("AccountList = %v, want %v", accounts, want)
+	}
+
+	all, err := store.AccountListAll(ctx)
+	if err != nil {
+		t.Fatalf("AccountListAll failed: %v", err)
+	}
+	want = append(want, AccountEntry{Domain: "other.com", Email: "c@other.com"})
+	if !reflect.DeepEqual(all, want) {
+		t.Errorf("AccountListAll = %v, want %v", all, want)
+	}
+
+	if empty, _ := store.AccountList(ctx, "none.test"); !reflect.DeepEqual(empty, []AccountEntry{}) {
+		t.Errorf("AccountList empty = %v", empty)
 	}
 }
 

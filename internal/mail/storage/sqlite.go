@@ -176,27 +176,44 @@ func (s *Store) AccountUpdatePassword(ctx context.Context, email, hashedPassword
 	return nil
 }
 
-// AccountList returns all email addresses for a given domain.
-func (s *Store) AccountList(ctx context.Context, domain string) ([]string, error) {
+// AccountEntry is one account as the listing endpoints expose it.
+type AccountEntry struct {
+	Domain string `json:"domain"`
+	Email  string `json:"email"`
+}
+
+// AccountList returns all accounts of a given domain.
+func (s *Store) AccountList(ctx context.Context, domain string) ([]AccountEntry, error) {
+	return s.accountQuery(ctx,
+		"SELECT domain, email FROM mail_account WHERE domain = ? ORDER BY email", domain)
+}
+
+// AccountListAll returns every account across all domains, sorted by domain
+// then address.
+func (s *Store) AccountListAll(ctx context.Context) ([]AccountEntry, error) {
+	return s.accountQuery(ctx,
+		"SELECT domain, email FROM mail_account ORDER BY domain, email")
+}
+
+func (s *Store) accountQuery(ctx context.Context, query string, args ...any) ([]AccountEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT email FROM mail_account WHERE domain = ?", domain)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("account list query failed: %w", err)
 	}
 	defer rows.Close()
 
-	var emails []string
+	accounts := []AccountEntry{}
 	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
+		var entry AccountEntry
+		if err := rows.Scan(&entry.Domain, &entry.Email); err != nil {
 			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
-		emails = append(emails, email)
+		accounts = append(accounts, entry)
 	}
-	return emails, rows.Err()
+	return accounts, rows.Err()
 }
 
 // AccountRow represents a row from the mail_account table.

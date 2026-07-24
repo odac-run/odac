@@ -239,24 +239,27 @@ func (s *Server) HandleAccountPassword(w http.ResponseWriter, r *http.Request) {
 	jsonSuccess(w, "Password updated successfully")
 }
 
-// HandleAccountList returns all accounts for a domain.
-// Endpoint: GET /accounts?domain=example.com
+// HandleAccountList returns the accounts of one domain, or every account
+// when the domain parameter is omitted.
+// Endpoint: GET /accounts[?domain=example.com]
 func (s *Server) HandleAccountList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	domain := r.URL.Query().Get("domain")
-	if domain == "" {
-		jsonError(w, "Domain parameter is required", http.StatusBadRequest)
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	accounts, err := s.store.AccountList(ctx, domain)
+	var (
+		accounts []storage.AccountEntry
+		err      error
+	)
+	if domain := r.URL.Query().Get("domain"); domain != "" {
+		accounts, err = s.store.AccountList(ctx, domain)
+	} else {
+		accounts, err = s.store.AccountListAll(ctx)
+	}
 	if err != nil {
 		log.Printf("[Mail-API] Account list failed: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)

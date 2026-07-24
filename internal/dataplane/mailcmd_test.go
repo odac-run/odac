@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -85,6 +86,23 @@ func (f *fakeMailModule) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.requests)
+}
+
+type fakeMailHub struct {
+	mu       sync.Mutex
+	triggers []string
+}
+
+func (f *fakeMailHub) Trigger(event string) {
+	f.mu.Lock()
+	f.triggers = append(f.triggers, event)
+	f.mu.Unlock()
+}
+
+func (f *fakeMailHub) fired() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.triggers...)
 }
 
 func newTestMailCmd(t *testing.T, dns DNSService) (*Mail, *fakeMailModule) {
@@ -209,6 +227,41 @@ func TestMailDeletePassword(t *testing.T) {
 	}
 }
 
+// Account changes push the account list to the cloud, whichever caller made
+// them — the CLI and API paths go through these same methods.
+func TestMailHubTriggers(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	hub := &fakeMailHub{}
+	m.SetHub(hub)
+	m.cfg.Set("domains", map[string]any{"example.com": map[string]any{}})
+
+	m.Create("a@example.com", "pw", "pw")
+	waitConfigPush(t, f)
+	m.Delete("a@example.com")
+	m.Password("a@example.com", "pw", "pw")
+	m.List("example.com")
+
+	if got := hub.fired(); !reflect.DeepEqual(got, []string{"mail.list", "mail.list"}) {
+		t.Errorf("triggers = %v, want one per create/delete", got)
+	}
+
+	f.respond["POST /account"] = map[string]any{"success": false}
+	f.respond["DELETE /account"] = map[string]any{"success": false}
+	m.Create("b@example.com", "pw", "pw")
+	m.Delete("b@example.com")
+	if got := hub.fired(); len(got) != 2 {
+		t.Errorf("failures triggered too: %v", got)
+	}
+
+	// The binary coming up pushes the list as well — the Hub connects a
+	// second earlier and its own push finds no socket.
+	m.onProcessUp()
+	waitConfigPush(t, f)
+	if got := hub.fired(); len(got) != 3 || got[2] != "mail.list" {
+		t.Errorf("process-up triggers = %v", got)
+	}
+}
+
 func TestMailList(t *testing.T) {
 	m, f := newTestMailCmd(t, nil)
 	m.cfg.Set("domains", map[string]any{"example.com": map[string]any{}})
@@ -220,7 +273,10 @@ func TestMailList(t *testing.T) {
 		t.Errorf("List unknown domain = %+v", res)
 	}
 
-	f.respond["GET /accounts"] = map[string]any{"success": true, "accounts": []any{"a@example.com", "b@example.com"}}
+	f.respond["GET /accounts"] = map[string]any{"success": true, "accounts": []any{
+		map[string]any{"domain": "example.com", "email": "a@example.com"},
+		map[string]any{"domain": "example.com", "email": "b@example.com"},
+	}}
 	res := m.List("example.com")
 	want := "Mail accounts for domain example.com.\na@example.com\nb@example.com"
 	if !res.Status || res.Message != want {
@@ -228,6 +284,39 @@ func TestMailList(t *testing.T) {
 	}
 	if req := f.last(t); req.path != "/accounts?domain=example.com" {
 		t.Errorf("List request path = %s", req.path)
+	}
+
+	// Bare addresses: a mail binary predating the object shape.
+	f.respond["GET /accounts"] = map[string]any{"success": true, "accounts": []any{"a@example.com", "b@example.com"}}
+	if res := m.List("example.com"); !res.Status || res.Message != want {
+		t.Errorf("List of bare addresses = %+v, want %q", res, want)
+	}
+}
+
+func TestMailListAll(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+
+	accounts := []any{
+		map[string]any{"domain": "example.com", "email": "a@example.com"},
+		map[string]any{"domain": "other.test", "email": "c@other.test"},
+	}
+	f.respond["GET /accounts"] = map[string]any{"success": true, "accounts": accounts}
+	res := m.ListAll()
+	if !res.Status || !reflect.DeepEqual(res.Data, accounts) {
+		t.Errorf("ListAll = %+v", res)
+	}
+	if req := f.last(t); req.path != "/accounts" {
+		t.Errorf("ListAll request path = %s", req.path)
+	}
+
+	f.respond["GET /accounts"] = map[string]any{"success": true}
+	if res := m.ListAll(); !res.Status || !reflect.DeepEqual(res.Data, []any{}) {
+		t.Errorf("ListAll empty = %+v", res)
+	}
+
+	f.respond["GET /accounts"] = map[string]any{"success": false, "message": "boom"}
+	if res := m.ListAll(); res.Status || res.Message != "boom" {
+		t.Errorf("ListAll failure = %+v", res)
 	}
 }
 

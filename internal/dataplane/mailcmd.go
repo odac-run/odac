@@ -53,6 +53,7 @@ func (m *Mail) Create(email, password, retype any) api.Result {
 	}
 	if truthy(res["success"]) {
 		go m.SyncConfig() // Node fires syncConfig un-awaited after create
+		m.hubTrigger("mail.list")
 		return api.Res(true, __("Mail account %s created successfully.", str(email)))
 	}
 	if truthy(res["message"]) {
@@ -71,6 +72,7 @@ func (m *Mail) Delete(email any) api.Result {
 		return api.Res(false, __("Account deletion failed."))
 	}
 	if truthy(res["success"]) {
+		m.hubTrigger("mail.list")
 		return api.Res(true, __("Mail account %s deleted successfully.", str(email)))
 	}
 	if truthy(res["message"]) {
@@ -101,9 +103,30 @@ func (m *Mail) List(domain any) api.Result {
 		accounts, _ := res["accounts"].([]any)
 		lines := make([]string, len(accounts))
 		for i, a := range accounts {
-			lines[i] = jsString(a)
+			lines[i] = accountAddress(a)
 		}
 		return api.Res(true, __("Mail accounts for domain %s.", str(domain))+"\n"+strings.Join(lines, "\n"))
+	}
+	if truthy(res["message"]) {
+		return api.Res(false, res["message"])
+	}
+	return api.Res(false, __("Account list failed."))
+}
+
+// ListAll returns every account across all domains. Unlike List's CLI text
+// blob it answers the module's account objects as data.
+func (m *Mail) ListAll() api.Result {
+	res, err := m.moduleRequest("GET", "/accounts", nil)
+	if err != nil {
+		m.log.Error("Account list failed: %s", err.Error())
+		return api.Res(false, __("Account list failed."))
+	}
+	if truthy(res["success"]) {
+		accounts, _ := res["accounts"].([]any)
+		if accounts == nil {
+			accounts = []any{}
+		}
+		return api.Res(true, accounts)
 	}
 	if truthy(res["message"]) {
 		return api.Res(false, res["message"])
@@ -259,6 +282,15 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		return api.Res(false, res["message"])
 	}
 	return api.Res(false, __("Mail sending failed."))
+}
+
+// accountAddress reads one /accounts entry's address; a bare string is
+// rendered as-is, for a mail binary predating the object shape.
+func accountAddress(entry any) string {
+	if obj, ok := entry.(map[string]any); ok {
+		return jsString(obj["email"])
+	}
+	return jsString(entry)
 }
 
 // resolveAccountDomain ports Create's domain resolution: exact config.domains

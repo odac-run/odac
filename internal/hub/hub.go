@@ -79,6 +79,16 @@ type ProxyService interface {
 	SetTunnels(tunnels []dataplane.Tunnel) int
 }
 
+// MailService is the slice of dataplane.Mail the command table calls.
+// Send is left out: mail sending stays on the local API.
+type MailService interface {
+	Create(email, password, retype any) api.Result
+	Delete(email any) api.Result
+	List(domain any) api.Result
+	ListAll() api.Result
+	Password(email, password, retype any) api.Result
+}
+
 // TerminalExec is one container shell session (docker.Terminal's surface).
 type TerminalExec interface {
 	Write(data []byte) bool
@@ -103,6 +113,7 @@ type Deps struct {
 	DNS       DNSService
 	Domain    DomainService
 	Proxy     ProxyService
+	Mail      MailService
 	Container ContainerService
 	SysInfo   func() jscanon.Obj
 	SysStats  func() jscanon.Obj
@@ -171,7 +182,7 @@ func New(cfg *config.Store, baseURL string, deps Deps) *Hub {
 
 	h.ws.onConnect = func() {
 		h.spawn(func() {
-			for _, task := range []string{"system.info", "app.list", "dns.list", "domain.list"} {
+			for _, task := range []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list"} {
 				h.triggerSync(task)
 			}
 		})
@@ -819,6 +830,39 @@ func (h *Hub) buildCommands() {
 	h.register("app.build_logs.off", &command{fn: h.buildLogsOff})
 	h.register("terminal.open", &command{fn: func(p any) (any, error) { return h.terminals.open(pmap(p)) }})
 	h.register("terminal.close", &command{fn: func(p any) (any, error) { return h.terminals.close(pmap(p)) }})
+	// mail.* — the retype argument is the CLI's ask-the-human-twice guard,
+	// so Hub payloads carry no retype and the password is passed for both.
+	withMail := func(fn func(payload any) (any, error)) func(payload any) (any, error) {
+		if h.deps.Mail == nil {
+			return func(any) (any, error) { return nil, errors.New("Mail service is not available") }
+		}
+		return fn
+	}
+	h.register("mail.create", &command{
+		fn: withMail(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.Mail.Create(m["email"], m["password"], m["password"]), nil
+		}),
+	})
+	h.register("mail.delete", &command{
+		fn: withMail(func(p any) (any, error) { return h.deps.Mail.Delete(pmap(p)["email"]), nil }),
+	})
+	h.register("mail.list", &command{
+		fn: withMail(func(p any) (any, error) {
+			domain := pmap(p)["domain"]
+			if !jsTruthy(domain) {
+				return h.deps.Mail.ListAll(), nil
+			}
+			return h.deps.Mail.List(domain), nil
+		}),
+		interval: 60 * time.Minute,
+	})
+	h.register("mail.password", &command{
+		fn: withMail(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.Mail.Password(m["email"], m["password"], m["password"]), nil
+		}),
+	})
 	h.register("system.update", &command{
 		fn: func(any) (any, error) {
 			if h.deps.SysUpdate == nil {

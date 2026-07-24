@@ -121,6 +121,7 @@ func main() {
 		DNS:      dnsSvc,
 		Domain:   domainSvc,
 		Proxy:    proxySvc,
+		Mail:     mailSvc,
 		SysInfo:  sysInfo.Get,
 		SysStats: sysInfo.Stats,
 		SysUpdate: func() (any, error) {
@@ -157,6 +158,7 @@ func main() {
 	if appMgr != nil {
 		appMgr.SetHub(hubSvc) // closes the 3.4e seam (triggers + recipe fetch)
 	}
+	mailSvc.SetHub(hubSvc)
 
 	svc := system.Services{
 		Proxy: proxySvc,
