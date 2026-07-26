@@ -25,6 +25,21 @@ Unsure where to begin contributing to Odac? You can start by looking through `go
 *   [Good first issues](https://github.com/Odac/Odac/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) - issues which should only require a few lines of code, and a test or two.
 *   [Help wanted issues](https://github.com/Odac/Odac/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) - issues which should be a bit more involved than `good first issue` issues.
 
+### Local Setup
+
+The repository ships a pre-commit hook (`.github/hooks/pre-commit`) that runs
+`gofmt` on staged files plus `go vet`, `go build` and `go test`. Git never
+enables hooks from a clone on its own — cloning a repository must not run its
+author's code — so turn it on once per clone:
+
+```sh
+git config core.hooksPath .github/hooks
+```
+
+Without this the hook is inert and you will only find problems in CI. Git gives
+no warning when the configured directory does not exist, so re-run the command
+if hooks ever stop firing.
+
 ### Development Workflow
 
 Our development process follows a branching model similar to Git Flow. This helps us keep the `main` branch stable and ready for release at all times.

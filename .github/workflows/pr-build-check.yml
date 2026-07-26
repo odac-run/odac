@@ -1,13 +1,19 @@
 name: PR Build Check
 
+# No paths-ignore: a skipped workflow reports no status at all, so a required
+# check would leave docs-only PRs permanently "waiting" and unmergeable. The Go
+# job is seconds and the Docker build is layer-cached, so always running is
+# cheaper than the deadlock.
 on:
   pull_request:
     branches:
       - main
       - dev
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+  # Direct pushes to dev skip the pull_request trigger entirely; without this
+  # they reach the branch unchecked.
+  push:
+    branches:
+      - dev
 
 jobs:
   # Check 1: Verify Go modules and Compilation explicitly
@@ -28,13 +34,29 @@ jobs:
       - name: Verify Dependencies
         run: go mod verify
 
+      # gofmt never exits non-zero — it just lists offending files, so an empty
+      # listing is the pass condition.
+      - name: Check Formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
       - name: Build All Packages
         env:
           GOOS: linux
         run: go build -v ./...
 
+      # -race needs cgo, which is on by default on the runner; the project
+      # itself stays cgo-free (modernc sqlite).
       - name: Run Tests
-        run: go test -v ./...
+        run: go test -race -v ./...
 
   # Check 2: Full Docker Build (Dry Run)
   # This ensures the Dockerfile stages (including the Go build inside Alpine) work correctly
