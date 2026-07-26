@@ -13,6 +13,7 @@ ODAC is a single Go module (`odac`) producing six binaries, shipped as one Docke
 - **Layout**: entry points live under `cmd/` (`odac` CLI, `odac-server` orchestrator, `odac-watchdog` supervisor, `odac-proxy`, `odac-dns`, `odac-mail` data plane); all shared code lives under `internal/`.
 - **Boundaries**: the CLI talks to the server over the TCP API socket (`internal/apiproto`, 127.0.0.1:1453); the server drives the data-plane daemons over their unix-socket control APIs (`internal/dataplane`). Cross-binary contracts are pinned — never change a wire format casually.
 - **Collaborators as interfaces**: packages depend on narrow interfaces (see `internal/appmgr`, `internal/hub`), wired together in `cmd/odac-server/main.go`. Follow that pattern; avoid global state.
+- **Failure domains**: each data-plane binary is a separate OS process and therefore its own crash domain — a panic in `odac-mail` cannot take down the proxy, DNS, or the server. Reason about reliability at that granularity, never as "one panic kills the platform". The flip side: `internal/dataplane` respawns a dead daemon on the 1-second check tick with no backoff or retry ceiling, so a remotely triggerable panic degrades into a respawn loop — a full outage for that service that still reports healthy to the watchdog, because every probe hits a freshly started process.
 - **Native Builder**: use the internal builder (`internal/docker`). Do not introduce Nixpacks or other external builders.
 
 ## 3. Core Directives (Non-Negotiable)
@@ -41,7 +42,8 @@ ODAC is a single Go module (`odac`) producing six binaries, shipped as one Docke
 ## 5. Knowledge Management (The Memory Loop)
 You possess a long-term memory at `.agent/rules/memory.md`.
 - **Learning**: Whenever the user corrects you or establishes a preference, update `memory.md` IMMEDIATELY.
-- **Consistency**: Read `memory.md` and `.agent/rules/*.md` at the start of every session to ensure perfect alignment with project standards.
+- **Consistency**: Read `memory.md` and `.agent/rules/*.md` at the start of every session to ensure perfect alignment with project standards. `CLAUDE.md` imports this file and those rules so they load automatically; keep it a thin import shim and never duplicate their content into it.
+- **Architectural corrections**: when a correction reveals a structural fact you had wrong (process boundaries, wire contracts, failure domains, lifecycle ordering), record it in the matching section of this file — not only in `memory.md`. Section 2 is where structure belongs; a fact that misled you once will mislead the next agent.
 
 ## 6. Documentation & Releases
 - **Language**: All documentation and code comments must be in **English**.
