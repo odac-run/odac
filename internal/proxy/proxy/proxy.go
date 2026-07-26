@@ -65,9 +65,27 @@ var (
 var debugMode = os.Getenv("PROXY_DEBUG") != ""
 
 func debugLog(format string, args ...interface{}) {
-	if debugMode {
-		log.Printf(format, args...)
+	if !debugMode {
+		return
 	}
+	// Debug logs carry remote-controlled strings (SNI, Host, URL paths); escape
+	// line breaks so a crafted request cannot forge extra log entries. Only ever
+	// runs with PROXY_DEBUG set, so the request path pays nothing for it.
+	for i, a := range args {
+		if s, ok := a.(string); ok {
+			args[i] = logSafe(s)
+		}
+	}
+	log.Printf(format, args...)
+}
+
+// logSafe escapes CR/LF so untrusted values stay on a single log line.
+func logSafe(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return strings.ReplaceAll(s, "\n", "\\n")
 }
 
 // bufferPool implements httputil.BufferPool interface for zero-allocation proxying.

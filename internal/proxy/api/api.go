@@ -81,6 +81,11 @@ func (s *Server) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing token", http.StatusBadRequest)
 			return
 		}
+		// Same format check as POST: the token reaches the map key and the log line.
+		if len(req.Token) > 256 || !validTokenRegex.MatchString(req.Token) {
+			http.Error(w, "Invalid token format", http.StatusBadRequest)
+			return
+		}
 		s.proxy.DeleteACMEChallenge(req.Token)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))

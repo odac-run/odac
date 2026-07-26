@@ -628,9 +628,14 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 			partialStr = rest[1 : len(rest)-1]
 			dotIdx := strings.Index(partialStr, ".")
 			if dotIdx >= 0 {
-				partialOrigin, _ = strconv.ParseInt(partialStr[:dotIdx], 10, 64)
-				partialCount, _ = strconv.ParseInt(partialStr[dotIdx+1:], 10, 64)
-				hasPartial = true
+				origin, oErr := strconv.ParseInt(partialStr[:dotIdx], 10, 64)
+				count, cErr := strconv.ParseInt(partialStr[dotIdx+1:], 10, 64)
+				// RFC 3501 §9 allows only non-negative numbers here; a malformed
+				// or negative range would otherwise slice the body out of bounds.
+				if oErr == nil && cErr == nil && origin >= 0 && count >= 0 {
+					partialOrigin, partialCount = origin, count
+					hasPartial = true
+				}
 			}
 		}
 	}
@@ -734,21 +739,21 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 	// Apply partial range if requested
 	if hasPartial {
 		contentBytes := []byte(content)
-		origin := int(partialOrigin)
-		count := int(partialCount)
+		total := int64(len(contentBytes))
 
-		if origin >= len(contentBytes) {
+		if partialOrigin >= total {
 			content = ""
 		} else {
-			end := origin + count
-			if end > len(contentBytes) {
-				end = len(contentBytes)
+			end := partialOrigin + partialCount
+			// end < partialOrigin catches int64 overflow on an absurd count.
+			if end > total || end < partialOrigin {
+				end = total
 			}
-			content = string(contentBytes[origin:end])
+			content = string(contentBytes[partialOrigin:end])
 		}
 
 		// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
-		key := fmt.Sprintf("BODY[%s]<%d>", section, origin)
+		key := fmt.Sprintf("BODY[%s]<%d>", section, partialOrigin)
 		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
 	} else {
 		key := "BODY[" + section + "]"

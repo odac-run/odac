@@ -394,9 +394,12 @@ func appendFile(file, payload string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.WriteString(payload)
-	return err
+	if _, err := f.WriteString(payload); err != nil {
+		f.Close()
+		return err
+	}
+	// Close can surface a deferred write error (full disk, network FS).
+	return f.Close()
 }
 
 // isoNow matches JavaScript's Date.toISOString() (millisecond UTC).
