@@ -1,3 +1,42 @@
+### doc
+
+- update security policy for clarity and consistency
+
+### ⚙️ Engine Tuning
+
+- remove outdated steering documents and enhance AGENTS.md with failure domain details
+
+### ✨ What's New
+
+- add elastic host-swap manager (internal/system/swap)
+- add image override support in fromRecipe method
+- add StatPathIsDir method to Docker interface and implement volume permission handling
+- add system stats functionality to report CPU, memory, disk, and network usage
+- enhance network usage metrics to include rx/tx counters
+- **mail:** expose account CRUD to the Hub and push list changes to cloud
+- Merge pull request #249 from odac-run/dev
+- migrate ODAC server and CLI from Node.js to Go
+
+### 🛠️ Fixes & Improvements
+
+- enhance argument parsing and unquoting to handle escaped characters correctly
+- remove app images on delete and prune dangling layers after redeploy
+- report memory used from MemAvailable instead of MemFree
+- **security:** reject malformed IMAP partial ranges and sanitize debug logs
+- **swap:** adopt swapfiles left on disk instead of orphaning them
+- **swap:** combined-pool grow metric + container /proc/swaps recognition
+- update flag parsing to use locale-independent casing for JSON flags
+
+
+### 💥 BREAKING CHANGES
+
+- Merge pull request #249 from odac-run/dev
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ⚙️ Engine Tuning
 
 - improve app deletion handling during container lifecycle and deployment phases

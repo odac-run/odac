@@ -29,7 +29,7 @@ import (
 
 // Version is the release version — the single source of truth since 4.1
 // removed package.json (it used to mirror it, guarded by a drift test).
-const Version = "1.11.0"
+const Version = "2.0.0"
 
 // Info assembles system inventory. containerEngine reports Docker
 // availability (Node: Odac.server('Container').available).
