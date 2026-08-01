@@ -23,7 +23,7 @@ require (
 	golang.org/x/term v0.45.0
 	golang.org/x/text v0.40.0
 	golang.org/x/time v0.15.0
-	modernc.org/sqlite v1.37.1
+	modernc.org/sqlite v1.55.0
 )
 
 require (
