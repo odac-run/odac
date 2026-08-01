@@ -1,32 +1,35 @@
-# Dependencies
-node_modules/
-npm-debug.log
-
-# Testing
-coverage/
-test/
-*.test.js
+# The image copies only go.mod/go.sum, cmd/ and internal/ (see Dockerfile);
+# everything listed here just keeps the rest of the tree out of the build
+# context.
 
 # Development
 .git/
 .github/
-.husky/
 .kiro/
 .vscode/
 .secret/
+.agent/
+.claude/
+.idea/
+
+# Runtime state (certs, config, storage) — must never be baked into an image
+.odac/
+
+# Release CI scratch (release.yml installs semantic-release into the workspace
+# before building the image from the same checkout)
+node_modules/
+.release-version
+
+# Locally compiled binaries (image builds its own in the go-builder stage;
+# a dev machine's copies may be the wrong arch/OS)
+bin/
 
 # Documentation
 docs/
 *.md
-!README.md
 
 # Logs
 *.log
-semantic.log
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Build artifacts
 dist/
@@ -37,8 +40,9 @@ build/
 .env.local
 .env.*.local
 
-# IDE
-.idea/
+# OS
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
 *~

@@ -27,8 +27,8 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v odac-storage:/app/storage \
-  -v odac-sites:/app/sites \
+  -v /var/lib/odac/.odac:/app/.odac \
+  -e ODAC_HOST_ROOT=/var/lib/odac \
   --cap-add NET_ADMIN \
   --cap-add NET_BIND_SERVICE \
   odacrun/odac:latest
@@ -37,8 +37,8 @@ docker run -d \
 docker logs -f odac
 
 # Execute CLI commands
-docker exec -it odac node bin/odac status
-docker exec -it odac node bin/odac monitor
+docker exec -it odac odac status
+docker exec -it odac odac monitor
 
 # Stop and remove
 docker stop odac
@@ -71,15 +71,15 @@ This script will:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NODE_ENV` | `production` | Node.js environment |
 | `TZ` | `UTC` | Timezone |
+| `ODAC_DATA_DIR` | `/var/lib/odac` | Host directory holding the persistent data (compose only) |
+| `ODAC_HOST_ROOT` | — | Host path the container's `/app` maps to; required for git deploys (compose sets it from `ODAC_DATA_DIR`) |
 
 ## Volumes
 
-| Volume | Purpose |
-|--------|---------|
-| `/app/storage` | Configuration, databases, logs |
-| `/app/sites` | Website files and data |
+| Mount | Purpose |
+|-------|---------|
+| `/app/.odac` | Configuration, databases, logs, app data — must be a **host bind** (named volumes break git deploys, see `ODAC_HOST_ROOT`) |
 | `/var/run/docker.sock` | Docker daemon access (required) |
 
 ## Ports
@@ -123,8 +123,12 @@ Using `network_mode: host` provides:
 ### Check Odac Status
 
 ```bash
-docker exec odac node bin/odac status
+docker exec odac odac status
 ```
+
+The container's `HEALTHCHECK` runs `odac healthcheck` (exit 0 while the
+server accepts API connections); `docker ps` shows the result as
+`healthy`/`unhealthy`.
 
 ### View Logs
 
@@ -152,7 +156,7 @@ docker exec -it odac sh
 docker restart odac
 
 # Restart specific service
-docker exec odac node bin/odac restart web
+docker exec odac odac restart web
 ```
 
 ## Updating Odac
@@ -168,34 +172,19 @@ docker-compose up -d
 
 ## Backup and Restore
 
+The persistent data lives in a plain host directory (default
+`/var/lib/odac/.odac`), so backup and restore are ordinary tar commands.
+
 ### Backup
 
 ```bash
-# Backup volumes
-docker run --rm \
-  -v odac-storage:/data \
-  -v $(pwd):/backup \
-  alpine tar czf /backup/odac-storage-backup.tar.gz -C /data .
-
-docker run --rm \
-  -v odac-sites:/data \
-  -v $(pwd):/backup \
-  alpine tar czf /backup/odac-sites-backup.tar.gz -C /data .
+tar czf odac-backup.tar.gz -C /var/lib/odac .odac
 ```
 
 ### Restore
 
 ```bash
-# Restore volumes
-docker run --rm \
-  -v odac-storage:/data \
-  -v $(pwd):/backup \
-  alpine sh -c "cd /data && tar xzf /backup/odac-storage-backup.tar.gz"
-
-docker run --rm \
-  -v odac-sites:/data \
-  -v $(pwd):/backup \
-  alpine sh -c "cd /data && tar xzf /backup/odac-sites-backup.tar.gz"
+tar xzf odac-backup.tar.gz -C /var/lib/odac
 ```
 
 ## Uninstall
@@ -204,8 +193,8 @@ docker run --rm \
 # Stop and remove container
 docker-compose down
 
-# Remove volumes (WARNING: This deletes all data!)
-docker volume rm odac-storage odac-sites
+# Remove data directory (WARNING: This deletes all data!)
+rm -rf /var/lib/odac
 
 # Remove image
 docker rmi odacrun/odac:latest
@@ -229,14 +218,17 @@ docker run -it --rm \
 
 ## Technical Details
 
-- **Base Image**: `node:22-alpine` (minimal footprint)
-- **Node.js Version**: 22.x LTS
+- **Base Image**: `alpine:3.22` (static Go binaries, no language runtime)
+- **Go Version**: 1.25 (build stage only)
 - **OS**: Alpine Linux (lightweight, secure)
 
 ### Run Tests
 
+Tests run with the Go toolchain against the source tree (they are not
+shipped in the image):
+
 ```bash
 docker run --rm \
-  -v $(pwd):/app \
-  odacrun/odac:dev npm test
+  -v $(pwd):/src -w /src \
+  golang:1.25-alpine go test ./...
 ```

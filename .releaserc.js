@@ -122,15 +122,21 @@ Powered by [⚡ ODAC](https://odac.run)
       }
     ],
     [
-      '@semantic-release/npm',
+      // Version source of truth is the Go constant sysinfo.Version (package.json
+      // is gone). prepareCmd bumps it before @semantic-release/git commits it,
+      // and drops .release-version (untracked) for the workflow's later steps.
+      '@semantic-release/exec',
       {
-        npmPublish: false
+        prepareCmd:
+          'sed -i \'s|^const Version = ".*"$|const Version = "${nextRelease.version}"|\' internal/sysinfo/sysinfo.go' +
+          ' && grep -q \'^const Version = "${nextRelease.version}"$\' internal/sysinfo/sysinfo.go' +
+          ' && echo "${nextRelease.version}" > .release-version'
       }
     ],
     [
       '@semantic-release/git',
       {
-        assets: ['package.json', 'package-lock.json', 'CHANGELOG.md'],
+        assets: ['internal/sysinfo/sysinfo.go', 'CHANGELOG.md'],
         message: '⚡ ODAC v${nextRelease.version} Released'
       }
     ],

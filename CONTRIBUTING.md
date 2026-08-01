@@ -25,6 +25,21 @@ Unsure where to begin contributing to Odac? You can start by looking through `go
 *   [Good first issues](https://github.com/Odac/Odac/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) - issues which should only require a few lines of code, and a test or two.
 *   [Help wanted issues](https://github.com/Odac/Odac/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) - issues which should be a bit more involved than `good first issue` issues.
 
+### Local Setup
+
+The repository ships a pre-commit hook (`.github/hooks/pre-commit`) that runs
+`gofmt` on staged files plus `go vet`, `go build` and `go test`. Git never
+enables hooks from a clone on its own — cloning a repository must not run its
+author's code — so turn it on once per clone:
+
+```sh
+git config core.hooksPath .github/hooks
+```
+
+Without this the hook is inert and you will only find problems in CI. Git gives
+no warning when the configured directory does not exist, so re-run the command
+if hooks ever stop firing.
+
 ### Development Workflow
 
 Our development process follows a branching model similar to Git Flow. This helps us keep the `main` branch stable and ready for release at all times.
@@ -37,12 +52,13 @@ Our development process follows a branching model similar to Git Flow. This help
 2.  **Making Changes:**
     *   Make your code changes, ensuring you follow the project's coding standards.
     *   Add tests for any new code.
-    *   Ensure all tests pass (`npm test`) and the code lints correctly.
+    *   Ensure the code builds and all tests pass: `go build ./...` and `go test ./...`.
+    *   Ensure the code is clean: `gofmt -l .` must print nothing and `go vet ./...` must pass.
 
 3.  **Committing Changes:**
     *   This project uses **Conventional Commits**. This is a requirement for our automated release process.
     *   Your commit messages must be in the format: `<type>(<scope>): <subject>`.
-        *   **type:** `feat` (new feature), `fix` (bug fix), `docs`, `style`, `refactor`, `test`, `chore`.
+        *   **type:** `feat` (new feature), `fix` (bug fix), `perf`, `docs`, `style`, `refactor`, `test`, `chore`.
         *   **scope:** (Optional) The part of the project you're working on (e.g., `server`, `framework`).
     *   Example: `feat(server): add rate limiting to API endpoints`
 
@@ -56,7 +72,7 @@ The `main` branch is only updated by merging `dev` into it during a new release.
 
 ## Code Style
 
-All JavaScript must adhere to the style defined in the `.prettierrc` file. The linter will automatically check this.
+All Go code must be `gofmt`-formatted and pass `go vet ./...`. CI checks both on every pull request.
 
 ---
 

@@ -1,98 +1,56 @@
-# Stage 0: Build Go Proxy
+# Stage 0: Build the Go binaries
 FROM golang:1.25-alpine AS go-builder
 WORKDIR /build
-# Copy Go source
-COPY server/proxy ./server/proxy
-COPY server/dns ./server/dns
-COPY server/mail ./server/mail
-# Build static binary
-# -ldflags="-s -w" reduces binary size by stripping debug symbols
-RUN cd server/proxy && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-proxy
-RUN cd server/dns && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-dns
-RUN cd server/mail && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/odac-mail
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+# Static binaries; -ldflags="-s -w" strips debug symbols to reduce size.
+# Builds all six: odac, odac-server, odac-watchdog, odac-proxy, odac-dns, odac-mail.
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/bin/ ./cmd/...
 
-# Stage 1: Build Node.js Native Dependencies
-FROM node:22-alpine AS node-builder
+# Stage 1: Production Image
+FROM alpine:3.22
 
 LABEL maintainer="emre.red <mail@emre.red>"
 LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
 
-# Install build dependencies
-RUN apk add --no-cache \
-    python3 \
-    make \
-    g++
-
-WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-
-# Install all dependencies (including devDependencies for native builds)
-RUN npm ci
-
-# Copy application files (Optional: if you need to build frontend assets later, copy . here)
-# COPY . .
-
-# Stage 2: Production Image
-FROM node:22-alpine
-
-LABEL maintainer="emre.red <mail@emre.red>"
-LABEL description="Odac Server - Next-Gen hosting platform with DNS, SSL, Mail & Monitoring"
-
-# Install runtime dependencies
+# Runtime dependencies:
+#   docker-cli / docker-cli-compose — container management (odac monitor shells
+#     out to `docker`; everything else goes through the socket API)
+#   sqlite — CLI for inspecting the mail database (the server itself uses a
+#     pure-Go driver and does not need it)
+#   ca-certificates — outbound TLS (hub, ACME, image pulls)
+#   tzdata — TZ env support for Go binaries (Node bundled its own tz database)
 RUN apk add --no-cache \
     docker-cli \
-    docker-compose \
+    docker-cli-compose \
     sqlite \
-    bash \
-    curl \
-    ca-certificates
+    ca-certificates \
+    tzdata
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+COPY --from=go-builder /build/bin ./bin
 
-# Install production dependencies only
-RUN npm ci --omit=dev
-
-# Copy Node.js modules from builder
-COPY --from=node-builder /app/node_modules ./node_modules
-
-# Copy Go Proxy, DNS and Mail binaries from go-builder
-COPY --from=go-builder /build/odac-proxy ./bin/odac-proxy
-COPY --from=go-builder /build/odac-dns ./bin/odac-dns
-COPY --from=go-builder /build/odac-mail ./bin/odac-mail
-
-# Copy application source code
-COPY . .
-# Ensure binary is executable
-RUN chmod +x ./bin/odac-proxy && chmod +x ./bin/odac-dns && chmod +x ./bin/odac-mail
+# The CLI on PATH (replaces the Node image's `npm link`)
+RUN ln -s /app/bin/odac /usr/local/bin/odac
 
 # Create necessary directories
 RUN mkdir -p /app/.odac
 
-# Link odac CLI globally
-RUN npm link
-
 # Expose ports (documentation only, will use host network)
 EXPOSE 80 443/tcp 443/udp 25 587 993 143 53/udp 53/tcp
 
-# Health check
+# Health check: exits 0 while the server accepts API connections
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "require('./core/Odac.js'); process.exit(Odac.core('Config').get('server.status') === 'online' ? 0 : 1)" || exit 1
+  CMD ["/app/bin/odac", "healthcheck"]
 
-# Set environment
-ENV NODE_ENV=production
+# Config lives in $HOME/.odac
 ENV HOME=/app
-ENV ODAC_WEB_PATH=/app/sites
 
 # Volumes for persistence
 VOLUME ["/app/.odac"]
 
-# Start Odac daemon
-CMD ["node", "watchdog/index.js"]
+# Start Odac daemon (Go watchdog supervising the Go server)
+CMD ["./bin/odac-watchdog"]

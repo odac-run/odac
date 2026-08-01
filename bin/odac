@@ -1,6 +1,0 @@
-#!/usr/bin/env node
-
-let args = process.argv
-if(process.argv[0].includes('node')) args = process.argv.slice(1)
-
-require(args.includes('watchdog') ? '../watchdog/index.js' : '../cli/index.js')

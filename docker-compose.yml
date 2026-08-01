@@ -1,46 +1,45 @@
-version: '3.8'
-
 services:
   odac:
     image: odacrun/odac:latest
     container_name: odac
     restart: unless-stopped
-    
+
     # Use host network for direct port access
     network_mode: host
 
     # Interactive mode & TTY
     stdin_open: true
     tty: true
-    
+
     volumes:
       # Docker socket for managing containers
       - /var/run/docker.sock:/var/run/docker.sock
-      
-      # Persistent data
-      - odac-storage:/app/.odac
+
+      # Persistent data — a HOST BIND, not a named volume: app clone/build
+      # helpers run as sibling containers that bind-mount host paths, so the
+      # data dir must be reachable at a real host path (paired with
+      # ODAC_HOST_ROOT below; a named volume here breaks git deploys).
+      - ${ODAC_DATA_DIR:-/var/lib/odac}/.odac:/app/.odac
 
       # Kernel modules access (for BBR optimization)
       - /lib/modules:/lib/modules:ro
 
       # Host OS release info (so System.distro() reports the host, not the container)
       - /etc/os-release:/host/etc/os-release:ro
-    
+
     environment:
-      - NODE_ENV=production
       - TZ=UTC
-    
+      # Host path the container's /app maps to; sibling containers get their
+      # /app/... bind paths rewritten under it. Must match the bind above.
+      - ODAC_HOST_ROOT=${ODAC_DATA_DIR:-/var/lib/odac}
+
     # Full system access (Required for Docker management, DNS, etc.)
     privileged: true
     pid: host
-    
+
     # Logging
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  odac-storage:
-    driver: local

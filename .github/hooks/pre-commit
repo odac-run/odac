@@ -1,0 +1,39 @@
+#!/usr/bin/env sh
+#
+# Pre-commit guard for the ODAC Go codebase (replaces the old Node/husky +
+# jest hook). Enable once per clone:
+#
+#     git config core.hooksPath .github/hooks
+#
+# Git points at a path, not at this file: if the configured directory is missing
+# it runs nothing and says nothing, so a stale setting looks exactly like a
+# passing commit. Re-run the line above after the hooks directory moves.
+#
+# Skips entirely when a commit touches no Go files (e.g. docs-only changes).
+set -e
+
+staged_go=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+if [ -z "$staged_go" ]; then
+	exit 0
+fi
+
+# gofmt: reject only the staged files that are not formatted, so a commit is
+# never blocked by unrelated pre-existing formatting drift.
+unformatted=$(gofmt -l $staged_go)
+if [ -n "$unformatted" ]; then
+	echo "pre-commit: these staged files are not gofmt-clean:" >&2
+	echo "$unformatted" | sed 's/^/  /' >&2
+	echo "fix with: gofmt -w $unformatted" >&2
+	exit 1
+fi
+
+echo "pre-commit: go vet ./..."
+go vet ./...
+
+echo "pre-commit: go build ./..."
+go build ./...
+
+echo "pre-commit: go test ./..."
+go test ./...
+
+echo "pre-commit: ok"
