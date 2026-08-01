@@ -17,7 +17,7 @@ require (
 	github.com/miekg/dns v1.1.62
 	github.com/moby/docker-image-spec v1.3.1
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/quic-go/quic-go v0.60.0
+	github.com/quic-go/quic-go v0.61.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
