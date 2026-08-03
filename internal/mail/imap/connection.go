@@ -221,6 +221,17 @@ func (c *Connection) requireAuth(tag string) bool {
 	return true
 }
 
+// requireMailboxName gates every command that accepts a client-supplied mailbox
+// name. Rejecting here — rather than at each store call — keeps names that
+// cannot be represented on a protocol line out of the database entirely.
+func (c *Connection) requireMailboxName(tag, name string) bool {
+	if !validMailboxName(name) {
+		c.write(fmt.Sprintf("%s NO Invalid mailbox name\r\n", tag))
+		return false
+	}
+	return true
+}
+
 func (c *Connection) requireMailbox(tag string) bool {
 	if !c.requireAuth(tag) {
 		return false

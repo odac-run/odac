@@ -106,9 +106,22 @@ func (c *Connection) cmdLogin(tag, args string) {
 		return
 	}
 
-	username := unquote(parts[0])
-	password := unquote(parts[1])
+	c.authenticateUser(tag, unquote(parts[0]), unquote(parts[1]))
+}
+
+// authenticateUser runs the credential check shared by LOGIN and AUTHENTICATE.
+// Both entry points hand over already-decoded values: re-serialising credentials
+// into a command line would let a `"` inside a username shift the argument
+// boundaries of the parser that re-reads it.
+func (c *Connection) authenticateUser(tag, username, password string) {
 	ip := extractConnIP(c.conn)
+
+	// A username reaches the logs; control characters there forge log records.
+	if username == "" || hasControlChars(username) {
+		c.firewall.HandleFailedAuth(ip)
+		c.write(fmt.Sprintf("%s NO Authentication failed\r\n", tag))
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -199,8 +212,7 @@ func (c *Connection) cmdAuthenticate(tag, args string) {
 		return
 	}
 
-	// Reuse login logic
-	c.cmdLogin(tag, fmt.Sprintf(`"%s" "%s"`, parts[1], parts[2]))
+	c.authenticateUser(tag, parts[1], parts[2])
 }
 
 func (c *Connection) cmdSelect(tag, args string) {
@@ -209,8 +221,7 @@ func (c *Connection) cmdSelect(tag, args string) {
 	}
 
 	box := unquote(strings.TrimSpace(args))
-	if box == "" {
-		c.write(fmt.Sprintf("%s NO Mailbox name required\r\n", tag))
+	if !c.requireMailboxName(tag, box) {
 		return
 	}
 
@@ -245,8 +256,7 @@ func (c *Connection) cmdExamine(tag, args string) {
 	}
 
 	box := unquote(strings.TrimSpace(args))
-	if box == "" {
-		c.write(fmt.Sprintf("%s NO Mailbox name required\r\n", tag))
+	if !c.requireMailboxName(tag, box) {
 		return
 	}
 
@@ -320,7 +330,7 @@ func (c *Connection) cmdList(tag, args string) {
 			!strings.Contains(flags, "\\All") && !strings.Contains(flags, "\\Flagged") {
 			continue
 		}
-		c.write(fmt.Sprintf("* LIST (%s) \"/\" \"%s\"\r\n", flags, box))
+		c.write(fmt.Sprintf("* LIST (%s) \"/\" %s\r\n", flags, quoteString(box)))
 	}
 	c.write(fmt.Sprintf("%s OK LIST completed\r\n", tag))
 }
@@ -361,7 +371,7 @@ func (c *Connection) cmdLsub(tag, args string) {
 	}
 
 	for _, box := range boxes {
-		c.write(fmt.Sprintf("* LSUB (%s) \"/\" \"%s\"\r\n", mailboxFlags(box), box))
+		c.write(fmt.Sprintf("* LSUB (%s) \"/\" %s\r\n", mailboxFlags(box), quoteString(box)))
 	}
 	c.write(fmt.Sprintf("%s OK LSUB completed\r\n", tag))
 }
@@ -373,6 +383,9 @@ func (c *Connection) cmdStatus(tag, args string) {
 
 	parts := strings.SplitN(args, " ", 2)
 	mailbox := unquote(parts[0])
+	if !c.requireMailboxName(tag, mailbox) {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -406,7 +419,7 @@ func (c *Connection) cmdStatus(tag, args string) {
 		result = append(result, fmt.Sprintf("UNSEEN %d", stats.Unseen))
 	}
 
-	c.write(fmt.Sprintf("* STATUS %s (%s)\r\n", mailbox, strings.Join(result, " ")))
+	c.write(fmt.Sprintf("* STATUS %s (%s)\r\n", quoteString(mailbox), strings.Join(result, " ")))
 	c.write(fmt.Sprintf("%s OK STATUS completed\r\n", tag))
 }
 
@@ -416,6 +429,10 @@ func (c *Connection) cmdCreate(tag, args string) {
 	}
 
 	mailbox := unquote(strings.TrimSpace(args))
+	if !c.requireMailboxName(tag, mailbox) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -432,6 +449,10 @@ func (c *Connection) cmdDelete(tag, args string) {
 	}
 
 	mailbox := unquote(strings.TrimSpace(args))
+	if !c.requireMailboxName(tag, mailbox) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -453,10 +474,15 @@ func (c *Connection) cmdRename(tag, args string) {
 		return
 	}
 
+	oldName, newName := unquote(parts[0]), unquote(parts[1])
+	if !c.requireMailboxName(tag, oldName) || !c.requireMailboxName(tag, newName) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := c.store.MailboxRename(ctx, c.auth, unquote(parts[0]), unquote(parts[1])); err != nil {
+	if err := c.store.MailboxRename(ctx, c.auth, oldName, newName); err != nil {
 		c.write(fmt.Sprintf("%s NO RENAME failed\r\n", tag))
 		return
 	}
@@ -1179,6 +1205,9 @@ func (c *Connection) cmdCopy(tag, args string, isUID bool) {
 
 	seqSet := parts[0]
 	targetMailbox := unquote(parts[1])
+	if !c.requireMailboxName(tag, targetMailbox) {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1231,6 +1260,9 @@ func (c *Connection) cmdAppend(tag, args string) {
 	}
 
 	mailbox := unquote(parts[0])
+	if !c.requireMailboxName(tag, mailbox) {
+		return
+	}
 
 	const maxLiteralSize = 10 * 1024 * 1024 // 10MB hard limit
 
@@ -1327,31 +1359,34 @@ func splitArgs(s string) []string {
 	return parts
 }
 
+// unquote decodes an RFC 3501 quoted-string token, resolving "\x" -> "x".
+// A token only counts as quoted when the *unescaped* closing quote is its last
+// character: `"a\"` is an unterminated string, not the value `a`, and is
+// returned untouched so the caller rejects it instead of acting on a guess.
 func unquote(s string) string {
-	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+	if len(s) < 2 || s[0] != '"' {
 		return s
 	}
-	inner := s[1 : len(s)-1]
-	if !strings.Contains(inner, "\\") {
-		return inner
-	}
-	// Decode RFC 3501 quoted-string escapes: "\x" -> "x" for any escaped rune.
 	var b strings.Builder
-	b.Grow(len(inner))
+	b.Grow(len(s))
 	escaped := false
-	for _, ch := range inner {
-		if escaped {
+	for i, ch := range s[1:] {
+		switch {
+		case escaped:
 			b.WriteRune(ch)
 			escaped = false
-			continue
-		}
-		if ch == '\\' {
+		case ch == '\\':
 			escaped = true
-			continue
+		case ch == '"':
+			if i+2 == len(s) {
+				return b.String()
+			}
+			return s
+		default:
+			b.WriteRune(ch)
 		}
-		b.WriteRune(ch)
 	}
-	return b.String()
+	return s
 }
 
 func parseJSONFlags(flagsJSON string) []string {

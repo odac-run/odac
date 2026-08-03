@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -109,4 +110,108 @@ func extractConnIPString(ip string) string {
 		return ip[7:]
 	}
 	return ip
+}
+
+func TestUnquoteRejectsUnterminatedString(t *testing.T) {
+	// The trailing quote is escaped, so the token is an unterminated quoted
+	// string and must survive untouched instead of decoding to "a".
+	for _, in := range []string{`"a\"`, `"a"b"`, `"`, `"\\\"`} {
+		if got := unquote(in); got != in {
+			t.Errorf("unquote(%q) = %q, want it returned unchanged", in, got)
+		}
+	}
+}
+
+func TestSplitArgsPreservesBoundaries(t *testing.T) {
+	// Reference tokenizer: decodes escapes in one pass, so it is independent of
+	// the splitArgs/unquote split. Boundaries must agree for every input,
+	// well-formed or not.
+	ref := func(s string) []string {
+		var parts []string
+		var cur strings.Builder
+		has, inQuote := false, false
+		r := []rune(s)
+		for i := 0; i < len(r); i++ {
+			switch {
+			case inQuote && r[i] == '\\' && i+1 < len(r):
+				cur.WriteRune(r[i+1])
+				has = true
+				i++
+			case r[i] == '"':
+				inQuote = !inQuote
+				has = true
+			case r[i] == ' ' && !inQuote:
+				if has {
+					parts = append(parts, cur.String())
+					cur.Reset()
+					has = false
+				}
+			default:
+				cur.WriteRune(r[i])
+				has = true
+			}
+		}
+		if has {
+			parts = append(parts, cur.String())
+		}
+		return parts
+	}
+
+	alphabet := []rune{'"', '\\', ' ', 'a'}
+	var walk func(prefix []rune)
+	walk = func(prefix []rune) {
+		s := string(prefix)
+		if got, want := len(splitArgs(s)), len(ref(s)); got != want {
+			t.Errorf("splitArgs(%q) produced %d tokens, want %d", s, got, want)
+		}
+		if len(prefix) == 6 {
+			return
+		}
+		for _, ch := range alphabet {
+			walk(append(prefix, ch))
+		}
+	}
+	walk(nil)
+}
+
+func TestQuoteString(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{`INBOX`, `"INBOX"`},
+		{`Sent Items`, `"Sent Items"`},
+		// A bare quote would otherwise close the response token early.
+		{`a"b`, `"a\"b"`},
+		{`a\b`, `"a\\b"`},
+		// Control characters are illegal inside a quoted-string.
+		{"a\r\nb", `"ab"`},
+	}
+	for _, tt := range tests {
+		if got := quoteString(tt.input); got != tt.want {
+			t.Errorf("quoteString(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+
+	// Round-trip: whatever we emit must decode back to the original name.
+	for _, name := range []string{`INBOX`, `a"b`, `a\b`, `a\"b`, `""`, `Sent Items`} {
+		if got := unquote(quoteString(name)); got != name {
+			t.Errorf("unquote(quoteString(%q)) = %q, want %q", name, got, name)
+		}
+	}
+}
+
+func TestValidMailboxName(t *testing.T) {
+	valid := []string{"INBOX", "Sent Items", "Ärchiv", `a"b`, strings.Repeat("x", maxMailboxNameLen)}
+	for _, name := range valid {
+		if !validMailboxName(name) {
+			t.Errorf("validMailboxName(%q) = false, want true", name)
+		}
+	}
+
+	invalid := []string{"", "a\rb", "a\nb", "a\x00b", "a\x7fb", strings.Repeat("x", maxMailboxNameLen+1), "\xff\xfe"}
+	for _, name := range invalid {
+		if validMailboxName(name) {
+			t.Errorf("validMailboxName(%q) = true, want false", name)
+		}
+	}
 }
