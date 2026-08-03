@@ -450,15 +450,53 @@ func (s *Store) MailboxRename(ctx context.Context, email, oldTitle, newTitle str
 	return nil
 }
 
+// maxUIDsPerStatement bounds how many UIDs are bound into one IN (?,?,...)
+// clause. SQLite rejects any statement carrying more than
+// SQLITE_MAX_VARIABLE_NUMBER (32766) bound parameters, so a mailbox-wide
+// "STORE 1:* +FLAGS (\Seen)" has to be applied in batches rather than failing
+// outright once the mailbox grows past that many messages.
+const maxUIDsPerStatement = 512
+
 // MessageStoreFlags updates flags on messages matching the given UIDs.
+// action is "add", "remove" or "set"; "set" with an empty flag list clears all
+// flags, which is how clients express STORE FLAGS (). All batches run inside a
+// single transaction so a partially applied update is never observable.
 func (s *Store) MessageStoreFlags(ctx context.Context, email string, uids []int64, action string, flags []string) error {
 	if len(uids) == 0 {
+		return nil
+	}
+	if action != "add" && action != "remove" && action != "set" {
+		return fmt.Errorf("unknown flag action %q", action)
+	}
+	if action != "set" && len(flags) == 0 {
 		return nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("cannot begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	for start := 0; start < len(uids); start += maxUIDsPerStatement {
+		end := min(start+maxUIDsPerStatement, len(uids))
+		if err := storeFlagsBatch(ctx, tx, email, uids[start:end], action, flags); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("flag update commit failed: %w", err)
+	}
+	return nil
+}
+
+// storeFlagsBatch applies one action to a batch of UIDs small enough to fit in
+// a single statement's parameter budget.
+func storeFlagsBatch(ctx context.Context, tx *sql.Tx, email string, uids []int64, action string, flags []string) error {
 	// Build a parameterized IN clause (?,?,...) with the UIDs as bound args so no
 	// user/data-derived value is ever concatenated into the SQL text.
 	placeholders := make([]string, len(uids))
@@ -469,41 +507,42 @@ func (s *Store) MessageStoreFlags(ctx context.Context, email string, uids []int6
 	}
 	inClause := strings.Join(placeholders, ",")
 
+	if action == "set" {
+		// Marshal flags into a JSON array so values containing quotes/backslashes
+		// can't produce malformed JSON. A nil slice must still encode as [].
+		list := flags
+		if list == nil {
+			list = []string{}
+		}
+		flagsJSON, err := json.Marshal(list)
+		if err != nil {
+			return fmt.Errorf("flag set failed: %w", err)
+		}
+		query := fmt.Sprintf(`UPDATE mail_received SET flags = ? WHERE email = ? AND uid IN (%s)`, inClause)
+		args := append([]any{string(flagsJSON), email}, uidArgs...)
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("flag set failed: %w", err)
+		}
+		return nil
+	}
+
 	for _, flag := range flags {
-		switch action {
-		case "add":
-			query := fmt.Sprintf(`UPDATE mail_received
+		var query string
+		if action == "add" {
+			query = fmt.Sprintf(`UPDATE mail_received
 				SET flags = JSON_INSERT(flags, '$[#]', ?)
 				WHERE email = ? AND uid IN (%s)
 				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
-			args := append([]any{flag, email}, uidArgs...)
-			args = append(args, flag)
-			if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-				return fmt.Errorf("flag add failed: %w", err)
-			}
-		case "remove":
-			query := fmt.Sprintf(`UPDATE mail_received
+		} else {
+			query = fmt.Sprintf(`UPDATE mail_received
 				SET flags = (SELECT JSON_GROUP_ARRAY(value) FROM JSON_EACH(flags) WHERE value != ?)
 				WHERE email = ? AND uid IN (%s)
 				AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
-			args := append([]any{flag, email}, uidArgs...)
-			args = append(args, flag)
-			if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-				return fmt.Errorf("flag remove failed: %w", err)
-			}
-		case "set":
-			// Marshal flags into a JSON array so values containing quotes/backslashes
-			// can't produce malformed JSON.
-			flagsJSON, err := json.Marshal(flags)
-			if err != nil {
-				return fmt.Errorf("flag set failed: %w", err)
-			}
-			query := fmt.Sprintf(`UPDATE mail_received SET flags = ? WHERE email = ? AND uid IN (%s)`, inClause)
-			args := append([]any{string(flagsJSON), email}, uidArgs...)
-			if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-				return fmt.Errorf("flag set failed: %w", err)
-			}
-			return nil // set replaces all flags at once, no per-flag iteration needed
+		}
+		args := append([]any{flag, email}, uidArgs...)
+		args = append(args, flag)
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("flag %s failed: %w", action, err)
 		}
 	}
 	return nil

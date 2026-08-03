@@ -385,3 +385,72 @@ func TestMessageStoreFlags(t *testing.T) {
 		t.Errorf("stored flags are not valid JSON: %q (%v)", got, err)
 	}
 }
+
+func TestMessageStoreFlags_EmptySetClearsFlags(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := store.MessageStore(ctx, &MessageRow{Email: "u@e.com", Mailbox: "INBOX", Flags: ns("[]")}); err != nil {
+		t.Fatalf("MessageStore failed: %v", err)
+	}
+	if err := store.MessageStoreFlags(ctx, "u@e.com", []int64{1}, "add", []string{"seen", "flagged"}); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// STORE 1 FLAGS () arrives here as action "set" with no flags and must
+	// clear the list, not silently do nothing.
+	if err := store.MessageStoreFlags(ctx, "u@e.com", []int64{1}, "set", nil); err != nil {
+		t.Fatalf("set with empty flags failed: %v", err)
+	}
+
+	msgs, err := store.MessageFetch(ctx, "u@e.com", "INBOX", 1, 1)
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("fetch failed: %v (%d rows)", err, len(msgs))
+	}
+	if got := msgs[0].Flags.String; got != "[]" {
+		t.Errorf("flags after FLAGS () = %q, want %q", got, "[]")
+	}
+}
+
+func TestMessageStoreFlags_LargeUIDSet(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const messages = 3
+	for i := 0; i < messages; i++ {
+		if err := store.MessageStore(ctx, &MessageRow{Email: "u@e.com", Mailbox: "INBOX", Flags: ns("[]")}); err != nil {
+			t.Fatalf("MessageStore failed: %v", err)
+		}
+	}
+
+	// More UIDs than SQLITE_MAX_VARIABLE_NUMBER (32766): a single IN clause
+	// would fail with "too many SQL variables", so the update must be batched.
+	uids := make([]int64, 40000)
+	for i := range uids {
+		uids[i] = int64(i + 1)
+	}
+	if err := store.MessageStoreFlags(ctx, "u@e.com", uids, "add", []string{"seen"}); err != nil {
+		t.Fatalf("add over %d UIDs failed: %v", len(uids), err)
+	}
+
+	for uid := int64(1); uid <= messages; uid++ {
+		msgs, err := store.MessageFetch(ctx, "u@e.com", "INBOX", uid, uid)
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("fetch uid %d failed: %v (%d rows)", uid, err, len(msgs))
+		}
+		if !strings.Contains(msgs[0].Flags.String, "seen") {
+			t.Errorf("uid %d should have 'seen', got %q", uid, msgs[0].Flags.String)
+		}
+	}
+}
+
+func TestMessageStoreFlags_UnknownAction(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.MessageStoreFlags(context.Background(), "u@e.com", []int64{1}, "toggle", []string{"seen"}); err == nil {
+		t.Error("unknown action should return an error, got nil")
+	}
+}
