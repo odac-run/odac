@@ -229,6 +229,41 @@ func (m *Manager) LinkEnv(id any, target string) *api.Result {
 	return result
 }
 
+// sweepLinkedRefsLocked drops a deleted app's name from every other app's
+// env.linked list. Links are stored by name with no reverse index, so a
+// dangling entry outlives the delete: resolveEnvLocked and GetEnv both skip
+// unknown targets, which silently strips the linker's env at its next restart
+// with nothing in the UI to explain it — and re-creating an app under the same
+// name revives the link, injecting the new app's secrets into the old linker.
+// Returns the affected app names. Caller holds cfg.Mutate; does not save.
+func (m *Manager) sweepLinkedRefsLocked(name string) []string {
+	var affected []string
+	for _, app := range m.apps {
+		envConfig, _ := app["env"].(map[string]any)
+		if envConfig == nil {
+			continue
+		}
+		linked, ok := envConfig["linked"].([]any)
+		if !ok {
+			continue
+		}
+		filtered := make([]any, 0, len(linked))
+		for _, ln := range linked {
+			if ln != name {
+				filtered = append(filtered, ln)
+			}
+		}
+		if len(filtered) == len(linked) {
+			continue
+		}
+		envConfig["linked"] = filtered
+		if linker, _ := app["name"].(string); linker != "" {
+			affected = append(affected, linker)
+		}
+	}
+	return affected
+}
+
 // SetEnv ports App.setEnv: merge K/V pairs into the manual envs (migrating
 // the legacy flat shape in place).
 func (m *Manager) SetEnv(id any, env map[string]any) *api.Result {

@@ -183,6 +183,7 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 	// worse, get renamed to app.name after we already removed it).
 	m.SweepGreenContainersFor(name, activeContainerID)
 
+	var unlinked []string
 	m.cfg.Mutate(func() {
 		filtered := m.apps[:0]
 		for _, app := range m.apps {
@@ -192,8 +193,13 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 			filtered = append(filtered, app)
 		}
 		m.apps = filtered
+		// Cascading delete: drop env links pointing at the removed app.
+		unlinked = m.sweepLinkedRefsLocked(name)
 		m.saveAppsLocked()
 	})
+	if len(unlinked) > 0 {
+		m.log.Log("Removed env link to %s from %s - restart required to apply", name, strings.Join(unlinked, ", "))
+	}
 
 	m.mu.Lock()
 	stream := m.logStreams[name]
