@@ -13,7 +13,7 @@ require (
 	github.com/emersion/go-smtp v0.24.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
-	github.com/klauspost/compress v1.18.2
+	github.com/klauspost/compress v1.19.2
 	github.com/miekg/dns v1.1.62
 	github.com/moby/docker-image-spec v1.3.1
 	github.com/opencontainers/image-spec v1.1.1
