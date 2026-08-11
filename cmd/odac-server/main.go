@@ -172,6 +172,9 @@ func main() {
 		appMgr.SetHub(hubSvc) // closes the 3.4e seam (triggers + recipe fetch)
 	}
 	mailSvc.SetHub(hubSvc)
+	// A GPU that becomes schedulable mid-flight (driver loaded, toolkit
+	// installed, daemon restarted) must not wait for the hourly system.info.
+	sysInfo.SetGPUChangeHook(func() { hubSvc.Trigger("system.info") })
 
 	svc := system.Services{
 		Proxy: proxySvc,

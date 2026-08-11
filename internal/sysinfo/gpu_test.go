@@ -570,3 +570,91 @@ func TestProbeGPUDriverSeenViaDevNode(t *testing.T) {
 		t.Errorf("schedulable = %v, reason = %q", snap.schedulable, snap.reason)
 	}
 }
+
+// hookInfo builds an Info over a host with an NVIDIA card whose driver is up
+// but whose engine runtime list the test controls, so flipping that list
+// flips schedulable/reason — exactly the transition an operator installing
+// nvidia-container-toolkit produces.
+func hookInfo(t *testing.T, runtimes *[]string, now *time.Time) *Info {
+	t.Helper()
+	fs := newFakeSysfs(t)
+	fs.pciDevice(t, "0000:01:00.0", "0x030000", pciVendorNvidia, "0x2204", nil)
+	fs.dir(t, "module", "nvidia")
+	info := New(nil, func() []string { return *runtimes })
+	info.now = func() time.Time { return *now }
+	return info
+}
+
+// The whole point: a host that becomes schedulable tells the Cloud at once
+// instead of waiting out the hourly system.info task.
+func TestGPUChangeHookFiresOnChange(t *testing.T) {
+	runtimes := []string{"runc"}
+	now := time.Now()
+	info := hookInfo(t, &runtimes, &now)
+
+	fired := 0
+	info.SetGPUChangeHook(func() { fired++ })
+
+	if snap := info.gpuState(); snap.schedulable {
+		t.Fatal("schedulable without an nvidia runtime registered")
+	}
+	if fired != 0 {
+		t.Fatalf("fired %d times on the first probe, want 0", fired)
+	}
+
+	runtimes = []string{"nvidia", "runc"}
+	now = now.Add(gpuCacheTTL + time.Second)
+	snap := info.gpuState()
+	if !snap.schedulable || snap.reason != "" {
+		t.Fatalf("snapshot = %+v, want schedulable with no reason", snap)
+	}
+	if fired != 1 {
+		t.Errorf("fired %d times, want 1", fired)
+	}
+}
+
+// A re-probe that finds the same host must stay quiet: the hook costs a
+// signed Hub message.
+func TestGPUChangeHookSilentWhenUnchanged(t *testing.T) {
+	runtimes := []string{"nvidia", "runc"}
+	now := time.Now()
+	info := hookInfo(t, &runtimes, &now)
+
+	fired := 0
+	info.SetGPUChangeHook(func() { fired++ })
+
+	info.gpuState()
+	now = now.Add(gpuCacheTTL + time.Second)
+	info.gpuState()
+	now = now.Add(gpuCacheTTL + time.Second)
+	info.gpuState()
+	if fired != 0 {
+		t.Errorf("fired %d times on an unchanged host, want 0", fired)
+	}
+}
+
+// The hook reads the payload it is announcing — it must not run under the
+// probe lock. A regression here hangs the Hub's stats task, so it deadlocks
+// this test rather than failing it.
+func TestGPUChangeHookMayReadThePayload(t *testing.T) {
+	runtimes := []string{"runc"}
+	now := time.Now()
+	info := hookInfo(t, &runtimes, &now)
+
+	var seen jscanon.Obj
+	info.SetGPUChangeHook(func() { seen = info.gpuField() })
+
+	info.gpuState()
+	runtimes = []string{"nvidia"}
+	now = now.Add(gpuCacheTTL + time.Second)
+	info.gpuState()
+
+	if len(seen) == 0 {
+		t.Fatal("hook never ran")
+	}
+	for _, field := range seen {
+		if field.K == "schedulable" && field.V != true {
+			t.Errorf("hook saw schedulable = %v, want the fresh answer", field.V)
+		}
+	}
+}

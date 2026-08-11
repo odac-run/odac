@@ -68,10 +68,11 @@ type Info struct {
 	// GPU inventory is probed lazily and cached for gpuCacheTTL: it walks
 	// sysfs and may exec nvidia-smi, which is too much work to repeat on
 	// every auth handshake.
-	gpuMu   sync.Mutex
-	gpuSnap gpuSnapshot
-	gpuAt   time.Time
-	hasGPU  bool
+	gpuMu      sync.Mutex
+	gpuSnap    gpuSnapshot
+	gpuAt      time.Time
+	hasGPU     bool
+	gpuChanged func()
 
 	// Live GPU metrics are sampled separately from the inventory: they
 	// change every second, so they carry their own (much shorter) floor.
@@ -84,6 +85,22 @@ type Info struct {
 // runtimes contributes no evidence to the GPU gate.
 func New(engine func() bool, runtimes func() []string) *Info {
 	return &Info{containerEngine: engine, containerRuntimes: runtimes, now: time.Now}
+}
+
+// SetGPUChangeHook installs the callback fired when a re-probe changes the
+// reported GPU state, closing a reporting gap: `runtime`, `schedulable` and
+// `reason` ride system.info alone, whose task interval is an hour. A host
+// that gains its nvidia-container-toolkit at 12:05 would otherwise keep
+// telling the Cloud "no_container_runtime" until 13:00, long after the
+// hardware became schedulable. Wired at the composition root to the Hub's
+// system.info trigger.
+//
+// The re-probe itself rides system.stats (every 60s), so the detection
+// latency is the inventory TTL rather than the info interval.
+func (i *Info) SetGPUChangeHook(fn func()) {
+	i.gpuMu.Lock()
+	defer i.gpuMu.Unlock()
+	i.gpuChanged = fn
 }
 
 // Get ports getSystemInfo(): an insertion-ordered object matching Node's

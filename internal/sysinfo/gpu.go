@@ -178,19 +178,57 @@ func hasRenderNode() bool {
 	return false
 }
 
-// gpuState returns the cached snapshot, re-probing when stale. The probe runs
+// gpuState returns the cached snapshot, re-probing when stale, and announces
+// a changed answer to whoever installed the hook.
+func (i *Info) gpuState() gpuSnapshot {
+	snap, changed := i.refreshGPU()
+	if changed != nil {
+		// Outside the lock on purpose: the hook re-enters Get().
+		changed()
+	}
+	return snap
+}
+
+// refreshGPU re-probes when the cache is stale and hands back the change hook
+// when this probe actually moved the payload, nil otherwise. The probe runs
 // under the lock so concurrent callers coalesce into one hardware walk
 // instead of stampeding the driver.
-func (i *Info) gpuState() gpuSnapshot {
+//
+// The hook is returned rather than invoked here because it ends up calling
+// Get() again — firing it under gpuMu would deadlock. The first probe never
+// fires it: there is no previous answer to differ from, and the payload that
+// prompted it carries the result anyway.
+func (i *Info) refreshGPU() (gpuSnapshot, func()) {
 	i.gpuMu.Lock()
 	defer i.gpuMu.Unlock()
 	now := i.now()
 	if i.hasGPU && now.Sub(i.gpuAt) < gpuCacheTTL {
-		return i.gpuSnap
+		return i.gpuSnap, nil
 	}
+	previous, had := i.gpuSnap, i.hasGPU
 	i.gpuSnap = probeGPU(i.engineRuntimes())
 	i.gpuAt, i.hasGPU = now, true
-	return i.gpuSnap
+	if had && i.gpuChanged != nil && !i.gpuSnap.sameAs(previous) {
+		return i.gpuSnap, i.gpuChanged
+	}
+	return i.gpuSnap, nil
+}
+
+// sameAs compares what the payload actually carries. addr and path are merge
+// keys the Cloud never sees, so a card whose sysfs path moved is not news
+// worth an unscheduled broadcast.
+func (s gpuSnapshot) sameAs(other gpuSnapshot) bool {
+	if s.runtime != other.runtime || s.schedulable != other.schedulable ||
+		s.reason != other.reason || len(s.devices) != len(other.devices) {
+		return false
+	}
+	for idx := range s.devices {
+		a, b := s.devices[idx], other.devices[idx]
+		if a.vendor != b.vendor || a.model != b.model || a.vramBytes != b.vramBytes {
+			return false
+		}
+	}
+	return true
 }
 
 // engineRuntimes is the container engine's registered OCI runtimes, or nil
