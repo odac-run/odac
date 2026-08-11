@@ -42,6 +42,12 @@ var (
 		"/proc/1/root/proc/driver/nvidia/gpus",
 	}
 
+	// devRoot is a test seam over the device tree. ODAC ships privileged
+	// (docker-compose.yml), so this is the HOST's /dev — the driver's own
+	// character devices are visible here even though nvidia-smi is not
+	// installed in ODAC's image.
+	devRoot = "/dev"
+
 	// nvidiaSMIQuery is a test seam (the binary is absent in CI).
 	nvidiaSMIQuery = runNvidiaSMI
 )
@@ -58,16 +64,30 @@ type gpuDevice struct {
 	path      string
 }
 
-// gpuSnapshot is one probe result, cached for gpuCacheTTL.
+// gpuSnapshot is one probe result, cached for gpuCacheTTL. runtime is the
+// loose answer ("there is a working card of this kind"), schedulable the
+// strict one ("the engine can hand it to a container"); reason names the
+// missing piece whenever schedulable is false.
 type gpuSnapshot struct {
-	runtime string
-	devices []gpuDevice
+	runtime     string
+	schedulable bool
+	reason      string
+	devices     []gpuDevice
 }
 
-// gpuField renders the `gpu` payload member. A null runtime means "do not
-// schedule GPU workloads here" even when devices are listed — inventory and
-// capability are deliberately separate. The vocabulary comes from
-// internal/gpu: the Cloud answers with the same words in app.create.
+// gpuField renders the `gpu` payload member. Three questions, three fields,
+// because they have genuinely different answers:
+//
+//   - runtime: what kind of working card is here (null = none). Inventory.
+//   - schedulable: whether the engine can actually hand it to a container.
+//     A driver without nvidia-container-toolkit reports runtime "nvidia" and
+//     schedulable false — the hardware is real, the passthrough is not.
+//   - reason: which piece is missing, null when schedulable. This is the
+//     field that turns "why is my 3090 not showing up" into one line of
+//     operator-facing guidance.
+//
+// The vocabulary comes from internal/gpu: the Cloud answers with the same
+// words in app.create.
 func (i *Info) gpuField() jscanon.Obj {
 	snap := i.gpuState()
 	devices := make([]any, 0, len(snap.devices))
@@ -78,12 +98,17 @@ func (i *Info) gpuField() jscanon.Obj {
 			{K: "vram", V: d.vramBytes},
 		})
 	}
-	var runtime any
+	var runtime, reason any
 	if snap.runtime != "" {
 		runtime = snap.runtime
 	}
+	if snap.reason != "" {
+		reason = snap.reason
+	}
 	return jscanon.Obj{
 		{K: "runtime", V: runtime},
+		{K: "schedulable", V: snap.schedulable},
+		{K: "reason", V: reason},
 		{K: "devices", V: devices},
 	}
 }
@@ -107,20 +132,40 @@ func (i *Info) CanPassthrough(runtime string) bool {
 	if forced, ok := forcedGPURuntime(); ok {
 		return forced == runtime
 	}
+	return passthroughReason(runtime, i.engineRuntimes()) == ""
+}
+
+// passthroughReason reports why runtime cannot be handed to a container, ""
+// when it can. Single source for both the create-time pre-flight and the
+// system.info diagnosis, so the two can never disagree about what a host is
+// missing.
+func passthroughReason(runtime string, engineRuntimes []string) string {
 	switch runtime {
 	case gpu.RuntimeNvidia:
-		return hasRuntime(i.engineRuntimes(), gpu.RuntimeNvidia)
+		// Engine-side evidence only: the daemon's runtime list is the one
+		// signal that survives ODAC's own container walls.
+		if hasRuntime(engineRuntimes, gpu.RuntimeNvidia) {
+			return ""
+		}
+		return gpu.ReasonNoContainerRuntime
 	case gpu.RuntimeROCm:
-		return dirExists(filepath.Join(sysfsRoot, "class", "kfd")) && hasRenderNode()
+		if dirExists(filepath.Join(sysfsRoot, "class", "kfd")) && hasRenderNode() {
+			return ""
+		}
+		return gpu.ReasonNoRenderNode
 	case gpu.RuntimeIntel:
-		return hasRenderNode()
+		if hasRenderNode() {
+			return ""
+		}
+		return gpu.ReasonNoRenderNode
 	}
-	return false
+	return gpu.ReasonUnsupportedDevice
 }
 
 // hasRenderNode reports whether the host exposes a DRM render node — the
 // /dev/dri entries ROCm and Intel compute are passed through as. sysfs is
-// read instead of /dev because ODAC's container has its own /dev.
+// read rather than /dev because it is the host's view under every install
+// shape, privileged or not.
 func hasRenderNode() bool {
 	entries, err := os.ReadDir(filepath.Join(sysfsRoot, "class", "drm"))
 	if err != nil {
@@ -159,13 +204,52 @@ func (i *Info) engineRuntimes() []string {
 }
 
 // probeGPU walks sysfs for the inventory, enriches NVIDIA cards from the
-// driver's own sources and decides the runtime gate.
+// driver's own sources, decides the runtime gate and diagnoses whatever is
+// still missing.
 func probeGPU(engineRuntimes []string) gpuSnapshot {
 	devices, driverSeen := enrichNvidia(scanPCIGPUs(sysfsRoot))
+	runtime := gpuRuntime(devices, engineRuntimes, driverSeen)
+	schedulable, reason := gpuCapability(devices, runtime, engineRuntimes, driverSeen)
 	return gpuSnapshot{
-		runtime: gpuRuntime(devices, engineRuntimes, driverSeen),
-		devices: devices,
+		runtime:     runtime,
+		schedulable: schedulable,
+		reason:      reason,
+		devices:     devices,
 	}
+}
+
+// gpuCapability answers "can this host actually run a GPU workload", and
+// when it cannot, which piece is missing. It is the diagnosis behind the
+// payload: the Cloud renders the reason instead of leaving an operator
+// staring at a null runtime next to a card they know is installed.
+func gpuCapability(devices []gpuDevice, runtime string, engineRuntimes []string, nvidiaDriverSeen bool) (bool, string) {
+	if forced, ok := forcedGPURuntime(); ok {
+		if forced == "" {
+			return false, gpu.ReasonDisabled
+		}
+		// The operator asserted the host can do it; their word beats probes
+		// that cannot see through the container wall in the first place.
+		return true, ""
+	}
+
+	if runtime != "" {
+		if reason := passthroughReason(runtime, engineRuntimes); reason != "" {
+			return false, reason
+		}
+		return true, ""
+	}
+
+	// No runtime at all: name the evidence that was missing.
+	switch {
+	case len(devices) == 0:
+		return false, gpu.ReasonNoDevice
+	case hasVendor(devices, gpu.VendorNvidia) && !nvidiaDriverSeen:
+		return false, gpu.ReasonNoDriver
+	case hasVendor(devices, gpu.VendorAMD):
+		// A card with no /sys/class/kfd means the ROCm stack is not loaded.
+		return false, gpu.ReasonNoDriver
+	}
+	return false, gpu.ReasonUnsupportedDevice
 }
 
 // gpuRuntime decides the gate. Evidence, strongest first: an explicit
@@ -242,7 +326,12 @@ func scanPCIGPUs(root string) []gpuDevice {
 // second return value. A card nvidia-smi reports but sysfs missed is
 // appended — the driver's word beats a blind sysfs.
 func enrichNvidia(devices []gpuDevice) ([]gpuDevice, bool) {
-	driverSeen := dirExists(filepath.Join(sysfsRoot, "module", "nvidia"))
+	// Two independent driver signals before any parsing: the loaded kernel
+	// module (sysfs, always the host's) and the driver's control device
+	// (/dev, the host's because ODAC runs privileged). Either one proves the
+	// driver is up even when nvidia-smi is absent from ODAC's image.
+	driverSeen := dirExists(filepath.Join(sysfsRoot, "module", "nvidia")) ||
+		pathExists(filepath.Join(devRoot, "nvidiactl"))
 
 	for addr, model := range nvidiaProcModels() {
 		driverSeen = true
@@ -478,4 +567,11 @@ func fieldAfterColon(text, prefix string) string {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// pathExists reports whether path exists at all — device nodes are character
+// devices, not directories.
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

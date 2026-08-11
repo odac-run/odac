@@ -66,6 +66,25 @@ func TestGetShape(t *testing.T) {
 	} else if runtime != nil && runtime != gpu.RuntimeNvidia && runtime != gpu.RuntimeROCm {
 		t.Errorf("gpu.runtime outside vocabulary: %v", runtime)
 	}
+	// schedulable answers the scheduling question on its own, so it may
+	// never be null; reason is null exactly when schedulable is true.
+	schedulable, isBool := gpuObj["schedulable"].(bool)
+	if !isBool {
+		t.Fatalf("gpu.schedulable must be a bool: %s", raw)
+	}
+	reason, present := gpuObj["reason"]
+	if !present {
+		t.Errorf("gpu.reason must be present (null when schedulable): %s", raw)
+	}
+	if schedulable != (reason == nil) {
+		t.Errorf("gpu.schedulable=%v with reason=%v: %s", schedulable, reason, raw)
+	}
+	switch reason {
+	case nil, gpu.ReasonDisabled, gpu.ReasonNoDevice, gpu.ReasonNoDriver,
+		gpu.ReasonNoContainerRuntime, gpu.ReasonNoRenderNode, gpu.ReasonUnsupportedDevice:
+	default:
+		t.Errorf("gpu.reason outside vocabulary: %v", reason)
+	}
 }
 
 func TestParseOSRelease(t *testing.T) {

@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 // --- startup self-heal (init) — jest describe('startup self-heal') ---
@@ -430,6 +432,64 @@ func TestUpdateAppliesDefaultLogRotation(t *testing.T) {
 	if c.logConfig.Type != "json-file" ||
 		c.logConfig.Config["max-size"] != "10m" || c.logConfig.Config["max-file"] != "3" {
 		t.Fatalf("logConfig = %+v, want json-file with max-size=10m max-file=3", c.logConfig)
+	}
+}
+
+// A GPU-enabled install must survive its own update. An operator runs ODAC
+// with --runtime=nvidia (or --gpus) so it can read nvidia-smi for the
+// system.info inventory; dropping that on update would take the card away
+// silently and the payload would quietly go back to "no driver".
+func TestUpdatePreservesGPURuntime(t *testing.T) {
+	fx := newFixture(t)
+	fx.u.platform = "darwin"
+	fx.w.world["odac"] = &fakeContainer{
+		policy: "unless-stopped", running: true,
+		env:        []string{"NVIDIA_DRIVER_CAPABILITIES=utility"},
+		runtime:    "nvidia",
+		deviceReqs: []container.DeviceRequest{{Driver: "nvidia", Count: -1, Capabilities: [][]string{{"gpu"}}}},
+	}
+
+	if err := fx.u.execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := fx.w.container("odac-update")
+	if c == nil {
+		t.Fatal("odac-update was not created")
+	}
+	if c.runtime != "nvidia" {
+		t.Errorf("runtime = %q, want nvidia", c.runtime)
+	}
+	if len(c.deviceReqs) != 1 || c.deviceReqs[0].Driver != "nvidia" || c.deviceReqs[0].Count != -1 {
+		t.Errorf("deviceRequests = %+v", c.deviceReqs)
+	}
+	found := false
+	for _, e := range c.env {
+		if e == "NVIDIA_DRIVER_CAPABILITIES=utility" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("driver capabilities env lost: %v", c.env)
+	}
+}
+
+// A plain install must not gain a runtime it never had.
+func TestUpdateInventsNoGPURuntime(t *testing.T) {
+	fx := newFixture(t)
+	fx.u.platform = "darwin"
+	fx.w.world["odac"] = &fakeContainer{policy: "unless-stopped", running: true}
+
+	if err := fx.u.execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := fx.w.container("odac-update")
+	if c == nil {
+		t.Fatal("odac-update was not created")
+	}
+	if c.runtime != "" || len(c.deviceReqs) != 0 {
+		t.Errorf("runtime = %q, deviceRequests = %+v, want none", c.runtime, c.deviceReqs)
 	}
 }
 

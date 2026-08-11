@@ -29,6 +29,35 @@ const (
 	VendorIntel  = "intel"
 )
 
+// Reasons explain why a host cannot run GPU workloads — the `reason` member
+// of system.info's gpu object. They are wire values the Cloud renders into
+// operator-facing guidance, so the set is closed and additions are additive.
+//
+// Deliberately absent: a code for "the driver is there but ODAC's container
+// cannot see it". From inside the container that state is indistinguishable
+// from having no driver at all, so ReasonNoDriver covers both and its
+// wording must stay honest about the ambiguity.
+const (
+	// ReasonDisabled: ODAC_GPU_RUNTIME=none. The operator turned it off.
+	ReasonDisabled = "disabled"
+	// ReasonNoDevice: no GPU on the PCI bus (and no driver reported one).
+	ReasonNoDevice = "no_device"
+	// ReasonNoDriver: a card is present but no driver answered — none
+	// installed, or none visible from ODAC's container.
+	ReasonNoDriver = "no_driver"
+	// ReasonNoContainerRuntime: the NVIDIA driver works, but the daemon has
+	// no `nvidia` runtime registered — nvidia-container-toolkit is missing
+	// or was never wired into Docker. The card is real; containers cannot
+	// have it.
+	ReasonNoContainerRuntime = "no_container_runtime"
+	// ReasonNoRenderNode: ROCm/Intel need DRM render nodes to pass through
+	// and the host exposes none.
+	ReasonNoRenderNode = "no_render_node"
+	// ReasonUnsupportedDevice: a GPU is present that ODAC does not schedule
+	// on (an Intel iGPU, say — slower than the CPU for inference).
+	ReasonUnsupportedDevice = "unsupported_device"
+)
+
 // CountAll requests every device the host exposes ("all" on the wire, -1 in
 // Docker's DeviceRequest vocabulary — the two happen to agree).
 const CountAll = -1

@@ -21,10 +21,13 @@ func newFakeSysfs(t *testing.T) *fakeSysfs {
 	sysfsRoot = fs.root
 	t.Cleanup(func() { sysfsRoot = previous })
 	// No NVIDIA /proc tree and no nvidia-smi unless a test adds them.
-	previousRoots, previousQuery := nvidiaProcRoots, nvidiaSMIQuery
+	previousRoots, previousQuery, previousDev := nvidiaProcRoots, nvidiaSMIQuery, devRoot
 	nvidiaProcRoots = []string{filepath.Join(fs.root, "absent")}
 	nvidiaSMIQuery = func() []nvidiaSMIEntry { return nil }
-	t.Cleanup(func() { nvidiaProcRoots, nvidiaSMIQuery = previousRoots, previousQuery })
+	devRoot = filepath.Join(fs.root, "dev")
+	t.Cleanup(func() {
+		nvidiaProcRoots, nvidiaSMIQuery, devRoot = previousRoots, previousQuery, previousDev
+	})
 	return fs
 }
 
@@ -49,6 +52,18 @@ func (f *fakeSysfs) pciDevice(t *testing.T, addr, class, vendor, device string, 
 func (f *fakeSysfs) dir(t *testing.T, parts ...string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(append([]string{f.root}, parts...)...), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// devNode writes a stand-in for a driver character device under devRoot.
+func (f *fakeSysfs) devNode(t *testing.T, name string) {
+	t.Helper()
+	dir := filepath.Join(f.root, "dev")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o660); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -288,7 +303,22 @@ func TestGPUFieldPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"runtime":"nvidia","devices":[{"vendor":"nvidia","model":"GeForce RTX 4090","vram":25757220864}]}`; string(raw) != want {
+	// Driver works, toolkit is not registered: the card is reported, the
+	// scheduling gate is shut, and the reason names the missing piece.
+	want := `{"runtime":"nvidia","schedulable":false,"reason":"no_container_runtime",` +
+		`"devices":[{"vendor":"nvidia","model":"GeForce RTX 4090","vram":25757220864}]}`
+	if string(raw) != want {
+		t.Errorf("payload = %s\nwant       %s", raw, want)
+	}
+
+	// Same host once the toolkit is wired into Docker.
+	raw, err = jscanon.Marshal(New(nil, func() []string { return []string{"runc", "nvidia"} }).gpuField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `{"runtime":"nvidia","schedulable":true,"reason":null,` +
+		`"devices":[{"vendor":"nvidia","model":"GeForce RTX 4090","vram":25757220864}]}`
+	if string(raw) != want {
 		t.Errorf("payload = %s\nwant       %s", raw, want)
 	}
 
@@ -297,7 +327,7 @@ func TestGPUFieldPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"runtime":null,"devices":[]}`; string(raw) != want {
+	if want := `{"runtime":null,"schedulable":false,"reason":"no_device","devices":[]}`; string(raw) != want {
 		t.Errorf("GPU-less payload = %s, want %s", raw, want)
 	}
 	var parsed map[string]any
@@ -380,5 +410,163 @@ func TestCanPassthroughHonoursOverride(t *testing.T) {
 	}
 	if !info.CanPassthrough("") {
 		t.Error("CPU apps stay unaffected")
+	}
+}
+
+// The diagnosis matrix. Each row is a real host state an operator can be in,
+// and the reason is what the Cloud shows them instead of an unexplained null.
+func TestGPUCapabilityReasons(t *testing.T) {
+	nvidiaCard := func(t *testing.T, fs *fakeSysfs) {
+		fs.pciDevice(t, "0000:01:00.0", "0x030000", pciVendorNvidia, "0x2204", nil)
+	}
+
+	cases := []struct {
+		name            string
+		setup           func(t *testing.T, fs *fakeSysfs)
+		engineRuntimes  []string
+		wantRuntime     string
+		wantSchedulable bool
+		wantReason      string
+	}{{
+		name:       "bare host, no card",
+		setup:      func(*testing.T, *fakeSysfs) {},
+		wantReason: gpu.ReasonNoDevice,
+	}, {
+		// The 3090-with-nothing-installed case.
+		name:       "card present, no driver anywhere",
+		setup:      nvidiaCard,
+		wantReason: gpu.ReasonNoDriver,
+	}, {
+		name: "driver installed, toolkit never wired into Docker",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			nvidiaCard(t, fs)
+			fs.dir(t, "module", "nvidia")
+		},
+		engineRuntimes: []string{"runc"},
+		wantRuntime:    gpu.RuntimeNvidia,
+		wantReason:     gpu.ReasonNoContainerRuntime,
+	}, {
+		name: "fully configured",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			nvidiaCard(t, fs)
+			fs.dir(t, "module", "nvidia")
+		},
+		engineRuntimes:  []string{"runc", "nvidia"},
+		wantRuntime:     gpu.RuntimeNvidia,
+		wantSchedulable: true,
+	}, {
+		name: "AMD card, ROCm stack not loaded",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:03:00.0", "0x030000", pciVendorAMD, "0x740f", nil)
+		},
+		wantReason: gpu.ReasonNoDriver,
+	}, {
+		name: "AMD card with kfd but no render node",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:03:00.0", "0x030000", pciVendorAMD, "0x740f", nil)
+			fs.dir(t, "class", "kfd")
+		},
+		wantRuntime: gpu.RuntimeROCm,
+		wantReason:  gpu.ReasonNoRenderNode,
+	}, {
+		name: "AMD card, ROCm ready",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:03:00.0", "0x030000", pciVendorAMD, "0x740f", nil)
+			fs.dir(t, "class", "kfd")
+			fs.dir(t, "class", "drm", "renderD128")
+		},
+		wantRuntime:     gpu.RuntimeROCm,
+		wantSchedulable: true,
+	}, {
+		// Found a GPU, but not one ODAC schedules on.
+		name: "Intel iGPU only",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:00:02.0", "0x030000", pciVendorIntel, "0x9bc4", nil)
+		},
+		wantReason: gpu.ReasonUnsupportedDevice,
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeSysfs(t)
+			tc.setup(t, fs)
+
+			snap := probeGPU(tc.engineRuntimes)
+
+			if snap.runtime != tc.wantRuntime {
+				t.Errorf("runtime = %q, want %q", snap.runtime, tc.wantRuntime)
+			}
+			if snap.schedulable != tc.wantSchedulable {
+				t.Errorf("schedulable = %v, want %v", snap.schedulable, tc.wantSchedulable)
+			}
+			if snap.reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", snap.reason, tc.wantReason)
+			}
+			// reason and schedulable are two sides of one verdict.
+			if snap.schedulable != (snap.reason == "") {
+				t.Errorf("schedulable=%v with reason=%q", snap.schedulable, snap.reason)
+			}
+		})
+	}
+}
+
+// The operator override closes the gate with its own reason, and opens it
+// past every probe — that is the whole point of the escape hatch.
+func TestGPUCapabilityHonoursOverride(t *testing.T) {
+	fs := newFakeSysfs(t)
+	fs.pciDevice(t, "0000:01:00.0", "0x030000", pciVendorNvidia, "0x2204", nil)
+	fs.dir(t, "module", "nvidia")
+
+	t.Setenv("ODAC_GPU_RUNTIME", "none")
+	if snap := probeGPU([]string{"nvidia"}); snap.schedulable || snap.reason != gpu.ReasonDisabled {
+		t.Errorf("disabled: schedulable=%v reason=%q", snap.schedulable, snap.reason)
+	}
+
+	t.Setenv("ODAC_GPU_RUNTIME", "nvidia")
+	if snap := probeGPU(nil); !snap.schedulable || snap.reason != "" {
+		t.Errorf("forced: schedulable=%v reason=%q", snap.schedulable, snap.reason)
+	}
+}
+
+// The create-time pre-flight and the payload diagnosis must never disagree:
+// both read passthroughReason.
+func TestCanPassthroughMatchesReason(t *testing.T) {
+	fs := newFakeSysfs(t)
+	fs.pciDevice(t, "0000:01:00.0", "0x030000", pciVendorNvidia, "0x2204", nil)
+	fs.dir(t, "module", "nvidia")
+
+	withoutToolkit := New(nil, func() []string { return []string{"runc"} })
+	if snap := withoutToolkit.gpuState(); snap.schedulable != withoutToolkit.CanPassthrough(snap.runtime) {
+		t.Errorf("payload says schedulable=%v, pre-flight says %v",
+			snap.schedulable, withoutToolkit.CanPassthrough(snap.runtime))
+	}
+
+	withToolkit := New(nil, func() []string { return []string{"runc", "nvidia"} })
+	if snap := withToolkit.gpuState(); snap.schedulable != withToolkit.CanPassthrough(snap.runtime) {
+		t.Errorf("payload says schedulable=%v, pre-flight says %v",
+			snap.schedulable, withToolkit.CanPassthrough(snap.runtime))
+	}
+}
+
+// ODAC ships privileged (docker-compose.yml), so /dev inside its container is
+// the host's: the driver's control device proves the driver is up even when
+// the kernel module directory is unreadable and nvidia-smi is absent.
+func TestProbeGPUDriverSeenViaDevNode(t *testing.T) {
+	fs := newFakeSysfs(t)
+	fs.pciDevice(t, "0000:01:00.0", "0x030000", pciVendorNvidia, "0x2204", nil)
+
+	// No /sys/module/nvidia, no proc tree, no nvidia-smi: gate stays shut.
+	if snap := probeGPU(nil); snap.runtime != "" || snap.reason != gpu.ReasonNoDriver {
+		t.Fatalf("runtime = %q, reason = %q", snap.runtime, snap.reason)
+	}
+
+	fs.devNode(t, "nvidiactl")
+
+	snap := probeGPU(nil)
+	if snap.runtime != gpu.RuntimeNvidia {
+		t.Errorf("runtime = %q, want nvidia", snap.runtime)
+	}
+	if snap.schedulable || snap.reason != gpu.ReasonNoContainerRuntime {
+		t.Errorf("schedulable = %v, reason = %q", snap.schedulable, snap.reason)
 	}
 }

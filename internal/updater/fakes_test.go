@@ -19,6 +19,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/go-connections/nat"
 
 	"odac/internal/logx"
@@ -33,6 +34,8 @@ type fakeContainer struct {
 	mounts       []MountPoint
 	portBindings nat.PortMap
 	logConfig    LogConfig
+	runtime      string
+	deviceReqs   []container.DeviceRequest
 }
 
 type fakeWorld struct {
@@ -102,16 +105,18 @@ func (w *fakeWorld) Inspect(name string) (ContainerInfo, error) {
 	}
 	c := w.world[resolved]
 	return ContainerInfo{
-		ID:            resolved,
-		Name:          "/" + resolved,
-		Env:           append([]string(nil), c.env...),
-		Binds:         append([]string(nil), c.binds...),
-		RestartPolicy: c.policy,
-		Running:       c.running,
-		Image:         c.image,
-		PortBindings:  c.portBindings,
-		Mounts:        append([]MountPoint(nil), c.mounts...),
-		LogConfig:     c.logConfig,
+		ID:             resolved,
+		Name:           "/" + resolved,
+		Env:            append([]string(nil), c.env...),
+		Binds:          append([]string(nil), c.binds...),
+		RestartPolicy:  c.policy,
+		Running:        c.running,
+		Image:          c.image,
+		PortBindings:   c.portBindings,
+		Mounts:         append([]MountPoint(nil), c.mounts...),
+		LogConfig:      c.logConfig,
+		Runtime:        c.runtime,
+		DeviceRequests: c.deviceReqs,
 	}, nil
 }
 
@@ -129,6 +134,8 @@ func (w *fakeWorld) Create(opts CreateOptions) (string, error) {
 		binds:        append([]string(nil), opts.Binds...),
 		portBindings: opts.PortBindings,
 		logConfig:    opts.LogConfig,
+		runtime:      opts.Runtime,
+		deviceReqs:   opts.DeviceRequests,
 	}
 	w.push(fmt.Sprintf("create:%s:policy=%s", name, opts.RestartPolicy))
 	w.mu.Unlock()
