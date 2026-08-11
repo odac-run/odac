@@ -16,6 +16,15 @@
 //     output paths and never uses this package.
 //   - String.prototype.replace's "$&"-style dollar patterns in %s
 //     replacements are not interpreted (Go replaces literally).
+//   - %s substitution also applies to Warn and Error. Node ran the marker
+//     loop in log() alone and passed error()/warn() straight to
+//     console.error, whose util.format only treats its FIRST argument as a
+//     format string — and that argument is the module prefix, which carries
+//     no markers. So 82 call sites that wrote "failed %s: %s" printed the
+//     markers verbatim followed by the arguments, in Node exactly as in the
+//     port. Reproducing that is faithfulness to a typo, not to a contract:
+//     log content is human-facing, and every one of those sites meant to
+//     interpolate.
 package logx
 
 import (
@@ -43,34 +52,38 @@ func New(modules ...string) *Logger {
 	return &Logger{prefix: "[" + strings.Join(modules, "][") + "] "}
 }
 
-// Log writes to stdout. Zero arguments write nothing (Node parity). The
-// first argument, when it is a string containing %s, consumes following
-// arguments one per %s; leftover %s markers are stripped.
+// Log writes to stdout. Zero arguments write nothing (Node parity).
 func (l *Logger) Log(args ...any) {
 	if len(args) == 0 {
 		return
 	}
-	rendered := renderAll(args)
-	if strings.Contains(rendered[0], "%s") {
-		msg, rest := rendered[0], rendered[1:]
-		for strings.Contains(msg, "%s") && len(rest) > 0 {
-			msg = strings.Replace(msg, "%s", rest[0], 1)
-			rest = rest[1:]
-		}
-		msg = strings.ReplaceAll(msg, "%s", "")
-		rendered = append([]string{msg}, rest...)
-	}
-	l.write(Stdout, rendered)
+	l.write(Stdout, substitute(renderAll(args)))
 }
 
-// Warn writes to stderr. No %s substitution (Node parity: only log() has it).
+// Warn writes to stderr.
 func (l *Logger) Warn(args ...any) {
-	l.write(Stderr, renderAll(args))
+	l.write(Stderr, substitute(renderAll(args)))
 }
 
-// Error writes to stderr. No %s substitution.
+// Error writes to stderr.
 func (l *Logger) Error(args ...any) {
-	l.write(Stderr, renderAll(args))
+	l.write(Stderr, substitute(renderAll(args)))
+}
+
+// substitute applies Log.js's %s rule: the first argument, when it contains
+// %s, consumes following arguments one per marker; leftover markers are
+// stripped and unconsumed arguments still trail the line.
+func substitute(rendered []string) []string {
+	if len(rendered) == 0 || !strings.Contains(rendered[0], "%s") {
+		return rendered
+	}
+	msg, rest := rendered[0], rendered[1:]
+	for strings.Contains(msg, "%s") && len(rest) > 0 {
+		msg = strings.Replace(msg, "%s", rest[0], 1)
+		rest = rest[1:]
+	}
+	msg = strings.ReplaceAll(msg, "%s", "")
+	return append([]string{msg}, rest...)
 }
 
 func (l *Logger) write(w io.Writer, rendered []string) {
