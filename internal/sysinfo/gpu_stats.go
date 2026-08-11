@@ -3,7 +3,6 @@ package sysinfo
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -150,15 +149,15 @@ type nvidiaSMIStatsEntry struct {
 // runNvidiaSMIStats queries every card's live counters in one exec. An
 // absent binary yields nothing and the samples stay zero.
 func runNvidiaSMIStats() []nvidiaSMIStatsEntry {
-	bin, err := exec.LookPath("nvidia-smi")
-	if err != nil {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), nvidiaSMITimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin,
+	cmd, ok := nvidiaSMICommand(ctx,
 		"--query-gpu=pci.bus_id,utilization.gpu,memory.used,memory.total,temperature.gpu",
-		"--format=csv,noheader,nounits").Output()
+		"--format=csv,noheader,nounits")
+	if !ok {
+		return nil
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

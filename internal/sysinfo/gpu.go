@@ -3,7 +3,6 @@ package sysinfo
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,7 +52,7 @@ var (
 )
 
 // gpuDevice is one accelerator. vramBytes is 0 when no source exposes the
-// size (NVIDIA without nvidia-smi in PATH); addr is the PCI merge key and
+// size (NVIDIA with no reachable nvidia-smi); addr is the PCI merge key and
 // path the sysfs directory live metrics are read from (empty for a card only
 // the driver reported). Neither is part of the payload.
 type gpuDevice struct {
@@ -398,15 +397,15 @@ type nvidiaSMIEntry struct {
 // card. An absent binary — the common case inside ODAC's own container —
 // yields nothing and costs one PATH lookup.
 func runNvidiaSMI() []nvidiaSMIEntry {
-	bin, err := exec.LookPath("nvidia-smi")
-	if err != nil {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), nvidiaSMITimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin,
+	cmd, ok := nvidiaSMICommand(ctx,
 		"--query-gpu=pci.bus_id,name,memory.total",
-		"--format=csv,noheader,nounits").Output()
+		"--format=csv,noheader,nounits")
+	if !ok {
+		return nil
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
