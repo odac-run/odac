@@ -342,6 +342,33 @@ func (f *fakeHub) GetApp(string) (map[string]any, error) {
 	return f.recipe, f.getErr
 }
 
+// fakeGPUHost answers the create-time GPU pre-flight. Default: this host can
+// do anything, so tests that do not care are unaffected.
+type fakeGPUHost struct {
+	mu       sync.Mutex
+	runtimes map[string]bool // nil = allow everything
+	asked    []string
+}
+
+func (f *fakeGPUHost) CanPassthrough(runtime string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, runtime)
+	if f.runtimes == nil {
+		return true
+	}
+	return f.runtimes[runtime]
+}
+
+func (f *fakeGPUHost) allow(runtimes ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runtimes = map[string]bool{}
+	for _, r := range runtimes {
+		f.runtimes[r] = true
+	}
+}
+
 type fakeDomains struct {
 	mu      sync.Mutex
 	deleted []string
@@ -364,6 +391,7 @@ type fixture struct {
 	proxy   *fakeProxy
 	hub     *fakeHub
 	domains *fakeDomains
+	gpuHost *fakeGPUHost
 
 	probeMu   sync.Mutex
 	httpPorts map[int]bool // ports that answer the HTTP probe
@@ -403,6 +431,7 @@ func newFixture(t *testing.T, apps any) *fixture {
 		proxy:     &fakeProxy{},
 		hub:       &fakeHub{},
 		domains:   &fakeDomains{},
+		gpuHost:   &fakeGPUHost{},
 		httpPorts: map[int]bool{},
 	}
 	fx.m = New(cfg, filepath.Join(base, "logs"), Deps{
@@ -411,6 +440,7 @@ func newFixture(t *testing.T, apps any) *fixture {
 		Proxy:   fx.proxy,
 		Hub:     fx.hub,
 		Domains: fx.domains,
+		GPUHost: fx.gpuHost,
 	})
 	// Collapse every wait: the poll/readiness budgets stay attempt-counted.
 	fx.m.sleep = func(time.Duration) {}

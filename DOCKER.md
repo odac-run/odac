@@ -74,6 +74,7 @@ This script will:
 | `TZ` | `UTC` | Timezone |
 | `ODAC_DATA_DIR` | `/var/lib/odac` | Host directory holding the persistent data (compose only) |
 | `ODAC_HOST_ROOT` | — | Host path the container's `/app` maps to; required for git deploys (compose sets it from `ODAC_DATA_DIR`) |
+| `ODAC_GPU_RUNTIME` | auto | Forces the reported GPU runtime (`nvidia`, `rocm`, `none`); only needed when the container cannot see the host's driver state |
 
 ## Volumes
 

@@ -82,6 +82,19 @@ func main() {
 	sslSvc := domains.NewSSL(cfg, dnsSvc, proxySvc, mailSvc)
 	domainSvc := domains.NewDomain(cfg, dnsSvc, sslSvc, proxySvc, mailSvc)
 
+	// System inventory. Built before appmgr because it also answers the GPU
+	// pre-flight ("can this engine hand a card to a container"), which app
+	// creation consults before pulling a single byte.
+	sysInfo := sysinfo.New(
+		func() bool { return containers != nil && containers.Available() },
+		func() []string {
+			if containers == nil {
+				return nil
+			}
+			return containers.Runtimes()
+		},
+	)
+
 	// App manager (task 3.4e). Skipped only when the Docker client could not
 	// even be constructed (malformed DOCKER_HOST-style env) — an unreachable
 	// daemon still yields a client, and appmgr no-ops like Node does.
@@ -92,6 +105,7 @@ func main() {
 			Api:     apiSrv,
 			Proxy:   proxySvc,
 			Domains: domainSvc,
+			GPUHost: sysInfo,
 		})
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
 	}
@@ -112,7 +126,6 @@ func main() {
 
 	// Hub client (task 3.6); app/container slots stay nil on docker-less
 	// hosts. system.update delegates to the updater like System.update().
-	sysInfo := sysinfo.New(func() bool { return containers != nil && containers.Available() })
 	hubURL := os.Getenv("ODAC_HUB_URL")
 	if hubURL == "" {
 		hubURL = hub.DefaultURL

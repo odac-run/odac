@@ -19,24 +19,28 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"odac/internal/applog"
+	"odac/internal/gpu"
 	"odac/internal/logx"
 	"odac/internal/ports"
 )
@@ -44,10 +48,15 @@ import (
 // networkName is the shared bridge network every ODAC app joins.
 const networkName = "odac-network"
 
+// infoTimeout caps the daemon-info call behind Runtimes(); the caller is on
+// the Hub's payload path and must not wait on a wedged daemon.
+const infoTimeout = 2 * time.Second
+
 // API is the narrow slice of the Docker SDK client the orchestrator uses.
 // *client.Client satisfies it; tests inject fakes.
 type API interface {
 	Ping(ctx context.Context) (types.Ping, error)
+	Info(ctx context.Context) (system.Info, error)
 	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
 	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
@@ -92,6 +101,8 @@ type RunOptions struct {
 	Env     map[string]string
 	Cmd     []string
 	User    string
+	// GPU is the validated accelerator request, nil for a CPU app.
+	GPU *gpu.Spec
 	// Privileged enables Docker Privileged mode. SECURITY: full host
 	// device/kernel access; CLI-only escape hatch.
 	Privileged bool
@@ -173,6 +184,31 @@ func New(api API, opts Options) *Client {
 
 // Available reports whether Docker answered the construction-time ping.
 func (c *Client) Available() bool { return c.available }
+
+// Runtimes reports the OCI runtimes the daemon has registered (`docker info`
+// → Runtimes), sorted. It exists for the GPU gate in sysinfo: only a daemon
+// that knows the `nvidia` runtime can hand a card to an app container, and
+// that fact is visible from inside ODAC's own container while the host's
+// driver state often is not. Empty when Docker is unavailable or the daemon
+// does not answer within infoTimeout.
+func (c *Client) Runtimes() []string {
+	if !c.available {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), infoTimeout)
+	defer cancel()
+	info, err := c.api.Info(ctx)
+	if err != nil {
+		c.log.Error("Failed to read docker info: %s", err.Error())
+		return nil
+	}
+	names := make([]string, 0, len(info.Runtimes))
+	for name := range info.Runtimes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // ResolveHostPath ports Container.resolveHostPath (DooD support): a
 // container-internal /app path is rewritten under ODAC_HOST_ROOT so the
@@ -333,6 +369,113 @@ func (c *Client) pullFailed(imageName string, logw io.Writer, err error) error {
 	return err
 }
 
+// ErrGPUUnavailable reports that the daemon refused a container's GPU
+// request: the hardware may be present, but the engine has no way to hand it
+// over (NVIDIA: nvidia-container-toolkit missing or never registered with
+// dockerd; ROCm/Intel: the device nodes are absent). Callers match it with
+// errors.Is to name the missing piece instead of "failed to start". The
+// create-time pre-flight catches this earlier; this covers the rest —
+// redeploys, and hosts that lost their toolkit after the app was created.
+var ErrGPUUnavailable = errors.New("the container engine cannot provide the requested GPU")
+
+// gpuRefusalSignatures are the daemon's ways of saying "I cannot give this
+// container a GPU". Narrow on purpose: a GPU app also fails for ordinary
+// reasons (missing image, port clash) and those must not be mislabelled.
+var gpuRefusalSignatures = []string{
+	"could not select device driver",     // --gpus with no nvidia device driver registered
+	"unknown runtime specified",          // nvidia runtime missing from daemon.json
+	"error gathering device information", // /dev/kfd or /dev/dri absent (ROCm, Intel)
+	"no such device",
+}
+
+// gpuRefusal wraps a create error in ErrGPUUnavailable when the refusal is
+// about the GPU request, keeping the daemon's own words attached.
+func gpuRefusal(spec *gpu.Spec, err error) error {
+	if spec == nil || err == nil {
+		return err
+	}
+	message := strings.ToLower(err.Error())
+	for _, signature := range gpuRefusalSignatures {
+		if strings.Contains(message, signature) {
+			return fmt.Errorf("%w (%s): %w", ErrGPUUnavailable, spec.Runtime, err)
+		}
+	}
+	return err
+}
+
+// renderDeviceNodes are the DRM nodes ROCm and Intel compute need. Passing
+// the directory lets the daemon expand it to every card/render node on the
+// host — the same thing `docker run --device /dev/dri` does.
+var renderDeviceNodes = map[string][]string{
+	gpu.RuntimeROCm:  {"/dev/kfd", "/dev/dri"},
+	gpu.RuntimeIntel: {"/dev/dri"},
+}
+
+// renderGroups is a test seam over the host's render group ids.
+var renderGroups = gpu.RenderGroups
+
+// gpuHostSpec is the host-config contribution of a GPU request.
+type gpuHostSpec struct {
+	requests []container.DeviceRequest
+	devices  []container.DeviceMapping
+	groups   []string
+}
+
+// gpuHostConfig translates a GPU request into Docker's two very different
+// passthrough shapes. NVIDIA goes through DeviceRequests — the wire form of
+// `docker run --gpus`, where the container runtime injects the host's driver
+// userspace. ROCm and Intel need nothing of the sort: their userspace ships
+// inside the image, so the contract is plain device nodes plus the
+// supplementary groups that own them (see gpu.RenderGroups) — without those,
+// an image that drops to a non-root user cannot open the render node it was
+// just handed.
+//
+// Nothing here checks that the host can honour the request. That is
+// deliberate: Docker refuses the create with "could not select device
+// driver", which surfaces in the app's build log as a real failure instead
+// of a container that silently ran on the CPU.
+func (c *Client) gpuHostConfig(name string, spec *gpu.Spec) (gpuHostSpec, error) {
+	if spec == nil {
+		return gpuHostSpec{}, nil
+	}
+	c.log.Log("App %s requests GPU access (%s).", name, spec.String())
+
+	if spec.Runtime == gpu.RuntimeNvidia {
+		return gpuHostSpec{requests: []container.DeviceRequest{{
+			Driver:       gpu.RuntimeNvidia,
+			Count:        spec.Count, // gpu.CountAll and Docker's "all" are both -1
+			Capabilities: [][]string{{"gpu"}},
+		}}}, nil
+	}
+
+	nodes := renderDeviceNodes[spec.Runtime]
+	if len(nodes) == 0 {
+		// Parse() rejects unknown runtimes, so this is unreachable from the
+		// wire; a hand-edited config lands here. Failing beats starting the
+		// app on the CPU while the Cloud believes it has a card.
+		return gpuHostSpec{}, fmt.Errorf("unsupported GPU runtime %q requested by app %s", spec.Runtime, name)
+	}
+	if spec.Count != gpu.CountAll {
+		// Device nodes are all-or-nothing without knowing which render node
+		// maps to which card; honouring "2" would be a guess.
+		c.log.Log("App %s: the %s runtime cannot limit device count, passing every render node.", name, spec.Runtime)
+	}
+
+	devices := make([]container.DeviceMapping, 0, len(nodes))
+	for _, node := range nodes {
+		devices = append(devices, container.DeviceMapping{
+			PathOnHost:        node,
+			PathInContainer:   node,
+			CgroupPermissions: "rwm",
+		})
+	}
+	groups := renderGroups()
+	if len(groups) == 0 {
+		c.log.Log("App %s: no render group id resolved, %s access needs a root container.", name, spec.Runtime)
+	}
+	return gpuHostSpec{devices: devices, groups: groups}, nil
+}
+
 // RunApp ports Container.runApp: force-replace any container with this
 // name, assemble Binds/Devices/PortBindings, ensure the shared network and
 // image, create and start. Only published port entries reach Docker; public
@@ -384,6 +527,13 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 		})
 	}
 
+	gpuCfg, err := c.gpuHostConfig(name, options.GPU)
+	if err != nil {
+		c.log.Error("Failed to start app container %s: %s", name, err.Error())
+		return false, err
+	}
+	devices = append(devices, gpuCfg.devices...)
+
 	c.ensureNetwork(ctx, networkName)
 
 	c.log.Log("Starting app container %s (%s)...", name, options.Image)
@@ -423,15 +573,24 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 	hostCfg := &container.HostConfig{
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 		Binds:         binds,
-		Resources:     container.Resources{Devices: devices},
+		Resources:     container.Resources{Devices: devices, DeviceRequests: gpuCfg.requests},
 		PortBindings:  portBindings,
 		NetworkMode:   networkName,
+		GroupAdd:      gpuCfg.groups,
 		Privileged:    options.Privileged,
 	}
 
 	created, err := c.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
+		err = gpuRefusal(options.GPU, err)
 		c.log.Error("Failed to start app container %s: %s", name, err.Error())
+		if buildLog != nil {
+			// The daemon's reason is the only actionable part of this
+			// failure; without this it lived in the server log alone and the
+			// phase stayed open forever.
+			fmt.Fprintf(buildLog, "%s\n", err.Error())
+			buildLog.EndPhase("start_new_container", false)
+		}
 		return false, err
 	}
 

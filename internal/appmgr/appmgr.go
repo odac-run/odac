@@ -99,6 +99,13 @@ type Hub interface {
 	GetApp(appType string) (map[string]any, error)
 }
 
+// GPUHost answers whether the container engine on this host can actually
+// hand a GPU to an app container. *sysinfo.Info provides it; a nil GPUHost
+// skips the pre-flight and lets Docker be the judge at start time.
+type GPUHost interface {
+	CanPassthrough(runtime string) bool
+}
+
 // DomainDeleter cascades app deletion into the domain table (task 3.5).
 type DomainDeleter interface {
 	DeleteByApp(appName string) error
@@ -113,6 +120,7 @@ type Deps struct {
 	Proxy   ProxyController
 	Hub     Hub
 	Domains DomainDeleter
+	GPUHost GPUHost
 }
 
 // Manager is the App.js singleton.
@@ -309,7 +317,7 @@ func (m *Manager) Check() {
 			id := p.id
 			m.spawn(func() {
 				defer m.unlockProcessing(id)
-				m.runHeld(id, nil)
+				_ = m.runHeld(id, nil)
 			})
 		}
 	}

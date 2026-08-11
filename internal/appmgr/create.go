@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"odac/internal/api"
+	"odac/internal/docker"
+	"odac/internal/gpu"
 	"odac/internal/ports"
 )
 
@@ -28,6 +30,61 @@ var (
 	// to join into a filesystem path (filepath.Join) without traversal.
 	validAppNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$`)
 )
+
+// parseGPURequest validates the payload's `gpu` member, falling back to the
+// recipe's own declaration when the payload carries none.
+func parseGPURequest(payload, recipe any) (*gpu.Spec, error) {
+	spec, err := gpu.Parse(payload)
+	if err != nil || spec != nil {
+		return spec, err
+	}
+	return gpu.Parse(recipe)
+}
+
+// startFailureMessage words a failed start for the Cloud. The GPU case gets
+// the missing piece named: the pre-flight cannot catch a host that loses its
+// toolkit between the check and the start, nor a redeploy of an app created
+// while the toolkit was still there.
+func startFailureMessage(spec *gpu.Spec, err error) string {
+	if spec != nil && errors.Is(err, docker.ErrGPUUnavailable) {
+		switch spec.Runtime {
+		case gpu.RuntimeNvidia:
+			return __("The container engine refused the NVIDIA GPU request. Install nvidia-container-toolkit and run `nvidia-ctk runtime configure --runtime=docker`, then restart Docker.")
+		case gpu.RuntimeROCm:
+			return __("The container engine refused the AMD GPU request: the ROCm device nodes (/dev/kfd, /dev/dri) are unavailable.")
+		case gpu.RuntimeIntel:
+			return __("The container engine refused the Intel GPU request: /dev/dri is unavailable.")
+		}
+	}
+	return __("Failed to start app container. Check logs for details.")
+}
+
+// checkGPUHost is the create-time pre-flight: it runs before any directory,
+// logger, image pull or container exists, so a host that cannot pass a GPU
+// through says so instantly instead of after a multi-gigabyte CUDA pull.
+// Returns "" when the app may proceed.
+//
+// It deliberately asks a stricter question than system.info reports: the
+// Cloud keeps seeing the card (drivers are installed, the hardware is real),
+// while a deploy onto an engine that cannot hand it over fails here with the
+// missing piece named.
+func (m *Manager) checkGPUHost(spec *gpu.Spec) string {
+	if spec == nil || m.deps.GPUHost == nil {
+		return ""
+	}
+	if m.deps.GPUHost.CanPassthrough(spec.Runtime) {
+		return ""
+	}
+	switch spec.Runtime {
+	case gpu.RuntimeNvidia:
+		return __("This host cannot pass an NVIDIA GPU to a container: the NVIDIA container runtime is not registered with Docker. Install nvidia-container-toolkit and run `nvidia-ctk runtime configure --runtime=docker`, then restart Docker.")
+	case gpu.RuntimeROCm:
+		return __("This host cannot pass an AMD GPU to a container: the ROCm device nodes (/dev/kfd, /dev/dri) are missing. Install the amdgpu kernel driver and the ROCm stack.")
+	case gpu.RuntimeIntel:
+		return __("This host cannot pass an Intel GPU to a container: no DRM render node (/dev/dri) is available. Install the Intel GPU driver (i915 or xe).")
+	}
+	return __("This host cannot pass a %s GPU to a container.", spec.Runtime)
+}
 
 // validAppName reports whether name is safe to use as a container name, an
 // image tag component, and an on-disk app directory. Enforced at every app
@@ -122,6 +179,20 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 		recipe["image"] = imageOverride
 	}
 
+	// The Cloud attaches the GPU request to the create payload; a recipe may
+	// also declare one for images that only ship an accelerated variant. The
+	// payload wins. Validated here so a bad request fails the create instead
+	// of crash-looping a CUDA image on the CPU.
+	gpuSpec, err := parseGPURequest(cfg["gpu"], recipe["gpu"])
+	if err != nil {
+		m.clog.Log("createFromRecipe: %s", err.Error())
+		return res(false, __("Invalid GPU configuration: %s", err.Error()))
+	}
+	if reason := m.checkGPUHost(gpuSpec); reason != "" {
+		m.clog.Log("createFromRecipe: GPU pre-flight failed for %s: %s", appType, reason)
+		return res(false, reason)
+	}
+
 	// Template detection: multi-app stacks are delegated to the template
 	// handler.
 	recipeName, _ := recipe["name"].(string)
@@ -205,20 +276,24 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 			"created": nowMs(),
 			"status":  "installing",
 		}
+		if gpuSpec != nil {
+			app["gpu"] = gpuSpec.Map()
+		}
 		appID = app["id"]
 		m.apps = append(m.apps, app)
 		m.saveAppsLocked()
 	})
 
 	m.clog.Log("createFromRecipe: Starting app...")
-	if m.run(appID, logCtrl) {
+	runErr := m.run(appID, logCtrl)
+	if runErr == nil {
 		m.clog.Log("createFromRecipe: App started successfully")
 		m.hubTrigger("app.list")
 		logCtrl.Finalize(true)
 		return res(true, __("App %s created successfully.", name))
 	}
 
-	failMsg := "Failed to start app container. Check logs for details."
+	failMsg := startFailureMessage(gpuSpec, runErr)
 	m.clog.Error("createFromRecipe: Failed to start app: %s", failMsg)
 	m.cfg.Mutate(func() {
 		filtered := m.apps[:0]
@@ -280,6 +355,24 @@ func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps m
 	}
 	if keysJSON, jerr := json.Marshal(orderedKeys); jerr == nil {
 		m.clog.Log("createFromTemplate: Dependency order: " + string(keysJSON))
+	}
+
+	// Phase 1b: GPU requests, validated for the whole stack before anything
+	// is created — a template that asks for an impossible accelerator must
+	// fail before it half-deploys and rolls back.
+	gpuSpecs := map[string]*gpu.Spec{}
+	for _, key := range orderedKeys {
+		appDef, _ := templateApps[key].(map[string]any)
+		spec, gerr := parseGPURequest(appDef["gpu"], nil)
+		if gerr != nil {
+			m.clog.Log("createFromTemplate: %s (%s)", gerr.Error(), key)
+			return res(false, __("Invalid GPU configuration for %s: %s", key, gerr.Error()))
+		}
+		if reason := m.checkGPUHost(spec); reason != "" {
+			m.clog.Log("createFromTemplate: GPU pre-flight failed for %s: %s", key, reason)
+			return res(false, reason)
+		}
+		gpuSpecs[key] = spec
 	}
 
 	// Phase 2: container names — Cloud-provided or locally generated.
@@ -413,6 +506,9 @@ func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps m
 					"created": nowMs(),
 					"status":  "installing",
 				}
+				if spec := gpuSpecs[key]; spec != nil {
+					app["gpu"] = spec.Map()
+				}
 				appID = app["id"]
 				m.apps = append(m.apps, app)
 				m.saveAppsLocked()
@@ -420,9 +516,10 @@ func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps m
 
 			m.clog.Log("createFromTemplate: Starting %s [%s] (%s)...", containerName, key, image)
 
-			if !m.run(appID, logCtrl) {
+			if runErr := m.run(appID, logCtrl); runErr != nil {
 				logCtrl.Finalize(false)
-				return errors.New(__("Failed to start %s (%s): %s", containerName, key, "Container run returned false"))
+				return errors.New(__("Failed to start %s (%s): %s", containerName, key,
+					startFailureMessage(gpuSpecs[key], runErr)))
 			}
 			logCtrl.Finalize(true)
 

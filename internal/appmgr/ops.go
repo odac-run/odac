@@ -55,12 +55,12 @@ func (m *Manager) Start(file string) *api.Result {
 	})
 
 	if existingID == nil {
-		m.run(appID, nil)
+		_ = m.run(appID, nil)
 		return res(true, __("App %s added successfully.", file))
 	}
 
 	if existingStatus != "running" {
-		m.run(existingID, nil)
+		_ = m.run(existingID, nil)
 		return res(true, __("App %s started successfully.", existingName))
 	}
 
@@ -323,7 +323,7 @@ func (m *Manager) Restart(id any) *api.Result {
 	// lock; the guard above already rejected concurrent callers.
 	m.unlockProcessing(idNum)
 
-	if m.run(idNum, nil) {
+	if m.run(idNum, nil) == nil {
 		m.hubTrigger("app.list")
 		return res(true, __("App %s restarted successfully.", name))
 	}

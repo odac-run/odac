@@ -14,8 +14,9 @@ var (
 
 // Stats reports live resource utilization for the Hub's system.stats task:
 // CPU load as an integer percent (0-100) plus memory, disk and swap as
-// used/total byte counts. It mirrors the cpu/memory/disk slice of Node's
-// System.status() (getStatus never shipped a caller in Node, so this is the
+// used/total byte counts, and one entry per accelerator in `gpu` (empty on a
+// host with none; see gpu_stats.go). It mirrors the cpu/memory/disk slice of
+// Node's System.status() (getStatus never shipped a caller in Node, so this is the
 // first live use); swap is an ODAC addition surfacing the elastic swap manager
 // (internal/system/swap) for the dashboard.
 // Fields degrade to zero on platforms whose collectors are stubbed — the
@@ -49,6 +50,7 @@ func (i *Info) Stats() jscanon.Obj {
 			{K: "used", V: diskUsed},
 			{K: "total", V: diskTotal},
 		}},
+		{K: "gpu", V: i.gpuStatsField()},
 		{K: "memory", V: jscanon.Obj{
 			{K: "used", V: usedKB * 1024},
 			{K: "total", V: totalKB * 1024},

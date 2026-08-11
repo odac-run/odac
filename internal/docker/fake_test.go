@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -38,6 +39,13 @@ type fakeAPI struct {
 	mu sync.Mutex
 
 	pingErr error
+
+	// createErr fails ContainerCreate (daemon refusals).
+	createErr error
+
+	// info answers docker-info calls; infoErr wins when set.
+	info    system.Info
+	infoErr error
 
 	// images that "exist locally".
 	images map[string]image.InspectResponse
@@ -89,9 +97,18 @@ func (f *fakeAPI) Ping(context.Context) (types.Ping, error) {
 	return types.Ping{}, f.pingErr
 }
 
+func (f *fakeAPI) Info(context.Context) (system.Info, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.info, f.infoErr
+}
+
 func (f *fakeAPI) ContainerCreate(_ context.Context, cfg *container.Config, hc *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return container.CreateResponse{}, f.createErr
+	}
 	f.nextID++
 	id := fmt.Sprintf("ctr%d", f.nextID)
 	f.created = append(f.created, createCall{Config: cfg, HostConfig: hc, Name: name, ID: id})

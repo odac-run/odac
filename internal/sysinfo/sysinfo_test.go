@@ -7,16 +7,17 @@ import (
 	"testing"
 	"time"
 
+	"odac/internal/gpu"
 	"odac/internal/jscanon"
 )
 
 // TestGetShape pins the field set and Node's literal key order.
 func TestGetShape(t *testing.T) {
-	info := New(func() bool { return true }).Get()
+	info := New(func() bool { return true }, nil).Get()
 
 	wantOrder := []string{
-		"arch", "container_engine", "cpu", "hostname", "load", "memory",
-		"node", "platform", "release", "uptime", "version",
+		"arch", "container_engine", "cpu", "gpu", "hostname", "load",
+		"memory", "node", "platform", "release", "uptime", "version",
 	}
 	if len(info) < len(wantOrder) {
 		t.Fatalf("info has %d fields: %v", len(info), info)
@@ -49,6 +50,21 @@ func TestGetShape(t *testing.T) {
 	}
 	if load, _ := parsed["load"].([]any); len(load) != 3 {
 		t.Errorf("load shape: %s", raw)
+	}
+	// gpu is always present: the Cloud gates on runtime being null, so the
+	// member may never be omitted, and devices may never be null.
+	gpuObj, ok := parsed["gpu"].(map[string]any)
+	if !ok {
+		t.Fatalf("gpu missing: %s", raw)
+	}
+	if _, isArray := gpuObj["devices"].([]any); !isArray {
+		t.Errorf("gpu.devices must be an array: %s", raw)
+	}
+	runtime, present := gpuObj["runtime"]
+	if !present {
+		t.Errorf("gpu.runtime must be present (null when ungated): %s", raw)
+	} else if runtime != nil && runtime != gpu.RuntimeNvidia && runtime != gpu.RuntimeROCm {
+		t.Errorf("gpu.runtime outside vocabulary: %v", runtime)
 	}
 }
 
@@ -111,9 +127,9 @@ func TestHostPlatformVocabulary(t *testing.T) {
 // TestStatsShape pins the system.stats field set/order and confirms the
 // payload is jscanon-encodable with numeric leaves.
 func TestStatsShape(t *testing.T) {
-	stats := New(nil).Stats()
+	stats := New(nil, nil).Stats()
 
-	wantOrder := []string{"cpu", "disk", "memory", "network", "swap"}
+	wantOrder := []string{"cpu", "disk", "gpu", "memory", "network", "swap"}
 	if len(stats) != len(wantOrder) {
 		t.Fatalf("stats has %d fields: %v", len(stats), stats)
 	}
@@ -133,6 +149,11 @@ func TestStatsShape(t *testing.T) {
 	}
 	if _, ok := parsed["cpu"].(float64); !ok {
 		t.Errorf("cpu not numeric: %s", raw)
+	}
+	// gpu is an array (empty on a GPU-less host), never null: the Cloud
+	// iterates it without a nil check.
+	if _, isArray := parsed["gpu"].([]any); !isArray {
+		t.Errorf("gpu must be an array: %s", raw)
 	}
 	for _, group := range []string{"disk", "memory", "swap"} {
 		m, ok := parsed[group].(map[string]any)

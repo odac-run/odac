@@ -13,6 +13,7 @@ import (
 
 	"odac/internal/applog"
 	"odac/internal/docker"
+	"odac/internal/gpu"
 	"odac/internal/ports"
 )
 
@@ -39,8 +40,12 @@ func runnerFor(filename string) scriptRunner {
 	return scriptRunners[".js"]
 }
 
+// errNotFound is run/runHeld's "the app vanished mid-flight" (deletion races
+// the start path); callers treat it like any other start failure.
+var errNotFound = errors.New("app not found")
+
 // run ports #run: the shared start path for every app type.
-func (m *Manager) run(id any, logCtrl *applog.BuildControl) bool {
+func (m *Manager) run(id any, logCtrl *applog.BuildControl) error {
 	var name string
 	var idNum float64
 	found := false
@@ -52,13 +57,13 @@ func (m *Manager) run(id any, logCtrl *applog.BuildControl) bool {
 		}
 	})
 	if !found {
-		return false
+		return errNotFound
 	}
 
 	// Prevent concurrent runs for the same app.
 	if !m.tryLockProcessing(idNum) {
 		m.log.Log("App %s is already being processed. Skipping duplicate run.", name)
-		return true
+		return nil
 	}
 	defer m.unlockProcessing(idNum)
 
@@ -67,7 +72,7 @@ func (m *Manager) run(id any, logCtrl *applog.BuildControl) bool {
 
 // runHeld is run's body once the processing lock is held (Check acquires it
 // synchronously before dispatching, like Node's pre-await section of #run).
-func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
+func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) error {
 	var name, typ string
 	found := false
 	m.cfg.View(func() {
@@ -78,7 +83,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
 		}
 	})
 	if !found {
-		return false
+		return errNotFound
 	}
 
 	m.log.Log("Starting app %s (Type: %s)...", name, typ)
@@ -97,7 +102,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
 	if err != nil {
 		m.log.Error("Failed to start app %s: %s", name, err.Error())
 		m.set(id, map[string]any{"status": "errored", "updated": nowMs()})
-		return false
+		return err
 	}
 
 	m.set(id, map[string]any{"status": "running", "started": nowMs()})
@@ -111,7 +116,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
 	// Trigger Proxy sync after every successful start/restart. Container IP
 	// changes on restart; without this the proxy routes to the dead IP.
 	m.proxySync()
-	return true
+	return nil
 }
 
 func nowMs() float64 { return float64(time.Now().UnixMilli()) }
@@ -128,6 +133,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		cmd                   []string
 		volumes               []docker.Mount
 		devices               []docker.Device
+		gpu                   *gpu.Spec
 		env                   map[string]any
 		privileged            string
 		port                  int
@@ -159,6 +165,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
+		s.gpu = toGPU(app["gpu"])
 
 		if s.dev {
 			// Mount the whole app directory to /app for live development.
@@ -207,6 +214,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		Ports:   []map[string]any{},
 		Volumes: s.volumes,
 		Devices: s.devices,
+		GPU:     s.gpu,
 		Env:     env,
 		Cmd:     s.cmd,
 	}
@@ -261,6 +269,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		cmd                   []string
 		volumes               []docker.Mount
 		devices               []docker.Device
+		gpu                   *gpu.Spec
 		published             []map[string]any
 		env                   map[string]any
 		privileged            string
@@ -287,6 +296,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
+		s.gpu = toGPU(app["gpu"])
 		s.env = m.resolveEnvLocked(app, true)
 		if jsTruthy(app["api"]) {
 			s.hasAPI = true
@@ -340,6 +350,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		Ports:   s.published,
 		Volumes: s.volumes,
 		Devices: s.devices,
+		GPU:     s.gpu,
 		Env:     env,
 		Cmd:     s.cmd,
 	}
@@ -490,6 +501,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		hasAPI               bool
 		apiPerms             any
 		devices              []docker.Device
+		gpu                  *gpu.Spec
 		privileged           string
 	}
 	var s snap
@@ -508,6 +520,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.file, _ = app["file"].(string)
 		s.privileged, _ = app["privileged"].(string)
 		s.devices = toDevices(app["devices"])
+		s.gpu = toGPU(app["gpu"])
 		if jsTruthy(app["api"]) {
 			s.hasAPI = true
 			s.apiPerms = app["api"]
@@ -537,6 +550,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		Cmd:     append(append([]string{runner.cmd}, runner.args...), filename),
 		Volumes: volumes,
 		Devices: s.devices,
+		GPU:     s.gpu,
 		Env:     env,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)

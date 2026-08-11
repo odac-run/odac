@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"odac/internal/docker"
+	"odac/internal/gpu"
 )
 
 // gitAppWithDomain builds a fixture whose single git app has a routed domain
@@ -26,6 +27,60 @@ func gitAppWithDomain(t *testing.T) *fixture {
 	})
 	fx.setHTTPPorts(3000)
 	return fx
+}
+
+// The GPU request lives in the app config, so every later start has to read
+// it back. Miss this and a GPU app takes the card on create and silently
+// loses it on the first restart — the container comes up healthy on the CPU
+// and nothing in the system says why inference crawled. Both restart shapes
+// are covered: the standard stop-then-start of a catalog container, and the
+// Blue-Green green container of a git app.
+func TestRestartKeepsGPU(t *testing.T) {
+	nvidia := map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"}
+
+	t.Run("container", func(t *testing.T) {
+		fx := newFixture(t, []any{map[string]any{
+			"id": float64(1), "name": "comfyui", "type": "container",
+			"image": "x/comfyui:cuda", "gpu": nvidia,
+		}})
+
+		if r := fx.m.Restart(float64(1)); !r.Status {
+			t.Fatalf("restart failed: %v", r.Message)
+		}
+		fx.waitIdle(t)
+
+		if got := fx.dock.runCallCount(); got != 1 {
+			t.Fatalf("runApp calls = %d", got)
+		}
+		if spec := fx.dock.runCallAt(0).options.GPU; spec == nil || spec.Runtime != gpu.RuntimeNvidia {
+			t.Fatalf("restarted container lost the GPU: %+v", spec)
+		}
+	})
+
+	t.Run("blue-green", func(t *testing.T) {
+		fx := gitAppWithDomain(t)
+		fx.cfg.Mutate(func() {
+			if app := fx.m.getLocked(float64(1)); app != nil {
+				app["gpu"] = nvidia
+			}
+		})
+
+		if r := fx.m.Restart(float64(1)); !r.Status {
+			t.Fatalf("restart failed: %v", r.Message)
+		}
+		fx.waitIdle(t)
+
+		if got := fx.dock.runCallCount(); got != 1 {
+			t.Fatalf("runApp calls = %d", got)
+		}
+		green := fx.dock.runCallAt(0)
+		if !strings.HasPrefix(green.name, "web-green-") {
+			t.Fatalf("green name = %q", green.name)
+		}
+		if green.options.GPU == nil || green.options.GPU.Runtime != gpu.RuntimeNvidia {
+			t.Fatalf("green container lost the GPU: %+v", green.options.GPU)
+		}
+	})
 }
 
 func TestBlueGreenRestartSwitchesContainers(t *testing.T) {
