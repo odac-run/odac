@@ -117,6 +117,16 @@ List all configured applications.
 odac app list
 ```
 
+#### `odac app network`
+Set an application's container network mode. See [Network Mode](../03-app/06-network-mode.md).
+
+```bash
+odac app network my-app --host     # Share the host network namespace
+odac app network my-app --bridge   # Restore the isolated ODAC bridge (default)
+```
+
+A restart is required for the change to take effect.
+
 #### `odac app privileged`
 Grant elevated access to an application (CLI-only, at your own risk). See [Privileged Access](../03-app/05-privileged-access.md).
 
@@ -155,6 +165,8 @@ odac domain add
 odac domain add -d example.com -a my-app
 odac domain add --domain example.com --app my-app
 ```
+
+> Apps using host networking are refused: host mode rules out zero-downtime deploys, so a routed domain would mean a live site that only redeploys with downtime. See [Network Mode](../03-app/06-network-mode.md).
 
 #### `odac domain delete`
 Delete a domain configuration and its DNS records.

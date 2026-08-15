@@ -187,6 +187,54 @@ func TestRunAppPrivileged(t *testing.T) {
 	}
 }
 
+// Host networking swaps the shared bridge for the host namespace: no bridge
+// to ensure, and published mappings are dropped because the daemon discards
+// them anyway (the app binds the host port itself).
+func TestRunAppHostNetwork(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+	opts := RunOptions{
+		Image:       "img",
+		NetworkMode: "host",
+		Ports: []map[string]any{
+			{"host": 8080.0, "container": 80.0},
+			{"host": "proxy", "container": 3000.0},
+		},
+	}
+	if _, err := c.RunApp("h", opts, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	call := f.created[0]
+	if string(call.HostConfig.NetworkMode) != "host" {
+		t.Errorf("network mode = %q", call.HostConfig.NetworkMode)
+	}
+	if len(call.HostConfig.PortBindings) != 0 {
+		t.Errorf("port bindings = %#v, want none in host mode", call.HostConfig.PortBindings)
+	}
+	if len(call.Config.ExposedPorts) != 0 {
+		t.Errorf("exposed ports = %#v, want none in host mode", call.Config.ExposedPorts)
+	}
+	for _, n := range f.networks {
+		if n == "odac-network" {
+			t.Error("odac-network ensured for a host-network container")
+		}
+	}
+}
+
+// An unset NetworkMode must keep the shared bridge — no config migration.
+func TestRunAppDefaultsToBridge(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+	if _, err := c.RunApp("b", RunOptions{Image: "img"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if string(f.created[0].HostConfig.NetworkMode) != "odac-network" {
+		t.Errorf("network mode = %q", f.created[0].HostConfig.NetworkMode)
+	}
+}
+
 // NVIDIA is passed through DeviceRequests — the wire form of `--gpus`.
 func TestRunAppGPUNvidia(t *testing.T) {
 	f := newFakeAPI()

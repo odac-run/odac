@@ -102,6 +102,158 @@ func TestPrivilegeAppliedToRunOptions(t *testing.T) {
 	})
 }
 
+// ---- network mode ----
+
+func TestSetNetworkMode(t *testing.T) {
+	newNet := func(t *testing.T, extra map[string]any) *fixture {
+		app := map[string]any{"id": float64(1), "name": "net-app", "type": "container"}
+		for k, v := range extra {
+			app[k] = v
+		}
+		return newFixture(t, []any{app})
+	}
+
+	t.Run("host persists and drops the stale address", func(t *testing.T) {
+		fx := newNet(t, map[string]any{"ip": "172.20.0.5"})
+		if r := fx.m.SetNetworkMode("net-app", "host"); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if fx.app(0)["networkMode"] != "host" {
+			t.Fatalf("networkMode = %v", fx.app(0)["networkMode"])
+		}
+		if _, present := fx.app(0)["ip"]; present {
+			t.Fatalf("stale bridge ip kept: %v", fx.app(0))
+		}
+	})
+
+	t.Run("bridge removes the key rather than storing a default", func(t *testing.T) {
+		fx := newNet(t, map[string]any{"networkMode": "host"})
+		if r := fx.m.SetNetworkMode("net-app", "bridge"); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if _, present := fx.app(0)["networkMode"]; present {
+			t.Fatalf("key not removed: %v", fx.app(0))
+		}
+	})
+
+	t.Run("empty mode means bridge", func(t *testing.T) {
+		fx := newNet(t, map[string]any{"networkMode": "host"})
+		if r := fx.m.SetNetworkMode("net-app", ""); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if _, present := fx.app(0)["networkMode"]; present {
+			t.Fatalf("key not removed: %v", fx.app(0))
+		}
+	})
+
+	t.Run("rejects invalid mode without touching the app", func(t *testing.T) {
+		fx := newNet(t, nil)
+		if r := fx.m.SetNetworkMode("net-app", "macvlan"); r.Status {
+			t.Fatal("invalid mode accepted")
+		}
+		if _, present := fx.app(0)["networkMode"]; present {
+			t.Fatalf("app touched: %v", fx.app(0))
+		}
+	})
+
+	t.Run("unknown app", func(t *testing.T) {
+		fx := newFixture(t, []any{})
+		if r := fx.m.SetNetworkMode("ghost", "host"); r.Status {
+			t.Fatal("expected failure")
+		}
+	})
+
+	// Host mode costs zero-downtime deploys, so a routed app may not take it.
+	// The gate lives in SetNetworkMode, not the CLI action, so every transport
+	// (CLI and Hub alike) gets the same answer.
+	t.Run("refuses host mode for an app with domains", func(t *testing.T) {
+		fx := newNet(t, nil)
+		fx.cfg.Mutate(func() {
+			fx.cfg.Set("domains", map[string]any{"example.com": map[string]any{"appId": "net-app"}})
+		})
+
+		r := fx.m.SetNetworkMode("net-app", "host")
+		if r.Status {
+			t.Fatal("host mode accepted for a routed app")
+		}
+		if !strings.Contains(jsString(r.Message), "domains") {
+			t.Fatalf("message = %q", jsString(r.Message))
+		}
+		if _, present := fx.app(0)["networkMode"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	// The domain gate must not block the safe direction.
+	t.Run("bridge is always allowed, domains or not", func(t *testing.T) {
+		fx := newNet(t, map[string]any{"networkMode": "host"})
+		fx.cfg.Mutate(func() {
+			fx.cfg.Set("domains", map[string]any{"example.com": map[string]any{"appId": "net-app"}})
+		})
+
+		if r := fx.m.SetNetworkMode("net-app", "bridge"); !r.Status {
+			t.Fatalf("bridge refused for a routed app: %v", r.Message)
+		}
+		if _, present := fx.app(0)["networkMode"]; present {
+			t.Fatalf("key not removed: %v", fx.app(0))
+		}
+	})
+
+	// The domain record may key on the numeric id instead of the name.
+	t.Run("refuses when the domain references the app by id", func(t *testing.T) {
+		fx := newNet(t, nil)
+		fx.cfg.Mutate(func() {
+			fx.cfg.Set("domains", map[string]any{"example.com": map[string]any{"appId": float64(1)}})
+		})
+
+		if r := fx.m.SetNetworkMode("net-app", "host"); r.Status {
+			t.Fatal("host mode accepted for an id-routed app")
+		}
+	})
+
+	// Docker refuses to attach a host-namespace container to a bridge, so the
+	// extra-networks command must answer before reaching the daemon.
+	t.Run("host mode rejects extra networks", func(t *testing.T) {
+		fx := newNet(t, map[string]any{"networkMode": "host"})
+		r := fx.m.SetNetworks("net-app", []any{"other-net"}, true)
+		if r.Status {
+			t.Fatal("extra networks accepted in host mode")
+		}
+		if !strings.Contains(jsString(r.Message), "host networking") {
+			t.Fatalf("message = %q", jsString(r.Message))
+		}
+	})
+}
+
+func TestNetworkModeAppliedToRunOptions(t *testing.T) {
+	runWith := func(t *testing.T, mode string) runCall {
+		app := map[string]any{
+			"id": float64(1), "name": "n-app", "active": true,
+			"type": "container", "image": "test:latest",
+		}
+		if mode != "" {
+			app["networkMode"] = mode
+		}
+		fx := newFixture(t, []any{app})
+		fx.checkAndSettle(t)
+		if fx.dock.runCallCount() == 0 {
+			t.Fatal("runApp not called")
+		}
+		return fx.dock.runCallAt(0)
+	}
+
+	if got := runWith(t, "host").options.NetworkMode; got != "host" {
+		t.Errorf("host: NetworkMode = %q", got)
+	}
+	if got := runWith(t, "").options.NetworkMode; got != "bridge" {
+		t.Errorf("unset: NetworkMode = %q, want the canonical bridge default", got)
+	}
+	// A hand-edited config must degrade to the isolated default, not fail.
+	if got := runWith(t, "macvlan").options.NetworkMode; got != "bridge" {
+		t.Errorf("garbage: NetworkMode = %q", got)
+	}
+}
+
 // ---- devices (deviceAdd.test.js / deviceDelete.test.js) ----
 
 func TestDeviceAdd(t *testing.T) {

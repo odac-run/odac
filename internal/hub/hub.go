@@ -53,6 +53,7 @@ type AppService interface {
 	UnlinkEnv(id any, target string) *api.Result
 	List(detailed bool) *api.Result
 	SetNetworks(id any, networks []any, payloadOK bool) *api.Result
+	SetNetworkMode(id any, mode string) *api.Result
 	SetPorts(id any, portsPayload []any, payloadOK bool) *api.Result
 	SetVolumes(id any, volumes []any, payloadOK bool) *api.Result
 	Redeploy(payload appmgr.RedeployPayload) *api.Result
@@ -712,6 +713,12 @@ func (h *Hub) buildCommands() {
 		fn: withApp(func(p any) (any, error) {
 			networks, ok := pmap(p)["networks"].([]any)
 			return h.deps.App.SetNetworks(nameOrID(p), networks, ok), nil
+		}),
+		triggers: []string{"app.list"},
+	})
+	h.register("app.network.mode", &command{
+		fn: withApp(func(p any) (any, error) {
+			return h.deps.App.SetNetworkMode(nameOrID(p), str(pmap(p)["mode"])), nil
 		}),
 		triggers: []string{"app.list"},
 	})

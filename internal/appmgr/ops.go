@@ -9,6 +9,7 @@ import (
 
 	"odac/internal/api"
 	"odac/internal/applog"
+	"odac/internal/netmode"
 	"odac/internal/ports"
 )
 
@@ -244,6 +245,24 @@ func (m *Manager) hasDomainsFor(name string, id float64) bool {
 	return has
 }
 
+// zddEligible is the single Blue-Green gate. Domains are the reason to pay
+// for a green container; host networking is the reason it cannot work — two
+// containers in the host namespace compete for the same port, so the green
+// one dies on bind and every deploy would abort on the readiness probe.
+// Host-mode apps therefore fall back to a stop/start recreate and accept the
+// gap, which is the only correct answer while the port is a host-wide
+// singleton.
+func (m *Manager) zddEligible(name string, id float64) bool {
+	if !m.hasDomainsFor(name, id) {
+		return false
+	}
+	if m.hostNetworked(id) {
+		m.log.Log("ZDD skipped for %s: host networking makes the app's port a host-wide singleton, so a green container cannot bind it. Falling back to a recreate (brief downtime).", name)
+		return false
+	}
+	return true
+}
+
 // Restart ports App.restart: Blue-Green for git apps with domains, standard
 // stop/start otherwise.
 func (m *Manager) Restart(id any) *api.Result {
@@ -264,7 +283,7 @@ func (m *Manager) Restart(id any) *api.Result {
 
 	m.log.Log("Restarting app %s", name)
 
-	if typ == "git" && m.hasDomainsFor(name, idNum) {
+	if typ == "git" && m.zddEligible(name, idNum) {
 		m.log.Log("ZDD enabled for %s (Has Domains). Executing Blue-Green restart.", name)
 
 		if !m.tryLockProcessing(idNum) {
@@ -298,7 +317,7 @@ func (m *Manager) Restart(id any) *api.Result {
 		return res(false, __("App %s is already being processed.", name))
 	}
 
-	m.log.Log("Standard restart for %s (No Domains or Script App). Stopping old container first.", name)
+	m.log.Log("Standard restart for %s (not ZDD-eligible). Stopping old container first.", name)
 
 	m.Stop(idNum)
 
@@ -517,7 +536,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		return res(false, "App was deleted during build phase.")
 	}
 
-	if m.hasDomainsFor(name, idNum) {
+	if m.zddEligible(name, idNum) {
 		// Zero-Downtime Deployment (Blue-Green).
 		m.log.Log("ZDD enabled for %s (Has Domains). Executing Blue-Green switch.", name)
 		greenName = name + "-green-" + generateRuntimeID("")
@@ -533,7 +552,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		}
 	} else {
 		// Standard redeploy (no domains).
-		m.log.Log("Standard redeploy for %s (No Domains). Stopping old container first.", name)
+		m.log.Log("Standard redeploy for %s (not ZDD-eligible). Stopping old container first.", name)
 
 		logCtrl.StartPhase("stop_old_container")
 		m.Stop(idNum)
@@ -881,15 +900,22 @@ func (m *Manager) DeviceDelete(id any, hostPath string) *api.Result {
 // SetNetworks ports App.setNetworks.
 func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Result {
 	var name string
-	found := false
+	found, hostNet := false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
 			found = true
 			name, _ = app["name"].(string)
+			hostNet = netmode.IsHost(app["networkMode"])
 		}
 	})
 	if !found {
 		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// Docker cannot attach a host-namespace container to a bridge network, so
+	// answer up front instead of surfacing the daemon's opaque refusal.
+	if hostNet {
+		return res(false, __("App %s uses host networking and cannot join additional networks. Switch it to bridge mode first.", name))
 	}
 
 	if !payloadOK {
@@ -957,6 +983,68 @@ func (m *Manager) SetPrivileged(id any, mode string) *api.Result {
 			label = __("FULL privileged (Docker Privileged + root)")
 		}
 		result = res(true, __("%s now runs with %s. Restart required to apply.", app["name"], label))
+	})
+	return result
+}
+
+// SetNetworkMode selects the app's container network namespace: netmode.Host
+// shares the host's (no isolation, the app binds host ports itself),
+// netmode.Bridge returns it to ODAC's shared bridge. Persisted only —
+// a container's network mode is fixed at create time, so it takes a restart.
+func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
+	parsed, err := netmode.Parse(mode)
+	if err != nil {
+		return res(false, __("Invalid network mode: %s. Expected %s or %s.", jsString(mode), netmode.Bridge, netmode.Host))
+	}
+
+	// Read the identity before the Mutate: hasDomainsFor takes cfg.View, and
+	// a View nested inside a Mutate deadlocks.
+	var name string
+	var idNum float64
+	found := false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			found = true
+			name, _ = app["name"].(string)
+			idNum, _ = app["id"].(float64)
+		}
+	})
+	if !found {
+		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// A routed app must keep zero-downtime deploys, and host networking makes
+	// its port a host-wide singleton so a green container can never bind it
+	// (see zddEligible). Rather than silently downgrading a live domain to
+	// restart-with-downtime, refuse and let the operator choose.
+	if parsed == netmode.Host && m.hasDomainsFor(name, idNum) {
+		return res(false, __("App %s has domains routed to it, so it cannot use host networking — zero-downtime deploys would be lost. Remove its domains first, or keep it on the bridge network.", name))
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if parsed == netmode.Bridge {
+			delete(app, "networkMode")
+		} else {
+			app["networkMode"] = parsed
+		}
+		// The cached address belongs to the old namespace; keeping it would
+		// point the proxy at a dead bridge IP (or a stale loopback) until the
+		// next discovery run overwrites it.
+		delete(app, "ip")
+		m.saveAppsLocked()
+
+		if parsed == netmode.Host {
+			result = res(true, __("%s now uses HOST networking (no network isolation from the host). Restart required to apply.", app["name"]))
+			return
+		}
+		result = res(true, __("%s now uses the isolated ODAC bridge network. Restart required to apply.", app["name"]))
 	})
 	return result
 }

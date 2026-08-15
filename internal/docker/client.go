@@ -42,6 +42,7 @@ import (
 	"odac/internal/applog"
 	"odac/internal/gpu"
 	"odac/internal/logx"
+	"odac/internal/netmode"
 	"odac/internal/ports"
 )
 
@@ -106,6 +107,11 @@ type RunOptions struct {
 	// Privileged enables Docker Privileged mode. SECURITY: full host
 	// device/kernel access; CLI-only escape hatch.
 	Privileged bool
+	// NetworkMode selects the container's network namespace, empty meaning
+	// ODAC's shared bridge. SECURITY: netmode.Host removes network isolation
+	// — the app shares the host namespace and can reach every service bound
+	// to loopback, ODAC's own API among them.
+	NetworkMode string
 }
 
 // BuildLog is the phase-aware build log control the container operations
@@ -496,11 +502,21 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 		binds = append(binds, c.ResolveHostPath(vol.Host)+":"+vol.Container)
 	}
 
+	hostNetwork := netmode.IsHost(options.NetworkMode)
+
 	portBindings := nat.PortMap{}
 	exposedPorts := nat.PortSet{}
 	for _, entry := range options.Ports {
 		// Defense in depth: a proxy-routed entry has no host binding to publish.
 		if !ports.IsPublished(entry) {
+			continue
+		}
+		// A host-namespace container binds host ports itself; the daemon
+		// discards any PortBindings sent with it. Dropping them here keeps
+		// the create call honest instead of relying on that silent discard.
+		if hostNetwork {
+			c.log.Log("App %s uses host networking: ignoring the published mapping for port %s (the app binds the host port directly).",
+				name, jsString(entry["container"]))
 			continue
 		}
 		portKey := nat.Port(jsString(entry["container"]) + "/tcp")
@@ -534,7 +550,14 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 	}
 	devices = append(devices, gpuCfg.devices...)
 
-	c.ensureNetwork(ctx, networkName)
+	netMode := networkName
+	if hostNetwork {
+		// No shared bridge to ensure: the container joins the host namespace.
+		netMode = netmode.Host
+		c.log.Log("App %s runs with HOST networking: no network isolation from the host.", name)
+	} else {
+		c.ensureNetwork(ctx, networkName)
+	}
 
 	c.log.Log("Starting app container %s (%s)...", name, options.Image)
 
@@ -575,7 +598,7 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 		Binds:         binds,
 		Resources:     container.Resources{Devices: devices, DeviceRequests: gpuCfg.requests},
 		PortBindings:  portBindings,
-		NetworkMode:   networkName,
+		NetworkMode:   container.NetworkMode(netMode),
 		GroupAdd:      gpuCfg.groups,
 		Privileged:    options.Privileged,
 	}

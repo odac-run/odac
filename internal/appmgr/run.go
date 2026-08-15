@@ -136,6 +136,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		gpu                   *gpu.Spec
 		env                   map[string]any
 		privileged            string
+		networkMode           string
 		port                  int
 	}
 	var s snap
@@ -162,6 +163,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		s.image, _ = app["image"].(string)
 		s.dev = app["dev"] == true
 		s.privileged, _ = app["privileged"].(string)
+		s.networkMode = toNetworkMode(app["networkMode"])
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
@@ -210,13 +212,14 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 	env["PORT"] = strconv.Itoa(s.port)
 
 	runOptions := docker.RunOptions{
-		Image:   s.image,
-		Ports:   []map[string]any{},
-		Volumes: s.volumes,
-		Devices: s.devices,
-		GPU:     s.gpu,
-		Env:     env,
-		Cmd:     s.cmd,
+		Image:       s.image,
+		Ports:       []map[string]any{},
+		Volumes:     s.volumes,
+		Devices:     s.devices,
+		GPU:         s.gpu,
+		Env:         env,
+		Cmd:         s.cmd,
+		NetworkMode: s.networkMode,
 	}
 
 	// In dev mode the mounted host directory is owned by the host user/root;
@@ -273,6 +276,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		published             []map[string]any
 		env                   map[string]any
 		privileged            string
+		networkMode           string
 	}
 	var s snap
 	found := false
@@ -293,6 +297,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		}
 		s.image, _ = app["image"].(string)
 		s.privileged, _ = app["privileged"].(string)
+		s.networkMode = toNetworkMode(app["networkMode"])
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
@@ -346,13 +351,14 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 	m.fixVolumePermissions(s.name, s.volumes)
 
 	runOptions := docker.RunOptions{
-		Image:   s.image,
-		Ports:   s.published,
-		Volumes: s.volumes,
-		Devices: s.devices,
-		GPU:     s.gpu,
-		Env:     env,
-		Cmd:     s.cmd,
+		Image:       s.image,
+		Ports:       s.published,
+		Volumes:     s.volumes,
+		Devices:     s.devices,
+		GPU:         s.gpu,
+		Env:         env,
+		Cmd:         s.cmd,
+		NetworkMode: s.networkMode,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 
@@ -503,6 +509,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		devices              []docker.Device
 		gpu                  *gpu.Spec
 		privileged           string
+		networkMode          string
 	}
 	var s snap
 	found := false
@@ -519,6 +526,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.name, _ = app["name"].(string)
 		s.file, _ = app["file"].(string)
 		s.privileged, _ = app["privileged"].(string)
+		s.networkMode = toNetworkMode(app["networkMode"])
 		s.devices = toDevices(app["devices"])
 		s.gpu = toGPU(app["gpu"])
 		if jsTruthy(app["api"]) {
@@ -546,12 +554,13 @@ func (m *Manager) runScriptContainer(id any) error {
 	}
 
 	runOptions := docker.RunOptions{
-		Image:   runner.image,
-		Cmd:     append(append([]string{runner.cmd}, runner.args...), filename),
-		Volumes: volumes,
-		Devices: s.devices,
-		GPU:     s.gpu,
-		Env:     env,
+		Image:       runner.image,
+		Cmd:         append(append([]string{runner.cmd}, runner.args...), filename),
+		Volumes:     volumes,
+		Devices:     s.devices,
+		GPU:         s.gpu,
+		Env:         env,
+		NetworkMode: s.networkMode,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 

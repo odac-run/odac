@@ -230,6 +230,53 @@ func TestStandardRestartForAppWithoutDomains(t *testing.T) {
 	}
 }
 
+// A host-networked app owns its port host-wide, so a green container would
+// die on bind and every deploy would abort on the readiness probe. The ZDD
+// gate must decline it up front and recreate in place instead — domains or
+// not.
+func TestHostNetworkSkipsBlueGreen(t *testing.T) {
+	t.Run("restart recreates in place", func(t *testing.T) {
+		fx := gitAppWithDomain(t)
+		fx.cfg.Mutate(func() {
+			if app := fx.m.getLocked(float64(1)); app != nil {
+				app["networkMode"] = "host"
+			}
+		})
+
+		r := fx.m.Restart(float64(1))
+		if !r.Status {
+			t.Fatalf("restart failed: %v", r.Message)
+		}
+		if strings.Contains(jsString(r.Message), "zero-downtime") {
+			t.Fatalf("host-mode restart took the ZDD path: %q", jsString(r.Message))
+		}
+		fx.waitIdle(t)
+
+		fx.dock.mu.Lock()
+		defer fx.dock.mu.Unlock()
+		if len(fx.dock.runCalls) != 1 || fx.dock.runCalls[0].name != "web" {
+			t.Fatalf("runCalls = %v, want a single in-place run named web", fx.dock.runCalls)
+		}
+		if len(fx.dock.renames) != 0 {
+			t.Fatalf("renames = %v, want none without a green container", fx.dock.renames)
+		}
+	})
+
+	t.Run("bridge app with the same shape still gets ZDD", func(t *testing.T) {
+		fx := gitAppWithDomain(t)
+		if r := fx.m.Restart(float64(1)); !r.Status {
+			t.Fatalf("restart failed: %v", r.Message)
+		}
+		fx.waitIdle(t)
+
+		fx.dock.mu.Lock()
+		defer fx.dock.mu.Unlock()
+		if len(fx.dock.runCalls) != 1 || !strings.HasPrefix(fx.dock.runCalls[0].name, "web-green-") {
+			t.Fatalf("runCalls = %v, want a green container", fx.dock.runCalls)
+		}
+	})
+}
+
 func TestRestartRejectsConcurrentProcessing(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{
 		"id": float64(1), "name": "busy", "type": "container", "image": "app",

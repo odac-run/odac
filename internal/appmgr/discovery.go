@@ -6,11 +6,36 @@ import (
 	"strings"
 	"time"
 
+	"odac/internal/netmode"
 	"odac/internal/ports"
 )
 
 // wellKnownGuess is the no-container-IP fallback order (#pollForPort).
 var wellKnownGuess = []int{80, 8080, 3000, 5000}
+
+// hostNetworked reports whether the app runs in the host namespace. Takes
+// cfg.View, so it must not be called from inside a cfg.Mutate block.
+func (m *Manager) hostNetworked(id any) bool {
+	hostNet := false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			hostNet = netmode.IsHost(app["networkMode"])
+		}
+	})
+	return hostNet
+}
+
+// containerAddr resolves the address ODAC probes and routes an app at. A
+// host-mode container has no IP of its own — it answers on the host's
+// loopback, which ODAC shares (see netmode.LoopbackAddr). Everything else is
+// reached by its bridge IP. Returns "" when no address is available yet.
+func (m *Manager) containerAddr(id any, containerName string) string {
+	if m.hostNetworked(id) {
+		return netmode.LoopbackAddr
+	}
+	ip, _ := m.deps.Docker.GetIP(containerName)
+	return ip
+}
 
 // wellKnownHTTP is the multi-response preference order (#detectHttpPort).
 var wellKnownHTTP = []int{80, 443, 8080, 3000, 5000, 8000}
@@ -87,7 +112,7 @@ func (m *Manager) pollForPort(id any, containerName string, expectedPort int) {
 		// port, so only a port that answers HTTP is worth writing. Probing
 		// every open port — including a lone one — is what keeps a database
 		// app from being handed a `proxy: 3306` mapping.
-		containerIP, _ := m.deps.Docker.GetIP(containerName)
+		containerIP := m.containerAddr(id, containerName)
 		if containerIP != "" {
 			preferred = m.detectHTTPPort(containerIP, listening)
 			if preferred == 0 {

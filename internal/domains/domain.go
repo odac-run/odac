@@ -40,6 +40,7 @@ import (
 	"odac/internal/dataplane"
 	"odac/internal/lang"
 	"odac/internal/logx"
+	"odac/internal/netmode"
 )
 
 var __ = lang.T
@@ -160,7 +161,7 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 
 	// Existence + app lookup + subdomain-parent scan, snapshotted under the
 	// read lock. targetName is the app the domain binds to.
-	var exists, found bool
+	var exists, found, targetHostNet bool
 	var targetName string
 	var parentDomain, sub string
 	var subAlready bool
@@ -177,6 +178,7 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 			if app != nil && (app["id"] == appID || app["name"] == appID) {
 				found = true
 				targetName, _ = app["name"].(string)
+				targetHostNet = netmode.IsHost(app["networkMode"])
 				break
 			}
 		}
@@ -205,6 +207,15 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 	}
 	if !found {
 		return api.Res(false, __("App %s not found.", str(appID)))
+	}
+
+	// Mirror of appmgr.SetNetworkMode's refusal, from the other direction: a
+	// host-networked app's port is a host-wide singleton, so Blue-Green can
+	// never run for it. Routing a domain to one would hand it a live site that
+	// only redeploys with downtime. Both doors are guarded, so the state stays
+	// unreachable instead of merely discouraged.
+	if targetHostNet {
+		return api.Res(false, __("App %s uses host networking, which rules out zero-downtime deploys, so domains cannot be routed to it. Switch it to bridge networking first: odac app network %s --bridge", targetName, targetName))
 	}
 
 	if parentDomain != "" {

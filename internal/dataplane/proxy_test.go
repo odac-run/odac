@@ -359,6 +359,36 @@ func TestProxyPortsSentinelResolution(t *testing.T) {
 	}
 }
 
+// A host-networked app has no container IP: the proxy must route it on
+// loopback (ODAC shares the host namespace) instead of inspecting Docker,
+// even when an inspect would answer with a stale bridge address.
+func TestProxyHostNetworkRoutesToLoopback(t *testing.T) {
+	cs := newControlServer(t)
+	resolver := &fakeResolver{ips: map[string]string{"hostapp": "10.5.0.9"}}
+	resolver.available.Store(true)
+	p, _ := newTestProxy(t, cs, resolver)
+
+	p.cfg.Set("apps", []any{
+		map[string]any{"name": "hostapp", "id": "h1", "networkMode": "host",
+			"ip":    "10.5.0.9", // stale cache from its bridge days
+			"ports": []any{map[string]any{"host": "proxy", "container": float64(7860)}}},
+	})
+	p.cfg.Set("domains", map[string]any{"hostapp.test": map[string]any{"appId": "hostapp"}})
+
+	p.SyncConfig()
+	payload := cs.nextConfig(t)
+	domains, _ := payload["domains"].(map[string]any)
+	want := map[string]any{
+		"domain": "hostapp.test", "port": float64(7860),
+		"containerIP": "127.0.0.1", "container": "127.0.0.1",
+		"subdomain": []any{}, "cert": map[string]any{},
+	}
+	got, _ := domains["hostapp.test"].(map[string]any)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("domains[hostapp.test] =\n%#v\nwant\n%#v", got, want)
+	}
+}
+
 // hasContainerApps must treat the 'proxy' sentinel like a missing host
 // (Ports.isProxy), and a published container port as NOT container-network.
 func TestHasContainerAppsSentinel(t *testing.T) {

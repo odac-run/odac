@@ -13,6 +13,7 @@ import (
 
 	"odac/internal/config"
 	"odac/internal/logx"
+	"odac/internal/netmode"
 	"odac/internal/ports"
 	"odac/internal/supervise"
 )
@@ -452,6 +453,14 @@ func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
 	}
 	if port == 0 {
 		return nil
+	}
+
+	if internal && netmode.IsHost(app["networkMode"]) {
+		// A host-namespace app has no container IP to inspect: it binds the
+		// port on the host, and ODAC shares that namespace, so the container
+		// port is already reachable on loopback. The default host is exactly
+		// that, so only the inspect below needs skipping.
+		return &backendInfo{host: netmode.LoopbackAddr, port: port, internal: internal}
 	}
 
 	if internal {

@@ -129,6 +129,11 @@ func init() {
 						return a.call("app.list", nil, false)
 					},
 				}},
+				{"network", &command{
+					description: "Set an app's network mode: --host to share the host namespace, --bridge (default) to restore isolation. Restart required.",
+					args:        []string{"-i", "--id", "--host", "--bridge"},
+					action:      appNetworkAction,
+				}},
 				{"privileged", &command{
 					description: "Grant elevated access to an app: --root (default) or --full. Use --off to revoke. (At your own risk)",
 					args:        []string{"-i", "--id", "--root", "--full", "--off"},
@@ -456,7 +461,9 @@ func appCreateAction(a *app, args []string) int {
 	return a.call("app.create", []any{typ}, false)
 }
 
-func appPrivilegedAction(a *app, args []string) int {
+// appIDArg resolves the app from -i/--id, else the first non-flag argument,
+// else a prompt.
+func appIDArg(a *app, args []string) string {
 	app := parseArg(args, "-i", "--id")
 	if app == "" {
 		for _, arg := range args {
@@ -469,6 +476,29 @@ func appPrivilegedAction(a *app, args []string) int {
 	if app == "" {
 		app = a.question(__("Enter the App ID or Name: "))
 	}
+	return app
+}
+
+func appNetworkAction(a *app, args []string) int {
+	app := appIDArg(a, args)
+
+	mode := "bridge"
+	if slices.Contains(args, "--host") {
+		mode = "host"
+	}
+
+	if mode == "host" {
+		fmt.Fprintln(a.out, __("WARNING: Host networking removes this app's network isolation. It shares the host's network namespace, binds host ports directly (published port mappings stop applying), and can reach every service listening on loopback — including ODAC's own API. Apps with routed domains are refused, because host networking rules out zero-downtime deploys."))
+		if !strings.EqualFold(a.question(__(`Type "yes" to continue: `)), "yes") {
+			fmt.Fprintln(a.out, __("Aborted."))
+			return 1
+		}
+	}
+	return a.call("app.network", []any{app, mode}, false)
+}
+
+func appPrivilegedAction(a *app, args []string) int {
+	app := appIDArg(a, args)
 
 	mode := "root"
 	if slices.Contains(args, "--off") {

@@ -3,6 +3,7 @@ package appmgr
 import (
 	"odac/internal/docker"
 	"odac/internal/gpu"
+	"odac/internal/netmode"
 )
 
 // copyMap shallow-copies a decoded-JSON map.
@@ -51,6 +52,17 @@ func toGPU(v any) *gpu.Spec {
 		return nil
 	}
 	return spec
+}
+
+// toNetworkMode converts a persisted `networkMode` value to a canonical mode.
+// Like toGPU it degrades to the safe default (isolated bridge) rather than
+// failing the start, since only a hand-edited config can be malformed here.
+func toNetworkMode(v any) string {
+	mode, err := netmode.Parse(v)
+	if err != nil {
+		return netmode.Bridge
+	}
+	return mode
 }
 
 // toDevices converts persisted `devices` entries to docker.Device.

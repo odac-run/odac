@@ -59,6 +59,10 @@
         {
           "file": "05-privileged-access.md",
           "title": "Privileged Access"
+        },
+        {
+          "file": "06-network-mode.md",
+          "title": "Network Mode"
         }
       ]
     },

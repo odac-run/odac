@@ -65,6 +65,12 @@ func TestDispatchActionsAndData(t *testing.T) {
 			"app.privileged", []any{"blog", "full"}},
 		{"privileged off no confirm", []string{"app", "privileged", "blog", "--off"}, "",
 			"app.privileged", []any{"blog", "off"}},
+		{"network host confirms", []string{"app", "network", "blog", "--host"}, "yes\n",
+			"app.network", []any{"blog", "host"}},
+		{"network bridge no confirm", []string{"app", "network", "blog", "--bridge"}, "",
+			"app.network", []any{"blog", "bridge"}},
+		{"network defaults to bridge", []string{"app", "network", "-i", "blog"}, "",
+			"app.network", []any{"blog", "bridge"}},
 	}
 
 	for _, tt := range tests {
@@ -133,6 +139,21 @@ func TestPrivilegedAbort(t *testing.T) {
 	a, out, _ := testApp(t, addr)
 	a.in = strings.NewReader("no\n")
 	if code := a.run([]string{"app", "privileged", "blog"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "Aborted.") {
+		t.Errorf("output:\n%s", out)
+	}
+	if last.Action != "" {
+		t.Errorf("server was called with %q after abort", last.Action)
+	}
+}
+
+func TestNetworkHostAbort(t *testing.T) {
+	addr, last := recordingServer(t)
+	a, out, _ := testApp(t, addr)
+	a.in = strings.NewReader("no\n")
+	if code := a.run([]string{"app", "network", "blog", "--host"}); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "Aborted.") {

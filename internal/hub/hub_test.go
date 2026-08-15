@@ -224,6 +224,10 @@ func (f *fakeApp) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 	f.record("networks:" + str(id))
 	return ok("ok")
 }
+func (f *fakeApp) SetNetworkMode(id any, mode string) *api.Result {
+	f.record("networkmode:" + str(id) + ":" + mode)
+	return ok("ok")
+}
 func (f *fakeApp) SetPorts(id any, ports []any, payloadOK bool) *api.Result {
 	f.record("ports:" + str(id))
 	return ok("ok")
@@ -873,6 +877,8 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.env.delete", map[string]any{"name": "web", "keys": []any{"A", "B"}})
 	run("app.redeploy", map[string]any{"container": "web", "branch": "dev"})
 	run("app.restart", map[string]any{"container": "web"})
+	run("app.network.mode", map[string]any{"name": "web", "mode": "host"})
+	run("app.network.mode", map[string]any{"name": "web"}) // absent mode → bridge
 
 	want := []string{
 		"delete:web:true",
@@ -883,6 +889,8 @@ func TestPayloadMappings(t *testing.T) {
 		"delenv:web:A,B",
 		"redeploy:web:dev",
 		"restart:web",
+		"networkmode:web:host",
+		"networkmode:web:",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {
@@ -1124,7 +1132,7 @@ func TestCommandTableOrder(t *testing.T) {
 	want := []string{
 		"configure", "app.create", "app.build_stats", "app.delete", "app.env.get",
 		"app.env.delete", "app.env.link", "app.env.set", "app.env.unlink", "app.list",
-		"app.network.set", "app.port.set", "app.redeploy", "app.restart", "app.start",
+		"app.network.set", "app.network.mode", "app.port.set", "app.redeploy", "app.restart", "app.start",
 		"app.stats", "app.stop",
 		"app.volumes.set", "dns.add", "dns.delete", "dns.list", "domain.add",
 		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
