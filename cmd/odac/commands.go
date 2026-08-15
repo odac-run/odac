@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"fmt"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -89,23 +88,6 @@ func init() {
 				return a.call("update", nil, false)
 			},
 		}},
-		{"run", &command{
-			args:        []string{"file"},
-			description: "Run a script or file as a service",
-			action: func(a *app, args []string) int {
-				if len(args) == 0 || args[0] == "" {
-					fmt.Fprintln(a.out, __("Please specify a file to run."))
-					return 1
-				}
-				file := args[0]
-				if !filepath.IsAbs(file) {
-					if abs, err := filepath.Abs(file); err == nil {
-						file = abs
-					}
-				}
-				return a.call("app.start", []any{file}, false)
-			},
-		}},
 		{"app", &command{
 			title: "APP",
 			sub: []entry{
@@ -157,6 +139,20 @@ func init() {
 					args:        []string{"-i", "--id"},
 					action: func(a *app, args []string) int {
 						return a.call("app.restart", []any{a.appArg(args)}, false)
+					},
+				}},
+				{"start", &command{
+					description: "Start a stopped App",
+					args:        []string{"-i", "--id"},
+					action: func(a *app, args []string) int {
+						return a.call("app.start", []any{a.appArg(args)}, false)
+					},
+				}},
+				{"stop", &command{
+					description: "Stop a running App",
+					args:        []string{"-i", "--id"},
+					action: func(a *app, args []string) int {
+						return a.call("app.stop", []any{a.appArg(args)}, false)
 					},
 				}},
 			},

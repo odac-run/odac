@@ -237,6 +237,8 @@ func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	return ok("ok")
 }
 func (f *fakeApp) Restart(id any) *api.Result { f.record("restart:" + str(id)); return ok("ok") }
+func (f *fakeApp) Start(id any) *api.Result   { f.record("start:" + str(id)); return ok("ok") }
+func (f *fakeApp) Stop(id any) *api.Result    { f.record("stop:" + str(id)); return ok("ok") }
 
 func (f *fakeApp) SubscribeToLogs(appName string, cb func(applog.Entry)) func() {
 	f.record("sub:" + appName)
@@ -1122,7 +1124,8 @@ func TestCommandTableOrder(t *testing.T) {
 	want := []string{
 		"configure", "app.create", "app.build_stats", "app.delete", "app.env.get",
 		"app.env.delete", "app.env.link", "app.env.set", "app.env.unlink", "app.list",
-		"app.network.set", "app.port.set", "app.redeploy", "app.restart", "app.stats",
+		"app.network.set", "app.port.set", "app.redeploy", "app.restart", "app.start",
+		"app.stats", "app.stop",
 		"app.volumes.set", "dns.add", "dns.delete", "dns.list", "domain.add",
 		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
 		"app.logs.on", "app.logs.off", "app.build_logs.on", "app.build_logs.off",

@@ -2,7 +2,6 @@ package main
 
 import (
 	"net"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,7 +22,6 @@ func recordingServer(t *testing.T) (string, *apiproto.Request) {
 }
 
 func TestDispatchActionsAndData(t *testing.T) {
-	absRun, _ := filepath.Abs("script.js")
 	tests := []struct {
 		name       string
 		argv       []string
@@ -35,6 +33,8 @@ func TestDispatchActionsAndData(t *testing.T) {
 		{"app delete positional", []string{"app", "delete", "42"}, "", "app.delete", []any{"42"}},
 		{"app delete flag", []string{"app", "delete", "-i", "42"}, "", "app.delete", []any{"42"}},
 		{"app restart", []string{"app", "restart", "blog"}, "", "app.restart", []any{"blog"}},
+		{"app start", []string{"app", "start", "blog"}, "", "app.start", []any{"blog"}},
+		{"app stop", []string{"app", "stop", "blog"}, "", "app.stop", []any{"blog"}},
 		{"app device add", []string{"app", "device", "add", "blog", "/dev/ttyACM0"}, "",
 			"app.device.add", []any{"blog", "/dev/ttyACM0"}},
 		{"app device delete flags", []string{"app", "device", "delete", "-a", "blog", "-d", "/dev/x"}, "",
@@ -59,7 +59,6 @@ func TestDispatchActionsAndData(t *testing.T) {
 		{"auth positional", []string{"auth", "SECRETKEY"}, "", "auth", []any{"SECRETKEY"}},
 		{"auth interactive", []string{"auth"}, "typedkey\n", "auth", []any{"typedkey"}},
 		{"update", []string{"update"}, "", "update", []any{}},
-		{"run resolves path", []string{"run", "script.js"}, "", "app.start", []any{absRun}},
 		{"privileged default root", []string{"app", "privileged", "blog"}, "yes\n",
 			"app.privileged", []any{"blog", "root"}},
 		{"privileged full", []string{"app", "privileged", "blog", "--full"}, "YES\n",
@@ -162,20 +161,6 @@ func TestDNSListDetailView(t *testing.T) {
 	}
 	if strings.Contains(got, "TYPE") {
 		t.Errorf("detail view must not print table headers:\n%s", got)
-	}
-}
-
-func TestRunMissingFile(t *testing.T) {
-	addr, last := recordingServer(t)
-	a, out, _ := testApp(t, addr)
-	if code := a.run([]string{"run"}); code != 1 {
-		t.Fatalf("exit = %d, want 1", code)
-	}
-	if !strings.Contains(out.String(), "Please specify a file to run.") {
-		t.Errorf("output = %q", out)
-	}
-	if last.Action != "" {
-		t.Errorf("server was called with %q", last.Action)
 	}
 }
 

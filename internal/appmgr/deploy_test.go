@@ -571,3 +571,50 @@ func TestStopEndsAppAndLogStream(t *testing.T) {
 		t.Fatalf("r2 = %+v", r2)
 	}
 }
+
+func TestStartResumesStoppedApp(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "web", "type": "container", "image": "app", "active": true,
+	}})
+	fx.checkAndSettle(t) // start it
+
+	if r := fx.m.Stop(float64(1)); !r.Status {
+		t.Fatalf("stop failed: %v", r.Message)
+	}
+	if app := fx.app(0); app["active"] != false {
+		t.Fatalf("active after stop = %v", app["active"])
+	}
+
+	r := fx.m.Start(float64(1))
+	if !r.Status {
+		t.Fatalf("start failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	if app := fx.app(0); app["active"] != true {
+		t.Fatalf("active after start = %v", app["active"])
+	}
+	if got := fx.dock.runCallCount(); got != 2 {
+		t.Fatalf("runApp calls = %d, want 2 (initial start + resume)", got)
+	}
+
+	// Starting an already-running app is a no-op: no extra run call.
+	r2 := fx.m.Start(float64(1))
+	if !r2.Status || !strings.Contains(jsString(r2.Message), "already running") {
+		t.Fatalf("r2 = %+v", r2)
+	}
+	if got := fx.dock.runCallCount(); got != 2 {
+		t.Fatalf("runApp calls after redundant start = %d, want 2", got)
+	}
+}
+
+func TestStartUnknownApp(t *testing.T) {
+	fx := newFixture(t, nil)
+	r := fx.m.Start(float64(99))
+	if r.Status {
+		t.Fatal("expected failure for unknown app")
+	}
+	if !strings.Contains(jsString(r.Message), "not found") {
+		t.Fatalf("message = %q", jsString(r.Message))
+	}
+}

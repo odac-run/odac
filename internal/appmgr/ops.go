@@ -19,53 +19,9 @@ var (
 	// greenSuffix matches the green container name suffix produced by
 	// generateRuntimeID: `<appName>-green-<13+digit-ms>_<8-hex>`.
 	greenSuffix = regexp.MustCompile(`-green-\d+_[a-f0-9]{8}$`)
-	// scriptExts is SCRIPT_EXTENSIONS: files App.start strips to name apps.
+	// scriptExts is SCRIPT_EXTENSIONS: extensions stripped from script-type app names.
 	scriptExts = []string{".js", ".py", ".php", ".sh", ".rb"}
 )
-
-// Start ports App.start: register/start a script app from a file path.
-func (m *Manager) Start(file string) *api.Result {
-	if file == "" {
-		return res(false, __("App file not specified."))
-	}
-
-	abs, err := filepath.Abs(file)
-	if err == nil {
-		file = abs
-	}
-
-	if _, statErr := os.Stat(file); statErr != nil {
-		return res(false, __("App file %s not found.", file))
-	}
-
-	var existingID any
-	var existingName, existingStatus string
-	var appID any
-	m.cfg.Mutate(func() {
-		for _, app := range m.apps {
-			if app["file"] == file {
-				existingID = app["id"]
-				existingName, _ = app["name"].(string)
-				existingStatus, _ = app["status"].(string)
-				return
-			}
-		}
-		app := m.addLocked(file, "script")
-		appID = app["id"]
-	})
-
-	if existingID == nil {
-		_ = m.run(appID, nil)
-		return res(true, __("App %s added successfully.", file))
-	}
-
-	if existingStatus != "running" {
-		_ = m.run(existingID, nil)
-		return res(true, __("App %s started successfully.", existingName))
-	}
-
-	return res(false, __("App %s already exists and is running.", file))
-}
 
 // Stop ports App.stop.
 func (m *Manager) Stop(id any) *api.Result {
@@ -114,6 +70,38 @@ func (m *Manager) Stop(id any) *api.Result {
 	}
 
 	return res(true, __("App %s stopped.", name))
+}
+
+// Start starts an existing, currently-stopped app by ID/name — the
+// counterpart to Stop. Unlike Restart it never stops a live container: a
+// running app is left untouched and reported as such.
+func (m *Manager) Start(id any) *api.Result {
+	var name string
+	var idVal any
+	found := false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			found = true
+			name, _ = app["name"].(string)
+			idVal = app["id"]
+		}
+	})
+	if !found {
+		return res(false, __("App ID %s not found.", jsString(id)))
+	}
+
+	if m.isAppRunning(idVal) {
+		return res(true, __("App %s is already running.", name))
+	}
+
+	m.log.Log("Starting app %s", name)
+	m.set(idVal, map[string]any{"active": true})
+
+	if m.run(idVal, nil) == nil {
+		m.hubTrigger("app.list")
+		return res(true, __("App %s started successfully.", name))
+	}
+	return res(false, __("Failed to start app %s.", name))
 }
 
 // StopAll ports App.stopAll.

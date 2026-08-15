@@ -274,7 +274,10 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 			return appMgr.Restart(a.At(0)), nil
 		})
 		apiSrv.Register("app.start", func(a api.Args, _ api.Progress) (*api.Result, error) {
-			return appMgr.Start(argStr(a.At(0))), nil
+			return appMgr.Start(a.At(0)), nil
+		})
+		apiSrv.Register("app.stop", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.Stop(a.At(0)), nil
 		})
 	}
 

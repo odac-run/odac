@@ -57,6 +57,8 @@ type AppService interface {
 	SetVolumes(id any, volumes []any, payloadOK bool) *api.Result
 	Redeploy(payload appmgr.RedeployPayload) *api.Result
 	Restart(id any) *api.Result
+	Start(id any) *api.Result
+	Stop(id any) *api.Result
 	SubscribeToLogs(appName string, cb func(applog.Entry)) func()
 }
 
@@ -737,9 +739,17 @@ func (h *Hub) buildCommands() {
 		fn:       withApp(func(p any) (any, error) { return h.deps.App.Restart(pmap(p)["container"]), nil }),
 		triggers: []string{"app.list", "app.stats"},
 	})
+	h.register("app.start", &command{
+		fn:       withApp(func(p any) (any, error) { return h.deps.App.Start(pmap(p)["container"]), nil }),
+		triggers: []string{"app.list", "app.stats"},
+	})
 	h.register("app.stats", &command{
 		fn:       func(any) (any, error) { return h.getAppStats() },
 		interval: 60 * time.Second,
+	})
+	h.register("app.stop", &command{
+		fn:       withApp(func(p any) (any, error) { return h.deps.App.Stop(pmap(p)["container"]), nil }),
+		triggers: []string{"app.list", "app.stats"},
 	})
 	h.register("app.volumes.set", &command{
 		fn: withApp(func(p any) (any, error) {
