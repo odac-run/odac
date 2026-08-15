@@ -71,6 +71,10 @@ func TestDispatchActionsAndData(t *testing.T) {
 			"app.network", []any{"blog", "bridge"}},
 		{"network defaults to bridge", []string{"app", "network", "-i", "blog"}, "",
 			"app.network", []any{"blog", "bridge"}},
+		{"isolate on", []string{"app", "isolate", "blog"}, "",
+			"app.isolate", []any{"blog", true}},
+		{"isolate off", []string{"app", "isolate", "-i", "blog", "--off"}, "",
+			"app.isolate", []any{"blog", false}},
 	}
 
 	for _, tt := range tests {

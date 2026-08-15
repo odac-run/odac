@@ -54,12 +54,18 @@ type fakeAPI struct {
 	pulled     []string
 
 	networks []string
-	created  []createCall
-	started  []string
-	stopped  []string
-	removed  []string
-	renamed  [][2]string
-	nextID   int
+	// netCreateOpts records the options each network was created with, so a
+	// test can assert the `internal` flag and not just the name.
+	netCreateOpts map[string]network.CreateOptions
+	// preInternal marks pre-seeded `networks` entries as internal, letting a
+	// test exercise the "exists but is not internal" branch.
+	preInternal map[string]bool
+	created     []createCall
+	started     []string
+	stopped     []string
+	removed     []string
+	renamed     [][2]string
+	nextID      int
 
 	// waitCode per container ID (default 0).
 	waitCodes map[string]int64
@@ -285,15 +291,23 @@ func (f *fakeAPI) NetworkList(context.Context, network.ListOptions) ([]network.S
 	defer f.mu.Unlock()
 	var out []network.Summary
 	for _, n := range f.networks {
-		out = append(out, network.Summary{Name: n})
+		internal := f.preInternal[n]
+		if opts, ok := f.netCreateOpts[n]; ok {
+			internal = opts.Internal
+		}
+		out = append(out, network.Summary{Name: n, Internal: internal})
 	}
 	return out, nil
 }
 
-func (f *fakeAPI) NetworkCreate(_ context.Context, name string, _ network.CreateOptions) (network.CreateResponse, error) {
+func (f *fakeAPI) NetworkCreate(_ context.Context, name string, opts network.CreateOptions) (network.CreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.networks = append(f.networks, name)
+	if f.netCreateOpts == nil {
+		f.netCreateOpts = map[string]network.CreateOptions{}
+	}
+	f.netCreateOpts[name] = opts
 	return network.CreateResponse{ID: name}, nil
 }
 

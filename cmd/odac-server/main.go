@@ -270,6 +270,9 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 		apiSrv.Register("app.network", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.SetNetworkMode(a.At(0), argStr(a.At(1))), nil
 		})
+		apiSrv.Register("app.isolate", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetIsolated(a.At(0), a.At(1) == true), nil
+		})
 		apiSrv.Register("app.privileged", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.SetPrivileged(a.At(0), argStr(a.At(1))), nil
 		})

@@ -54,6 +54,7 @@ type AppService interface {
 	List(detailed bool) *api.Result
 	SetNetworks(id any, networks []any, payloadOK bool) *api.Result
 	SetNetworkMode(id any, mode string) *api.Result
+	SetIsolated(id any, isolated bool) *api.Result
 	SetPorts(id any, portsPayload []any, payloadOK bool) *api.Result
 	SetVolumes(id any, volumes []any, payloadOK bool) *api.Result
 	Redeploy(payload appmgr.RedeployPayload) *api.Result
@@ -719,6 +720,12 @@ func (h *Hub) buildCommands() {
 	h.register("app.network.mode", &command{
 		fn: withApp(func(p any) (any, error) {
 			return h.deps.App.SetNetworkMode(nameOrID(p), str(pmap(p)["mode"])), nil
+		}),
+		triggers: []string{"app.list"},
+	})
+	h.register("app.network.isolate", &command{
+		fn: withApp(func(p any) (any, error) {
+			return h.deps.App.SetIsolated(nameOrID(p), pmap(p)["isolated"] == true), nil
 		}),
 		triggers: []string{"app.list"},
 	})

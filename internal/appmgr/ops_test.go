@@ -225,6 +225,131 @@ func TestSetNetworkMode(t *testing.T) {
 	})
 }
 
+// ---- egress isolation (its own axis, not a network mode) ----
+
+func TestSetIsolated(t *testing.T) {
+	newIso := func(t *testing.T, extra map[string]any) *fixture {
+		app := map[string]any{"id": float64(1), "name": "iso-app", "type": "container"}
+		for k, v := range extra {
+			app[k] = v
+		}
+		return newFixture(t, []any{app})
+	}
+
+	t.Run("persists and drops the stale address", func(t *testing.T) {
+		fx := newIso(t, map[string]any{"ip": "172.20.0.5"})
+		if r := fx.m.SetIsolated("iso-app", true); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if fx.app(0)["isolated"] != true {
+			t.Fatalf("isolated = %v", fx.app(0)["isolated"])
+		}
+		if _, present := fx.app(0)["ip"]; present {
+			t.Fatalf("stale address kept: %v", fx.app(0))
+		}
+	})
+
+	t.Run("off removes the key", func(t *testing.T) {
+		fx := newIso(t, map[string]any{"isolated": true})
+		if r := fx.m.SetIsolated("iso-app", false); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if _, present := fx.app(0)["isolated"]; present {
+			t.Fatalf("key not removed: %v", fx.app(0))
+		}
+	})
+
+	// Isolation is orthogonal to the network mode, but not to host mode: a
+	// host-namespace container has no bridge of its own to cut off. Both
+	// directions must refuse, or an operator ends up with an app that reports
+	// itself isolated while sharing the host's stack.
+	t.Run("refuses on a host-networked app", func(t *testing.T) {
+		fx := newIso(t, map[string]any{"networkMode": "host"})
+		r := fx.m.SetIsolated("iso-app", true)
+		if r.Status {
+			t.Fatal("isolation accepted for a host-networked app")
+		}
+		if _, present := fx.app(0)["isolated"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	t.Run("host mode refused while isolated", func(t *testing.T) {
+		fx := newIso(t, map[string]any{"isolated": true})
+		r := fx.m.SetNetworkMode("iso-app", "host")
+		if r.Status {
+			t.Fatal("host mode accepted for an isolated app")
+		}
+		if fx.app(0)["networkMode"] != nil {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	// Turning isolation off must always be possible, whatever the state.
+	t.Run("off is allowed even on a host-networked app", func(t *testing.T) {
+		fx := newIso(t, map[string]any{"networkMode": "host"})
+		if r := fx.m.SetIsolated("iso-app", false); !r.Status {
+			t.Fatalf("clearing isolation refused: %v", r.Message)
+		}
+	})
+
+	// Isolated apps keep a container IP, so the proxy reaches them and
+	// Blue-Green still works — the domain restriction is host-mode only.
+	t.Run("allowed for an app with domains", func(t *testing.T) {
+		fx := newIso(t, nil)
+		fx.cfg.Mutate(func() {
+			fx.cfg.Set("domains", map[string]any{"example.com": map[string]any{"appId": "iso-app"}})
+		})
+		if r := fx.m.SetIsolated("iso-app", true); !r.Status {
+			t.Fatalf("isolation refused for a routed app: %v", r.Message)
+		}
+	})
+
+	// Attaching an isolated app to an ordinary bridge hands it egress again.
+	t.Run("rejects extra networks", func(t *testing.T) {
+		fx := newIso(t, map[string]any{"isolated": true})
+		r := fx.m.SetNetworks("iso-app", []any{"other-net"}, true)
+		if r.Status {
+			t.Fatal("extra networks accepted for an isolated app")
+		}
+		if !strings.Contains(jsString(r.Message), "isolated") {
+			t.Fatalf("message = %q", jsString(r.Message))
+		}
+	})
+
+	t.Run("unknown app", func(t *testing.T) {
+		fx := newFixture(t, []any{})
+		if r := fx.m.SetIsolated("ghost", true); r.Status {
+			t.Fatal("expected failure")
+		}
+	})
+}
+
+func TestIsolationAppliedToRunOptions(t *testing.T) {
+	runWith := func(t *testing.T, isolated bool) runCall {
+		app := map[string]any{
+			"id": float64(1), "name": "i-app", "active": true,
+			"type": "container", "image": "test:latest",
+		}
+		if isolated {
+			app["isolated"] = true
+		}
+		fx := newFixture(t, []any{app})
+		fx.checkAndSettle(t)
+		if fx.dock.runCallCount() == 0 {
+			t.Fatal("runApp not called")
+		}
+		return fx.dock.runCallAt(0)
+	}
+
+	if !runWith(t, true).options.Isolated {
+		t.Error("isolation lost on the way to RunOptions")
+	}
+	if runWith(t, false).options.Isolated {
+		t.Error("isolation set for a plain app")
+	}
+}
+
 func TestNetworkModeAppliedToRunOptions(t *testing.T) {
 	runWith := func(t *testing.T, mode string) runCall {
 		app := map[string]any{

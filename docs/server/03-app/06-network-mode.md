@@ -4,16 +4,14 @@ By default every ODAC application container joins the shared **`odac-network`** 
 
 Some workloads need the **host** network namespace instead — service discovery protocols that broadcast on the LAN, VPN or tunnel clients, apps that open large dynamic port ranges, or anything that has to see the host's real interfaces. `odac app network` switches an app between the two.
 
-> ⚠️ **Host mode removes network isolation.** The container shares the host's network stack: it can reach every service listening on the host's loopback — including ODAC's own API on `127.0.0.1:1453` — and any port it binds is bound host-wide. Grant it only to apps you trust.
-
-> 🚫 **Host networking and routed domains are mutually exclusive.** A domain means the app is serving live traffic, and host networking rules out zero-downtime deploys (see below). Rather than silently downgrading a live site to restart-with-downtime, ODAC refuses the combination **from both directions**: `app network --host` is rejected for an app that already has domains, and `domain add` is rejected for an app that is already host-networked. Pick one — remove the domains, or stay on the bridge. This applies to every interface; the CLI and the dashboard get the same answer.
+> Looking to *deny* an app network access rather than change its topology? That is a separate setting — see [Network Isolation](07-network-isolation.md).
 
 ### The Two Modes
 
 | Mode | Flag | What it does | When to use |
 |------|------|--------------|-------------|
-| **Bridge** | `--bridge` (default) | The container joins `odac-network` with its own IP and isolated port namespace. Published port mappings apply, and the proxy routes by container IP. | Everything else. This is the secure default. |
-| **Host** | `--host` | The container shares the host's network namespace. No IP of its own, no port isolation — it binds host ports directly. | mDNS/SSDP/DLNA discovery, VPN and tunnel clients, WebRTC or SIP with wide dynamic port ranges, apps that must observe the host's real interfaces. |
+| **Bridge** | `--bridge` (default) | Joins `odac-network` with its own IP and port namespace. Published ports apply, the proxy routes by container IP, and the app can reach the internet and other apps. | Everything ordinary. This is the default. |
+| **Host** | `--host` | Shares the host's network namespace. No IP of its own, no port isolation — it binds host ports directly. | mDNS/SSDP/DLNA discovery, VPN and tunnel clients, WebRTC or SIP with wide dynamic port ranges, apps that must observe the host's real interfaces. |
 
 ### Usage
 
@@ -21,7 +19,7 @@ Some workloads need the **host** network namespace instead — service discovery
 # Share the host network namespace
 odac app network my-app --host
 
-# Restore the isolated ODAC bridge
+# Back to the shared bridge network
 odac app network my-app --bridge
 odac app network my-app            # same thing — bridge is the default
 ```
@@ -31,14 +29,20 @@ You will be asked to confirm with `yes` before host mode is applied.
 ### Available Prefixes
 - `-i`, `--id`: The App ID or Name
 - `--host`: Share the host's network namespace
-- `--bridge`: Use the isolated ODAC bridge network (default)
+- `--bridge`: ODAC's shared bridge network (default)
 
 > ⚠️ **Important:** A container's network mode is fixed when it is created, so the change takes effect on the next start. **Restart** the application afterwards:
 > ```bash
 > odac app restart my-app
 > ```
 
-### What Changes in Host Mode
+---
+
+## Host Mode
+
+> ⚠️ **Host mode removes network isolation.** The container shares the host's network stack: it can reach every service listening on the host's loopback — including ODAC's own API on `127.0.0.1:1453` — and any port it binds is bound host-wide. Grant it only to apps you trust.
+
+> 🚫 **Host networking and routed domains are mutually exclusive.** A domain means the app is serving live traffic, and host networking rules out zero-downtime deploys (see below). Rather than silently downgrading a live site to restart-with-downtime, ODAC refuses the combination **from both directions**: `app network --host` is rejected for an app that already has domains, and `domain add` is rejected for an app that is already host-networked. Pick one — remove the domains, or stay on the bridge. This applies to every interface; the CLI and the dashboard get the same answer.
 
 **Published ports stop applying.** A host-mode app binds the host port itself, so ODAC drops any published mapping rather than sending it to Docker (which would discard it anyway). Configure the app to listen on the port you want directly.
 
@@ -52,9 +56,9 @@ Both entry points into that state are guarded, so it is unreachable through norm
        recreate (brief downtime).
 ```
 
-If uptime during deploys matters more than host networking, stay on bridge mode.
-
 **The refusal is a deploy-safety policy, not a routing limitation.** ODAC itself runs in the host network namespace, so the proxy can reach a host-mode app on `127.0.0.1:<port>` perfectly well — routing is not the problem. Domains are refused because the app would lose zero-downtime deploys, not because traffic could not reach it.
+
+---
 
 ### Examples
 
@@ -64,10 +68,10 @@ odac app network my-app --host
 odac app restart my-app
 ```
 
-**Back to isolation after the app no longer needs it:**
+**Back to the shared network:**
 ```bash
 odac app network my-app --bridge
 odac app restart my-app
 ```
 
-> 📝 **Note:** Prefer bridge mode with explicit published ports whenever it works. Reach for host mode only when the app genuinely needs the host's network namespace — you give up port isolation, network isolation, and zero-downtime deploys to get it.
+> 📝 **Note:** Prefer bridge mode whenever it works. Reach for host mode only when the app genuinely needs the host's network namespace — you give up port isolation, network isolation, and zero-downtime deploys to get it.

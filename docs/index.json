@@ -63,6 +63,10 @@
         {
           "file": "06-network-mode.md",
           "title": "Network Mode"
+        },
+        {
+          "file": "07-network-isolation.md",
+          "title": "Network Isolation"
         }
       ]
     },

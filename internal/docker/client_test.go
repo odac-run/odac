@@ -16,6 +16,7 @@ import (
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 
 	"odac/internal/gpu"
+	"odac/internal/logx"
 )
 
 func newTestClient(t *testing.T, f *fakeAPI) *Client {
@@ -219,6 +220,64 @@ func TestRunAppHostNetwork(t *testing.T) {
 		if n == "odac-network" {
 			t.Error("odac-network ensured for a host-network container")
 		}
+	}
+}
+
+// Isolated apps go on their own bridge, and that bridge MUST carry Docker's
+// `internal` flag — the flag is the whole guarantee. Without it the app keeps
+// full internet access while reporting itself isolated.
+func TestRunAppIsolatedNetwork(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+	if _, err := c.RunApp("i", RunOptions{Image: "img", Isolated: true}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(f.created[0].HostConfig.NetworkMode); got != IsolatedNetwork {
+		t.Errorf("network mode = %q, want %q", got, IsolatedNetwork)
+	}
+	opts, ok := f.netCreateOpts[IsolatedNetwork]
+	if !ok {
+		t.Fatalf("%s never created: %v", IsolatedNetwork, f.networks)
+	}
+	if !opts.Internal {
+		t.Error("isolated network created WITHOUT the internal flag: egress is wide open")
+	}
+	if opts.Driver != "bridge" {
+		t.Errorf("driver = %q", opts.Driver)
+	}
+	// The shared egress-capable bridge must not be touched for an isolated app.
+	for _, n := range f.networks {
+		if n == "odac-network" {
+			t.Error("shared bridge ensured for an isolated app")
+		}
+	}
+}
+
+// An existing network of that name without the flag is a silent hole, so the
+// client must not adopt it quietly. It reuses the network (Docker cannot
+// retrofit the flag) but says so at Error level.
+func TestRunAppIsolatedWarnsOnNonInternalNetwork(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	f.networks = []string{IsolatedNetwork}
+	f.preInternal = map[string]bool{IsolatedNetwork: false}
+
+	var logged bytes.Buffer
+	old := logx.Stderr
+	logx.Stderr = &logged
+	t.Cleanup(func() { logx.Stderr = old })
+
+	c := newTestClient(t, f)
+	if _, err := c.RunApp("i", RunOptions{Image: "img", Isolated: true}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logged.String(), "NOT internal") {
+		t.Errorf("no warning for a non-internal isolated network:\n%s", logged.String())
+	}
+	if _, created := f.netCreateOpts[IsolatedNetwork]; created {
+		t.Error("existing network recreated")
 	}
 }
 

@@ -23,6 +23,7 @@ odac app create [-n|--name] <name> [-u|--url] <gitUrl>  # Create app
 odac app delete [-i|--id] <app>                          # Delete app
 odac app device add [-a|--app] <app> [-d|--device] <path> # Connect device
 odac app device delete [-a|--app] <app> [-d|--device] <path> # Disconnect device
+odac app isolate [-i|--id] <app> [--off]                 # Block outbound access
 odac app list                                            # List apps
 odac app network [-i|--id] <app> [--host|--bridge]       # Set network mode
 odac app privileged [-i|--id] <app> [--root|--full|--off] # Grant elevated access

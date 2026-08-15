@@ -26,7 +26,9 @@ func TestParse(t *testing.T) {
 		}
 	}
 
-	invalid := []any{"none", "container:foo", "macvlan", 42, true, []any{"host"}}
+	// "isolated" is deliberately NOT a mode — egress isolation is its own
+	// axis, so the parser must keep rejecting it as a namespace value.
+	invalid := []any{"none", "container:foo", "macvlan", "isolated", 42, true, []any{"host"}}
 	for _, in := range invalid {
 		if got, err := Parse(in); err == nil {
 			t.Errorf("Parse(%#v) = %q, want an error", in, got)
@@ -38,8 +40,8 @@ func TestIsHost(t *testing.T) {
 	if !IsHost("host") {
 		t.Error("IsHost(host) = false")
 	}
-	// Anything unparseable must fall back to the isolated default, never host.
-	for _, v := range []any{nil, "", "bridge", "default", "garbage", 7} {
+	// Anything unparseable must fall back to the shared bridge, never host.
+	for _, v := range []any{nil, "", "bridge", "default", "isolated", "garbage", 7} {
 		if IsHost(v) {
 			t.Errorf("IsHost(%#v) = true, want false", v)
 		}

@@ -9,6 +9,7 @@ import (
 
 	"odac/internal/api"
 	"odac/internal/applog"
+	"odac/internal/docker"
 	"odac/internal/netmode"
 	"odac/internal/ports"
 )
@@ -900,12 +901,13 @@ func (m *Manager) DeviceDelete(id any, hostPath string) *api.Result {
 // SetNetworks ports App.setNetworks.
 func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Result {
 	var name string
-	found, hostNet := false, false
+	found, hostNet, isolated := false, false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
 			found = true
 			name, _ = app["name"].(string)
 			hostNet = netmode.IsHost(app["networkMode"])
+			isolated = jsTruthy(app["isolated"])
 		}
 	})
 	if !found {
@@ -916,6 +918,14 @@ func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 	// answer up front instead of surfacing the daemon's opaque refusal.
 	if hostNet {
 		return res(false, __("App %s uses host networking and cannot join additional networks. Switch it to bridge mode first.", name))
+	}
+
+	// Isolation is a property of the network, not the container: attaching an
+	// isolated app to any ordinary bridge hands it a route to the internet
+	// again and silently voids the guarantee. Refuse rather than let the app
+	// keep reporting itself isolated.
+	if isolated {
+		return res(false, __("App %s is isolated, so it cannot join other networks — that would restore its outbound access. To let another app reach it, attach that app to %s instead.", name, docker.IsolatedNetwork))
 	}
 
 	if !payloadOK {
@@ -1001,16 +1011,24 @@ func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
 	// a View nested inside a Mutate deadlocks.
 	var name string
 	var idNum float64
-	found := false
+	found, isolated := false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
 			found = true
 			name, _ = app["name"].(string)
 			idNum, _ = app["id"].(float64)
+			isolated = jsTruthy(app["isolated"])
 		}
 	})
 	if !found {
 		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// Isolation is a property of a bridge; a host-namespace container has no
+	// bridge of its own to cut off. Refusing beats silently dropping the
+	// isolation an operator believes is still in force.
+	if parsed == netmode.Host && isolated {
+		return res(false, __("App %s is isolated, and host networking cannot be isolated — it shares the host's network stack. Turn isolation off first: odac app isolate %s --off", name, name))
 	}
 
 	// A routed app must keep zero-downtime deploys, and host networking makes
@@ -1044,7 +1062,59 @@ func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
 			result = res(true, __("%s now uses HOST networking (no network isolation from the host). Restart required to apply.", app["name"]))
 			return
 		}
-		result = res(true, __("%s now uses the isolated ODAC bridge network. Restart required to apply.", app["name"]))
+		result = res(true, __("%s now uses ODAC's shared bridge network. Restart required to apply.", app["name"]))
+	})
+	return result
+}
+
+// SetIsolated cuts an app off from every network outside the host, or
+// restores its outbound access. Orthogonal to SetNetworkMode: an isolated app
+// is still a bridge app — same container IP, same proxy routing, same
+// Blue-Green deploys — it just joins docker.IsolatedNetwork, whose `internal`
+// flag drops everything routed in or out of its subnet. Persisted only; a
+// container's network is fixed at create time, so it takes a restart.
+func (m *Manager) SetIsolated(id any, isolated bool) *api.Result {
+	var name string
+	found, hostNet := false, false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			found = true
+			name, _ = app["name"].(string)
+			hostNet = netmode.IsHost(app["networkMode"])
+		}
+	})
+	if !found {
+		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// Same invariant as SetNetworkMode's, from the other direction.
+	if isolated && hostNet {
+		return res(false, __("App %s uses host networking, which shares the host's network stack and cannot be isolated. Switch it to bridge networking first: odac app network %s --bridge", name, name))
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if isolated {
+			app["isolated"] = true
+		} else {
+			delete(app, "isolated")
+		}
+		// The cached address belongs to the previous network; the proxy would
+		// aim at it until the next discovery run overwrites it.
+		delete(app, "ip")
+		m.saveAppsLocked()
+
+		if isolated {
+			result = res(true, __("%s is now ISOLATED: no outbound network access. Domains and the proxy keep working; published ports become reachable from this host only. Restart required to apply.", app["name"]))
+			return
+		}
+		result = res(true, __("%s can reach the network again. Restart required to apply.", app["name"]))
 	})
 	return result
 }

@@ -123,6 +123,11 @@ func init() {
 						}},
 					},
 				}},
+				{"isolate", &command{
+					description: "Cut off an app's outbound network access. Use --off to restore it. Restart required.",
+					args:        []string{"-i", "--id", "--off"},
+					action:      appIsolateAction,
+				}},
 				{"list", &command{
 					description: "List all apps",
 					action: func(a *app, args []string) int {
@@ -130,7 +135,7 @@ func init() {
 					},
 				}},
 				{"network", &command{
-					description: "Set an app's network mode: --host to share the host namespace, --bridge (default) to restore isolation. Restart required.",
+					description: "Set an app's network mode: --host to share the host namespace, --bridge (default) for the shared network. Restart required.",
 					args:        []string{"-i", "--id", "--host", "--bridge"},
 					action:      appNetworkAction,
 				}},
@@ -495,6 +500,16 @@ func appNetworkAction(a *app, args []string) int {
 		}
 	}
 	return a.call("app.network", []any{app, mode}, false)
+}
+
+func appIsolateAction(a *app, args []string) int {
+	app := appIDArg(a, args)
+	isolated := !slices.Contains(args, "--off")
+
+	if isolated {
+		fmt.Fprintln(a.out, __("NOTE: An isolated app has no outbound network access at all — no package installs at runtime, no outbound API calls, no update checks. Domains and the proxy keep working, but published ports become reachable from this host only, and the app can no longer reach apps on the shared network."))
+	}
+	return a.call("app.isolate", []any{app, isolated}, false)
 }
 
 func appPrivilegedAction(a *app, args []string) int {

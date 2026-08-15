@@ -49,6 +49,13 @@ import (
 // networkName is the shared bridge network every ODAC app joins.
 const networkName = "odac-network"
 
+// IsolatedNetwork is the shared `internal` bridge for isolated apps: same
+// driver, no route off the host. Kept separate from networkName because
+// `internal` is a network-level property — it cannot be toggled per container,
+// so no-egress apps need a bridge of their own. Exported because appmgr names
+// it when telling an operator where to attach a peer app.
+const IsolatedNetwork = "odac-network-isolated"
+
 // infoTimeout caps the daemon-info call behind Runtimes(); the caller is on
 // the Hub's payload path and must not wait on a wedged daemon.
 const infoTimeout = 2 * time.Second
@@ -112,6 +119,11 @@ type RunOptions struct {
 	// — the app shares the host namespace and can reach every service bound
 	// to loopback, ODAC's own API among them.
 	NetworkMode string
+	// Isolated puts a bridge container on ODAC's `internal` network, cutting
+	// off all outbound access. Orthogonal to NetworkMode and meaningful only
+	// alongside the bridge: a host-namespace container has no bridge to
+	// isolate, so the two never combine (appmgr refuses it).
+	Isolated bool
 }
 
 // BuildLog is the phase-aware build log control the container operations
@@ -289,7 +301,13 @@ func (c *Client) GetLastBuildLog(appName string) string {
 
 // ensureNetwork makes sure the named bridge network exists. Best-effort
 // like Node: failures are logged, not returned.
-func (c *Client) ensureNetwork(ctx context.Context, name string) {
+//
+// internal creates the network with Docker's `internal` flag, which installs
+// FORWARD rules dropping every packet routed between the bridge's subnet and
+// any other interface. That is the enforcement behind RunOptions.Isolated. Note
+// the flag is a property of the network, not the container, so an existing
+// network is never reconfigured — a name that already exists is taken as-is.
+func (c *Client) ensureNetwork(ctx context.Context, name string, internal bool) {
 	networks, err := c.api.NetworkList(ctx, network.ListOptions{})
 	if err != nil {
 		c.log.Error("Failed to ensure network %s: %s", name, err.Error())
@@ -297,11 +315,17 @@ func (c *Client) ensureNetwork(ctx context.Context, name string) {
 	}
 	for _, n := range networks {
 		if n.Name == name {
+			if internal && !n.Internal {
+				// Someone created this name by hand without the flag. Egress
+				// would be wide open while the app reports itself isolated, so
+				// say it out loud rather than pretend.
+				c.log.Error("Network %s exists but is NOT internal: apps on it can still reach the internet. Remove it and let ODAC recreate it.", name)
+			}
 			return
 		}
 	}
-	c.log.Log("Creating network %s...", name)
-	if _, err := c.api.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge"}); err != nil {
+	c.log.Log("Creating network %s (internal=%v)...", name, internal)
+	if _, err := c.api.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge", Internal: internal}); err != nil {
 		c.log.Error("Failed to ensure network %s: %s", name, err.Error())
 	}
 }
@@ -551,12 +575,17 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 	devices = append(devices, gpuCfg.devices...)
 
 	netMode := networkName
-	if hostNetwork {
+	switch {
+	case hostNetwork:
 		// No shared bridge to ensure: the container joins the host namespace.
 		netMode = netmode.Host
 		c.log.Log("App %s runs with HOST networking: no network isolation from the host.", name)
-	} else {
-		c.ensureNetwork(ctx, networkName)
+	case options.Isolated:
+		netMode = IsolatedNetwork
+		c.ensureNetwork(ctx, IsolatedNetwork, true)
+		c.log.Log("App %s runs ISOLATED on %s: no outbound network access.", name, IsolatedNetwork)
+	default:
+		c.ensureNetwork(ctx, networkName, false)
 	}
 
 	c.log.Log("Starting app container %s (%s)...", name, options.Image)
@@ -965,7 +994,9 @@ func (c *Client) SetNetworks(name string, networks []string) SetNetworksResult {
 	desired := map[string]bool{}
 	for _, n := range networks {
 		desired[n] = true
-		c.ensureNetwork(ctx, n)
+		// User-named networks are ordinary bridges; only ODAC's own isolated
+		// network carries the internal flag.
+		c.ensureNetwork(ctx, n, n == IsolatedNetwork)
 	}
 
 	currentSorted := make([]string, 0, len(current))

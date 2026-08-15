@@ -137,6 +137,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		env                   map[string]any
 		privileged            string
 		networkMode           string
+		isolated              bool
 		port                  int
 	}
 	var s snap
@@ -164,6 +165,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		s.dev = app["dev"] == true
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
+		s.isolated = jsTruthy(app["isolated"])
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
@@ -220,6 +222,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		Env:         env,
 		Cmd:         s.cmd,
 		NetworkMode: s.networkMode,
+		Isolated:    s.isolated,
 	}
 
 	// In dev mode the mounted host directory is owned by the host user/root;
@@ -277,6 +280,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		env                   map[string]any
 		privileged            string
 		networkMode           string
+		isolated              bool
 	}
 	var s snap
 	found := false
@@ -298,6 +302,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		s.image, _ = app["image"].(string)
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
+		s.isolated = jsTruthy(app["isolated"])
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
@@ -359,6 +364,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		Env:         env,
 		Cmd:         s.cmd,
 		NetworkMode: s.networkMode,
+		Isolated:    s.isolated,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 
@@ -510,6 +516,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		gpu                  *gpu.Spec
 		privileged           string
 		networkMode          string
+		isolated             bool
 	}
 	var s snap
 	found := false
@@ -527,6 +534,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.file, _ = app["file"].(string)
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
+		s.isolated = jsTruthy(app["isolated"])
 		s.devices = toDevices(app["devices"])
 		s.gpu = toGPU(app["gpu"])
 		if jsTruthy(app["api"]) {
@@ -561,6 +569,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		GPU:         s.gpu,
 		Env:         env,
 		NetworkMode: s.networkMode,
+		Isolated:    s.isolated,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 

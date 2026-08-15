@@ -110,6 +110,16 @@ odac app device delete -a my-app -d /dev/ttyACM0
 odac app device delete --app my-app --device /dev/ttyACM0
 ```
 
+#### `odac app isolate`
+Cut off an application's outbound network access. See [Network Isolation](../03-app/07-network-isolation.md).
+
+```bash
+odac app isolate my-app         # No outbound network access
+odac app isolate my-app --off   # Restore it
+```
+
+A restart is required for the change to take effect.
+
 #### `odac app list`
 List all configured applications.
 
@@ -122,7 +132,7 @@ Set an application's container network mode. See [Network Mode](../03-app/06-net
 
 ```bash
 odac app network my-app --host     # Share the host network namespace
-odac app network my-app --bridge   # Restore the isolated ODAC bridge (default)
+odac app network my-app --bridge   # ODAC's shared bridge network (default)
 ```
 
 A restart is required for the change to take effect.
