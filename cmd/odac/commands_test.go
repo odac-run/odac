@@ -75,6 +75,21 @@ func TestDispatchActionsAndData(t *testing.T) {
 			"app.isolate", []any{"blog", true}},
 		{"isolate off", []string{"app", "isolate", "-i", "blog", "--off"}, "",
 			"app.isolate", []any{"blog", false}},
+		{"api allow list", []string{"app", "api", "blog", "--allow", "app.list,mail.send"}, "",
+			"app.api", []any{"blog", "app.list,mail.send"}},
+		// --allow's value is a bare argument too; the app must still be "blog".
+		{"api allow before app", []string{"app", "api", "--allow", "app.list", "blog"}, "",
+			"app.api", []any{"blog", "app.list"}},
+		{"api all confirms", []string{"app", "api", "blog", "--all"}, "yes\n",
+			"app.api", []any{"blog", true}},
+		{"api off no confirm", []string{"app", "api", "-i", "blog", "--off"}, "",
+			"app.api", []any{"blog", false}},
+		{"api interactive", []string{"app", "api", "blog"}, "app.list\n",
+			"app.api", []any{"blog", "app.list"}},
+		{"api interactive wildcard confirms", []string{"app", "api", "blog"}, "*\nyes\n",
+			"app.api", []any{"blog", true}},
+		{"api allow wildcard confirms", []string{"app", "api", "blog", "--allow", "app.list,*"}, "yes\n",
+			"app.api", []any{"blog", true}},
 	}
 
 	for _, tt := range tests {
@@ -158,6 +173,21 @@ func TestNetworkHostAbort(t *testing.T) {
 	a, out, _ := testApp(t, addr)
 	a.in = strings.NewReader("no\n")
 	if code := a.run([]string{"app", "network", "blog", "--host"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "Aborted.") {
+		t.Errorf("output:\n%s", out)
+	}
+	if last.Action != "" {
+		t.Errorf("server was called with %q after abort", last.Action)
+	}
+}
+
+func TestAPIGrantAllAbort(t *testing.T) {
+	addr, last := recordingServer(t)
+	a, out, _ := testApp(t, addr)
+	a.in = strings.NewReader("no\n")
+	if code := a.run([]string{"app", "api", "blog", "--all"}); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "Aborted.") {

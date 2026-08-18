@@ -67,6 +67,10 @@
         {
           "file": "07-network-isolation.md",
           "title": "Network Isolation"
+        },
+        {
+          "file": "08-api-access.md",
+          "title": "API Access"
         }
       ]
     },

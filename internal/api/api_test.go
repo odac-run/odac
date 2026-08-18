@@ -300,10 +300,11 @@ func TestDomainTokenRBAC(t *testing.T) {
 
 func TestAppTokenRBAC(t *testing.T) {
 	s := startTestServer(t)
+	// Permissions come from the live config grant, not the token's own claim.
 	s.cfg.Set("apps", []any{
-		map[string]any{"name": "myapp", "active": true},
-		map[string]any{"name": "star", "active": true},
-		map[string]any{"name": "anyapp", "active": false},
+		map[string]any{"name": "myapp", "active": true, "api": []any{"mail.send"}},
+		map[string]any{"name": "star", "active": true, "api": []any{"*"}},
+		map[string]any{"name": "anyapp", "active": false, "api": true},
 	})
 	ok := func(_ Args, _ Progress) (*Result, error) {
 		r := Res(true, "ok")
@@ -332,6 +333,41 @@ func TestAppTokenRBAC(t *testing.T) {
 	lines = call(t, "tcp", tcpAddr(s), request(fixtureAppTokenAll, "app.list"))
 	if !strings.Contains(lines[0], `"message":"unauthorized"`) {
 		t.Errorf("inactive app token = %v", lines)
+	}
+
+	// A revoked grant refuses the app's next request, even though its token
+	// still carries the old permission and its container is untouched.
+	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true}})
+	lines = call(t, "tcp", tcpAddr(s), request(fixtureAppToken, "mail.send"))
+	if !strings.Contains(lines[0], `"message":"permission_denied"`) {
+		t.Errorf("revoked grant = %v", lines)
+	}
+
+	// A widened grant reaches actions the token never claimed.
+	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": true}})
+	lines = call(t, "tcp", tcpAddr(s), request(fixtureAppToken, "app.list"))
+	if !strings.Contains(lines[0], `"result":true`) {
+		t.Errorf("widened grant = %v", lines)
+	}
+
+	// Server-control actions are refused however wide the grant is.
+	s.Register("update", ok)
+	s.Register("server.stop", ok)
+	s.Register("auth", ok)
+	s.Register("app.privileged", ok)
+	s.Register("app.api", ok)
+	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": true}})
+	for _, action := range []string{"update", "server.stop", "auth", "app.privileged", "app.api"} {
+		lines = call(t, "tcp", tcpAddr(s), request(fixtureAppToken, action))
+		if !strings.Contains(lines[0], `"message":"permission_denied"`) {
+			t.Errorf("%s with a full grant = %v", action, lines)
+		}
+	}
+	// An explicit list naming one cannot smuggle it past either.
+	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": []any{"server.stop"}}})
+	lines = call(t, "tcp", tcpAddr(s), request(fixtureAppToken, "server.stop"))
+	if !strings.Contains(lines[0], `"message":"permission_denied"`) {
+		t.Errorf("hand-edited server.stop grant = %v", lines)
 	}
 
 	// Unknown app name: unauthorized.

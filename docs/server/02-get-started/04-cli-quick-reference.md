@@ -19,6 +19,7 @@ odac auth [-k|--key] <key>
 
 ### Applications
 ```bash
+odac app api [-i|--id] <app> [--allow <actions>|--all|--off] # Grant API access
 odac app create [-n|--name] <name> [-u|--url] <gitUrl>  # Create app
 odac app delete [-i|--id] <app>                          # Delete app
 odac app device add [-a|--app] <app> [-d|--device] <path> # Connect device

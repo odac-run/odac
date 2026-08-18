@@ -758,3 +758,126 @@ func TestLegacyPortMigration(t *testing.T) {
 		fx.m.Check() // must not panic
 	})
 }
+
+// ---- API access grants ----
+
+func TestSetAPI(t *testing.T) {
+	newAPIApp := func(t *testing.T, extra map[string]any) *fixture {
+		app := map[string]any{"id": float64(1), "name": "api-app", "type": "container"}
+		for k, v := range extra {
+			app[k] = v
+		}
+		return newFixture(t, []any{app})
+	}
+
+	t.Run("persists a validated action list", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		if r := fx.m.SetAPI("api-app", []any{"app.list", "mail.send"}); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		got, _ := fx.app(0)["api"].([]any)
+		if len(got) != 2 || got[0] != "app.list" || got[1] != "mail.send" {
+			t.Fatalf("api = %v", fx.app(0)["api"])
+		}
+	})
+
+	t.Run("splits and dedupes a comma-separated string", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		if r := fx.m.SetAPI("api-app", "app.list, mail.send,app.list"); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		got, _ := fx.app(0)["api"].([]any)
+		if len(got) != 2 {
+			t.Fatalf("api = %v", fx.app(0)["api"])
+		}
+	})
+
+	t.Run("true grants every action", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		if r := fx.m.SetAPI("api-app", true); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if fx.app(0)["api"] != true {
+			t.Fatalf("api = %v", fx.app(0)["api"])
+		}
+	})
+
+	t.Run("wildcard normalizes to true", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		if r := fx.m.SetAPI("api-app", []any{"app.list", "*"}); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if fx.app(0)["api"] != true {
+			t.Fatalf("api = %v", fx.app(0)["api"])
+		}
+	})
+
+	t.Run("false removes the key", func(t *testing.T) {
+		fx := newAPIApp(t, map[string]any{"api": true})
+		if r := fx.m.SetAPI("api-app", false); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if _, present := fx.app(0)["api"]; present {
+			t.Fatalf("key not removed: %v", fx.app(0))
+		}
+	})
+
+	// The shapes that used to persist happily and then answer
+	// permission_denied on every request with no way to tell why.
+	t.Run("refuses unknown actions", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		r := fx.m.SetAPI("api-app", []any{"app.list", "app.lst"})
+		if r.Status {
+			t.Fatal("unknown action accepted")
+		}
+		if msg, _ := r.Message.(string); !strings.Contains(msg, "app.lst") {
+			t.Fatalf("message does not name the typo: %v", r.Message)
+		}
+		if _, present := fx.app(0)["api"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	// Server control is not a permission an operator can hand out by mistake.
+	t.Run("refuses server-control actions", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		r := fx.m.SetAPI("api-app", []any{"app.list", "server.stop"})
+		if r.Status {
+			t.Fatal("server.stop grant accepted")
+		}
+		if msg, _ := r.Message.(string); !strings.Contains(msg, "server.stop") {
+			t.Fatalf("message does not name the action: %v", r.Message)
+		}
+		if _, present := fx.app(0)["api"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	t.Run("refuses an empty list", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		if r := fx.m.SetAPI("api-app", []any{}); r.Status {
+			t.Fatal("empty grant accepted")
+		}
+		if _, present := fx.app(0)["api"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	t.Run("refuses a non-action shape", func(t *testing.T) {
+		fx := newAPIApp(t, map[string]any{"api": []any{"app.list"}})
+		if r := fx.m.SetAPI("api-app", map[string]any{"all": true}); r.Status {
+			t.Fatal("object grant accepted")
+		}
+		got, _ := fx.app(0)["api"].([]any)
+		if len(got) != 1 {
+			t.Fatalf("existing grant clobbered: %v", fx.app(0)["api"])
+		}
+	})
+
+	t.Run("unknown app", func(t *testing.T) {
+		fx := newAPIApp(t, nil)
+		if r := fx.m.SetAPI("nope", true); r.Status {
+			t.Fatal("unknown app accepted")
+		}
+	})
+}

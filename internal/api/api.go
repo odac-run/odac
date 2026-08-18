@@ -36,6 +36,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,6 +133,49 @@ func (s *Server) SocketPath() string {
 // ResolveHostPath translates it for the Docker daemon under DooD).
 func (s *Server) HostSocketDir() string {
 	return filepath.Dir(s.SocketPath())
+}
+
+// appDeniedActions are actions an app token may never call, whatever its
+// grant says. Two kinds live here: the server's own lifecycle and identity
+// (update restarts it, server.stop takes the platform down, auth re-points
+// its Cloud pairing), and the two that hand out privilege (app.privileged
+// elevates a container to root or full Docker privileged; app.api rewrites
+// the grants this table protects, so an app holding it could simply widen
+// itself). Nothing an app legitimately automates needs them.
+var appDeniedActions = map[string]bool{
+	"auth":           true,
+	"update":         true,
+	"server.stop":    true,
+	"app.privileged": true,
+	"app.api":        true,
+}
+
+// AppMayCall reports whether an app token is ever allowed to call an action.
+// Grant-time validation uses it too, but the authoritative check is the one
+// on the request path: a hand-edited config never passes through validation.
+func AppMayCall(action string) bool {
+	return !appDeniedActions[action]
+}
+
+// AppDeniedActions lists, in a stable order, the actions no app grant can
+// ever include. Callers use it to explain a refusal.
+func AppDeniedActions() []string {
+	out := make([]string, 0, len(appDeniedActions))
+	for action := range appDeniedActions {
+		out = append(out, action)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// HasAction reports whether an action is registered. Grant-time callers use
+// it to reject unknown action names up front, instead of persisting a
+// permission that can only ever answer permission_denied.
+func (s *Server) HasAction(action string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.commands[action]
+	return ok
 }
 
 // Init ports Api.init(): ensure config.api exists, generate the root auth
@@ -408,6 +452,7 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 	} else if appAuth := s.verifyAppToken(auth); appAuth != nil {
 		name, _ := appAuth["n"].(string)
 		var app map[string]any
+		var livePerms any
 		s.cfg.View(func() {
 			apps, _ := s.cfg.Get("apps").([]any)
 			for _, a := range apps {
@@ -419,6 +464,9 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 			if app != nil && !jsTruthy(app["active"]) {
 				app = nil // inactive counts as missing below
 			}
+			if app != nil {
+				livePerms = copyPermissions(app["api"])
+			}
 		})
 		if app == nil {
 			s.log.Warn(fmt.Sprintf("Rejected app token: App '%s' not found or inactive", name))
@@ -428,7 +476,13 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 		}
 		isApp = true
 		clientDomain = name
-		appPermissions = appAuth["p"]
+		// Deviation from Node, which trusted the token's own "p" claim: the
+		// grant lives in config.apps[].api and is read per request, so
+		// revoking one lands on the next call instead of surviving in an
+		// already-issued token until the container restarts. The token's "p"
+		// stays in the signed payload (wire format untouched) as the
+		// issuing-time snapshot.
+		appPermissions = livePerms
 	} else {
 		r := Res(false, "unauthorized")
 		c.write(encodeFinal(id, true, &r))
@@ -445,9 +499,16 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 	}
 
 	// RBAC: domain tokens may only mail.send; app tokens carry an explicit
-	// permission list ('*' wildcard or the literal true for everything).
+	// permission list ('*' wildcard or the literal true for everything),
+	// minus the actions no grant can ever cover.
 	if !isRoot {
 		allowed := false
+		if isApp && !AppMayCall(action) {
+			s.log.Warn(fmt.Sprintf("Blocked restricted action '%s' from app '%s'", action, clientDomain))
+			r := Res(false, "permission_denied")
+			c.write(encodeFinal(id, true, &r))
+			return false
+		}
 		if isApp {
 			switch p := appPermissions.(type) {
 			case bool:
@@ -556,6 +617,16 @@ func jsTruthy(v any) bool {
 		return x != 0
 	}
 	return true
+}
+
+// copyPermissions detaches a permission list from the config map so the RBAC
+// check below runs outside the store lock without aliasing shared state.
+func copyPermissions(v any) any {
+	list, ok := v.([]any)
+	if !ok {
+		return v
+	}
+	return append([]any(nil), list...)
 }
 
 func constantTimeEqual(a, b string) bool {

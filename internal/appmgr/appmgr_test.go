@@ -313,6 +313,10 @@ func (f *fakeAPI) GenerateAppToken(appName string, permissions any) string {
 
 func (f *fakeAPI) HostSocketDir() string { return "/tmp/odac-socket" }
 
+func (f *fakeAPI) HasAction(action string) bool {
+	return action == "app.list" || action == "mail.send" || action == "server.stop"
+}
+
 type fakeProxy struct {
 	mu     sync.Mutex
 	syncs  int

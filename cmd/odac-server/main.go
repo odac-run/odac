@@ -246,6 +246,9 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 			return fmt.Sprint(v)
 		}
 
+		apiSrv.Register("app.api", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetAPI(a.At(0), a.At(1)), nil
+		})
 		apiSrv.Register("app.create", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.Create(a.At(0)), nil
 		})

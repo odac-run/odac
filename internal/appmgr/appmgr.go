@@ -78,11 +78,13 @@ type Docker interface {
 	ResolveHostPath(localPath string) string
 }
 
-// TokenIssuer is the Api surface App needs: app tokens for ODAC_API_KEY and
-// the run dir holding api.sock (mounted read-only into api-enabled apps).
+// TokenIssuer is the Api surface App needs: app tokens for ODAC_API_KEY, the
+// run dir holding api.sock (mounted read-only into api-enabled apps), and
+// the registered action set SetAPI validates a grant against.
 type TokenIssuer interface {
 	GenerateAppToken(appName string, permissions any) string
 	HostSocketDir() string
+	HasAction(action string) bool
 }
 
 // ProxyController is the Proxy surface App needs after (re)starts.

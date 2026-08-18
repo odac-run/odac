@@ -1119,6 +1119,143 @@ func (m *Manager) SetIsolated(id any, isolated bool) *api.Result {
 	return result
 }
 
+// SetAPI grants or revokes an app's access to ODAC's own API. permissions is
+// the literal true (every grantable action, now and future), a list of action
+// names, or
+// false/nil to revoke; "*" anywhere in a list normalizes to true. The two
+// directions are deliberately asymmetric: a revoke lands on the app's next
+// request, because the API reads this grant from config per request, while a
+// grant needs a restart, because ODAC_API_KEY and the read-only api.sock mount are
+// injected at container start.
+func (m *Manager) SetAPI(id any, permissions any) *api.Result {
+	if m.deps.Api == nil {
+		return res(false, __("The API server is unavailable, so API access cannot be changed."))
+	}
+
+	value, failure := m.normalizeAPIPermissions(permissions)
+	if failure != nil {
+		return failure
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if value == nil {
+			if _, had := app["api"]; !had {
+				result = res(true, __("%s has no API access.", app["name"]))
+				return
+			}
+			delete(app, "api")
+			m.saveAppsLocked()
+			result = res(true, __("API access revoked from %s. Requests are refused from now on; restart it to also drop the socket mount and its stale key.", app["name"]))
+			return
+		}
+
+		app["api"] = value
+		m.saveAppsLocked()
+
+		if value == true {
+			result = res(true, __("%s may now call every API action except %s. Restart required to apply.", app["name"], strings.Join(api.AppDeniedActions(), ", ")))
+			return
+		}
+		result = res(true, __("%s may now call: %s. Restart required to apply.", app["name"], strings.Join(actionNames(value), ", ")))
+	})
+	return result
+}
+
+// normalizeAPIPermissions validates a grant against the registered action set
+// and returns the value to persist (nil revokes). Rejecting unknown actions
+// here is the point: an unrecognized shape used to persist happily and then
+// answer permission_denied on every request, with nothing but a server log to
+// explain it.
+func (m *Manager) normalizeAPIPermissions(permissions any) (any, *api.Result) {
+	switch v := permissions.(type) {
+	case nil:
+		return nil, nil
+	case bool:
+		if !v {
+			return nil, nil
+		}
+		return true, nil
+	case string:
+		if v == "" || strings.EqualFold(v, "off") || strings.EqualFold(v, "false") {
+			return nil, nil
+		}
+		return m.normalizeAPIActions(splitActions(v))
+	case []any:
+		var items []string
+		for _, entry := range v {
+			name, ok := entry.(string)
+			if !ok {
+				return nil, res(false, __("Invalid API permission entry: %s. Expected action names.", jsString(entry)))
+			}
+			items = append(items, splitActions(name)...)
+		}
+		return m.normalizeAPIActions(items)
+	}
+	return nil, res(false, __("Invalid API permissions. Expected true, false, or a list of action names."))
+}
+
+func (m *Manager) normalizeAPIActions(items []string) (any, *api.Result) {
+	seen := map[string]bool{}
+	list := []any{}
+	var unknown, restricted []string
+	for _, item := range items {
+		action := strings.TrimSpace(item)
+		if action == "" || seen[action] {
+			continue
+		}
+		seen[action] = true
+		if action == "*" {
+			return true, nil
+		}
+		if !m.deps.Api.HasAction(action) {
+			unknown = append(unknown, action)
+			continue
+		}
+		if !api.AppMayCall(action) {
+			restricted = append(restricted, action)
+			continue
+		}
+		list = append(list, action)
+	}
+	if len(unknown) > 0 {
+		return nil, res(false, __("Unknown API action(s): %s.", strings.Join(unknown, ", ")))
+	}
+	if len(restricted) > 0 {
+		return nil, res(false, __("These actions can never be granted to an app: %s. They control the server itself.", strings.Join(restricted, ", ")))
+	}
+	if len(list) == 0 {
+		return nil, res(false, __("No API actions given. Pass action names, * for all, or revoke access instead."))
+	}
+	return list, nil
+}
+
+// splitActions accepts one action name, or several separated by commas or
+// whitespace, so `--allow "app.list, mail.send"` behaves as written.
+func splitActions(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+}
+
+// actionNames renders a normalized permission list for user-facing messages.
+func actionNames(value any) []string {
+	list, _ := value.([]any)
+	names := make([]string, 0, len(list))
+	for _, entry := range list {
+		if name, ok := entry.(string); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // List ports App.list: the dashboard/CLI app table.
 func (m *Manager) List(detailed bool) *api.Result {
 	type row struct {

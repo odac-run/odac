@@ -68,6 +68,23 @@ odac app create -n my-app -u https://github.com/user/repo.git
 odac app create --name my-app --url https://github.com/user/repo.git
 ```
 
+#### `odac app api`
+Let an application call ODAC's own API over the unix socket mounted into its container. See [API Access](../03-app/08-api-access.md).
+
+**Interactive:**
+```bash
+odac app api my-app
+```
+
+**Single-line:**
+```bash
+odac app api my-app --allow app.list,mail.send   # Only these actions
+odac app api my-app --all                        # Every action (asks to confirm)
+odac app api my-app --off                        # Revoke access
+```
+
+Granting requires a restart; a revoke takes effect immediately. The access is local to this server: it grants nothing in ODAC Cloud and no reach over your other servers.
+
 #### `odac app delete`
 Delete an application configuration.
 

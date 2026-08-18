@@ -91,6 +91,11 @@ func init() {
 		{"app", &command{
 			title: "APP",
 			sub: []entry{
+				{"api", &command{
+					description: "Let an app call ODAC's API: --allow <actions> or --all. Use --off to revoke. Restart required to grant.",
+					args:        []string{"-i", "--id", "--allow", "--all", "--off"},
+					action:      appAPIAction,
+				}},
 				{"create", &command{
 					description: "Create a new application",
 					args:        []string{"-t", "--type", "-n", "--name", "-u", "--url", "-b", "--branch", "--token", "-D", "--dev"},
@@ -500,6 +505,59 @@ func appNetworkAction(a *app, args []string) int {
 		}
 	}
 	return a.call("app.network", []any{app, mode}, false)
+}
+
+func appAPIAction(a *app, args []string) int {
+	allow := parseArg(args, "--allow")
+	// appIDArg takes the first bare argument as the app, so --allow's value
+	// must not still be sitting in the slice it scans.
+	appID := appIDArg(a, withoutFlagValue(args, "--allow"))
+
+	if slices.Contains(args, "--off") {
+		return a.call("app.api", []any{appID, false}, false)
+	}
+
+	all := slices.Contains(args, "--all")
+	if !all && allow == "" {
+		allow = a.question(__("Enter the API actions to allow (comma-separated, or * for all): "))
+	}
+	// "*" is the whole surface however it was spelled, so it takes the same
+	// confirmation --all does.
+	if !all && slices.Contains(splitActions(allow), "*") {
+		all = true
+	}
+
+	var permissions any = allow
+	if all {
+		fmt.Fprintln(a.out, __("WARNING: This grants the app every API action, including creating and deleting apps, domains and mailboxes. Server control and privilege management (auth, update, server.stop, app.privileged, app.api) are never granted. Prefer --allow with the actions it actually needs."))
+		if !strings.EqualFold(a.question(__(`Type "yes" to continue: `)), "yes") {
+			fmt.Fprintln(a.out, __("Aborted."))
+			return 1
+		}
+		permissions = true
+	}
+	return a.call("app.api", []any{appID, permissions}, false)
+}
+
+// splitActions accepts one action name or several, separated by commas or
+// whitespace, matching the shapes the server normalizes.
+func splitActions(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+}
+
+// withoutFlagValue drops a flag and the argument it consumes.
+func withoutFlagValue(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			i++ // skip the value too
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
 
 func appIsolateAction(a *app, args []string) int {
