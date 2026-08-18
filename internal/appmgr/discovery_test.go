@@ -34,6 +34,64 @@ func TestDiscoveryAdoptsObservedPortForGuessedEntry(t *testing.T) {
 	portEq(t, p[0], map[string]any{"host": "proxy", "container": float64(5678), "auto": true})
 }
 
+// Isolation blocks traffic routed off the host, not ODAC's own probe: the
+// container keeps an IP, /proc is read over the Docker socket rather than the
+// network, and ODAC shares the host namespace. Auto-discovery must therefore
+// keep correcting an isolated app's proxy port like any other app's — losing
+// it would leave the proxy pointed at a port the app never binds.
+func TestDiscoveryAdoptsPortForIsolatedApp(t *testing.T) {
+	_, p := discover(t, map[string]any{
+		"id": float64(1), "name": "web", "type": "container", "image": "n8n", "active": true,
+		"isolated": true,
+		"ports":    []any{map[string]any{"host": "proxy", "container": float64(3000), "auto": true}},
+	}, []int{5678}, []int{5678})
+
+	portEq(t, p[0], map[string]any{"host": "proxy", "container": float64(5678), "auto": true})
+}
+
+// app.http is the proxy's fallback routing source, so the HTTP scan has to
+// resolve an address the same way everything else does. A host-mode app has
+// no container IP; probing by IP alone recorded it as serving nothing.
+func TestHTTPScanResolvesAddressPerNetworkMode(t *testing.T) {
+	// hasIP mirrors what Docker would report: bridge and isolated containers
+	// have an address, a host-networked one does not.
+	scan := func(t *testing.T, extra map[string]any, hasIP bool) any {
+		t.Helper()
+		app := map[string]any{
+			"id": float64(1), "name": "web", "type": "container",
+			"image": "n8n", "active": true,
+		}
+		for k, v := range extra {
+			app[k] = v
+		}
+		fx := newFixture(t, []any{app})
+		fx.dock.setListening("web", []int{8080})
+		fx.setHTTPPorts(8080)
+		if !hasIP {
+			fx.dock.dropIPs()
+		}
+
+		if err := fx.m.scanAndSaveHTTPStatus(float64(1)); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		return fx.app(0)["http"]
+	}
+
+	if got := scan(t, nil, true); got != float64(8080) {
+		t.Errorf("bridge app: http = %v, want 8080", got)
+	}
+	if got := scan(t, map[string]any{"isolated": true}, true); got != float64(8080) {
+		t.Errorf("isolated app: http = %v, want 8080", got)
+	}
+	if got := scan(t, map[string]any{"networkMode": "host"}, false); got != float64(8080) {
+		t.Errorf("host app: http = %v, want 8080 (probed on loopback)", got)
+	}
+	// A bridge app with no address yet genuinely cannot be probed.
+	if got := scan(t, nil, false); got != false {
+		t.Errorf("bridge app without an IP: http = %v, want false", got)
+	}
+}
+
 func TestDiscoveryKeepsCorrectingACorrectedGuess(t *testing.T) {
 	// The entry stays a guess after a correction, or a wrong first guess
 	// would freeze the app on a port it never binds.

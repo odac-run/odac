@@ -256,7 +256,10 @@ func (m *Manager) scanAndSaveHTTPStatus(id any) error {
 		}
 
 		if len(listening) > 0 {
-			containerIP, _ := m.deps.Docker.GetIP(target)
+			// containerAddr, not GetIP: a host-mode app has no container IP
+			// and answers on loopback, so probing by IP alone would record it
+			// as "serves no HTTP" and cost the proxy its app.http fallback.
+			containerIP := m.containerAddr(id, target)
 			if containerIP != "" {
 				// Retry the probe: some apps open their TCP ports early but
 				// take time to actually serve HTTP. Re-fetch listening ports

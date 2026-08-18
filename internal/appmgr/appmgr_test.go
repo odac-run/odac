@@ -220,6 +220,14 @@ func (f *fakeDocker) setListening(name string, ports []int) {
 	f.listening = map[string][]int{name: ports}
 }
 
+// dropIPs makes GetIP fail for every container, the way the real client
+// behaves for a host-networked one (it has no address of its own).
+func (f *fakeDocker) dropIPs() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ips = map[string]string{}
+}
+
 func (f *fakeDocker) GetImageExposedPorts(image string) []int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
