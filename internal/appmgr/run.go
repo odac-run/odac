@@ -596,9 +596,9 @@ func (m *Manager) applyPrivilege(name, privileged string, runOptions *docker.Run
 // order: (1) a trailing '/' on the container path means directory; (2) an
 // already-materialized host path mirrors its own type; (3) the app's live
 // container mirrors whatever exists at that path; (4) otherwise fall back to
-// an extension heuristic (a basename with an extension is a file). name is
-// the container to probe in step 3; fsPath is the orchestrator-visible host
-// path to stat in step 2.
+// an extension heuristic (a basename with an extension is a file, ignoring
+// any leading dot). name is the container to probe in step 3; fsPath is the
+// orchestrator-visible host path to stat in step 2.
 func (m *Manager) mountIsFile(name, fsPath, container string) bool {
 	cPath := strings.TrimSuffix(container, ":ro")
 
@@ -620,7 +620,9 @@ func (m *Manager) mountIsFile(name, fsPath, container string) bool {
 	}
 
 	// (4) create-time / no container: a basename with an extension is a file.
-	return path.Ext(path.Base(cPath)) != ""
+	// A leading dot is not an extension separator: '/root/.ollama' and '.ssh'
+	// are dotted directory names, while '.env.local' still ends in one.
+	return path.Ext(strings.TrimLeft(path.Base(cPath), ".")) != ""
 }
 
 // fixVolumePermissions ports #fixVolumePermissions: materialize each volume
