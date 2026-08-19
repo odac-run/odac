@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"odac/internal/docker"
@@ -1060,5 +1061,46 @@ func TestCreateNonGPUFailureMessage(t *testing.T) {
 	})
 	if r.Status || strings.Contains(jsString(r.Message), "nvidia-container-toolkit") {
 		t.Fatalf("r = %+v", r)
+	}
+}
+
+// A slow image pull must leave the app visible and correctly labelled: the
+// record is broadcast before RunApp, and List reports "installing" instead of
+// the live container state until the pull finishes.
+func TestCreateStaysVisibleWhileImagePulls(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:7"})
+
+	block := make(chan struct{})
+	release := sync.OnceFunc(func() { close(block) })
+	defer release()
+	fx.dock.mu.Lock()
+	fx.dock.runBlock = block
+	fx.dock.mu.Unlock()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "slow-pull"}).Status
+	}()
+
+	waitFor(t, "the pull to start", func() bool { return fx.dock.runCallCount() == 1 })
+
+	if !fx.hub.sawTrigger("app.list") {
+		t.Fatal("app.list was not broadcast before the pull")
+	}
+	// run() relabels the record "starting" before RunApp, so that is the
+	// status the pull runs under. What matters is that it is not "stopped".
+	if got := fx.listStatus("slow-pull"); got != "starting" {
+		t.Fatalf("status during pull = %v, want starting", got)
+	}
+
+	release()
+	if !<-done {
+		t.Fatal("create failed")
+	}
+	fx.waitIdle(t)
+
+	if got := fx.listStatus("slow-pull"); got != "running" {
+		t.Fatalf("status after create = %v, want running", got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"odac/internal/api"
 	"odac/internal/applog"
+	"odac/internal/appstatus"
 	"odac/internal/docker"
 	"odac/internal/netmode"
 	"odac/internal/ports"
@@ -352,6 +353,16 @@ func (m *Manager) unlockProcessing(id float64) {
 	m.mu.Lock()
 	delete(m.processing, id)
 	m.mu.Unlock()
+}
+
+// inFlight reports whether an operation currently holds this app, by id
+// (run/redeploy/update) or by name (create). It gates the transient statuses
+// in List so a status left behind by a crash mid-create decays to "stopped" on
+// the next list instead of pinning the app to "installing" forever.
+func (m *Manager) inFlight(id float64, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.processing[id] || m.creating[name]
 }
 
 // RedeployPayload carries app.redeploy's named arguments.
@@ -1260,6 +1271,7 @@ func actionNames(value any) []string {
 func (m *Manager) List(detailed bool) *api.Result {
 	type row struct {
 		app      map[string]any
+		id       float64
 		name     string
 		identity string
 		file     string
@@ -1271,6 +1283,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 		for _, app := range m.apps {
 			r := row{app: copyMap(app)}
+			r.id, _ = app["id"].(float64)
 			r.name, _ = app["name"].(string)
 			r.identity = r.name
 			if ai, _ := app["_appIdentity"].(string); ai != "" {
@@ -1315,9 +1328,14 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 		cp["health"] = health
 
-		if isRunning {
+		configStatus, _ := cp["status"].(string)
+		switch {
+		case isRunning:
 			cp["status"] = "running"
-		} else {
+		case appstatus.IsTransient(configStatus) && m.inFlight(r.id, r.name):
+			// Keep the lifecycle status: a slow pull or build must read as
+			// installing/building, not as a stopped app.
+		default:
 			cp["status"] = "stopped"
 		}
 		if len(statusInfo.Networks) > 0 {

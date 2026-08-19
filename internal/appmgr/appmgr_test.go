@@ -348,6 +348,18 @@ func (f *fakeHub) Trigger(event string) {
 	f.triggers = append(f.triggers, event)
 }
 
+// sawTrigger reports whether the hub was asked to broadcast event.
+func (f *fakeHub) sawTrigger(event string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.triggers {
+		if t == event {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeHub) GetApp(string) (map[string]any, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -881,3 +881,62 @@ func TestSetAPI(t *testing.T) {
 		}
 	})
 }
+
+// ---- transient status in List ----
+
+// listStatus returns the status List reports for one app.
+func (fx *fixture) listStatus(name string) any {
+	data, _ := fx.m.List(true).Data.([]any)
+	for _, entry := range data {
+		if app, _ := entry.(map[string]any); app != nil && app["name"] == name {
+			return app["status"]
+		}
+	}
+	return nil
+}
+
+func TestListTransientStatus(t *testing.T) {
+	newApp := func(t *testing.T, status string) *fixture {
+		return newFixture(t, []any{map[string]any{
+			"id": float64(1), "name": "web", "type": "container",
+			"active": true, "status": status,
+		}})
+	}
+
+	t.Run("keeps installing while the create holds the app", func(t *testing.T) {
+		fx := newApp(t, "installing")
+		fx.m.tryLockCreating("web")
+		defer fx.m.unlockCreating("web")
+		if got := fx.listStatus("web"); got != "installing" {
+			t.Fatalf("status = %v, want installing", got)
+		}
+	})
+
+	t.Run("keeps building while an operation holds the app", func(t *testing.T) {
+		fx := newApp(t, "building")
+		fx.m.tryLockProcessing(1)
+		defer fx.m.unlockProcessing(1)
+		if got := fx.listStatus("web"); got != "building" {
+			t.Fatalf("status = %v, want building", got)
+		}
+	})
+
+	t.Run("a stale transient status decays to stopped", func(t *testing.T) {
+		fx := newApp(t, "installing")
+		if got := fx.listStatus("web"); got != "stopped" {
+			t.Fatalf("status = %v, want stopped", got)
+		}
+	})
+
+	t.Run("a running container wins over the transient status", func(t *testing.T) {
+		fx := newApp(t, "installing")
+		fx.m.tryLockCreating("web")
+		defer fx.m.unlockCreating("web")
+		fx.dock.mu.Lock()
+		fx.dock.running["web"] = true
+		fx.dock.mu.Unlock()
+		if got := fx.listStatus("web"); got != "running" {
+			t.Fatalf("status = %v, want running", got)
+		}
+	})
+}

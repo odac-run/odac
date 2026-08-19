@@ -284,6 +284,11 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 		m.saveAppsLocked()
 	})
 
+	// Publish the record before the pull: EnsureImage can run for minutes on a
+	// large image, and until the Cloud sees the row there is nothing to show
+	// the "installing" state on.
+	m.hubTrigger("app.list")
+
 	m.clog.Log("createFromRecipe: Starting app...")
 	runErr := m.run(appID, logCtrl)
 	if runErr == nil {
@@ -514,6 +519,8 @@ func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps m
 				m.saveAppsLocked()
 			})
 
+			m.hubTrigger("app.list")
+
 			m.clog.Log("createFromTemplate: Starting %s [%s] (%s)...", containerName, key, image)
 
 			if runErr := m.run(appID, logCtrl); runErr != nil {
@@ -737,6 +744,8 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		m.apps = append(m.apps, app)
 		m.saveAppsLocked()
 	})
+
+	m.hubTrigger("app.list")
 
 	m.clog.Log("createFromGit: Starting container...")
 	logCtrl.StartPhase("start_new_container")
