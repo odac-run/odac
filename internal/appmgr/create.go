@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -986,13 +987,17 @@ func (m *Manager) writeConfigFiles(configs any, appDir string) ([]any, error) {
 			continue
 		}
 
-		normalized := filepath.Clean(cfgPath)
-		if strings.Contains(normalized, "..") || filepath.IsAbs(normalized) {
-			m.clog.Error("writeConfigFiles: Skipping unsafe config path: %s", cfgPath)
+		// The target is a path inside the container, so it is a slash path
+		// regardless of the host OS. Docker rejects a non-absolute mount
+		// destination, and path.Clean resolves every ".." on an absolute
+		// path, so a cleaned absolute target cannot escape.
+		target := path.Clean(cfgPath)
+		if !path.IsAbs(target) {
+			m.clog.Error("writeConfigFiles: Skipping config path that is not absolute: %s", cfgPath)
 			continue
 		}
 
-		hostFile := filepath.Join(configBase, normalized)
+		hostFile := filepath.Join(configBase, filepath.FromSlash(target))
 		if !strings.HasPrefix(filepath.Clean(hostFile), configBase+string(filepath.Separator)) {
 			m.clog.Error("writeConfigFiles: Resolved path escapes sandbox: %s", cfgPath)
 			continue
@@ -1001,23 +1006,51 @@ func (m *Manager) writeConfigFiles(configs any, appDir string) ([]any, error) {
 			return volumes, err
 		}
 
-		data, isStr := content.(string)
-		if !isStr {
-			marshaled, err := json.MarshalIndent(content, "", "  ")
-			if err != nil {
-				return volumes, err
-			}
-			data = string(marshaled)
+		data, err := configContent(content)
+		if err != nil {
+			return volumes, err
 		}
 		if err := os.WriteFile(hostFile, []byte(data), 0o644); err != nil {
 			return volumes, err
 		}
 
-		volumes = append(volumes, map[string]any{"host": hostFile, "container": cfgPath})
+		volumes = append(volumes, map[string]any{"host": hostFile, "container": target})
 		m.clog.Log("writeConfigFiles: Wrote %s ("+itoa(len(data))+" bytes)", cfgPath)
 	}
 
 	return volumes, nil
+}
+
+// configContent renders a config file body. A string is written verbatim, so
+// any text format (YAML, INI, nginx.conf) passes through untouched. A list of
+// strings is joined into lines, the natural way to write a multi-line file in
+// a JSON recipe. Anything else falls back to JSON.
+func configContent(content any) (string, error) {
+	switch v := content.(type) {
+	case string:
+		return v, nil
+	case []any:
+		lines := make([]string, 0, len(v))
+		for _, item := range v {
+			line, ok := item.(string)
+			if !ok {
+				lines = nil
+				break
+			}
+			lines = append(lines, line)
+		}
+		if lines != nil {
+			if len(lines) == 0 {
+				return "", nil
+			}
+			return strings.Join(lines, "\n") + "\n", nil
+		}
+	}
+	marshaled, err := json.MarshalIndent(content, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(marshaled), nil
 }
 
 // toMapSlice converts a decoded-JSON array to []map[string]any, dropping

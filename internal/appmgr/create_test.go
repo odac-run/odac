@@ -5,6 +5,8 @@ package appmgr
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1102,5 +1104,152 @@ func TestCreateStaysVisibleWhileImagePulls(t *testing.T) {
 
 	if got := fx.listStatus("slow-pull"); got != "running" {
 		t.Fatalf("status after create = %v, want running", got)
+	}
+}
+
+// ---- recipe config files ----
+
+// A recipe config file must land on disk verbatim and reach Docker as a bind
+// with an absolute container target, which is the only form the daemon
+// accepts. Multi-line content may arrive as a string or as a list of lines.
+func TestCreateWritesRecipeConfigFiles(t *testing.T) {
+	yaml := "logger:\n  level: warning\n  size: 100M\n"
+	cases := []struct {
+		name    string
+		content any
+	}{
+		{"string", yaml},
+		{"lines", []any{"logger:", "  level: warning", "  size: 100M"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newFixture(t, []any{})
+			fx.setRecipe(map[string]any{
+				"name":  "clickhouse",
+				"image": "clickhouse/clickhouse-server:24",
+				"configs": []any{map[string]any{
+					"path":    "/etc/clickhouse-server/config.d/odac-logs.yaml",
+					"content": tc.content,
+				}},
+			})
+
+			r := fx.m.Create(map[string]any{"type": "app", "app": "clickhouse", "name": "ch"})
+			if !r.Status {
+				t.Fatalf("create failed: %v", r.Message)
+			}
+			fx.waitIdle(t)
+
+			app := fx.findApp("ch")
+			if app == nil {
+				t.Fatal("app not persisted")
+			}
+			vols, _ := app["volumes"].([]any)
+			var mount map[string]any
+			for _, v := range vols {
+				if entry, _ := v.(map[string]any); entry != nil &&
+					entry["container"] == "/etc/clickhouse-server/config.d/odac-logs.yaml" {
+					mount = entry
+				}
+			}
+			if mount == nil {
+				t.Fatalf("config mount missing, volumes = %v", vols)
+			}
+
+			hostPath, _ := mount["host"].(string)
+			wantHost := filepath.Join(fx.m.appsPath(), "ch", "configs",
+				"etc", "clickhouse-server", "config.d", "odac-logs.yaml")
+			if hostPath != wantHost {
+				t.Fatalf("host = %q, want %q", hostPath, wantHost)
+			}
+			data, err := os.ReadFile(hostPath)
+			if err != nil {
+				t.Fatalf("read config: %v", err)
+			}
+			if string(data) != yaml {
+				t.Fatalf("content = %q, want %q", string(data), yaml)
+			}
+
+			// The bind must survive into the actual container run.
+			var bound bool
+			fx.dock.mu.Lock()
+			for _, call := range fx.dock.runCalls {
+				for _, vol := range call.options.Volumes {
+					if vol.Host == wantHost && vol.Container == "/etc/clickhouse-server/config.d/odac-logs.yaml" {
+						bound = true
+					}
+				}
+			}
+			fx.dock.mu.Unlock()
+			if !bound {
+				t.Fatal("config bind never reached RunApp")
+			}
+		})
+	}
+}
+
+// Paths that cannot become a valid mount target, or that try to escape the
+// per-app sandbox, are dropped instead of producing a broken container.
+func TestWriteConfigFilesRejectsUnusablePaths(t *testing.T) {
+	fx := newFixture(t, []any{})
+	appDir := filepath.Join(fx.m.appsPath(), "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{"conf/app.yaml", "app.yaml", "", "../../etc/passwd"} {
+		vols, err := fx.m.writeConfigFiles([]any{
+			map[string]any{"path": p, "content": "x"},
+		}, appDir)
+		if err != nil {
+			t.Fatalf("path %q: %v", p, err)
+		}
+		if len(vols) != 0 {
+			t.Fatalf("path %q produced %v, want no mount", p, vols)
+		}
+	}
+
+	// An absolute path with ".." resolves inside the sandbox, it does not escape.
+	vols, err := fx.m.writeConfigFiles([]any{
+		map[string]any{"path": "/etc/../etc/app.conf", "content": "x"},
+	}, appDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vols) != 1 {
+		t.Fatalf("volumes = %v, want 1", vols)
+	}
+	entry, _ := vols[0].(map[string]any)
+	if entry["container"] != "/etc/app.conf" {
+		t.Fatalf("container = %v, want /etc/app.conf", entry["container"])
+	}
+	host, _ := entry["host"].(string)
+	if !strings.HasPrefix(host, filepath.Join(appDir, "configs")+string(filepath.Separator)) {
+		t.Fatalf("host escaped the sandbox: %q", host)
+	}
+}
+
+func TestConfigContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content any
+		want    string
+	}{
+		{"string verbatim", "a: 1\nb: 2", "a: 1\nb: 2"},
+		{"lines joined", []any{"a: 1", "b: 2"}, "a: 1\nb: 2\n"},
+		{"empty list", []any{}, ""},
+		{"mixed list falls back to json", []any{"a", float64(1)}, "[\n  \"a\",\n  1\n]"},
+		{"object falls back to json", map[string]any{"a": "1"}, "{\n  \"a\": \"1\"\n}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := configContent(tc.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("configContent = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
