@@ -1,3 +1,30 @@
+### ✨ What's New
+
+- **api:** add app api command to grant apps API access
+- **app:** add egress isolation for apps
+- **app:** add host network mode for apps
+- **app:** add start and stop commands for managing applications
+- **gpu:** AI/GPU application support end to end
+- **gpu:** enhance GPU capability diagnostics and preserve runtime settings across updates
+
+### 🛠️ Fixes & Improvements
+
+- **app:** enhance discovery for host-networked and isolated apps
+- **app:** improve mountIsFile logic for dotted basenames and extensions
+- **app:** keep apps visible while images pull
+- **appmgr:** sweep dangling env links on app delete
+- **gpu:** add GPU change hook to notify on state changes and improve responsiveness
+- **gpu:** run nvidia-smi from the host root so VRAM/usage populate
+- **logx:** apply %s substitution to Warn and Error, not just Log
+- **mail:** batch MessageStoreFlags UIDs and honour STORE FLAGS ()
+- **security:** escape IMAP mailbox names and stop re-parsing credentials
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### doc
 
 - update security policy for clarity and consistency
