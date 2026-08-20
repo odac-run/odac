@@ -83,11 +83,26 @@ func TestPercentSSubstitution(t *testing.T) {
 	}
 }
 
-func TestErrorHasNoPercentSSubstitution(t *testing.T) {
+// Node left the markers in on this path (console.error only formats against
+// its first argument, the module prefix). That was a typo reproduced by 82
+// call sites, not a contract — see the deviation note in the package doc.
+func TestWarnErrorSubstitute(t *testing.T) {
 	_, errBuf := capture(t)
 	New("U").Error("fail: %s", "reason")
-	if got, want := errBuf.String(), "[U]  fail: %s reason\n"; got != want {
-		t.Errorf("Error = %q, want %q", got, want)
+	New("U").Warn("retry %s of %s", 2, 5)
+	want := "[U]  fail: reason\n[U]  retry 2 of 5\n"
+	if got := errBuf.String(); got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+}
+
+// An error message that happens to contain %s must not eat the arguments
+// after it — only the first argument is a format string.
+func TestSubstitutionOnlyReadsFirstArgument(t *testing.T) {
+	_, errBuf := capture(t)
+	New("U").Error("boom", "literal %s stays")
+	if got, want := errBuf.String(), "[U]  boom literal %s stays\n"; got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
 	}
 }
 

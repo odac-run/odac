@@ -67,6 +67,13 @@ func TestMicon(t *testing.T) {
 	if got := micon("", false); got != "   " {
 		t.Errorf("unknown status = %q, want three spaces", got)
 	}
+	// An app mid-pull or mid-build must read as in progress, not as a blank
+	// row that looks like nothing is happening.
+	for _, status := range []string{"installing", "building", "starting", "switching", "updating"} {
+		if got := micon(status, false); !strings.Contains(got, "-") {
+			t.Errorf("micon(%q) = %q, want the progress marker", status, got)
+		}
+	}
 }
 
 func TestMspacing(t *testing.T) {

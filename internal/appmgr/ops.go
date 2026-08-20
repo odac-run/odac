@@ -9,6 +9,9 @@ import (
 
 	"odac/internal/api"
 	"odac/internal/applog"
+	"odac/internal/appstatus"
+	"odac/internal/docker"
+	"odac/internal/netmode"
 	"odac/internal/ports"
 )
 
@@ -19,53 +22,9 @@ var (
 	// greenSuffix matches the green container name suffix produced by
 	// generateRuntimeID: `<appName>-green-<13+digit-ms>_<8-hex>`.
 	greenSuffix = regexp.MustCompile(`-green-\d+_[a-f0-9]{8}$`)
-	// scriptExts is SCRIPT_EXTENSIONS: files App.start strips to name apps.
+	// scriptExts is SCRIPT_EXTENSIONS: extensions stripped from script-type app names.
 	scriptExts = []string{".js", ".py", ".php", ".sh", ".rb"}
 )
-
-// Start ports App.start: register/start a script app from a file path.
-func (m *Manager) Start(file string) *api.Result {
-	if file == "" {
-		return res(false, __("App file not specified."))
-	}
-
-	abs, err := filepath.Abs(file)
-	if err == nil {
-		file = abs
-	}
-
-	if _, statErr := os.Stat(file); statErr != nil {
-		return res(false, __("App file %s not found.", file))
-	}
-
-	var existingID any
-	var existingName, existingStatus string
-	var appID any
-	m.cfg.Mutate(func() {
-		for _, app := range m.apps {
-			if app["file"] == file {
-				existingID = app["id"]
-				existingName, _ = app["name"].(string)
-				existingStatus, _ = app["status"].(string)
-				return
-			}
-		}
-		app := m.addLocked(file, "script")
-		appID = app["id"]
-	})
-
-	if existingID == nil {
-		m.run(appID, nil)
-		return res(true, __("App %s added successfully.", file))
-	}
-
-	if existingStatus != "running" {
-		m.run(existingID, nil)
-		return res(true, __("App %s started successfully.", existingName))
-	}
-
-	return res(false, __("App %s already exists and is running.", file))
-}
 
 // Stop ports App.stop.
 func (m *Manager) Stop(id any) *api.Result {
@@ -114,6 +73,38 @@ func (m *Manager) Stop(id any) *api.Result {
 	}
 
 	return res(true, __("App %s stopped.", name))
+}
+
+// Start starts an existing, currently-stopped app by ID/name — the
+// counterpart to Stop. Unlike Restart it never stops a live container: a
+// running app is left untouched and reported as such.
+func (m *Manager) Start(id any) *api.Result {
+	var name string
+	var idVal any
+	found := false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			found = true
+			name, _ = app["name"].(string)
+			idVal = app["id"]
+		}
+	})
+	if !found {
+		return res(false, __("App ID %s not found.", jsString(id)))
+	}
+
+	if m.isAppRunning(idVal) {
+		return res(true, __("App %s is already running.", name))
+	}
+
+	m.log.Log("Starting app %s", name)
+	m.set(idVal, map[string]any{"active": true})
+
+	if m.run(idVal, nil) == nil {
+		m.hubTrigger("app.list")
+		return res(true, __("App %s started successfully.", name))
+	}
+	return res(false, __("Failed to start app %s.", name))
 }
 
 // StopAll ports App.stopAll.
@@ -183,6 +174,7 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 	// worse, get renamed to app.name after we already removed it).
 	m.SweepGreenContainersFor(name, activeContainerID)
 
+	var unlinked []string
 	m.cfg.Mutate(func() {
 		filtered := m.apps[:0]
 		for _, app := range m.apps {
@@ -192,8 +184,13 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 			filtered = append(filtered, app)
 		}
 		m.apps = filtered
+		// Cascading delete: drop env links pointing at the removed app.
+		unlinked = m.sweepLinkedRefsLocked(name)
 		m.saveAppsLocked()
 	})
+	if len(unlinked) > 0 {
+		m.log.Log("Removed env link to %s from %s - restart required to apply", name, strings.Join(unlinked, ", "))
+	}
 
 	m.mu.Lock()
 	stream := m.logStreams[name]
@@ -250,6 +247,24 @@ func (m *Manager) hasDomainsFor(name string, id float64) bool {
 	return has
 }
 
+// zddEligible is the single Blue-Green gate. Domains are the reason to pay
+// for a green container; host networking is the reason it cannot work — two
+// containers in the host namespace compete for the same port, so the green
+// one dies on bind and every deploy would abort on the readiness probe.
+// Host-mode apps therefore fall back to a stop/start recreate and accept the
+// gap, which is the only correct answer while the port is a host-wide
+// singleton.
+func (m *Manager) zddEligible(name string, id float64) bool {
+	if !m.hasDomainsFor(name, id) {
+		return false
+	}
+	if m.hostNetworked(id) {
+		m.log.Log("ZDD skipped for %s: host networking makes the app's port a host-wide singleton, so a green container cannot bind it. Falling back to a recreate (brief downtime).", name)
+		return false
+	}
+	return true
+}
+
 // Restart ports App.restart: Blue-Green for git apps with domains, standard
 // stop/start otherwise.
 func (m *Manager) Restart(id any) *api.Result {
@@ -270,7 +285,7 @@ func (m *Manager) Restart(id any) *api.Result {
 
 	m.log.Log("Restarting app %s", name)
 
-	if typ == "git" && m.hasDomainsFor(name, idNum) {
+	if typ == "git" && m.zddEligible(name, idNum) {
 		m.log.Log("ZDD enabled for %s (Has Domains). Executing Blue-Green restart.", name)
 
 		if !m.tryLockProcessing(idNum) {
@@ -304,7 +319,7 @@ func (m *Manager) Restart(id any) *api.Result {
 		return res(false, __("App %s is already being processed.", name))
 	}
 
-	m.log.Log("Standard restart for %s (No Domains or Script App). Stopping old container first.", name)
+	m.log.Log("Standard restart for %s (not ZDD-eligible). Stopping old container first.", name)
 
 	m.Stop(idNum)
 
@@ -317,7 +332,7 @@ func (m *Manager) Restart(id any) *api.Result {
 	// lock; the guard above already rejected concurrent callers.
 	m.unlockProcessing(idNum)
 
-	if m.run(idNum, nil) {
+	if m.run(idNum, nil) == nil {
 		m.hubTrigger("app.list")
 		return res(true, __("App %s restarted successfully.", name))
 	}
@@ -338,6 +353,16 @@ func (m *Manager) unlockProcessing(id float64) {
 	m.mu.Lock()
 	delete(m.processing, id)
 	m.mu.Unlock()
+}
+
+// inFlight reports whether an operation currently holds this app, by id
+// (run/redeploy/update) or by name (create). It gates the transient statuses
+// in List so a status left behind by a crash mid-create decays to "stopped" on
+// the next list instead of pinning the app to "installing" forever.
+func (m *Manager) inFlight(id float64, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.processing[id] || m.creating[name]
 }
 
 // RedeployPayload carries app.redeploy's named arguments.
@@ -523,7 +548,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		return res(false, "App was deleted during build phase.")
 	}
 
-	if m.hasDomainsFor(name, idNum) {
+	if m.zddEligible(name, idNum) {
 		// Zero-Downtime Deployment (Blue-Green).
 		m.log.Log("ZDD enabled for %s (Has Domains). Executing Blue-Green switch.", name)
 		greenName = name + "-green-" + generateRuntimeID("")
@@ -539,7 +564,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		}
 	} else {
 		// Standard redeploy (no domains).
-		m.log.Log("Standard redeploy for %s (No Domains). Stopping old container first.", name)
+		m.log.Log("Standard redeploy for %s (not ZDD-eligible). Stopping old container first.", name)
 
 		logCtrl.StartPhase("stop_old_container")
 		m.Stop(idNum)
@@ -887,15 +912,31 @@ func (m *Manager) DeviceDelete(id any, hostPath string) *api.Result {
 // SetNetworks ports App.setNetworks.
 func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Result {
 	var name string
-	found := false
+	found, hostNet, isolated := false, false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
 			found = true
 			name, _ = app["name"].(string)
+			hostNet = netmode.IsHost(app["networkMode"])
+			isolated = jsTruthy(app["isolated"])
 		}
 	})
 	if !found {
 		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// Docker cannot attach a host-namespace container to a bridge network, so
+	// answer up front instead of surfacing the daemon's opaque refusal.
+	if hostNet {
+		return res(false, __("App %s uses host networking and cannot join additional networks. Switch it to bridge mode first.", name))
+	}
+
+	// Isolation is a property of the network, not the container: attaching an
+	// isolated app to any ordinary bridge hands it a route to the internet
+	// again and silently voids the guarantee. Refuse rather than let the app
+	// keep reporting itself isolated.
+	if isolated {
+		return res(false, __("App %s is isolated, so it cannot join other networks — that would restore its outbound access. To let another app reach it, attach that app to %s instead.", name, docker.IsolatedNetwork))
 	}
 
 	if !payloadOK {
@@ -967,10 +1008,270 @@ func (m *Manager) SetPrivileged(id any, mode string) *api.Result {
 	return result
 }
 
+// SetNetworkMode selects the app's container network namespace: netmode.Host
+// shares the host's (no isolation, the app binds host ports itself),
+// netmode.Bridge returns it to ODAC's shared bridge. Persisted only —
+// a container's network mode is fixed at create time, so it takes a restart.
+func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
+	parsed, err := netmode.Parse(mode)
+	if err != nil {
+		return res(false, __("Invalid network mode: %s. Expected %s or %s.", jsString(mode), netmode.Bridge, netmode.Host))
+	}
+
+	// Read the identity before the Mutate: hasDomainsFor takes cfg.View, and
+	// a View nested inside a Mutate deadlocks.
+	var name string
+	var idNum float64
+	found, isolated := false, false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			found = true
+			name, _ = app["name"].(string)
+			idNum, _ = app["id"].(float64)
+			isolated = jsTruthy(app["isolated"])
+		}
+	})
+	if !found {
+		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// Isolation is a property of a bridge; a host-namespace container has no
+	// bridge of its own to cut off. Refusing beats silently dropping the
+	// isolation an operator believes is still in force.
+	if parsed == netmode.Host && isolated {
+		return res(false, __("App %s is isolated, and host networking cannot be isolated — it shares the host's network stack. Turn isolation off first: odac app isolate %s --off", name, name))
+	}
+
+	// A routed app must keep zero-downtime deploys, and host networking makes
+	// its port a host-wide singleton so a green container can never bind it
+	// (see zddEligible). Rather than silently downgrading a live domain to
+	// restart-with-downtime, refuse and let the operator choose.
+	if parsed == netmode.Host && m.hasDomainsFor(name, idNum) {
+		return res(false, __("App %s has domains routed to it, so it cannot use host networking — zero-downtime deploys would be lost. Remove its domains first, or keep it on the bridge network.", name))
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if parsed == netmode.Bridge {
+			delete(app, "networkMode")
+		} else {
+			app["networkMode"] = parsed
+		}
+		// The cached address belongs to the old namespace; keeping it would
+		// point the proxy at a dead bridge IP (or a stale loopback) until the
+		// next discovery run overwrites it.
+		delete(app, "ip")
+		m.saveAppsLocked()
+
+		if parsed == netmode.Host {
+			result = res(true, __("%s now uses HOST networking (no network isolation from the host). Restart required to apply.", app["name"]))
+			return
+		}
+		result = res(true, __("%s now uses ODAC's shared bridge network. Restart required to apply.", app["name"]))
+	})
+	return result
+}
+
+// SetIsolated cuts an app off from every network outside the host, or
+// restores its outbound access. Orthogonal to SetNetworkMode: an isolated app
+// is still a bridge app — same container IP, same proxy routing, same
+// Blue-Green deploys — it just joins docker.IsolatedNetwork, whose `internal`
+// flag drops everything routed in or out of its subnet. Persisted only; a
+// container's network is fixed at create time, so it takes a restart.
+func (m *Manager) SetIsolated(id any, isolated bool) *api.Result {
+	var name string
+	found, hostNet := false, false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			found = true
+			name, _ = app["name"].(string)
+			hostNet = netmode.IsHost(app["networkMode"])
+		}
+	})
+	if !found {
+		return res(false, __("App %s not found.", jsString(id)))
+	}
+
+	// Same invariant as SetNetworkMode's, from the other direction.
+	if isolated && hostNet {
+		return res(false, __("App %s uses host networking, which shares the host's network stack and cannot be isolated. Switch it to bridge networking first: odac app network %s --bridge", name, name))
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if isolated {
+			app["isolated"] = true
+		} else {
+			delete(app, "isolated")
+		}
+		// The cached address belongs to the previous network; the proxy would
+		// aim at it until the next discovery run overwrites it.
+		delete(app, "ip")
+		m.saveAppsLocked()
+
+		if isolated {
+			result = res(true, __("%s is now ISOLATED: no outbound network access. Domains and the proxy keep working; published ports become reachable from this host only. Restart required to apply.", app["name"]))
+			return
+		}
+		result = res(true, __("%s can reach the network again. Restart required to apply.", app["name"]))
+	})
+	return result
+}
+
+// SetAPI grants or revokes an app's access to ODAC's own API. permissions is
+// the literal true (every grantable action, now and future), a list of action
+// names, or
+// false/nil to revoke; "*" anywhere in a list normalizes to true. The two
+// directions are deliberately asymmetric: a revoke lands on the app's next
+// request, because the API reads this grant from config per request, while a
+// grant needs a restart, because ODAC_API_KEY and the read-only api.sock mount are
+// injected at container start.
+func (m *Manager) SetAPI(id any, permissions any) *api.Result {
+	if m.deps.Api == nil {
+		return res(false, __("The API server is unavailable, so API access cannot be changed."))
+	}
+
+	value, failure := m.normalizeAPIPermissions(permissions)
+	if failure != nil {
+		return failure
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if value == nil {
+			if _, had := app["api"]; !had {
+				result = res(true, __("%s has no API access.", app["name"]))
+				return
+			}
+			delete(app, "api")
+			m.saveAppsLocked()
+			result = res(true, __("API access revoked from %s. Requests are refused from now on; restart it to also drop the socket mount and its stale key.", app["name"]))
+			return
+		}
+
+		app["api"] = value
+		m.saveAppsLocked()
+
+		if value == true {
+			result = res(true, __("%s may now call every API action except %s. Restart required to apply.", app["name"], strings.Join(api.AppDeniedActions(), ", ")))
+			return
+		}
+		result = res(true, __("%s may now call: %s. Restart required to apply.", app["name"], strings.Join(actionNames(value), ", ")))
+	})
+	return result
+}
+
+// normalizeAPIPermissions validates a grant against the registered action set
+// and returns the value to persist (nil revokes). Rejecting unknown actions
+// here is the point: an unrecognized shape used to persist happily and then
+// answer permission_denied on every request, with nothing but a server log to
+// explain it.
+func (m *Manager) normalizeAPIPermissions(permissions any) (any, *api.Result) {
+	switch v := permissions.(type) {
+	case nil:
+		return nil, nil
+	case bool:
+		if !v {
+			return nil, nil
+		}
+		return true, nil
+	case string:
+		if v == "" || strings.EqualFold(v, "off") || strings.EqualFold(v, "false") {
+			return nil, nil
+		}
+		return m.normalizeAPIActions(splitActions(v))
+	case []any:
+		var items []string
+		for _, entry := range v {
+			name, ok := entry.(string)
+			if !ok {
+				return nil, res(false, __("Invalid API permission entry: %s. Expected action names.", jsString(entry)))
+			}
+			items = append(items, splitActions(name)...)
+		}
+		return m.normalizeAPIActions(items)
+	}
+	return nil, res(false, __("Invalid API permissions. Expected true, false, or a list of action names."))
+}
+
+func (m *Manager) normalizeAPIActions(items []string) (any, *api.Result) {
+	seen := map[string]bool{}
+	list := []any{}
+	var unknown, restricted []string
+	for _, item := range items {
+		action := strings.TrimSpace(item)
+		if action == "" || seen[action] {
+			continue
+		}
+		seen[action] = true
+		if action == "*" {
+			return true, nil
+		}
+		if !m.deps.Api.HasAction(action) {
+			unknown = append(unknown, action)
+			continue
+		}
+		if !api.AppMayCall(action) {
+			restricted = append(restricted, action)
+			continue
+		}
+		list = append(list, action)
+	}
+	if len(unknown) > 0 {
+		return nil, res(false, __("Unknown API action(s): %s.", strings.Join(unknown, ", ")))
+	}
+	if len(restricted) > 0 {
+		return nil, res(false, __("These actions can never be granted to an app: %s. They control the server itself.", strings.Join(restricted, ", ")))
+	}
+	if len(list) == 0 {
+		return nil, res(false, __("No API actions given. Pass action names, * for all, or revoke access instead."))
+	}
+	return list, nil
+}
+
+// splitActions accepts one action name, or several separated by commas or
+// whitespace, so `--allow "app.list, mail.send"` behaves as written.
+func splitActions(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+}
+
+// actionNames renders a normalized permission list for user-facing messages.
+func actionNames(value any) []string {
+	list, _ := value.([]any)
+	names := make([]string, 0, len(list))
+	for _, entry := range list {
+		if name, ok := entry.(string); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // List ports App.list: the dashboard/CLI app table.
 func (m *Manager) List(detailed bool) *api.Result {
 	type row struct {
 		app      map[string]any
+		id       float64
 		name     string
 		identity string
 		file     string
@@ -982,6 +1283,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 		for _, app := range m.apps {
 			r := row{app: copyMap(app)}
+			r.id, _ = app["id"].(float64)
 			r.name, _ = app["name"].(string)
 			r.identity = r.name
 			if ai, _ := app["_appIdentity"].(string); ai != "" {
@@ -1026,9 +1328,14 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 		cp["health"] = health
 
-		if isRunning {
+		configStatus, _ := cp["status"].(string)
+		switch {
+		case isRunning:
 			cp["status"] = "running"
-		} else {
+		case appstatus.IsTransient(configStatus) && m.inFlight(r.id, r.name):
+			// Keep the lifecycle status: a slow pull or build must read as
+			// installing/building, not as a stopped app.
+		default:
 			cp["status"] = "stopped"
 		}
 		if len(statusInfo.Networks) > 0 {

@@ -267,15 +267,17 @@ func (u *Updater) executeInner() error {
 	}
 
 	createOpts := CreateOptions{
-		Name:          newName,
-		Image:         u.image,
-		Env:           env,
-		Binds:         info.Binds,
-		Privileged:    true,
-		CapAdd:        []string{"NET_ADMIN", "NET_BIND_SERVICE"},
-		RestartPolicy: "unless-stopped", // default policy for production
-		Tty:           true,
-		LogConfig:     inheritLogConfig(info.LogConfig),
+		Name:           newName,
+		Image:          u.image,
+		Env:            env,
+		Binds:          info.Binds,
+		Privileged:     true,
+		CapAdd:         []string{"NET_ADMIN", "NET_BIND_SERVICE"},
+		RestartPolicy:  "unless-stopped", // default policy for production
+		Tty:            true,
+		LogConfig:      inheritLogConfig(info.LogConfig),
+		Runtime:        info.Runtime,
+		DeviceRequests: info.DeviceRequests,
 	}
 
 	if u.platform == "linux" {

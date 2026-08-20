@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,8 +11,12 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/system"
 	"github.com/docker/go-connections/nat"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+
+	"odac/internal/gpu"
+	"odac/internal/logx"
 )
 
 func newTestClient(t *testing.T, f *fakeAPI) *Client {
@@ -37,6 +42,31 @@ func TestAvailability(t *testing.T) {
 	}
 	if len(f2.created) != 0 {
 		t.Error("no container should be created while unavailable")
+	}
+}
+
+func TestRuntimes(t *testing.T) {
+	f := newFakeAPI()
+	f.info = system.Info{Runtimes: map[string]system.RuntimeWithStatus{
+		"runc":   {},
+		"nvidia": {},
+	}}
+	if got := newTestClient(t, f).Runtimes(); !reflect.DeepEqual(got, []string{"nvidia", "runc"}) {
+		t.Errorf("Runtimes() = %v, want sorted [nvidia runc]", got)
+	}
+
+	// A failing daemon call degrades to "no evidence", never to a panic:
+	// the GPU gate must stay closed rather than guess.
+	f2 := newFakeAPI()
+	f2.infoErr = notFoundErr{"boom"}
+	if got := newTestClient(t, f2).Runtimes(); len(got) != 0 {
+		t.Errorf("Runtimes() on error = %v, want empty", got)
+	}
+
+	f3 := newFakeAPI()
+	f3.pingErr = notFoundErr{"down"}
+	if got := newTestClient(t, f3).Runtimes(); got != nil {
+		t.Errorf("Runtimes() while unavailable = %v, want nil", got)
 	}
 }
 
@@ -155,6 +185,259 @@ func TestRunAppPrivileged(t *testing.T) {
 	}
 	if !f.created[0].HostConfig.Privileged {
 		t.Error("privileged flag lost")
+	}
+}
+
+// Host networking swaps the shared bridge for the host namespace: no bridge
+// to ensure, and published mappings are dropped because the daemon discards
+// them anyway (the app binds the host port itself).
+func TestRunAppHostNetwork(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+	opts := RunOptions{
+		Image:       "img",
+		NetworkMode: "host",
+		Ports: []map[string]any{
+			{"host": 8080.0, "container": 80.0},
+			{"host": "proxy", "container": 3000.0},
+		},
+	}
+	if _, err := c.RunApp("h", opts, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	call := f.created[0]
+	if string(call.HostConfig.NetworkMode) != "host" {
+		t.Errorf("network mode = %q", call.HostConfig.NetworkMode)
+	}
+	if len(call.HostConfig.PortBindings) != 0 {
+		t.Errorf("port bindings = %#v, want none in host mode", call.HostConfig.PortBindings)
+	}
+	if len(call.Config.ExposedPorts) != 0 {
+		t.Errorf("exposed ports = %#v, want none in host mode", call.Config.ExposedPorts)
+	}
+	for _, n := range f.networks {
+		if n == "odac-network" {
+			t.Error("odac-network ensured for a host-network container")
+		}
+	}
+}
+
+// Isolated apps go on their own bridge, and that bridge MUST carry Docker's
+// `internal` flag — the flag is the whole guarantee. Without it the app keeps
+// full internet access while reporting itself isolated.
+func TestRunAppIsolatedNetwork(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+	if _, err := c.RunApp("i", RunOptions{Image: "img", Isolated: true}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(f.created[0].HostConfig.NetworkMode); got != IsolatedNetwork {
+		t.Errorf("network mode = %q, want %q", got, IsolatedNetwork)
+	}
+	opts, ok := f.netCreateOpts[IsolatedNetwork]
+	if !ok {
+		t.Fatalf("%s never created: %v", IsolatedNetwork, f.networks)
+	}
+	if !opts.Internal {
+		t.Error("isolated network created WITHOUT the internal flag: egress is wide open")
+	}
+	if opts.Driver != "bridge" {
+		t.Errorf("driver = %q", opts.Driver)
+	}
+	// The shared egress-capable bridge must not be touched for an isolated app.
+	for _, n := range f.networks {
+		if n == "odac-network" {
+			t.Error("shared bridge ensured for an isolated app")
+		}
+	}
+}
+
+// An existing network of that name without the flag is a silent hole, so the
+// client must not adopt it quietly. It reuses the network (Docker cannot
+// retrofit the flag) but says so at Error level.
+func TestRunAppIsolatedWarnsOnNonInternalNetwork(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	f.networks = []string{IsolatedNetwork}
+	f.preInternal = map[string]bool{IsolatedNetwork: false}
+
+	var logged bytes.Buffer
+	old := logx.Stderr
+	logx.Stderr = &logged
+	t.Cleanup(func() { logx.Stderr = old })
+
+	c := newTestClient(t, f)
+	if _, err := c.RunApp("i", RunOptions{Image: "img", Isolated: true}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logged.String(), "NOT internal") {
+		t.Errorf("no warning for a non-internal isolated network:\n%s", logged.String())
+	}
+	if _, created := f.netCreateOpts[IsolatedNetwork]; created {
+		t.Error("existing network recreated")
+	}
+}
+
+// An unset NetworkMode must keep the shared bridge — no config migration.
+func TestRunAppDefaultsToBridge(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+	if _, err := c.RunApp("b", RunOptions{Image: "img"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if string(f.created[0].HostConfig.NetworkMode) != "odac-network" {
+		t.Errorf("network mode = %q", f.created[0].HostConfig.NetworkMode)
+	}
+}
+
+// NVIDIA is passed through DeviceRequests — the wire form of `--gpus`.
+func TestRunAppGPUNvidia(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	if _, err := c.RunApp("ai", RunOptions{
+		Image: "img",
+		GPU:   &gpu.Spec{Vendor: gpu.VendorNvidia, Runtime: gpu.RuntimeNvidia, Count: gpu.CountAll},
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := f.created[0].HostConfig.Resources.DeviceRequests
+	if len(requests) != 1 {
+		t.Fatalf("DeviceRequests = %+v", requests)
+	}
+	want := container.DeviceRequest{
+		Driver:       "nvidia",
+		Count:        -1,
+		Capabilities: [][]string{{"gpu"}},
+	}
+	if !reflect.DeepEqual(requests[0], want) {
+		t.Errorf("DeviceRequest = %+v, want %+v", requests[0], want)
+	}
+	if devices := f.created[0].HostConfig.Resources.Devices; len(devices) != 0 {
+		t.Errorf("NVIDIA must not map device nodes: %+v", devices)
+	}
+
+	// An explicit count reaches Docker verbatim.
+	f2 := newFakeAPI()
+	f2.images["img"] = image.InspectResponse{}
+	if _, err := newTestClient(t, f2).RunApp("ai2", RunOptions{
+		Image: "img",
+		GPU:   &gpu.Spec{Vendor: gpu.VendorNvidia, Runtime: gpu.RuntimeNvidia, Count: 2},
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f2.created[0].HostConfig.Resources.DeviceRequests[0].Count; got != 2 {
+		t.Errorf("Count = %d, want 2", got)
+	}
+}
+
+// ROCm and Intel need device nodes, not a device driver: their userspace
+// ships inside the image. App-declared devices survive alongside them.
+// fakeRenderGroups pins the host's render group ids for a test.
+func fakeRenderGroups(t *testing.T, gids ...string) {
+	t.Helper()
+	previous := renderGroups
+	renderGroups = func() []string { return gids }
+	t.Cleanup(func() { renderGroups = previous })
+}
+
+func TestRunAppGPUDeviceNodes(t *testing.T) {
+	for _, tc := range []struct {
+		runtime string
+		vendor  string
+		want    []string
+	}{
+		{gpu.RuntimeROCm, gpu.VendorAMD, []string{"/dev/ttyACM0", "/dev/kfd", "/dev/dri"}},
+		{gpu.RuntimeIntel, gpu.VendorIntel, []string{"/dev/ttyACM0", "/dev/dri"}},
+	} {
+		t.Run(tc.runtime, func(t *testing.T) {
+			fakeRenderGroups(t, "44", "993")
+			f := newFakeAPI()
+			f.images["img"] = image.InspectResponse{}
+			if _, err := newTestClient(t, f).RunApp("ai", RunOptions{
+				Image:   "img",
+				Devices: []Device{{Host: "/dev/ttyACM0"}},
+				GPU:     &gpu.Spec{Vendor: tc.vendor, Runtime: tc.runtime, Count: gpu.CountAll},
+			}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			resources := f.created[0].HostConfig.Resources
+			if len(resources.DeviceRequests) != 0 {
+				t.Errorf("%s must not use DeviceRequests: %+v", tc.runtime, resources.DeviceRequests)
+			}
+			var got []string
+			for _, device := range resources.Devices {
+				if device.PathOnHost != device.PathInContainer || device.CgroupPermissions != "rwm" {
+					t.Errorf("device mapping = %+v", device)
+				}
+				got = append(got, device.PathOnHost)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("devices = %v, want %v", got, tc.want)
+			}
+			// A node the container may not open is the same as no node.
+			if groups := f.created[0].HostConfig.GroupAdd; !reflect.DeepEqual(groups, []string{"44", "993"}) {
+				t.Errorf("GroupAdd = %v", groups)
+			}
+		})
+	}
+}
+
+// NVIDIA's runtime handles device access itself; adding host groups there
+// would be noise.
+func TestRunAppGPUNvidiaTakesNoGroups(t *testing.T) {
+	fakeRenderGroups(t, "44")
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	if _, err := newTestClient(t, f).RunApp("ai", RunOptions{
+		Image: "img",
+		GPU:   &gpu.Spec{Vendor: gpu.VendorNvidia, Runtime: gpu.RuntimeNvidia, Count: gpu.CountAll},
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if groups := f.created[0].HostConfig.GroupAdd; len(groups) != 0 {
+		t.Errorf("GroupAdd = %v, want none", groups)
+	}
+}
+
+// A runtime with no passthrough branch must fail the run, not start the app
+// on the CPU while the Cloud believes it scheduled a GPU workload.
+func TestRunAppGPUUnknownRuntimeFails(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	started, err := newTestClient(t, f).RunApp("ai", RunOptions{
+		Image: "img",
+		GPU:   &gpu.Spec{Vendor: "xpu", Runtime: "xpu", Count: gpu.CountAll},
+	}, nil, nil)
+	if err == nil || started {
+		t.Fatalf("started = %v, err = %v", started, err)
+	}
+	if len(f.created) != 0 {
+		t.Errorf("a container was created anyway: %+v", f.created)
+	}
+}
+
+// A CPU app must look exactly like it did before GPUs existed.
+func TestRunAppWithoutGPU(t *testing.T) {
+	fakeRenderGroups(t, "44")
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	if _, err := newTestClient(t, f).RunApp("cpu", RunOptions{Image: "img"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	resources := f.created[0].HostConfig.Resources
+	if len(resources.DeviceRequests) != 0 || len(resources.Devices) != 0 {
+		t.Errorf("CPU app got %+v", resources)
+	}
+	if groups := f.created[0].HostConfig.GroupAdd; len(groups) != 0 {
+		t.Errorf("CPU app got GroupAdd %v", groups)
 	}
 }
 
@@ -604,5 +887,80 @@ func TestIsRunning(t *testing.T) {
 	}
 	if c.IsRunning("down") {
 		t.Error("missing container should not be running")
+	}
+}
+
+// recordingBuildLog captures what RunApp streams into an app's build log.
+type recordingBuildLog struct {
+	bytes.Buffer
+	phases []string // "name:started" / "name:ok" / "name:failed"
+}
+
+func (r *recordingBuildLog) StartPhase(name string) { r.phases = append(r.phases, name+":started") }
+
+func (r *recordingBuildLog) EndPhase(name string, success bool) {
+	result := ":failed"
+	if success {
+		result = ":ok"
+	}
+	r.phases = append(r.phases, name+result)
+}
+
+// A daemon that cannot provide the GPU must produce an errors.Is-matchable
+// failure AND leave its reason in the app's build log — without it the only
+// copy lived in the server log and the phase never closed.
+func TestRunAppGPURefusalIsClassified(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	f.createErr = errors.New(`Error response from daemon: could not select device driver "nvidia" with capabilities: [[gpu]]`)
+	buildLog := &recordingBuildLog{}
+
+	started, err := newTestClient(t, f).RunApp("ai", RunOptions{
+		Image: "img",
+		GPU:   &gpu.Spec{Vendor: gpu.VendorNvidia, Runtime: gpu.RuntimeNvidia, Count: gpu.CountAll},
+	}, buildLog, nil)
+
+	if started {
+		t.Error("a refused GPU must not report started")
+	}
+	if !errors.Is(err, ErrGPUUnavailable) {
+		t.Fatalf("err = %v, want ErrGPUUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "could not select device driver") {
+		t.Errorf("the daemon's own words must survive: %v", err)
+	}
+	if !strings.Contains(buildLog.String(), "could not select device driver") {
+		t.Errorf("build log = %q", buildLog.String())
+	}
+	if got := buildLog.phases; len(got) == 0 || got[len(got)-1] != "start_new_container:failed" {
+		t.Errorf("phases = %v, want the start phase closed as failed", got)
+	}
+}
+
+// Ordinary failures of a GPU app must NOT be blamed on the GPU.
+func TestRunAppNonGPUFailureNotClassified(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	f.createErr = errors.New("Error response from daemon: Conflict. The container name is already in use")
+
+	_, err := newTestClient(t, f).RunApp("ai", RunOptions{
+		Image: "img",
+		GPU:   &gpu.Spec{Vendor: gpu.VendorNvidia, Runtime: gpu.RuntimeNvidia, Count: gpu.CountAll},
+	}, nil, nil)
+
+	if err == nil || errors.Is(err, ErrGPUUnavailable) {
+		t.Fatalf("err = %v, want the original unclassified error", err)
+	}
+}
+
+// A CPU app never gets a GPU verdict, whatever the daemon says.
+func TestRunAppRefusalWithoutGPURequest(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	f.createErr = errors.New("could not select device driver")
+
+	_, err := newTestClient(t, f).RunApp("cpu", RunOptions{Image: "img"}, nil, nil)
+	if errors.Is(err, ErrGPUUnavailable) {
+		t.Fatalf("CPU app classified as a GPU refusal: %v", err)
 	}
 }

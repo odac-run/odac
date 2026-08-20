@@ -220,6 +220,14 @@ func (f *fakeDocker) setListening(name string, ports []int) {
 	f.listening = map[string][]int{name: ports}
 }
 
+// dropIPs makes GetIP fail for every container, the way the real client
+// behaves for a host-networked one (it has no address of its own).
+func (f *fakeDocker) dropIPs() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ips = map[string]string{}
+}
+
 func (f *fakeDocker) GetImageExposedPorts(image string) []int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -305,6 +313,10 @@ func (f *fakeAPI) GenerateAppToken(appName string, permissions any) string {
 
 func (f *fakeAPI) HostSocketDir() string { return "/tmp/odac-socket" }
 
+func (f *fakeAPI) HasAction(action string) bool {
+	return action == "app.list" || action == "mail.send" || action == "server.stop"
+}
+
 type fakeProxy struct {
 	mu     sync.Mutex
 	syncs  int
@@ -336,10 +348,49 @@ func (f *fakeHub) Trigger(event string) {
 	f.triggers = append(f.triggers, event)
 }
 
+// sawTrigger reports whether the hub was asked to broadcast event.
+func (f *fakeHub) sawTrigger(event string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.triggers {
+		if t == event {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeHub) GetApp(string) (map[string]any, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.recipe, f.getErr
+}
+
+// fakeGPUHost answers the create-time GPU pre-flight. Default: this host can
+// do anything, so tests that do not care are unaffected.
+type fakeGPUHost struct {
+	mu       sync.Mutex
+	runtimes map[string]bool // nil = allow everything
+	asked    []string
+}
+
+func (f *fakeGPUHost) CanPassthrough(runtime string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, runtime)
+	if f.runtimes == nil {
+		return true
+	}
+	return f.runtimes[runtime]
+}
+
+func (f *fakeGPUHost) allow(runtimes ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runtimes = map[string]bool{}
+	for _, r := range runtimes {
+		f.runtimes[r] = true
+	}
 }
 
 type fakeDomains struct {
@@ -364,6 +415,7 @@ type fixture struct {
 	proxy   *fakeProxy
 	hub     *fakeHub
 	domains *fakeDomains
+	gpuHost *fakeGPUHost
 
 	probeMu   sync.Mutex
 	httpPorts map[int]bool // ports that answer the HTTP probe
@@ -403,6 +455,7 @@ func newFixture(t *testing.T, apps any) *fixture {
 		proxy:     &fakeProxy{},
 		hub:       &fakeHub{},
 		domains:   &fakeDomains{},
+		gpuHost:   &fakeGPUHost{},
 		httpPorts: map[int]bool{},
 	}
 	fx.m = New(cfg, filepath.Join(base, "logs"), Deps{
@@ -411,6 +464,7 @@ func newFixture(t *testing.T, apps any) *fixture {
 		Proxy:   fx.proxy,
 		Hub:     fx.hub,
 		Domains: fx.domains,
+		GPUHost: fx.gpuHost,
 	})
 	// Collapse every wait: the poll/readiness budgets stay attempt-counted.
 	fx.m.sleep = func(time.Duration) {}

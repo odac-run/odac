@@ -68,6 +68,23 @@ odac app create -n my-app -u https://github.com/user/repo.git
 odac app create --name my-app --url https://github.com/user/repo.git
 ```
 
+#### `odac app api`
+Let an application call ODAC's own API over the unix socket mounted into its container. See [API Access](../03-app/08-api-access.md).
+
+**Interactive:**
+```bash
+odac app api my-app
+```
+
+**Single-line:**
+```bash
+odac app api my-app --allow app.list,mail.send   # Only these actions
+odac app api my-app --all                        # Every action (asks to confirm)
+odac app api my-app --off                        # Revoke access
+```
+
+Granting requires a restart; a revoke takes effect immediately. The access is local to this server: it grants nothing in ODAC Cloud and no reach over your other servers.
+
 #### `odac app delete`
 Delete an application configuration.
 
@@ -110,12 +127,32 @@ odac app device delete -a my-app -d /dev/ttyACM0
 odac app device delete --app my-app --device /dev/ttyACM0
 ```
 
+#### `odac app isolate`
+Cut off an application's outbound network access. See [Network Isolation](../03-app/07-network-isolation.md).
+
+```bash
+odac app isolate my-app         # No outbound network access
+odac app isolate my-app --off   # Restore it
+```
+
+A restart is required for the change to take effect.
+
 #### `odac app list`
 List all configured applications.
 
 ```bash
 odac app list
 ```
+
+#### `odac app network`
+Set an application's container network mode. See [Network Mode](../03-app/06-network-mode.md).
+
+```bash
+odac app network my-app --host     # Share the host network namespace
+odac app network my-app --bridge   # ODAC's shared bridge network (default)
+```
+
+A restart is required for the change to take effect.
 
 #### `odac app privileged`
 Grant elevated access to an application (CLI-only, at your own risk). See [Privileged Access](../03-app/05-privileged-access.md).
@@ -155,6 +192,8 @@ odac domain add
 odac domain add -d example.com -a my-app
 odac domain add --domain example.com --app my-app
 ```
+
+> Apps using host networking are refused: host mode rules out zero-downtime deploys, so a routed domain would mean a live site that only redeploys with downtime. See [Network Mode](../03-app/06-network-mode.md).
 
 #### `odac domain delete`
 Delete a domain configuration and its DNS records.

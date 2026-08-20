@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"fmt"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -89,26 +88,14 @@ func init() {
 				return a.call("update", nil, false)
 			},
 		}},
-		{"run", &command{
-			args:        []string{"file"},
-			description: "Run a script or file as a service",
-			action: func(a *app, args []string) int {
-				if len(args) == 0 || args[0] == "" {
-					fmt.Fprintln(a.out, __("Please specify a file to run."))
-					return 1
-				}
-				file := args[0]
-				if !filepath.IsAbs(file) {
-					if abs, err := filepath.Abs(file); err == nil {
-						file = abs
-					}
-				}
-				return a.call("app.start", []any{file}, false)
-			},
-		}},
 		{"app", &command{
 			title: "APP",
 			sub: []entry{
+				{"api", &command{
+					description: "Let an app call ODAC's API: --allow <actions> or --all. Use --off to revoke. Restart required to grant.",
+					args:        []string{"-i", "--id", "--allow", "--all", "--off"},
+					action:      appAPIAction,
+				}},
 				{"create", &command{
 					description: "Create a new application",
 					args:        []string{"-t", "--type", "-n", "--name", "-u", "--url", "-b", "--branch", "--token", "-D", "--dev"},
@@ -141,11 +128,21 @@ func init() {
 						}},
 					},
 				}},
+				{"isolate", &command{
+					description: "Cut off an app's outbound network access. Use --off to restore it. Restart required.",
+					args:        []string{"-i", "--id", "--off"},
+					action:      appIsolateAction,
+				}},
 				{"list", &command{
 					description: "List all apps",
 					action: func(a *app, args []string) int {
 						return a.call("app.list", nil, false)
 					},
+				}},
+				{"network", &command{
+					description: "Set an app's network mode: --host to share the host namespace, --bridge (default) for the shared network. Restart required.",
+					args:        []string{"-i", "--id", "--host", "--bridge"},
+					action:      appNetworkAction,
 				}},
 				{"privileged", &command{
 					description: "Grant elevated access to an app: --root (default) or --full. Use --off to revoke. (At your own risk)",
@@ -157,6 +154,20 @@ func init() {
 					args:        []string{"-i", "--id"},
 					action: func(a *app, args []string) int {
 						return a.call("app.restart", []any{a.appArg(args)}, false)
+					},
+				}},
+				{"start", &command{
+					description: "Start a stopped App",
+					args:        []string{"-i", "--id"},
+					action: func(a *app, args []string) int {
+						return a.call("app.start", []any{a.appArg(args)}, false)
+					},
+				}},
+				{"stop", &command{
+					description: "Stop a running App",
+					args:        []string{"-i", "--id"},
+					action: func(a *app, args []string) int {
+						return a.call("app.stop", []any{a.appArg(args)}, false)
 					},
 				}},
 			},
@@ -460,7 +471,9 @@ func appCreateAction(a *app, args []string) int {
 	return a.call("app.create", []any{typ}, false)
 }
 
-func appPrivilegedAction(a *app, args []string) int {
+// appIDArg resolves the app from -i/--id, else the first non-flag argument,
+// else a prompt.
+func appIDArg(a *app, args []string) string {
 	app := parseArg(args, "-i", "--id")
 	if app == "" {
 		for _, arg := range args {
@@ -473,6 +486,92 @@ func appPrivilegedAction(a *app, args []string) int {
 	if app == "" {
 		app = a.question(__("Enter the App ID or Name: "))
 	}
+	return app
+}
+
+func appNetworkAction(a *app, args []string) int {
+	app := appIDArg(a, args)
+
+	mode := "bridge"
+	if slices.Contains(args, "--host") {
+		mode = "host"
+	}
+
+	if mode == "host" {
+		fmt.Fprintln(a.out, __("WARNING: Host networking removes this app's network isolation. It shares the host's network namespace, binds host ports directly (published port mappings stop applying), and can reach every service listening on loopback — including ODAC's own API. Apps with routed domains are refused, because host networking rules out zero-downtime deploys."))
+		if !strings.EqualFold(a.question(__(`Type "yes" to continue: `)), "yes") {
+			fmt.Fprintln(a.out, __("Aborted."))
+			return 1
+		}
+	}
+	return a.call("app.network", []any{app, mode}, false)
+}
+
+func appAPIAction(a *app, args []string) int {
+	allow := parseArg(args, "--allow")
+	// appIDArg takes the first bare argument as the app, so --allow's value
+	// must not still be sitting in the slice it scans.
+	appID := appIDArg(a, withoutFlagValue(args, "--allow"))
+
+	if slices.Contains(args, "--off") {
+		return a.call("app.api", []any{appID, false}, false)
+	}
+
+	all := slices.Contains(args, "--all")
+	if !all && allow == "" {
+		allow = a.question(__("Enter the API actions to allow (comma-separated, or * for all): "))
+	}
+	// "*" is the whole surface however it was spelled, so it takes the same
+	// confirmation --all does.
+	if !all && slices.Contains(splitActions(allow), "*") {
+		all = true
+	}
+
+	var permissions any = allow
+	if all {
+		fmt.Fprintln(a.out, __("WARNING: This grants the app every API action, including creating and deleting apps, domains and mailboxes. Server control and privilege management (auth, update, server.stop, app.privileged, app.api) are never granted. Prefer --allow with the actions it actually needs."))
+		if !strings.EqualFold(a.question(__(`Type "yes" to continue: `)), "yes") {
+			fmt.Fprintln(a.out, __("Aborted."))
+			return 1
+		}
+		permissions = true
+	}
+	return a.call("app.api", []any{appID, permissions}, false)
+}
+
+// splitActions accepts one action name or several, separated by commas or
+// whitespace, matching the shapes the server normalizes.
+func splitActions(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+}
+
+// withoutFlagValue drops a flag and the argument it consumes.
+func withoutFlagValue(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			i++ // skip the value too
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
+func appIsolateAction(a *app, args []string) int {
+	app := appIDArg(a, args)
+	isolated := !slices.Contains(args, "--off")
+
+	if isolated {
+		fmt.Fprintln(a.out, __("NOTE: An isolated app has no outbound network access at all — no package installs at runtime, no outbound API calls, no update checks. Domains and the proxy keep working, but published ports become reachable from this host only, and the app can no longer reach apps on the shared network."))
+	}
+	return a.call("app.isolate", []any{app, isolated}, false)
+}
+
+func appPrivilegedAction(a *app, args []string) int {
+	app := appIDArg(a, args)
 
 	mode := "root"
 	if slices.Contains(args, "--off") {

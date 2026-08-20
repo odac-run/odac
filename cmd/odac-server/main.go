@@ -82,6 +82,19 @@ func main() {
 	sslSvc := domains.NewSSL(cfg, dnsSvc, proxySvc, mailSvc)
 	domainSvc := domains.NewDomain(cfg, dnsSvc, sslSvc, proxySvc, mailSvc)
 
+	// System inventory. Built before appmgr because it also answers the GPU
+	// pre-flight ("can this engine hand a card to a container"), which app
+	// creation consults before pulling a single byte.
+	sysInfo := sysinfo.New(
+		func() bool { return containers != nil && containers.Available() },
+		func() []string {
+			if containers == nil {
+				return nil
+			}
+			return containers.Runtimes()
+		},
+	)
+
 	// App manager (task 3.4e). Skipped only when the Docker client could not
 	// even be constructed (malformed DOCKER_HOST-style env) — an unreachable
 	// daemon still yields a client, and appmgr no-ops like Node does.
@@ -92,6 +105,7 @@ func main() {
 			Api:     apiSrv,
 			Proxy:   proxySvc,
 			Domains: domainSvc,
+			GPUHost: sysInfo,
 		})
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
 	}
@@ -112,7 +126,6 @@ func main() {
 
 	// Hub client (task 3.6); app/container slots stay nil on docker-less
 	// hosts. system.update delegates to the updater like System.update().
-	sysInfo := sysinfo.New(func() bool { return containers != nil && containers.Available() })
 	hubURL := os.Getenv("ODAC_HUB_URL")
 	if hubURL == "" {
 		hubURL = hub.DefaultURL
@@ -159,6 +172,9 @@ func main() {
 		appMgr.SetHub(hubSvc) // closes the 3.4e seam (triggers + recipe fetch)
 	}
 	mailSvc.SetHub(hubSvc)
+	// A GPU that becomes schedulable mid-flight (driver loaded, toolkit
+	// installed, daemon restarted) must not wait for the hourly system.info.
+	sysInfo.SetGPUChangeHook(func() { hubSvc.Trigger("system.info") })
 
 	svc := system.Services{
 		Proxy: proxySvc,
@@ -230,6 +246,9 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 			return fmt.Sprint(v)
 		}
 
+		apiSrv.Register("app.api", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetAPI(a.At(0), a.At(1)), nil
+		})
 		apiSrv.Register("app.create", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.Create(a.At(0)), nil
 		})
@@ -251,6 +270,12 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 		apiSrv.Register("app.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.List(a.At(0) == true), nil
 		})
+		apiSrv.Register("app.network", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetNetworkMode(a.At(0), argStr(a.At(1))), nil
+		})
+		apiSrv.Register("app.isolate", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetIsolated(a.At(0), a.At(1) == true), nil
+		})
 		apiSrv.Register("app.privileged", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.SetPrivileged(a.At(0), argStr(a.At(1))), nil
 		})
@@ -258,7 +283,10 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 			return appMgr.Restart(a.At(0)), nil
 		})
 		apiSrv.Register("app.start", func(a api.Args, _ api.Progress) (*api.Result, error) {
-			return appMgr.Start(argStr(a.At(0))), nil
+			return appMgr.Start(a.At(0)), nil
+		})
+		apiSrv.Register("app.stop", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.Stop(a.At(0)), nil
 		})
 	}
 

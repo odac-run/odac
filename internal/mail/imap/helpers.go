@@ -5,11 +5,65 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
+
+// maxMailboxNameLen bounds mailbox names so a client cannot fill the store
+// with names that no longer fit in a single response line.
+const maxMailboxNameLen = 512
 
 // toNullString creates a sql.NullString from a string value.
 func toNullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// quoteString encodes s as an RFC 3501 quoted-string. Every value that reaches
+// the wire inside quotes must go through here: an unescaped `"` or `\` in a
+// mailbox name would otherwise close the token early and desynchronise the
+// client's parser. Control characters are illegal in quoted-strings and are
+// dropped rather than emitted raw.
+func quoteString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case isControlRune(r):
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// validMailboxName reports whether s is acceptable as a mailbox name. Control
+// characters are rejected at the input boundary so they can never be stored
+// and later echoed back in LIST/STATUS responses.
+func validMailboxName(s string) bool {
+	if s == "" || len(s) > maxMailboxNameLen {
+		return false
+	}
+	return !hasControlChars(s) && utf8.ValidString(s)
+}
+
+// hasControlChars reports whether s contains characters that must never reach
+// a protocol line or a log record (CR/LF injection, terminal escapes).
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if isControlRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isControlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f
 }
 
 // seqSetToUIDs resolves a sequence-set string to a list of UIDs from allUIDs.

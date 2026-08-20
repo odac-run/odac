@@ -173,6 +173,94 @@ func TestUnlinkEnvRemovesLink(t *testing.T) {
 	}
 }
 
+func TestDeleteSweepsLinkedEnvRefs(t *testing.T) {
+	fx := newFixture(t, []any{
+		map[string]any{
+			"id": float64(1), "name": "app-main", "type": "container",
+			"env": map[string]any{
+				"manual": map[string]any{"NODE_ENV": "production"},
+				"linked": []any{"app-db", "app-cache"},
+			},
+		},
+		map[string]any{
+			"id": float64(2), "name": "app-other", "type": "container",
+			"env": map[string]any{"manual": map[string]any{}, "linked": []any{"app-db"}},
+		},
+		map[string]any{
+			"id": float64(3), "name": "app-db", "type": "container",
+			"env": map[string]any{"manual": map[string]any{"POSTGRES_PASSWORD": "db-secret"}},
+		},
+		map[string]any{
+			"id": float64(4), "name": "app-legacy", "type": "container",
+			"env": map[string]any{"LEGACY_VAR": "old-value"},
+		},
+	})
+
+	if r := fx.m.Delete("app-db", false); !r.Status {
+		t.Fatalf("delete failed: %v", r.Message)
+	}
+
+	mainEnv, _ := fx.app(0)["env"].(map[string]any)
+	linked, _ := mainEnv["linked"].([]any)
+	if len(linked) != 1 || linked[0] != "app-cache" {
+		t.Fatalf("app-main linked = %v, want [app-cache]", linked)
+	}
+
+	otherEnv, _ := fx.app(1)["env"].(map[string]any)
+	if l, _ := otherEnv["linked"].([]any); len(l) != 0 {
+		t.Fatalf("app-other linked = %v, want empty", l)
+	}
+
+	// The legacy flat shape has no linked list; the sweep must leave it alone.
+	legacyEnv, _ := fx.app(2)["env"].(map[string]any)
+	if legacyEnv["LEGACY_VAR"] != "old-value" {
+		t.Fatalf("legacy env mangled: %v", legacyEnv)
+	}
+}
+
+func TestDeleteThenRecreateSameNameDoesNotReviveLink(t *testing.T) {
+	// Links are stored by name: without the sweep, an app re-created under the
+	// deleted app's name would silently re-inject its envs into the old linker.
+	fx := newFixture(t, []any{
+		map[string]any{
+			"id": float64(1), "name": "app-main", "type": "container",
+			"env": map[string]any{"manual": map[string]any{}, "linked": []any{"app-db"}},
+		},
+		map[string]any{
+			"id": float64(2), "name": "app-db", "type": "container",
+			"env": map[string]any{"manual": map[string]any{"POSTGRES_PASSWORD": "old-secret"}},
+		},
+	})
+
+	if r := fx.m.Delete("app-db", false); !r.Status {
+		t.Fatalf("delete failed: %v", r.Message)
+	}
+
+	fx.cfg.Mutate(func() {
+		fx.m.apps = append(fx.m.apps, map[string]any{
+			"id": float64(3), "name": "app-db", "type": "container",
+			"env": map[string]any{"manual": map[string]any{"POSTGRES_PASSWORD": "new-secret"}},
+		})
+	})
+
+	r := fx.m.GetEnv("app-main")
+	if !r.Status {
+		t.Fatalf("getEnv failed: %v", r.Message)
+	}
+	data, _ := r.Data.(map[string]any)
+	if l, _ := data["linked"].([]any); len(l) != 0 {
+		t.Fatalf("link revived by name reuse: %v", l)
+	}
+
+	var resolved map[string]any
+	fx.cfg.View(func() {
+		resolved = fx.m.resolveEnvLocked(fx.m.getLocked("app-main"), false)
+	})
+	if _, ok := resolved["POSTGRES_PASSWORD"]; ok {
+		t.Fatalf("recreated app's secret leaked into app-main: %v", resolved)
+	}
+}
+
 func TestResolveEnvMergesLinkedThenManual(t *testing.T) {
 	// Linked env is applied first, own manual env overrides it, system
 	// defaults (HOST/ODAC_APP) always present — verified through the actual

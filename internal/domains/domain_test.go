@@ -117,6 +117,70 @@ func TestAddRejectsDuplicate(t *testing.T) {
 	}
 }
 
+// The other half of the host-networking gate (appmgr.SetNetworkMode guards
+// the reverse direction): a host-mode app cannot run Blue-Green, so it must
+// not acquire a routed domain through the back door either.
+func TestAddRejectsHostNetworkedApp(t *testing.T) {
+	hostFixture := func(t *testing.T) *fixture {
+		fx := newFixture(t)
+		fx.cfg.Mutate(func() {
+			fx.cfg.Set("apps", []any{
+				map[string]any{"id": "app-1", "name": "myapp", "networkMode": "host"},
+				map[string]any{"id": "app-2", "name": "otherapp"},
+			})
+		})
+		return fx
+	}
+
+	t.Run("root domain", func(t *testing.T) {
+		fx := hostFixture(t)
+
+		r := fx.d.Add("example.com", "myapp")
+		if r.Status || !strings.Contains(msgOf(t, r.Message), "host networking") {
+			t.Fatalf("r = %+v", r)
+		}
+		if fx.domain("example.com") != nil {
+			t.Fatal("domain registered for a host-networked app")
+		}
+		if len(fx.dns.recorded()) != 0 || len(fx.renew.renewed()) != 0 {
+			t.Fatal("DNS/SSL fired despite the refusal")
+		}
+	})
+
+	// The subdomain branch sits after the guard, so it must be covered too.
+	t.Run("subdomain of an existing parent", func(t *testing.T) {
+		fx := hostFixture(t)
+		fx.setDomains(map[string]any{
+			"example.com": map[string]any{"appId": "myapp", "created": nowMs()},
+		})
+
+		r := fx.d.Add("sub.example.com", "myapp")
+		if r.Status || !strings.Contains(msgOf(t, r.Message), "host networking") {
+			t.Fatalf("r = %+v", r)
+		}
+		rec := fx.domain("example.com")
+		if subs, _ := rec["subdomain"].([]any); len(subs) != 0 {
+			t.Fatalf("subdomain added anyway: %v", rec["subdomain"])
+		}
+	})
+
+	// Lookup by id must be gated identically to lookup by name.
+	t.Run("app referenced by id", func(t *testing.T) {
+		fx := hostFixture(t)
+		if r := fx.d.Add("example.com", "app-1"); r.Status {
+			t.Fatal("host-networked app accepted a domain via its id")
+		}
+	})
+
+	// A bridge app in the same config must stay unaffected.
+	t.Run("bridge app is unaffected", func(t *testing.T) {
+		fx := hostFixture(t)
+		if r := fx.d.Add("example.com", "otherapp"); !r.Status {
+			t.Fatalf("bridge app refused: %v", r.Message)
+		}
+	})
+}
+
 func TestAddSkipsDNSAndSSLForLocalhost(t *testing.T) {
 	fx := newFixture(t)
 

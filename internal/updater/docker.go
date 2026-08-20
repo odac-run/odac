@@ -28,6 +28,13 @@ type ContainerInfo struct {
 	PortBindings  nat.PortMap
 	Mounts        []MountPoint
 	LogConfig     LogConfig
+	// Runtime and DeviceRequests carry a GPU-enabled install across its own
+	// updates. They are pure passthrough: the updater never sets them, it
+	// only refuses to lose what the operator configured (an ODAC started
+	// with --runtime=nvidia so it can read nvidia-smi would otherwise come
+	// back CPU-only after the first update, silently).
+	Runtime        string
+	DeviceRequests []container.DeviceRequest
 }
 
 // MountPoint is the named-volume fallback #resolveHostBind walks.
@@ -61,6 +68,9 @@ type CreateOptions struct {
 	AutoRemove    bool
 	PortBindings  nat.PortMap
 	LogConfig     LogConfig // zero value = daemon default (sidecar/runner containers)
+	// Runtime / DeviceRequests: see ContainerInfo — inherited, never invented.
+	Runtime        string
+	DeviceRequests []container.DeviceRequest
 }
 
 // Docker is the updater's view of the daemon, shaped 1:1 after the dockerode
@@ -116,6 +126,8 @@ func (d *sdkDocker) Inspect(name string) (ContainerInfo, error) {
 		info.RestartPolicy = string(resp.HostConfig.RestartPolicy.Name)
 		info.PortBindings = resp.HostConfig.PortBindings
 		info.LogConfig = LogConfig{Type: resp.HostConfig.LogConfig.Type, Config: resp.HostConfig.LogConfig.Config}
+		info.Runtime = resp.HostConfig.Runtime
+		info.DeviceRequests = resp.HostConfig.Resources.DeviceRequests
 	}
 	if resp.State != nil {
 		info.Running = resp.State.Running
@@ -142,6 +154,8 @@ func (d *sdkDocker) Create(opts CreateOptions) (string, error) {
 		PidMode:      container.PidMode(opts.PidMode),
 		PortBindings: opts.PortBindings,
 		LogConfig:    container.LogConfig{Type: opts.LogConfig.Type, Config: opts.LogConfig.Config},
+		Runtime:      opts.Runtime,
+		Resources:    container.Resources{DeviceRequests: opts.DeviceRequests},
 	}
 	if opts.RestartPolicy != "" {
 		host.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyMode(opts.RestartPolicy)}

@@ -224,6 +224,18 @@ func (f *fakeApp) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 	f.record("networks:" + str(id))
 	return ok("ok")
 }
+func (f *fakeApp) SetNetworkMode(id any, mode string) *api.Result {
+	f.record("networkmode:" + str(id) + ":" + mode)
+	return ok("ok")
+}
+func (f *fakeApp) SetIsolated(id any, isolated bool) *api.Result {
+	state := "off"
+	if isolated {
+		state = "on"
+	}
+	f.record("isolate:" + str(id) + ":" + state)
+	return ok("ok")
+}
 func (f *fakeApp) SetPorts(id any, ports []any, payloadOK bool) *api.Result {
 	f.record("ports:" + str(id))
 	return ok("ok")
@@ -237,6 +249,8 @@ func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	return ok("ok")
 }
 func (f *fakeApp) Restart(id any) *api.Result { f.record("restart:" + str(id)); return ok("ok") }
+func (f *fakeApp) Start(id any) *api.Result   { f.record("start:" + str(id)); return ok("ok") }
+func (f *fakeApp) Stop(id any) *api.Result    { f.record("stop:" + str(id)); return ok("ok") }
 
 func (f *fakeApp) SubscribeToLogs(appName string, cb func(applog.Entry)) func() {
 	f.record("sub:" + appName)
@@ -871,6 +885,11 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.env.delete", map[string]any{"name": "web", "keys": []any{"A", "B"}})
 	run("app.redeploy", map[string]any{"container": "web", "branch": "dev"})
 	run("app.restart", map[string]any{"container": "web"})
+	run("app.network.mode", map[string]any{"name": "web", "mode": "host"})
+	run("app.network.mode", map[string]any{"name": "web"}) // absent mode → bridge
+	run("app.network.isolate", map[string]any{"name": "web", "isolated": true})
+	run("app.network.isolate", map[string]any{"name": "web", "isolated": false})
+	run("app.network.isolate", map[string]any{"name": "web"}) // absent → off
 
 	want := []string{
 		"delete:web:true",
@@ -881,6 +900,11 @@ func TestPayloadMappings(t *testing.T) {
 		"delenv:web:A,B",
 		"redeploy:web:dev",
 		"restart:web",
+		"networkmode:web:host",
+		"networkmode:web:",
+		"isolate:web:on",
+		"isolate:web:off",
+		"isolate:web:off",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {
@@ -1122,7 +1146,9 @@ func TestCommandTableOrder(t *testing.T) {
 	want := []string{
 		"configure", "app.create", "app.build_stats", "app.delete", "app.env.get",
 		"app.env.delete", "app.env.link", "app.env.set", "app.env.unlink", "app.list",
-		"app.network.set", "app.port.set", "app.redeploy", "app.restart", "app.stats",
+		"app.network.set", "app.network.mode", "app.network.isolate",
+		"app.port.set", "app.redeploy", "app.restart", "app.start",
+		"app.stats", "app.stop",
 		"app.volumes.set", "dns.add", "dns.delete", "dns.list", "domain.add",
 		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
 		"app.logs.on", "app.logs.off", "app.build_logs.on", "app.build_logs.off",

@@ -15,6 +15,11 @@
 //     (darwin) instead of libuv; non-Linux gaps degrade to zeros. The
 //     production host is Linux (Docker image); darwin/windows builds serve
 //     development.
+//   - `gpu` has no Node counterpart at all: in system.info it is the Cloud's
+//     gate for scheduling GPU/AI workloads on this host (see gpu.go), and in
+//     system.stats it is the matching per-device utilization (gpu_stats.go).
+//     Non-Linux hosts report a null runtime and no devices — Docker cannot
+//     pass a card through there anyway.
 package sysinfo
 
 import (
@@ -32,9 +37,12 @@ import (
 const Version = "2.0.0"
 
 // Info assembles system inventory. containerEngine reports Docker
-// availability (Node: Odac.server('Container').available).
+// availability (Node: Odac.server('Container').available) and
+// containerRuntimes the OCI runtimes the daemon registered — the half of the
+// GPU gate that lives on the engine side.
 type Info struct {
-	containerEngine func() bool
+	containerEngine   func() bool
+	containerRuntimes func() []string
 
 	// now is a clock seam (Node used Date.now() for the network window).
 	now func() time.Time
@@ -56,15 +64,48 @@ type Info struct {
 	lastSent    int64
 	lastNetTime time.Time
 	hasNet      bool
+
+	// GPU inventory is probed lazily and cached for gpuCacheTTL: it walks
+	// sysfs and may exec nvidia-smi, which is too much work to repeat on
+	// every auth handshake.
+	gpuMu      sync.Mutex
+	gpuSnap    gpuSnapshot
+	gpuAt      time.Time
+	hasGPU     bool
+	gpuChanged func()
+
+	// Live GPU metrics are sampled separately from the inventory: they
+	// change every second, so they carry their own (much shorter) floor.
+	gpuStatsMu  sync.Mutex
+	gpuSamples  []gpuDeviceStats
+	gpuSampleAt time.Time
 }
 
-// New builds an Info. engine may be nil (reports false).
-func New(engine func() bool) *Info {
-	return &Info{containerEngine: engine, now: time.Now}
+// New builds an Info. Both seams may be nil: engine then reports false and
+// runtimes contributes no evidence to the GPU gate.
+func New(engine func() bool, runtimes func() []string) *Info {
+	return &Info{containerEngine: engine, containerRuntimes: runtimes, now: time.Now}
+}
+
+// SetGPUChangeHook installs the callback fired when a re-probe changes the
+// reported GPU state, closing a reporting gap: `runtime`, `schedulable` and
+// `reason` ride system.info alone, whose task interval is an hour. A host
+// that gains its nvidia-container-toolkit at 12:05 would otherwise keep
+// telling the Cloud "no_container_runtime" until 13:00, long after the
+// hardware became schedulable. Wired at the composition root to the Hub's
+// system.info trigger.
+//
+// The re-probe itself rides system.stats (every 60s), so the detection
+// latency is the inventory TTL rather than the info interval.
+func (i *Info) SetGPUChangeHook(fn func()) {
+	i.gpuMu.Lock()
+	defer i.gpuMu.Unlock()
+	i.gpuChanged = fn
 }
 
 // Get ports getSystemInfo(): an insertion-ordered object matching Node's
-// literal key order (arch … version, then the conditional distro).
+// literal key order (arch … version, then the conditional distro), with the
+// Go-era `gpu` member slotted alphabetically after `cpu`.
 func (i *Info) Get() jscanon.Obj {
 	hostname, _ := os.Hostname()
 	engine := false
@@ -84,6 +125,7 @@ func (i *Info) Get() jscanon.Obj {
 			{K: "count", V: runtime.NumCPU()},
 			{K: "model", V: cpuModel()},
 		}},
+		{K: "gpu", V: i.gpuField()},
 		{K: "hostname", V: hostname},
 		{K: "load", V: []any{l1, l2, l3}},
 		{K: "memory", V: jscanon.Obj{

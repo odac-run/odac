@@ -2,6 +2,7 @@ package appmgr
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 
@@ -102,5 +103,18 @@ func TestMountIsFileClassification(t *testing.T) {
 	}
 	if fx.m.mountIsFile("app1", filepath.Join(base, "newdir"), "/app/newdir") {
 		t.Fatalf("unknown path without extension should classify as directory")
+	}
+
+	// (4) a dotted basename is a hidden directory, not an extension: mounting
+	// a file at /root/.ollama makes the ollama server fail to start.
+	for _, cPath := range []string{"/root/.ollama", "/root/.ssh", "/home/node/.n8n"} {
+		if fx.m.mountIsFile("app1", filepath.Join(base, path.Base(cPath)), cPath) {
+			t.Fatalf("dotted basename %s should classify as directory", cPath)
+		}
+	}
+
+	// ... unless it carries a real extension after the leading dot.
+	if !fx.m.mountIsFile("app1", filepath.Join(base, ".env.local"), "/app/.env.local") {
+		t.Fatalf("dotted basename with an extension should classify as file")
 	}
 }

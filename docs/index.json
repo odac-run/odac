@@ -59,6 +59,18 @@
         {
           "file": "05-privileged-access.md",
           "title": "Privileged Access"
+        },
+        {
+          "file": "06-network-mode.md",
+          "title": "Network Mode"
+        },
+        {
+          "file": "07-network-isolation.md",
+          "title": "Network Isolation"
+        },
+        {
+          "file": "08-api-access.md",
+          "title": "API Access"
         }
       ]
     },

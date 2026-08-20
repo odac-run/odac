@@ -3,8 +3,14 @@ package appmgr
 // Ports of App.test.js "git configuration" + "template deployment".
 
 import (
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
+
+	"odac/internal/docker"
+	"odac/internal/gpu"
 )
 
 func (fx *fixture) setRecipe(recipe map[string]any) {
@@ -746,4 +752,355 @@ func TestTemplatePayloadValidation(t *testing.T) {
 			t.Fatalf("r = %+v", r)
 		}
 	})
+}
+
+// ---- GPU requests ----
+
+// The Cloud's single-app shape (Hub.js:672): the request is persisted and
+// reaches the container run untouched.
+func TestCreateWithGPURequest(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "name": "comfyui-a1b2c3", "app": "comfyui",
+		"image": "x/comfyui:cuda", "ports": []any{}, "volumes": []any{}, "env": map[string]any{},
+		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+	})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	app := fx.findApp("comfyui-a1b2c3")
+	if app == nil {
+		t.Fatal("app not persisted")
+	}
+	persisted, _ := app["gpu"].(map[string]any)
+	if persisted["vendor"] != "nvidia" || persisted["runtime"] != "nvidia" || persisted["count"] != "all" {
+		t.Fatalf("persisted gpu = %v", persisted)
+	}
+
+	spec := fx.dock.runCallAt(0).options.GPU
+	if spec == nil || spec.Runtime != gpu.RuntimeNvidia || spec.Count != gpu.CountAll {
+		t.Fatalf("RunOptions.GPU = %+v", spec)
+	}
+}
+
+// A recipe may declare the GPU itself; the payload still wins over it.
+func TestCreateGPUPayloadOverridesRecipe(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{
+		"name": "whisper", "image": "x/whisper",
+		"gpu": map[string]any{"runtime": "nvidia", "count": "all"},
+	})
+
+	if r := fx.m.Create(map[string]any{"type": "app", "app": "whisper", "name": "recipe-gpu"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+	if spec := fx.dock.runCallAt(0).options.GPU; spec == nil || spec.Runtime != gpu.RuntimeNvidia {
+		t.Fatalf("recipe gpu ignored: %+v", spec)
+	}
+
+	fx2 := newFixture(t, []any{})
+	fx2.setRecipe(map[string]any{
+		"name": "whisper", "image": "x/whisper",
+		"gpu": map[string]any{"runtime": "nvidia", "count": "all"},
+	})
+	if r := fx2.m.Create(map[string]any{
+		"type": "app", "app": "whisper", "name": "payload-gpu",
+		"gpu": map[string]any{"vendor": "amd", "runtime": "rocm", "count": float64(1)},
+	}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx2.waitIdle(t)
+	spec := fx2.dock.runCallAt(0).options.GPU
+	if spec == nil || spec.Runtime != gpu.RuntimeROCm || spec.Count != 1 {
+		t.Fatalf("payload gpu did not win: %+v", spec)
+	}
+}
+
+// A CPU app must carry no GPU key at all — the Cloud reads app.list and must
+// not see a phantom request.
+func TestCreateWithoutGPU(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
+
+	if r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	if app := fx.findApp("plain"); app == nil {
+		t.Fatal("app not persisted")
+	} else if _, present := app["gpu"]; present {
+		t.Fatalf("CPU app carries a gpu key: %v", app["gpu"])
+	}
+	if spec := fx.dock.runCallAt(0).options.GPU; spec != nil {
+		t.Fatalf("RunOptions.GPU = %+v, want nil", spec)
+	}
+}
+
+// A malformed request fails the create instead of silently starting a
+// CUDA-only image on the CPU.
+func TestCreateRejectsInvalidGPU(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "app": "comfyui", "name": "bad-gpu",
+		"gpu": map[string]any{"vendor": "nvidia", "runtime": "cuda", "count": "all"},
+	})
+	if r.Status || !strings.Contains(jsString(r.Message), "Invalid GPU configuration") {
+		t.Fatalf("r = %+v", r)
+	}
+	if fx.appCount() != 0 {
+		t.Fatalf("a rejected create must persist nothing: %d apps", fx.appCount())
+	}
+	if fx.dock.runCallCount() != 0 {
+		t.Fatal("a rejected create must not start a container")
+	}
+}
+
+// The Cloud's template shape (Hub.js:904): gpu lives per container under
+// apps.<key> and only that member gets it.
+func TestTemplateGPUPerContainer(t *testing.T) {
+	fx := newFixture(t, []any{})
+
+	r := fx.m.Create(map[string]any{
+		"type": "template", "name": "immich",
+		"apps": map[string]any{
+			"immich-server": map[string]any{
+				"container": "immich-server", "image": "immich/server",
+			},
+			"immich-ml": map[string]any{
+				"container": "immich-ml", "image": "immich/ml:cuda",
+				"linked": []any{"immich-server"},
+				"gpu":    map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+			},
+		},
+	})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	ml := fx.findApp("immich-ml")
+	if ml == nil {
+		t.Fatal("ml app not persisted")
+	}
+	if persisted, _ := ml["gpu"].(map[string]any); persisted["runtime"] != "nvidia" {
+		t.Fatalf("ml gpu = %v", ml["gpu"])
+	}
+	server := fx.findApp("immich-server")
+	if _, present := server["gpu"]; present {
+		t.Fatalf("the CPU member must not inherit a GPU: %v", server["gpu"])
+	}
+
+	// Both containers ran; only the ML one asked for a GPU.
+	byName := map[string]*gpu.Spec{}
+	for i := 0; i < fx.dock.runCallCount(); i++ {
+		call := fx.dock.runCallAt(i)
+		byName[call.name] = call.options.GPU
+	}
+	if spec := byName["immich-ml"]; spec == nil || spec.Runtime != gpu.RuntimeNvidia {
+		t.Fatalf("immich-ml GPU = %+v", spec)
+	}
+	if spec := byName["immich-server"]; spec != nil {
+		t.Fatalf("immich-server GPU = %+v, want nil", spec)
+	}
+}
+
+// A bad GPU request anywhere in a template fails the whole stack before a
+// single container is created — no half-deploy, no rollback.
+func TestTemplateRejectsInvalidGPUBeforeDeploying(t *testing.T) {
+	fx := newFixture(t, []any{})
+
+	r := fx.m.Create(map[string]any{
+		"type": "template", "name": "immich",
+		"apps": map[string]any{
+			"immich-server": map[string]any{"container": "immich-server", "image": "immich/server"},
+			"immich-ml": map[string]any{
+				"container": "immich-ml", "image": "immich/ml:cuda",
+				"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": float64(0)},
+			},
+		},
+	})
+	if r.Status || !strings.Contains(jsString(r.Message), "Invalid GPU configuration for immich-ml") {
+		t.Fatalf("r = %+v", r)
+	}
+	if fx.appCount() != 0 || fx.dock.runCallCount() != 0 {
+		t.Fatalf("nothing may be created: %d apps, %d runs", fx.appCount(), fx.dock.runCallCount())
+	}
+}
+
+// The pre-flight must fire before anything expensive happens: no directory,
+// no logger, no image pull, no container. The Cloud gets the missing piece
+// named instead of "failed to start".
+func TestCreateGPUPreflightFailsEarly(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
+	fx.gpuHost.allow() // this host can pass nothing through
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "app": "comfyui", "name": "comfyui-a1b2c3",
+		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+	})
+
+	if r.Status {
+		t.Fatal("expected the create to fail")
+	}
+	message := jsString(r.Message)
+	if !strings.Contains(message, "nvidia-container-toolkit") || !strings.Contains(message, "nvidia-ctk runtime configure") {
+		t.Fatalf("message must name the fix, got %q", message)
+	}
+	if fx.appCount() != 0 {
+		t.Errorf("nothing may be persisted: %d apps", fx.appCount())
+	}
+	// RunApp is what pulls the image and creates the container; never
+	// reaching it is exactly "no multi-gigabyte CUDA pull".
+	if fx.dock.runCallCount() != 0 {
+		t.Errorf("RunApp must not be reached: %d calls", fx.dock.runCallCount())
+	}
+	if len(fx.dock.registered) != 0 {
+		t.Errorf("no build logger may be registered: %v", fx.dock.registered)
+	}
+}
+
+// Same gate for templates, before a single member is created.
+func TestTemplateGPUPreflightFailsEarly(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.gpuHost.allow(gpu.RuntimeROCm) // AMD host, NVIDIA app
+
+	r := fx.m.Create(map[string]any{
+		"type": "template", "name": "immich",
+		"apps": map[string]any{
+			"immich-server": map[string]any{"container": "immich-server", "image": "immich/server"},
+			"immich-ml": map[string]any{
+				"container": "immich-ml", "image": "immich/ml:cuda",
+				"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+			},
+		},
+	})
+
+	if r.Status || !strings.Contains(jsString(r.Message), "nvidia-container-toolkit") {
+		t.Fatalf("r = %+v", r)
+	}
+	if fx.appCount() != 0 || fx.dock.runCallCount() != 0 {
+		t.Fatalf("nothing may be created: %d apps, %d runs", fx.appCount(), fx.dock.runCallCount())
+	}
+}
+
+// A capable host is not blocked, and CPU apps never consult the pre-flight.
+func TestCreateGPUPreflightPasses(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
+	fx.gpuHost.allow(gpu.RuntimeNvidia)
+
+	if r := fx.m.Create(map[string]any{
+		"type": "app", "app": "comfyui", "name": "gpu-ok",
+		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+	}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+	if spec := fx.dock.runCallAt(0).options.GPU; spec == nil {
+		t.Fatal("GPU request lost")
+	}
+
+	fx2 := newFixture(t, []any{})
+	fx2.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
+	fx2.gpuHost.allow() // nothing allowed — a CPU app must not care
+	if r := fx2.m.Create(map[string]any{"type": "app", "app": "redis", "name": "cpu-app"}); !r.Status {
+		t.Fatalf("CPU app blocked by the GPU pre-flight: %v", r.Message)
+	}
+	fx2.waitIdle(t)
+	if len(fx2.gpuHost.asked) != 0 {
+		t.Errorf("pre-flight consulted for a CPU app: %v", fx2.gpuHost.asked)
+	}
+}
+
+// When the daemon refuses at start time anyway (toolkit removed after the
+// pre-flight, or a redeploy), the Cloud still gets the actionable message
+// rather than the generic one.
+func TestCreateGPURefusedAtStartMessage(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
+	fx.gpuHost.allow(gpu.RuntimeNvidia)   // pre-flight says yes...
+	fx.dock.runErr = func(string) error { // ...but the daemon disagrees
+		return fmt.Errorf("%w (nvidia): could not select device driver", docker.ErrGPUUnavailable)
+	}
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "app": "comfyui", "name": "late-fail",
+		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+	})
+
+	if r.Status {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(jsString(r.Message), "nvidia-container-toolkit") {
+		t.Fatalf("message = %q", jsString(r.Message))
+	}
+	if fx.appCount() != 0 {
+		t.Errorf("the failed app must be rolled back: %d apps", fx.appCount())
+	}
+}
+
+// An ordinary start failure keeps the generic message — the GPU must not be
+// blamed for unrelated problems.
+func TestCreateNonGPUFailureMessage(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
+	fx.dock.runErr = func(string) error { return errors.New("port already allocated") }
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "app": "comfyui", "name": "other-fail",
+		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
+	})
+	if r.Status || strings.Contains(jsString(r.Message), "nvidia-container-toolkit") {
+		t.Fatalf("r = %+v", r)
+	}
+}
+
+// A slow image pull must leave the app visible and correctly labelled: the
+// record is broadcast before RunApp, and List reports "installing" instead of
+// the live container state until the pull finishes.
+func TestCreateStaysVisibleWhileImagePulls(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:7"})
+
+	block := make(chan struct{})
+	release := sync.OnceFunc(func() { close(block) })
+	defer release()
+	fx.dock.mu.Lock()
+	fx.dock.runBlock = block
+	fx.dock.mu.Unlock()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "slow-pull"}).Status
+	}()
+
+	waitFor(t, "the pull to start", func() bool { return fx.dock.runCallCount() == 1 })
+
+	if !fx.hub.sawTrigger("app.list") {
+		t.Fatal("app.list was not broadcast before the pull")
+	}
+	// run() relabels the record "starting" before RunApp, so that is the
+	// status the pull runs under. What matters is that it is not "stopped".
+	if got := fx.listStatus("slow-pull"); got != "starting" {
+		t.Fatalf("status during pull = %v, want starting", got)
+	}
+
+	release()
+	if !<-done {
+		t.Fatal("create failed")
+	}
+	fx.waitIdle(t)
+
+	if got := fx.listStatus("slow-pull"); got != "running" {
+		t.Fatalf("status after create = %v, want running", got)
+	}
 }

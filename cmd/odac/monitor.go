@@ -27,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"odac/internal/apiproto"
+	"odac/internal/appstatus"
 )
 
 // Node Cli.color / Cli.#backgrounds name→SGR maps. Unknown names apply no
@@ -77,6 +78,11 @@ func micon(status string, selected bool) string {
 		return mcolor(" ⏸ ", "yellow", bg)
 	case "success":
 		return mcolor(" ✓ ", "green", bg)
+	}
+	// installing/building/starting/... : an operation owns the app and the
+	// container does not exist yet, so the row reads as in progress.
+	if appstatus.IsTransient(status) {
+		return mcolor(" - ", "gray", bg)
 	}
 	return "   "
 }

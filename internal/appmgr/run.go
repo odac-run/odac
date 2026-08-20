@@ -13,6 +13,7 @@ import (
 
 	"odac/internal/applog"
 	"odac/internal/docker"
+	"odac/internal/gpu"
 	"odac/internal/ports"
 )
 
@@ -39,8 +40,12 @@ func runnerFor(filename string) scriptRunner {
 	return scriptRunners[".js"]
 }
 
+// errNotFound is run/runHeld's "the app vanished mid-flight" (deletion races
+// the start path); callers treat it like any other start failure.
+var errNotFound = errors.New("app not found")
+
 // run ports #run: the shared start path for every app type.
-func (m *Manager) run(id any, logCtrl *applog.BuildControl) bool {
+func (m *Manager) run(id any, logCtrl *applog.BuildControl) error {
 	var name string
 	var idNum float64
 	found := false
@@ -52,13 +57,13 @@ func (m *Manager) run(id any, logCtrl *applog.BuildControl) bool {
 		}
 	})
 	if !found {
-		return false
+		return errNotFound
 	}
 
 	// Prevent concurrent runs for the same app.
 	if !m.tryLockProcessing(idNum) {
 		m.log.Log("App %s is already being processed. Skipping duplicate run.", name)
-		return true
+		return nil
 	}
 	defer m.unlockProcessing(idNum)
 
@@ -67,7 +72,7 @@ func (m *Manager) run(id any, logCtrl *applog.BuildControl) bool {
 
 // runHeld is run's body once the processing lock is held (Check acquires it
 // synchronously before dispatching, like Node's pre-await section of #run).
-func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
+func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) error {
 	var name, typ string
 	found := false
 	m.cfg.View(func() {
@@ -78,7 +83,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
 		}
 	})
 	if !found {
-		return false
+		return errNotFound
 	}
 
 	m.log.Log("Starting app %s (Type: %s)...", name, typ)
@@ -97,7 +102,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
 	if err != nil {
 		m.log.Error("Failed to start app %s: %s", name, err.Error())
 		m.set(id, map[string]any{"status": "errored", "updated": nowMs()})
-		return false
+		return err
 	}
 
 	m.set(id, map[string]any{"status": "running", "started": nowMs()})
@@ -111,7 +116,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) bool {
 	// Trigger Proxy sync after every successful start/restart. Container IP
 	// changes on restart; without this the proxy routes to the dead IP.
 	m.proxySync()
-	return true
+	return nil
 }
 
 func nowMs() float64 { return float64(time.Now().UnixMilli()) }
@@ -128,8 +133,11 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		cmd                   []string
 		volumes               []docker.Mount
 		devices               []docker.Device
+		gpu                   *gpu.Spec
 		env                   map[string]any
 		privileged            string
+		networkMode           string
+		isolated              bool
 		port                  int
 	}
 	var s snap
@@ -156,9 +164,12 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		s.image, _ = app["image"].(string)
 		s.dev = app["dev"] == true
 		s.privileged, _ = app["privileged"].(string)
+		s.networkMode = toNetworkMode(app["networkMode"])
+		s.isolated = jsTruthy(app["isolated"])
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
+		s.gpu = toGPU(app["gpu"])
 
 		if s.dev {
 			// Mount the whole app directory to /app for live development.
@@ -203,12 +214,15 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 	env["PORT"] = strconv.Itoa(s.port)
 
 	runOptions := docker.RunOptions{
-		Image:   s.image,
-		Ports:   []map[string]any{},
-		Volumes: s.volumes,
-		Devices: s.devices,
-		Env:     env,
-		Cmd:     s.cmd,
+		Image:       s.image,
+		Ports:       []map[string]any{},
+		Volumes:     s.volumes,
+		Devices:     s.devices,
+		GPU:         s.gpu,
+		Env:         env,
+		Cmd:         s.cmd,
+		NetworkMode: s.networkMode,
+		Isolated:    s.isolated,
 	}
 
 	// In dev mode the mounted host directory is owned by the host user/root;
@@ -261,9 +275,12 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		cmd                   []string
 		volumes               []docker.Mount
 		devices               []docker.Device
+		gpu                   *gpu.Spec
 		published             []map[string]any
 		env                   map[string]any
 		privileged            string
+		networkMode           string
+		isolated              bool
 	}
 	var s snap
 	found := false
@@ -284,9 +301,12 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		}
 		s.image, _ = app["image"].(string)
 		s.privileged, _ = app["privileged"].(string)
+		s.networkMode = toNetworkMode(app["networkMode"])
+		s.isolated = jsTruthy(app["isolated"])
 		s.cmd = toCmd(app["cmd"])
 		s.volumes = toMounts(app["volumes"])
 		s.devices = toDevices(app["devices"])
+		s.gpu = toGPU(app["gpu"])
 		s.env = m.resolveEnvLocked(app, true)
 		if jsTruthy(app["api"]) {
 			s.hasAPI = true
@@ -336,12 +356,15 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 	m.fixVolumePermissions(s.name, s.volumes)
 
 	runOptions := docker.RunOptions{
-		Image:   s.image,
-		Ports:   s.published,
-		Volumes: s.volumes,
-		Devices: s.devices,
-		Env:     env,
-		Cmd:     s.cmd,
+		Image:       s.image,
+		Ports:       s.published,
+		Volumes:     s.volumes,
+		Devices:     s.devices,
+		GPU:         s.gpu,
+		Env:         env,
+		Cmd:         s.cmd,
+		NetworkMode: s.networkMode,
+		Isolated:    s.isolated,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 
@@ -490,7 +513,10 @@ func (m *Manager) runScriptContainer(id any) error {
 		hasAPI               bool
 		apiPerms             any
 		devices              []docker.Device
+		gpu                  *gpu.Spec
 		privileged           string
+		networkMode          string
+		isolated             bool
 	}
 	var s snap
 	found := false
@@ -507,7 +533,10 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.name, _ = app["name"].(string)
 		s.file, _ = app["file"].(string)
 		s.privileged, _ = app["privileged"].(string)
+		s.networkMode = toNetworkMode(app["networkMode"])
+		s.isolated = jsTruthy(app["isolated"])
 		s.devices = toDevices(app["devices"])
+		s.gpu = toGPU(app["gpu"])
 		if jsTruthy(app["api"]) {
 			s.hasAPI = true
 			s.apiPerms = app["api"]
@@ -533,11 +562,14 @@ func (m *Manager) runScriptContainer(id any) error {
 	}
 
 	runOptions := docker.RunOptions{
-		Image:   runner.image,
-		Cmd:     append(append([]string{runner.cmd}, runner.args...), filename),
-		Volumes: volumes,
-		Devices: s.devices,
-		Env:     env,
+		Image:       runner.image,
+		Cmd:         append(append([]string{runner.cmd}, runner.args...), filename),
+		Volumes:     volumes,
+		Devices:     s.devices,
+		GPU:         s.gpu,
+		Env:         env,
+		NetworkMode: s.networkMode,
+		Isolated:    s.isolated,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
 
@@ -564,9 +596,9 @@ func (m *Manager) applyPrivilege(name, privileged string, runOptions *docker.Run
 // order: (1) a trailing '/' on the container path means directory; (2) an
 // already-materialized host path mirrors its own type; (3) the app's live
 // container mirrors whatever exists at that path; (4) otherwise fall back to
-// an extension heuristic (a basename with an extension is a file). name is
-// the container to probe in step 3; fsPath is the orchestrator-visible host
-// path to stat in step 2.
+// an extension heuristic (a basename with an extension is a file, ignoring
+// any leading dot). name is the container to probe in step 3; fsPath is the
+// orchestrator-visible host path to stat in step 2.
 func (m *Manager) mountIsFile(name, fsPath, container string) bool {
 	cPath := strings.TrimSuffix(container, ":ro")
 
@@ -588,7 +620,9 @@ func (m *Manager) mountIsFile(name, fsPath, container string) bool {
 	}
 
 	// (4) create-time / no container: a basename with an extension is a file.
-	return path.Ext(path.Base(cPath)) != ""
+	// A leading dot is not an extension separator: '/root/.ollama' and '.ssh'
+	// are dotted directory names, while '.env.local' still ends in one.
+	return path.Ext(strings.TrimLeft(path.Base(cPath), ".")) != ""
 }
 
 // fixVolumePermissions ports #fixVolumePermissions: materialize each volume

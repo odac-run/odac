@@ -2,7 +2,6 @@ package main
 
 import (
 	"net"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,7 +22,6 @@ func recordingServer(t *testing.T) (string, *apiproto.Request) {
 }
 
 func TestDispatchActionsAndData(t *testing.T) {
-	absRun, _ := filepath.Abs("script.js")
 	tests := []struct {
 		name       string
 		argv       []string
@@ -35,6 +33,8 @@ func TestDispatchActionsAndData(t *testing.T) {
 		{"app delete positional", []string{"app", "delete", "42"}, "", "app.delete", []any{"42"}},
 		{"app delete flag", []string{"app", "delete", "-i", "42"}, "", "app.delete", []any{"42"}},
 		{"app restart", []string{"app", "restart", "blog"}, "", "app.restart", []any{"blog"}},
+		{"app start", []string{"app", "start", "blog"}, "", "app.start", []any{"blog"}},
+		{"app stop", []string{"app", "stop", "blog"}, "", "app.stop", []any{"blog"}},
 		{"app device add", []string{"app", "device", "add", "blog", "/dev/ttyACM0"}, "",
 			"app.device.add", []any{"blog", "/dev/ttyACM0"}},
 		{"app device delete flags", []string{"app", "device", "delete", "-a", "blog", "-d", "/dev/x"}, "",
@@ -59,13 +59,37 @@ func TestDispatchActionsAndData(t *testing.T) {
 		{"auth positional", []string{"auth", "SECRETKEY"}, "", "auth", []any{"SECRETKEY"}},
 		{"auth interactive", []string{"auth"}, "typedkey\n", "auth", []any{"typedkey"}},
 		{"update", []string{"update"}, "", "update", []any{}},
-		{"run resolves path", []string{"run", "script.js"}, "", "app.start", []any{absRun}},
 		{"privileged default root", []string{"app", "privileged", "blog"}, "yes\n",
 			"app.privileged", []any{"blog", "root"}},
 		{"privileged full", []string{"app", "privileged", "blog", "--full"}, "YES\n",
 			"app.privileged", []any{"blog", "full"}},
 		{"privileged off no confirm", []string{"app", "privileged", "blog", "--off"}, "",
 			"app.privileged", []any{"blog", "off"}},
+		{"network host confirms", []string{"app", "network", "blog", "--host"}, "yes\n",
+			"app.network", []any{"blog", "host"}},
+		{"network bridge no confirm", []string{"app", "network", "blog", "--bridge"}, "",
+			"app.network", []any{"blog", "bridge"}},
+		{"network defaults to bridge", []string{"app", "network", "-i", "blog"}, "",
+			"app.network", []any{"blog", "bridge"}},
+		{"isolate on", []string{"app", "isolate", "blog"}, "",
+			"app.isolate", []any{"blog", true}},
+		{"isolate off", []string{"app", "isolate", "-i", "blog", "--off"}, "",
+			"app.isolate", []any{"blog", false}},
+		{"api allow list", []string{"app", "api", "blog", "--allow", "app.list,mail.send"}, "",
+			"app.api", []any{"blog", "app.list,mail.send"}},
+		// --allow's value is a bare argument too; the app must still be "blog".
+		{"api allow before app", []string{"app", "api", "--allow", "app.list", "blog"}, "",
+			"app.api", []any{"blog", "app.list"}},
+		{"api all confirms", []string{"app", "api", "blog", "--all"}, "yes\n",
+			"app.api", []any{"blog", true}},
+		{"api off no confirm", []string{"app", "api", "-i", "blog", "--off"}, "",
+			"app.api", []any{"blog", false}},
+		{"api interactive", []string{"app", "api", "blog"}, "app.list\n",
+			"app.api", []any{"blog", "app.list"}},
+		{"api interactive wildcard confirms", []string{"app", "api", "blog"}, "*\nyes\n",
+			"app.api", []any{"blog", true}},
+		{"api allow wildcard confirms", []string{"app", "api", "blog", "--allow", "app.list,*"}, "yes\n",
+			"app.api", []any{"blog", true}},
 	}
 
 	for _, tt := range tests {
@@ -144,6 +168,36 @@ func TestPrivilegedAbort(t *testing.T) {
 	}
 }
 
+func TestNetworkHostAbort(t *testing.T) {
+	addr, last := recordingServer(t)
+	a, out, _ := testApp(t, addr)
+	a.in = strings.NewReader("no\n")
+	if code := a.run([]string{"app", "network", "blog", "--host"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "Aborted.") {
+		t.Errorf("output:\n%s", out)
+	}
+	if last.Action != "" {
+		t.Errorf("server was called with %q after abort", last.Action)
+	}
+}
+
+func TestAPIGrantAllAbort(t *testing.T) {
+	addr, last := recordingServer(t)
+	a, out, _ := testApp(t, addr)
+	a.in = strings.NewReader("no\n")
+	if code := a.run([]string{"app", "api", "blog", "--all"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "Aborted.") {
+		t.Errorf("output:\n%s", out)
+	}
+	if last.Action != "" {
+		t.Errorf("server was called with %q after abort", last.Action)
+	}
+}
+
 func TestDNSListDetailView(t *testing.T) {
 	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
 		conn.Write([]byte(`{"id":"d","result":true,"message":null,` +
@@ -162,20 +216,6 @@ func TestDNSListDetailView(t *testing.T) {
 	}
 	if strings.Contains(got, "TYPE") {
 		t.Errorf("detail view must not print table headers:\n%s", got)
-	}
-}
-
-func TestRunMissingFile(t *testing.T) {
-	addr, last := recordingServer(t)
-	a, out, _ := testApp(t, addr)
-	if code := a.run([]string{"run"}); code != 1 {
-		t.Fatalf("exit = %d, want 1", code)
-	}
-	if !strings.Contains(out.String(), "Please specify a file to run.") {
-		t.Errorf("output = %q", out)
-	}
-	if last.Action != "" {
-		t.Errorf("server was called with %q", last.Action)
 	}
 }
 

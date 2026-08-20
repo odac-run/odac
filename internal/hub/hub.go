@@ -53,10 +53,14 @@ type AppService interface {
 	UnlinkEnv(id any, target string) *api.Result
 	List(detailed bool) *api.Result
 	SetNetworks(id any, networks []any, payloadOK bool) *api.Result
+	SetNetworkMode(id any, mode string) *api.Result
+	SetIsolated(id any, isolated bool) *api.Result
 	SetPorts(id any, portsPayload []any, payloadOK bool) *api.Result
 	SetVolumes(id any, volumes []any, payloadOK bool) *api.Result
 	Redeploy(payload appmgr.RedeployPayload) *api.Result
 	Restart(id any) *api.Result
+	Start(id any) *api.Result
+	Stop(id any) *api.Result
 	SubscribeToLogs(appName string, cb func(applog.Entry)) func()
 }
 
@@ -713,6 +717,18 @@ func (h *Hub) buildCommands() {
 		}),
 		triggers: []string{"app.list"},
 	})
+	h.register("app.network.mode", &command{
+		fn: withApp(func(p any) (any, error) {
+			return h.deps.App.SetNetworkMode(nameOrID(p), str(pmap(p)["mode"])), nil
+		}),
+		triggers: []string{"app.list"},
+	})
+	h.register("app.network.isolate", &command{
+		fn: withApp(func(p any) (any, error) {
+			return h.deps.App.SetIsolated(nameOrID(p), pmap(p)["isolated"] == true), nil
+		}),
+		triggers: []string{"app.list"},
+	})
 	h.register("app.port.set", &command{
 		fn: withApp(func(p any) (any, error) {
 			ports, ok := pmap(p)["ports"].([]any)
@@ -737,9 +753,17 @@ func (h *Hub) buildCommands() {
 		fn:       withApp(func(p any) (any, error) { return h.deps.App.Restart(pmap(p)["container"]), nil }),
 		triggers: []string{"app.list", "app.stats"},
 	})
+	h.register("app.start", &command{
+		fn:       withApp(func(p any) (any, error) { return h.deps.App.Start(pmap(p)["container"]), nil }),
+		triggers: []string{"app.list", "app.stats"},
+	})
 	h.register("app.stats", &command{
 		fn:       func(any) (any, error) { return h.getAppStats() },
 		interval: 60 * time.Second,
+	})
+	h.register("app.stop", &command{
+		fn:       withApp(func(p any) (any, error) { return h.deps.App.Stop(pmap(p)["container"]), nil }),
+		triggers: []string{"app.list", "app.stats"},
 	})
 	h.register("app.volumes.set", &command{
 		fn: withApp(func(p any) (any, error) {

@@ -1,6 +1,10 @@
 package appmgr
 
-import "odac/internal/docker"
+import (
+	"odac/internal/docker"
+	"odac/internal/gpu"
+	"odac/internal/netmode"
+)
 
 // copyMap shallow-copies a decoded-JSON map.
 func copyMap(src map[string]any) map[string]any {
@@ -37,6 +41,28 @@ func toMounts(v any) []docker.Mount {
 		}
 	}
 	return out
+}
+
+// toGPU converts a persisted `gpu` object to a request. The value was
+// validated at creation time, so a malformed one here means a hand-edited
+// config: it degrades to no GPU rather than failing the start.
+func toGPU(v any) *gpu.Spec {
+	spec, err := gpu.Parse(v)
+	if err != nil {
+		return nil
+	}
+	return spec
+}
+
+// toNetworkMode converts a persisted `networkMode` value to a canonical mode.
+// Like toGPU it degrades to the safe default (isolated bridge) rather than
+// failing the start, since only a hand-edited config can be malformed here.
+func toNetworkMode(v any) string {
+	mode, err := netmode.Parse(v)
+	if err != nil {
+		return netmode.Bridge
+	}
+	return mode
 }
 
 // toDevices converts persisted `devices` entries to docker.Device.

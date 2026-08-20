@@ -6,11 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"odac/internal/api"
 )
 
 // TestServerSmoke builds the binary and runs it with an isolated HOME: it
@@ -313,6 +316,49 @@ func TestServerAPIRoundTrip(t *testing.T) {
 			}
 		} else {
 			t.Errorf("api.sock missing: %v", err)
+		}
+	}
+}
+
+// TestDocumentedActionsMatchRegistry keeps docs/server/03-app/08-api-access.md
+// honest: that table is the contract apps are written against, so it must list
+// exactly the grantable actions. A new (or renamed) action must not land
+// without a row, and an action closed to apps must not keep one. main.go is
+// read as text, which costs nothing and needs no production surface to
+// enumerate the registry.
+func TestDocumentedActionsMatchRegistry(t *testing.T) {
+	registered := map[string]bool{}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	for _, m := range regexp.MustCompile(`Register\("([a-z.]+)"`).FindAllStringSubmatch(string(src), -1) {
+		registered[m[1]] = true
+	}
+	if len(registered) == 0 {
+		t.Fatal("no Register calls found; the pattern no longer matches")
+	}
+
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "server", "03-app", "08-api-access.md"))
+	if err != nil {
+		t.Fatalf("read the API access doc: %v", err)
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([a-z.]+)` \\|").FindAllStringSubmatch(string(doc), -1) {
+		documented[m[1]] = true
+	}
+
+	for action := range registered {
+		if api.AppMayCall(action) && !documented[action] {
+			t.Errorf("action %q is grantable but missing from the API access doc", action)
+		}
+		if !api.AppMayCall(action) && documented[action] {
+			t.Errorf("action %q is closed to apps but still documented as available", action)
+		}
+	}
+	for action := range documented {
+		if !registered[action] {
+			t.Errorf("action %q is documented but no longer registered", action)
 		}
 	}
 }
