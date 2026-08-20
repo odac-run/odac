@@ -1,3 +1,13 @@
+### 🛠️ Fixes & Improvements
+
+- **app:** make recipe config files produce a valid mount
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ✨ What's New
 
 - **api:** add app api command to grant apps API access
