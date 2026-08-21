@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -205,12 +206,170 @@ func TestParseMessage_QuotedPrintableSoftLineBreak(t *testing.T) {
 	}
 }
 
-func TestDecodeBody_7bit(t *testing.T) {
-	body := "Hello World"
-	if result := decodeBody(body, "7bit"); result != body {
-		t.Errorf("7bit should pass through unchanged, got %q", result)
+// A text/plain file sent as an attachment used to overwrite the message body,
+// because the old walk matched Content-Type and never read Content-Disposition.
+func TestParseMessage_TextAttachmentDoesNotOverwriteBody(t *testing.T) {
+	raw := strings.ReplaceAll(`From: a@b.com
+To: c@d.com
+Subject: Notes attached
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: text/plain; charset="UTF-8"
+
+Real message body.
+--MIX
+Content-Type: text/plain; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+
+ATTACHMENT CONTENT
+--MIX--
+`, "\n", "\r\n")
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.text, "Real message body.") {
+		t.Errorf("text = %q, want the message body", msg.text)
 	}
-	if result := decodeBody(body, ""); result != body {
-		t.Errorf("empty encoding should pass through unchanged, got %q", result)
+	if strings.Contains(msg.text, "ATTACHMENT CONTENT") {
+		t.Errorf("attachment content leaked into the body: %q", msg.text)
+	}
+}
+
+// A binary attachment must never be mistaken for message content.
+func TestParseMessage_BinaryAttachmentStaysOutOfBody(t *testing.T) {
+	raw := strings.ReplaceAll(`From: a@b.com
+To: c@d.com
+Subject: Invoice
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: text/html; charset="UTF-8"
+
+<p>See attached.</p>
+--MIX
+Content-Type: application/pdf; name="invoice.pdf"
+Content-Disposition: attachment; filename="invoice.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJUdPT0Q=
+--MIX--
+`, "\n", "\r\n")
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.html, "<p>See attached.</p>") {
+		t.Errorf("html = %q", msg.html)
+	}
+	if strings.Contains(msg.text, "PDF") || strings.Contains(msg.html, "JVBERi") {
+		t.Errorf("attachment bytes leaked into the body: text=%q html=%q", msg.text, msg.html)
+	}
+}
+
+// A forwarded message is an attachment; its body is not this message's body.
+func TestParseMessage_ForwardedMessageStaysOutOfBody(t *testing.T) {
+	raw := strings.ReplaceAll(`From: a@b.com
+To: c@d.com
+Subject: Fwd
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: text/plain
+
+Forwarding this to you.
+--MIX
+Content-Type: message/rfc822
+
+From: original@example.com
+Subject: Original
+Content-Type: text/plain
+
+INNER MESSAGE BODY
+--MIX--
+`, "\n", "\r\n")
+
+	msg := parseMessage([]byte(raw))
+
+	if !strings.Contains(msg.text, "Forwarding this to you.") {
+		t.Errorf("text = %q", msg.text)
+	}
+	if strings.Contains(msg.text, "INNER MESSAGE BODY") {
+		t.Errorf("forwarded body leaked into the outer body: %q", msg.text)
+	}
+}
+
+func TestParseMessage_AttachmentIndex(t *testing.T) {
+	raw := strings.ReplaceAll(`From: a@b.com
+To: c@d.com
+Subject: Invoice
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: text/plain
+
+body
+--MIX
+Content-Type: application/pdf; name="invoice.pdf"
+Content-Disposition: attachment; filename="invoice.pdf"
+Content-Transfer-Encoding: base64
+Content-ID: <abc-123@example.com>
+
+aGVsbG8gd29ybGQ=
+--MIX--
+`, "\n", "\r\n")
+
+	msg := parseMessage([]byte(raw))
+
+	var metas []attachmentMeta
+	if err := json.Unmarshal([]byte(msg.attachmentsJSON), &metas); err != nil {
+		t.Fatalf("attachments JSON invalid: %v (%s)", err, msg.attachmentsJSON)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(metas))
+	}
+	a := metas[0]
+
+	if a.Filename != "invoice.pdf" || a.ContentType != "application/pdf" {
+		t.Errorf("filename/type = %q/%q", a.Filename, a.ContentType)
+	}
+	if a.PartID != "2" {
+		t.Errorf("partId = %q, want 2", a.PartID)
+	}
+	if a.ContentID != "<abc-123@example.com>" || a.CID != "abc-123@example.com" {
+		t.Errorf("contentId/cid = %q/%q", a.ContentID, a.CID)
+	}
+	if a.Encoding != "base64" {
+		t.Errorf("encoding = %q", a.Encoding)
+	}
+	// Size describes the decoded file, Length the encoded bytes in the message.
+	if a.Size != len("hello world") {
+		t.Errorf("size = %d, want %d", a.Size, len("hello world"))
+	}
+	if a.Length != len("aGVsbG8gd29ybGQ=") {
+		t.Errorf("length = %d, want %d", a.Length, len("aGVsbG8gd29ybGQ="))
+	}
+	// md5("hello world")
+	if a.Checksum != "5eb63bbbe01eeed093cb22bb8f5acdc3" {
+		t.Errorf("checksum = %q", a.Checksum)
+	}
+
+	// The recorded range must cut the encoded attachment out of the raw message.
+	if got := string([]byte(raw)[a.Offset : a.Offset+a.Length]); got != "aGVsbG8gd29ybGQ=" {
+		t.Errorf("offset/length do not address the attachment: %q", got)
+	}
+
+	// Attachment bytes must not be inlined; that was the old format's mistake.
+	if strings.Contains(msg.attachmentsJSON, "aGVsbG8") || strings.Contains(msg.attachmentsJSON, `"data"`) {
+		t.Errorf("attachment content leaked into the index: %s", msg.attachmentsJSON)
+	}
+}
+
+func TestParseMessage_NoAttachmentsLeavesIndexEmpty(t *testing.T) {
+	raw := "From: a@b.com\r\nTo: c@d.com\r\nSubject: Plain\r\n\r\njust text\r\n"
+
+	msg := parseMessage([]byte(raw))
+
+	if msg.attachmentsJSON != "" {
+		t.Errorf("attachments = %q, want empty for a message with none", msg.attachmentsJSON)
 	}
 }

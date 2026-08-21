@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"odac/internal/mail/auth"
+	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
 	"odac/internal/mail/storage"
@@ -21,6 +22,7 @@ import (
 
 // Server manages IMAP listeners on ports 143 (STARTTLS) and 993 (implicit TLS).
 type Server struct {
+	blobs     *blob.Store
 	firewall  *auth.Firewall
 	getConfig func() config.Config
 	limiter   *limits.Limiter
@@ -33,8 +35,9 @@ type Server struct {
 }
 
 // NewServer creates a new IMAP server with the given dependencies.
-func NewServer(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config) *Server {
+func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config) *Server {
 	return &Server{
+		blobs:     blobs,
 		firewall:  fw,
 		getConfig: getConfig,
 		limiter:   limits.New(limits.IMAPProfile()),
@@ -198,7 +201,7 @@ func (s *Server) handleConnection(conn net.Conn, tlsCfg *tls.Config) {
 	total, ips, users := s.limiter.Snapshot()
 	log.Printf("[IMAP] New connection from %s (total=%d ips=%d users=%d)", ip, total, ips, users)
 
-	c := NewConnection(conn, tlsCfg, s.store, s.firewall, s.getConfig, handle)
+	c := NewConnection(conn, tlsCfg, s.store, s.blobs, s.firewall, s.getConfig, handle)
 	c.Serve()
 }
 

@@ -554,13 +554,13 @@ func (c *Connection) cmdFetch(tag, args string, isUID bool) {
 			continue
 		}
 		c.write(fmt.Sprintf("* %d FETCH (", seqMap[uid]))
-		c.writeFetchItems(dataItems, &messages[0], isUID)
+		c.writeFetchItems(dataItems, &messages[0], newRawView(c, &messages[0]), isUID)
 		c.write(")\r\n")
 	}
 	c.write(fmt.Sprintf("%s OK FETCH completed\r\n", tag))
 }
 
-func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUID bool) {
+func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, rv *rawView, isUID bool) {
 	upper := strings.ToUpper(items)
 
 	if isUID || strings.Contains(upper, "UID") {
@@ -574,19 +574,27 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUI
 		c.write(fmt.Sprintf("INTERNALDATE \"%s\" ", formatInternalDate(msg.Date.String)))
 	}
 	if strings.Contains(upper, "RFC822.SIZE") || strings.Contains(upper, "RFC822") {
-		body := buildFullBody(msg)
-		c.write(fmt.Sprintf("RFC822.SIZE %d ", len(body)))
+		// The stored message has a size on disk; only a synthesized body has
+		// to be built to be measured.
+		if rv.available() {
+			c.write(fmt.Sprintf("RFC822.SIZE %d ", rv.octets()))
+		} else {
+			c.write(fmt.Sprintf("RFC822.SIZE %d ", len(buildFullBody(msg))))
+		}
 	}
 	if strings.Contains(upper, "ENVELOPE") {
 		c.writeEnvelope(msg)
 	}
 	if strings.Contains(upper, "BODYSTRUCTURE") {
-		c.writeBodyStructure(msg)
+		c.writeBodyStructure(msg, rv)
 	}
 
 	// RFC822 full message fetch (not just SIZE)
 	if strings.Contains(upper, "RFC822") && !strings.Contains(upper, "RFC822.SIZE") && !strings.Contains(upper, "RFC822.HEADER") {
-		body := buildFullBody(msg)
+		body := rv.bytesAll()
+		if body == nil {
+			body = []byte(buildFullBody(msg))
+		}
 		c.write(fmt.Sprintf("RFC822 {%d}\r\n%s", len(body), body))
 	}
 
@@ -594,7 +602,7 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, isUI
 	// to avoid conflict with BODYSTRUCTURE keyword.
 	if strings.Contains(upper, "BODY[") || strings.Contains(upper, "BODY.PEEK[") {
 		for _, sel := range findBodySelectors(items) {
-			c.writeBodySection(sel, msg)
+			c.writeBodySection(sel, msg, rv)
 		}
 	}
 }
@@ -639,7 +647,7 @@ func findBodySelectors(items string) []string {
 }
 
 // writeBodySection handles BODY[section] and BODY.PEEK[section] requests.
-func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
+func (c *Connection) writeBodySection(items string, msg *storage.MessageRow, rv *rawView) {
 	// Parse partial range: BODY[section]<origin.count>
 	// RFC 3501 §6.4.5: partial fetch returns a substring of the section
 	var partialOrigin, partialCount int64
@@ -677,6 +685,21 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 	// Build full content for the requested section
 	var content string
 	upperSection := strings.ToUpper(section)
+
+	// The verbatim message answers every section exactly as transmitted,
+	// including attachment parts the synthesized fallback below cannot
+	// represent at all.
+	if rv.available() {
+		if data, ok := rv.section(section); ok {
+			c.writeSectionResult(section, string(data), hasPartial, partialOrigin, partialCount)
+			return
+		}
+		// A section the message does not contain is answered with an empty
+		// string rather than a synthesized substitute, which would be a
+		// different message than the one BODYSTRUCTURE described.
+		c.writeSectionResult(section, "", hasPartial, partialOrigin, partialCount)
+		return
+	}
 
 	switch {
 	case strings.HasPrefix(upperSection, "HEADER.FIELDS"):
@@ -762,29 +785,32 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow) {
 		}
 	}
 
-	// Apply partial range if requested
-	if hasPartial {
-		contentBytes := []byte(content)
-		total := int64(len(contentBytes))
+	c.writeSectionResult(section, content, hasPartial, partialOrigin, partialCount)
+}
 
-		if partialOrigin >= total {
-			content = ""
-		} else {
-			end := partialOrigin + partialCount
-			// end < partialOrigin catches int64 overflow on an absurd count.
-			if end > total || end < partialOrigin {
-				end = total
-			}
-			content = string(contentBytes[partialOrigin:end])
-		}
-
-		// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
-		key := fmt.Sprintf("BODY[%s]<%d>", section, partialOrigin)
-		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
-	} else {
-		key := "BODY[" + section + "]"
-		c.write(fmt.Sprintf("%s {%d}\r\n%s ", key, len(content), content))
+// writeSectionResult emits one BODY[section] response, applying the partial
+// range when the client asked for one.
+func (c *Connection) writeSectionResult(section, content string, hasPartial bool, partialOrigin, partialCount int64) {
+	if !hasPartial {
+		c.write(fmt.Sprintf("BODY[%s] {%d}\r\n%s ", section, len(content), content))
+		return
 	}
+
+	contentBytes := []byte(content)
+	total := int64(len(contentBytes))
+	if partialOrigin >= total {
+		content = ""
+	} else {
+		end := partialOrigin + partialCount
+		// end < partialOrigin catches int64 overflow on an absurd count.
+		if end > total || end < partialOrigin {
+			end = total
+		}
+		content = string(contentBytes[partialOrigin:end])
+	}
+
+	// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
+	c.write(fmt.Sprintf("BODY[%s]<%d> {%d}\r\n%s ", section, partialOrigin, len(content), content))
 }
 
 // buildFilteredHeaders returns only the requested header fields from the message.
@@ -940,7 +966,17 @@ func escapeIMAPString(s string) string {
 	return s
 }
 
-func (c *Connection) writeBodyStructure(msg *storage.MessageRow) {
+func (c *Connection) writeBodyStructure(msg *storage.MessageRow, rv *rawView) {
+	// A structure derived from the real message is what lets a client know an
+	// attachment exists; the synthesized form below can only ever describe the
+	// text parts recovered by the parser.
+	if rv.available() {
+		if tree := rv.parts(); tree != nil {
+			c.write("BODYSTRUCTURE " + tree.BodyStructure(rv.bytesAll()) + " ")
+			return
+		}
+	}
+
 	hasText := msg.Text.Valid && msg.Text.String != "" && msg.Text.String != "0"
 	hasHTML := msg.HTML.Valid && msg.HTML.String != "" && msg.HTML.String != "0"
 
@@ -1110,8 +1146,8 @@ func (c *Connection) cmdSearch(tag, args string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Simplified search: fetch all UIDs for the mailbox
-	messages, err := c.store.MessageFetch(ctx, c.auth, c.mailbox, 0, 0)
+	// Only UIDs and flags are consulted below, so only those are read.
+	messages, err := c.store.MessageFlags(ctx, c.auth, c.mailbox)
 	if err != nil {
 		c.write(fmt.Sprintf("%s NO SEARCH failed\r\n", tag))
 		return

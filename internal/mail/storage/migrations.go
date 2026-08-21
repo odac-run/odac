@@ -3,10 +3,15 @@
 // at ~/.odac/db/mail, enabling zero-downtime migration without data loss.
 package storage
 
-// migrations defines the SQL statements for schema creation and indexing.
-// These mirror the exact schema from the Node.js Mail.js init() method
-// to ensure full backward compatibility with existing databases.
-var migrations = []string{
+// tables defines the schema creation statements. These mirror the exact schema
+// from the Node.js Mail.js init() method to ensure full backward compatibility
+// with existing databases.
+//
+// Tables, added columns and indexes are three separate phases run in that
+// order by migrate(). An index over a column from addedColumns cannot live in
+// this list: against a database that already has the table, CREATE TABLE IF
+// NOT EXISTS is a no-op, so the column only appears in the ALTER phase.
+var tables = []string{
 	// mail_received: Stores all received/sent email messages
 	`CREATE TABLE IF NOT EXISTS mail_received (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,6 +25,7 @@ var migrations = []string{
 		html        TEXT,
 		text        TEXT,
 		textAsHtml  TEXT,
+		rawRef      TEXT,
 		subject     TEXT,
 		date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		"to"        JSON,
@@ -47,7 +53,11 @@ var migrations = []string{
 		date    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(email, title)
 	)`,
+}
 
+// indexes are created after addedColumns, so they may reference any column
+// added by a later schema revision.
+var indexes = []string{
 	// Indexes for mail_account
 	`CREATE INDEX IF NOT EXISTS idx_account_email  ON mail_account (email)`,
 	`CREATE INDEX IF NOT EXISTS idx_account_domain ON mail_account (domain)`,
@@ -61,4 +71,21 @@ var migrations = []string{
 	// Indexes for mail_box
 	`CREATE INDEX IF NOT EXISTS idx_box_email ON mail_box (email)`,
 	`CREATE INDEX IF NOT EXISTS idx_box_title ON mail_box (title)`,
+
+	// rawRef is probed per candidate by the blob sweeper to find live references.
+	`CREATE INDEX IF NOT EXISTS idx_received_rawref ON mail_received (rawRef)`,
+}
+
+// addedColumns lists columns introduced after the original Node.js schema.
+// SQLite has no ADD COLUMN IF NOT EXISTS, so migrate() consults PRAGMA
+// table_info before issuing these against a pre-existing database.
+var addedColumns = []struct {
+	table  string
+	column string
+	def    string
+}{
+	// rawRef addresses the verbatim RFC 5322 message in the blob store.
+	// Without it a message is only recoverable as the lossy html/text pair the
+	// parser extracted, which is how attachments used to disappear.
+	{"mail_received", "rawRef", "TEXT"},
 }

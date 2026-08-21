@@ -79,13 +79,62 @@ func (s *Store) migrate() error {
 	}
 	defer tx.Rollback()
 
-	for _, stmt := range migrations {
+	for _, stmt := range tables {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("migration statement failed: %w\nSQL: %s", err, stmt)
+			return fmt.Errorf("table migration failed: %w\nSQL: %s", err, stmt)
+		}
+	}
+
+	// Columns come after the tables exist and before any index that may
+	// reference them.
+	for _, c := range addedColumns {
+		has, err := columnExists(ctx, tx, c.table, c.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", c.table, c.column, c.def)
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("column migration failed: %w\nSQL: %s", err, stmt)
+		}
+		log.Printf("[Mail-DB] Schema upgraded: %s.%s added", c.table, c.column)
+	}
+
+	for _, stmt := range indexes {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("index migration failed: %w\nSQL: %s", err, stmt)
 		}
 	}
 
 	return tx.Commit()
+}
+
+// columnExists reports whether a table already has the named column.
+func columnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("table_info(%s) failed: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name, typ  string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultVal, &pk); err != nil {
+			return false, fmt.Errorf("table_info scan failed: %w", err)
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Close gracefully shuts down the database connection pool.
@@ -260,11 +309,11 @@ func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO mail_received
 			(uid, email, mailbox, attachments, headers, headerLines,
-			 html, text, textAsHtml, subject, "to", "from", messageId, flags)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 html, text, textAsHtml, subject, "to", "from", messageId, flags, rawRef)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nextUID, msg.Email, msg.Mailbox, msg.Attachments, msg.Headers,
 		msg.HeaderLines, msg.HTML, msg.Text, msg.TextAsHTML, msg.Subject,
-		msg.To, msg.From, msg.MessageID, msg.Flags)
+		msg.To, msg.From, msg.MessageID, msg.Flags, msg.RawRef)
 	if err != nil {
 		return fmt.Errorf("message insert failed: %w", err)
 	}
@@ -278,7 +327,7 @@ func (s *Store) MessageFetch(ctx context.Context, email, mailbox string, uidMin,
 	defer s.mu.RUnlock()
 
 	query := `SELECT id, uid, email, mailbox, flags, attachments, headers,
-		headerLines, html, text, textAsHtml, subject, date, "to", "from", messageId
+		headerLines, html, text, textAsHtml, subject, date, "to", "from", messageId, rawRef
 		FROM mail_received WHERE email = ? AND mailbox = ?`
 	args := []any{email, mailbox}
 
@@ -303,7 +352,8 @@ func (s *Store) MessageFetch(ctx context.Context, email, mailbox string, uidMin,
 		var m MessageRow
 		err := rows.Scan(&m.ID, &m.UID, &m.Email, &m.Mailbox, &m.Flags,
 			&m.Attachments, &m.Headers, &m.HeaderLines, &m.HTML, &m.Text,
-			&m.TextAsHTML, &m.Subject, &m.Date, &m.To, &m.From, &m.MessageID)
+			&m.TextAsHTML, &m.Subject, &m.Date, &m.To, &m.From, &m.MessageID,
+			&m.RawRef)
 		if err != nil {
 			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
@@ -561,6 +611,7 @@ type MessageRow struct {
 	ID          int64
 	Mailbox     string
 	MessageID   sql.NullString
+	RawRef      sql.NullString
 	Subject     sql.NullString
 	Text        sql.NullString
 	TextAsHTML  sql.NullString
@@ -598,7 +649,7 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 
 	rows, err := tx.QueryContext(ctx,
 		`SELECT email, flags, attachments, headers, headerLines, html, text,
-			textAsHtml, subject, "to", "from", messageId
+			textAsHtml, subject, "to", "from", messageId, rawRef
 		FROM mail_received WHERE email = ? AND mailbox = ? AND uid BETWEEN ? AND ?`,
 		email, sourceMailbox, uidMin, uidMax)
 	if err != nil {
@@ -610,7 +661,7 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 		var m MessageRow
 		err := rows.Scan(&m.Email, &m.Flags, &m.Attachments, &m.Headers,
 			&m.HeaderLines, &m.HTML, &m.Text, &m.TextAsHTML, &m.Subject,
-			&m.To, &m.From, &m.MessageID)
+			&m.To, &m.From, &m.MessageID, &m.RawRef)
 		if err != nil {
 			return fmt.Errorf("row scan failed: %w", err)
 		}
@@ -618,11 +669,11 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO mail_received
 				(uid, email, mailbox, attachments, headers, headerLines,
-				 html, text, textAsHtml, subject, "to", "from", messageId, flags)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 html, text, textAsHtml, subject, "to", "from", messageId, flags, rawRef)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			nextUID, m.Email, targetMailbox, m.Attachments, m.Headers,
 			m.HeaderLines, m.HTML, m.Text, m.TextAsHTML, m.Subject,
-			m.To, m.From, m.MessageID, m.Flags)
+			m.To, m.From, m.MessageID, m.Flags, m.RawRef)
 		if err != nil {
 			return fmt.Errorf("copy insert failed: %w", err)
 		}
@@ -630,6 +681,61 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 	}
 
 	return tx.Commit()
+}
+
+// MessageFlagRow is the minimal projection a flag-based search needs.
+type MessageFlagRow struct {
+	Flags sql.NullString
+	UID   int64
+}
+
+// MessageFlags returns the UID and flags of every message in a mailbox.
+//
+// SEARCH used to run through MessageFetch, which selects every column: each
+// search pulled the full body of every message in the mailbox into memory to
+// decide which UIDs matched a flag. Clients issue SEARCH constantly, so the
+// projection matters more here than anywhere else in the IMAP path.
+func (s *Store) MessageFlags(ctx context.Context, email, mailbox string) ([]MessageFlagRow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT uid, flags FROM mail_received
+		WHERE email = ? AND mailbox = ? ORDER BY uid ASC`, email, mailbox)
+	if err != nil {
+		return nil, fmt.Errorf("flag fetch failed: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MessageFlagRow
+	for rows.Next() {
+		var m MessageFlagRow
+		if err := rows.Scan(&m.UID, &m.Flags); err != nil {
+			return nil, fmt.Errorf("flag row scan failed: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// RawRefExists reports whether any stored message still references a raw
+// message blob. The blob sweeper asks per candidate rather than loading every
+// live reference into memory, which keeps its footprint flat as the mail store
+// grows; idx_received_rawref makes each lookup an index probe.
+func (s *Store) RawRefExists(ctx context.Context, ref string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT 1 FROM mail_received WHERE rawRef = ? LIMIT 1", ref).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("rawRef lookup failed: %w", err)
+	}
+	return true, nil
 }
 
 // MessageUIDs returns all UIDs for a given email and mailbox in ASC order.

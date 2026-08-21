@@ -1,16 +1,18 @@
 package smtp
 
 import (
-	"encoding/base64"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
-	"io"
-	"mime/quotedprintable"
 	"strings"
+
+	"odac/internal/mail/mimetree"
 )
 
 // parsedMessage holds the extracted fields from an RFC 2822 message,
 // structured to match the existing SQLite schema from the Node.js implementation.
 type parsedMessage struct {
+	attachmentsJSON string // JSON array of attachment metadata, empty when none
 	from            string // JSON: {"value":[{"address":"...","name":"..."}]}
 	headerLinesJSON string // JSON array of {key, line} objects
 	headersJSON     string // JSON object of header key→value
@@ -96,19 +98,12 @@ func parseMessage(raw []byte) parsedMessage {
 	headersBytes, _ := json.Marshal(headers)
 	msg.headersJSON = string(headersBytes)
 
-	// Determine body content type and transfer encoding from headers
-	contentType := strings.ToLower(headers["content-type"])
-	cte := headers["content-transfer-encoding"]
-
-	if strings.Contains(contentType, "text/html") {
-		msg.html = decodeBody(bodySection, cte)
-	} else if strings.Contains(contentType, "multipart/") {
-		// Pass original (non-lowercased) Content-Type to preserve boundary case
-		msg.html, msg.text = parseMIMEBody(headers["content-type"], bodySection)
-	} else {
-		// Default to text/plain
-		msg.text = decodeBody(bodySection, cte)
-	}
+	// One parse feeds both the display bodies and the attachment index; the
+	// tree walk is over the header block's actual structure rather than a
+	// guess made from the Content-Type header alone.
+	tree := mimetree.Parse(raw)
+	pickBodies(raw, tree, &msg.html, &msg.text)
+	msg.attachmentsJSON = buildAttachmentsJSON(raw, tree)
 
 	// If from/to weren't in headers, build from envelope
 	if msg.from == "" {
@@ -156,135 +151,107 @@ func formatAddressJSON(raw string) string {
 	return string(b)
 }
 
-// decodeBody decodes a message body based on its Content-Transfer-Encoding.
-// Supports quoted-printable (RFC 2045 §6.7) and base64 (RFC 2045 §6.8).
-// Returns the original body unchanged for 7bit, 8bit, binary, or unknown encodings.
-func decodeBody(body, encoding string) string {
-	switch strings.TrimSpace(strings.ToLower(encoding)) {
-	case "quoted-printable":
-		r := quotedprintable.NewReader(strings.NewReader(body))
-		decoded, err := io.ReadAll(r)
-		if err != nil {
-			return body
+// pickBodies fills in the display bodies of a message: the first
+// non-attachment text/html and text/plain parts, decoded.
+//
+// Attachments are skipped explicitly. A text/plain file sent as an attachment
+// used to overwrite the message body, because the old walk matched on
+// Content-Type alone and never consulted Content-Disposition.
+func pickBodies(raw []byte, p *mimetree.Part, html, text *string) {
+	if p == nil {
+		return
+	}
+	// An embedded message is an attachment in its own right; its body is not
+	// the body of the message carrying it.
+	if p.IsMessage() {
+		return
+	}
+	if p.Type == "multipart" {
+		for _, c := range p.Children {
+			pickBodies(raw, c, html, text)
 		}
-		return string(decoded)
-	case "base64":
-		cleaned := strings.NewReplacer("\r", "", "\n", "", " ", "").Replace(body)
-		decoded, err := base64.StdEncoding.DecodeString(cleaned)
-		if err != nil {
-			return body
+		return
+	}
+	if p.IsAttachment() {
+		return
+	}
+	switch p.MediaType() {
+	case "text/html":
+		if *html == "" {
+			*html = string(p.DecodedBody(raw))
 		}
-		return string(decoded)
-	default:
-		return body
+	case "text/plain":
+		if *text == "" {
+			*text = string(p.DecodedBody(raw))
+		}
 	}
 }
 
-// extractHeader returns the full (unfolded) value of a specific header from a raw header block.
-// Handles RFC 2822 continuation lines (lines starting with whitespace).
-func extractHeader(headerBlock, name string) string {
-	target := strings.ToLower(name) + ":"
-	lines := strings.Split(headerBlock, "\n")
-	for i, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), target) {
-			value := strings.TrimSpace(line[strings.Index(line, ":")+1:])
-			// Collect continuation lines (RFC 2822 §2.2.3)
-			for j := i + 1; j < len(lines); j++ {
-				cont := strings.TrimRight(lines[j], "\r")
-				if len(cont) == 0 {
-					break
-				}
-				if cont[0] == ' ' || cont[0] == '\t' {
-					value += " " + strings.TrimSpace(cont)
-				} else {
-					break
-				}
-			}
-			return value
-		}
-	}
-	return ""
+// attachmentMeta is one entry of the mail_received.attachments index.
+//
+// The attachment bytes are deliberately absent: they already live in the raw
+// message, addressed by Offset and Length, so storing them again in SQL would
+// duplicate the largest data in the system. The predecessor format inlined
+// them as a JSON array of byte values, which inflated binary content roughly
+// 3.6x and was loaded on every query that touched the row.
+type attachmentMeta struct {
+	Type               string            `json:"type"`
+	ContentType        string            `json:"contentType"`
+	PartID             string            `json:"partId"`
+	ContentDisposition string            `json:"contentDisposition"`
+	Filename           string            `json:"filename,omitempty"`
+	ContentID          string            `json:"contentId,omitempty"`
+	CID                string            `json:"cid,omitempty"`
+	Headers            map[string]string `json:"headers"`
+	Checksum           string            `json:"checksum"`
+	Size               int               `json:"size"`
+	Encoding           string            `json:"encoding"`
+	Offset             int               `json:"offset"`
+	Length             int               `json:"length"`
 }
 
-// maxMIMEDepth caps recursion to prevent stack overflow from malicious nested MIME.
-const maxMIMEDepth = 10
-
-// parseMIMEBody extracts text/plain and text/html parts from a multipart message.
-func parseMIMEBody(contentType, body string) (html, text string) {
-	return parseMIMEBodyDepth(contentType, body, 0)
-}
-
-// parseMIMEBodyDepth is the depth-limited recursive MIME parser.
-func parseMIMEBodyDepth(contentType, body string, depth int) (html, text string) {
-	if depth >= maxMIMEDepth {
-		return "", body
+// buildAttachmentsJSON indexes the message's attachments. Offset and Length
+// point at the still-encoded part body inside the raw message, which is what
+// an IMAP BODY[partId] fetch returns verbatim; Size and Checksum describe the
+// decoded file, matching what a client saves to disk.
+func buildAttachmentsJSON(raw []byte, tree *mimetree.Part) string {
+	found := tree.Attachments()
+	if len(found) == 0 {
+		return ""
 	}
 
-	// Extract boundary from Content-Type header
-	boundary := ""
-	for _, param := range strings.Split(contentType, ";") {
-		param = strings.TrimSpace(param)
-		if strings.HasPrefix(strings.ToLower(param), "boundary=") {
-			boundary = strings.Trim(param[9:], `"' `)
-			break
+	metas := make([]attachmentMeta, 0, len(found))
+	for _, a := range found {
+		decoded := a.Part.DecodedBody(raw)
+		// MD5 matches the checksum the previous Node.js implementation wrote,
+		// and is a content fingerprint here, not a security primitive.
+		sum := md5.Sum(decoded)
+
+		disposition := a.Part.Disposition
+		if disposition == "" {
+			disposition = "attachment"
 		}
+
+		metas = append(metas, attachmentMeta{
+			Type:               "attachment",
+			ContentType:        a.Part.MediaType(),
+			PartID:             a.PartID,
+			ContentDisposition: disposition,
+			Filename:           a.Part.Filename(),
+			ContentID:          a.Part.ContentID,
+			CID:                strings.Trim(a.Part.ContentID, "<>"),
+			Headers:            map[string]string{},
+			Checksum:           hex.EncodeToString(sum[:]),
+			Size:               len(decoded),
+			Encoding:           a.Part.Encoding,
+			Offset:             a.Part.BodyStart,
+			Length:             a.Part.Size(),
+		})
 	}
 
-	if boundary == "" {
-		return "", body
+	out, err := json.Marshal(metas)
+	if err != nil {
+		return ""
 	}
-
-	delimiter := "--" + boundary
-	parts := strings.Split(body, delimiter)
-
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" || part == "--" {
-			continue
-		}
-
-		// Split part headers from part body
-		partHeaderEnd := strings.Index(part, "\r\n\r\n")
-		if partHeaderEnd < 0 {
-			partHeaderEnd = strings.Index(part, "\n\n")
-		}
-		if partHeaderEnd < 0 {
-			continue
-		}
-
-		rawPartHeaders := part[:partHeaderEnd]
-		partHeaders := strings.ToLower(rawPartHeaders)
-		partBody := strings.TrimLeft(part[partHeaderEnd:], "\r\n")
-
-		// Trim trailing \r\n that precedes the next boundary delimiter (RFC 2046 §5.1.1)
-		partBody = strings.TrimRight(partBody, "\r\n")
-
-		// Decode body based on Content-Transfer-Encoding
-		cte := extractHeader(rawPartHeaders, "Content-Transfer-Encoding")
-		partBody = decodeBody(partBody, cte)
-
-		// Recurse into nested multipart
-		if strings.Contains(partHeaders, "multipart/") {
-			nestedCT := extractHeader(rawPartHeaders, "Content-Type")
-			if nestedCT != "" {
-				subHTML, subText := parseMIMEBodyDepth(nestedCT, partBody, depth+1)
-				if subHTML != "" {
-					html = subHTML
-				}
-				if subText != "" {
-					text = subText
-				}
-			}
-			continue
-		}
-
-		if strings.Contains(partHeaders, "text/html") {
-			html = partBody
-		} else if strings.Contains(partHeaders, "text/plain") {
-			text = partBody
-		}
-	}
-
-	return html, text
+	return string(out)
 }
