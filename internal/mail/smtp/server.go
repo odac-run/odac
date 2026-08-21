@@ -12,6 +12,7 @@ import (
 	gosmtp "github.com/emersion/go-smtp"
 
 	"odac/internal/mail/auth"
+	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
 	"odac/internal/mail/storage"
@@ -37,12 +38,12 @@ type Server struct {
 // Two backends are created with separate limiter instances so port 25
 // (inbound MTA traffic) and port 465 (authenticated submission) get
 // independent ceilings; a flood from one cannot starve the other.
-func NewServer(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config, dkimSigner interface {
+func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, dkimSigner interface {
 	Sign(string, []byte) ([]byte, error)
 }) *Server {
 	return &Server{
-		inboundBackend:    NewBackend(store, fw, getConfig, limits.New(limits.SMTPInboundProfile()), "inbound"),
-		submissionBackend: NewBackend(store, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), "submission"),
+		inboundBackend:    NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPInboundProfile()), "inbound"),
+		submissionBackend: NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), "submission"),
 		dkimSigner:        dkimSigner,
 		getConfig:         getConfig,
 	}
@@ -67,7 +68,7 @@ func (s *Server) Start() {
 	s.insecure.Addr = ":25"
 	s.insecure.AllowInsecureAuth = false
 	s.insecure.Domain = "ODAC"
-	s.insecure.MaxMessageBytes = 10 * 1024 * 1024 // 10MB
+	s.insecure.MaxMessageBytes = config.MaxMessageBytes()
 	s.insecure.MaxRecipients = 100
 	s.insecure.ReadTimeout = 60 * time.Second
 	s.insecure.WriteTimeout = 60 * time.Second
@@ -76,7 +77,7 @@ func (s *Server) Start() {
 	s.secure = gosmtp.NewServer(s.submissionBackend)
 	s.secure.Addr = ":465"
 	s.secure.Domain = "ODAC"
-	s.secure.MaxMessageBytes = 10 * 1024 * 1024
+	s.secure.MaxMessageBytes = config.MaxMessageBytes()
 	s.secure.MaxRecipients = 100
 	s.secure.ReadTimeout = 60 * time.Second
 	s.secure.WriteTimeout = 60 * time.Second

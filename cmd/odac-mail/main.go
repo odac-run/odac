@@ -37,6 +37,7 @@ import (
 
 	"odac/internal/mail/api"
 	"odac/internal/mail/auth"
+	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
 	"odac/internal/mail/dkim"
 	imapserver "odac/internal/mail/imap"
@@ -44,6 +45,19 @@ import (
 	"odac/internal/mail/storage"
 	"odac/internal/netutil"
 )
+
+// blobRoot resolves the directory holding verbatim messages, overridable with
+// ODAC_MAIL_BLOB_DIR for deployments that keep bulk data off the config volume.
+func blobRoot() string {
+	if dir := os.Getenv("ODAC_MAIL_BLOB_DIR"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".odac", "mail", "objects")
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -71,6 +85,20 @@ func main() {
 		log.Fatalf("[Mail] Failed to initialize database: %v", err)
 	}
 	defer store.Close()
+
+	// Verbatim messages live next to the database, on the same bind-mounted
+	// volume, so a message and the row referencing it are backed up together.
+	blobs, err := blob.NewStore(blobRoot())
+	if err != nil {
+		log.Fatalf("[Mail] Failed to initialize message store: %v", err)
+	}
+	log.Printf("[Mail] Raw message store: %s", blobs.Root())
+
+	// Content addressing means a blob outlives the row that created it once a
+	// message is deleted; without this sweep the store grows without bound.
+	sweeper := blob.NewSweeper(blobs, store)
+	sweeper.Start()
+	defer sweeper.Stop()
 
 	// Initialize firewall
 	fw := auth.NewFirewall()
@@ -106,12 +134,12 @@ func main() {
 	dkimSigner := dkim.NewSigner(getConfig)
 
 	// Start SMTP Server (ports 25 and 465)
-	smtpSrv := smtpserver.NewServer(store, fw, getConfig, dkimSigner)
+	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, dkimSigner)
 	smtpSrv.Start()
 	defer smtpSrv.Stop()
 
 	// Start IMAP Server (ports 143 and 993)
-	imapSrv := imapserver.NewServer(store, fw, getConfig)
+	imapSrv := imapserver.NewServer(store, blobs, fw, getConfig)
 	imapSrv.Start()
 	defer imapSrv.Stop()
 

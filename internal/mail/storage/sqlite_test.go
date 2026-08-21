@@ -454,3 +454,102 @@ func TestMessageStoreFlags_UnknownAction(t *testing.T) {
 		t.Error("unknown action should return an error, got nil")
 	}
 }
+
+// legacySchema is the mail_received table as the Node.js implementation left
+// it: no rawRef column. Opening a store against such a database must upgrade
+// it in place rather than fail.
+const legacySchema = `CREATE TABLE mail_received (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	uid         INTEGER NOT NULL,
+	email       VARCHAR(255) NOT NULL,
+	mailbox     VARCHAR(255),
+	flags       JSON DEFAULT '[]',
+	attachments JSON,
+	headers     JSON,
+	headerLines JSON,
+	html        TEXT,
+	text        TEXT,
+	textAsHtml  TEXT,
+	subject     TEXT,
+	date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	"to"        JSON,
+	"from"      JSON,
+	messageId   TEXT,
+	UNIQUE(email, uid)
+)`
+
+func TestMigrate_UpgradesLegacyDatabase(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy_mail")
+
+	// Build a database that predates rawRef and put a message in it, so the
+	// upgrade has to preserve existing rows.
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if _, err := legacy.Exec(
+		`INSERT INTO mail_received (uid, email, mailbox, subject) VALUES (1, 'a@b.com', 'INBOX', 'old mail')`); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore against a legacy database failed: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// The column and the index over it must both exist after the upgrade.
+	msgs, err := store.MessageFetch(ctx, "a@b.com", "INBOX", 0, 0)
+	if err != nil {
+		t.Fatalf("MessageFetch after upgrade: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Subject.String != "old mail" {
+		t.Fatalf("existing row lost in upgrade: %+v", msgs)
+	}
+	if msgs[0].RawRef.Valid {
+		t.Errorf("rawRef should be NULL on a pre-blob row, got %q", msgs[0].RawRef.String)
+	}
+
+	var indexName string
+	err = store.db.QueryRowContext(ctx,
+		"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_received_rawref'").Scan(&indexName)
+	if err != nil {
+		t.Fatalf("idx_received_rawref missing after upgrade: %v", err)
+	}
+
+	if _, err := store.RawRefExists(ctx, "deadbeef"); err != nil {
+		t.Errorf("RawRefExists after upgrade: %v", err)
+	}
+}
+
+// Reopening an already-upgraded database must be a no-op, not a duplicate
+// ALTER TABLE.
+func TestMigrate_IsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "twice_mail")
+
+	first, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("first NewStore: %v", err)
+	}
+	first.Close()
+
+	second, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("second NewStore: %v", err)
+	}
+	defer second.Close()
+
+	if _, err := second.RawRefExists(context.Background(), "deadbeef"); err != nil {
+		t.Errorf("RawRefExists on reopened store: %v", err)
+	}
+}

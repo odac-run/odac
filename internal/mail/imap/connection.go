@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"odac/internal/mail/auth"
+	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
 	"odac/internal/mail/storage"
@@ -38,6 +39,7 @@ var permanentFlags = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Dr
 // Connection represents a single IMAP client session with its state machine.
 type Connection struct {
 	auth       string // Authenticated email (empty = not authenticated)
+	blobs      *blob.Store
 	conn       net.Conn
 	tls        bool        // True if connection is TLS-encrypted (implicit TLS or post-STARTTLS)
 	tlsConfig  *tls.Config // Used for STARTTLS upgrade on plaintext listener
@@ -53,9 +55,10 @@ type Connection struct {
 
 // NewConnection creates a new IMAP connection handler.
 // tlsConfig is required so plaintext connections on port 143 can negotiate STARTTLS.
-func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, fw *auth.Firewall, getConfig func() config.Config, limit *limits.Handle) *Connection {
+func NewConnection(conn net.Conn, tlsConfig *tls.Config, store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, limit *limits.Handle) *Connection {
 	_, isTLS := conn.(*tls.Conn)
 	return &Connection{
+		blobs:     blobs,
 		conn:      conn,
 		tls:       isTLS,
 		tlsConfig: tlsConfig,

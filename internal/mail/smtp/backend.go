@@ -16,8 +16,10 @@ import (
 	"github.com/emersion/go-smtp"
 
 	"odac/internal/mail/auth"
+	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
+	"odac/internal/mail/message"
 	"odac/internal/mail/storage"
 )
 
@@ -27,6 +29,7 @@ import (
 // One Backend instance is bound to one listener (port 25 or 465) so the
 // limiter and log tag reflect that listener's traffic in isolation.
 type Backend struct {
+	blobs     *blob.Store
 	firewall  *auth.Firewall
 	getConfig func() config.Config
 	limiter   *limits.Limiter
@@ -35,8 +38,9 @@ type Backend struct {
 }
 
 // NewBackend creates a new SMTP backend with the given dependencies.
-func NewBackend(store *storage.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, tag string) *Backend {
+func NewBackend(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, tag string) *Backend {
 	return &Backend{
+		blobs:     blobs,
 		firewall:  fw,
 		getConfig: getConfig,
 		limiter:   limiter,
@@ -220,26 +224,42 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 // Parses the RFC 2822 message, stores locally for known recipients,
 // and triggers outbound delivery for authenticated senders.
 func (s *Session) Data(r io.Reader) error {
-	const maxBody = 10 * 1024 * 1024 // 10MB limit
-	body, err := io.ReadAll(io.LimitReader(r, maxBody))
+	maxBody := config.MaxMessageBytes()
+	// Read one byte past the ceiling so a message of exactly maxBody bytes is
+	// accepted and only a genuinely oversized one trips the check below.
+	body, err := io.ReadAll(io.LimitReader(r, maxBody+1))
 	if err != nil {
 		log.Printf("[SMTP] DATA read failed (read=%d sender=%s rcpts=%d ip=%s): %v",
 			len(body), s.from, len(s.recipients), s.ip, err)
 		return err
 	}
-	if len(body) == maxBody {
-		log.Printf("[SMTP] DATA hit 10MB cap (truncated) sender=%s rcpts=%d ip=%s",
-			s.from, len(s.recipients), s.ip)
+	// go-smtp enforces the same ceiling and answers 552 before reaching here.
+	// Hitting it anyway means a truncated message, which must be refused
+	// rather than stored: a half message parses into a plausible-looking body
+	// with every attachment past the cut silently missing.
+	if int64(len(body)) > maxBody {
+		log.Printf("[SMTP] DATA exceeded %d byte cap sender=%s rcpts=%d ip=%s",
+			maxBody, s.from, len(s.recipients), s.ip)
+		return &smtp.SMTPError{
+			Code:         552,
+			EnhancedCode: smtp.EnhancedCode{5, 3, 4},
+			Message:      "message exceeds maximum size",
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// The verbatim message is the source of truth: IMAP serves BODY[] and
+	// BODYSTRUCTURE from it, so attachments survive exactly as sent. The
+	// parsed fields below are derived display data, not the record itself.
+	rawRef := s.storeRaw(body)
+
 	// Parse RFC 2822 message into headers and body parts
-	parsed := parseMessage(body)
+	parsed := message.Parse(body)
 	log.Printf("[SMTP] DATA received: %d bytes sender=%s rcpts=%v ip=%s msg-id=%q subject=%q html=%dB text=%dB",
 		len(body), s.from, s.recipients, s.ip,
-		parsed.messageID, parsed.subject, len(parsed.html), len(parsed.text))
+		parsed.MessageID, parsed.Subject, len(parsed.HTML), len(parsed.Text))
 
 	sentStored := false
 	storedCount := 0
@@ -274,24 +294,18 @@ func (s *Session) Data(r io.Reader) error {
 		// Store locally for local recipients
 		if rcptIsLocal && rcpt != s.from {
 			msg := &storage.MessageRow{
-				Email:       rcpt,
-				Flags:       toNullString("[]"),
-				From:        toNullString(parsed.from),
-				Headers:     toNullString(parsed.headersJSON),
-				HeaderLines: toNullString(parsed.headerLinesJSON),
-				HTML:        toNullString(parsed.html),
-				Mailbox:     "INBOX",
-				MessageID:   toNullString(parsed.messageID),
-				Subject:     toNullString(parsed.subject),
-				Text:        toNullString(parsed.text),
-				To:          toNullString(parsed.to),
+				Email:   rcpt,
+				Flags:   toNullString("[]"),
+				Mailbox: "INBOX",
+				RawRef:  toNullString(rawRef),
 			}
+			parsed.Apply(msg)
 			if err := s.backend.store.MessageStore(ctx, msg); err != nil {
 				log.Printf("[SMTP] Failed to store message for %s: %v", rcpt, err)
 			} else {
 				storedCount++
 				log.Printf("[SMTP] Stored INBOX message: rcpt=%s msg-id=%q subject=%q",
-					rcpt, parsed.messageID, parsed.subject)
+					rcpt, parsed.MessageID, parsed.Subject)
 			}
 		} else if rcptIsLocal && rcpt == s.from {
 			log.Printf("[SMTP] Skipped store (self-loop, rcpt==from): %s", rcpt)
@@ -311,22 +325,16 @@ func (s *Session) Data(r io.Reader) error {
 		if senderIsLocal && !sentStored {
 			sentStored = true
 			sentMsg := &storage.MessageRow{
-				Email:       s.from,
-				Flags:       toNullString(`["seen"]`),
-				From:        toNullString(parsed.from),
-				Headers:     toNullString(parsed.headersJSON),
-				HeaderLines: toNullString(parsed.headerLinesJSON),
-				HTML:        toNullString(parsed.html),
-				Mailbox:     "Sent",
-				MessageID:   toNullString(parsed.messageID),
-				Subject:     toNullString(parsed.subject),
-				Text:        toNullString(parsed.text),
-				To:          toNullString(parsed.to),
+				Email:   s.from,
+				Flags:   toNullString(`["seen"]`),
+				Mailbox: "Sent",
+				RawRef:  toNullString(rawRef),
 			}
+			parsed.Apply(sentMsg)
 			if err := s.backend.store.MessageStore(ctx, sentMsg); err != nil {
 				log.Printf("[SMTP] Failed to store sent message for %s: %v", s.from, err)
 			} else {
-				log.Printf("[SMTP] Stored Sent message: from=%s msg-id=%q", s.from, parsed.messageID)
+				log.Printf("[SMTP] Stored Sent message: from=%s msg-id=%q", s.from, parsed.MessageID)
 			}
 		}
 	}
@@ -334,6 +342,24 @@ func (s *Session) Data(r io.Reader) error {
 	log.Printf("[SMTP] DATA complete: stored=%d outbound=%d sender=%s rcpts=%d ip=%s",
 		storedCount, outboundCount, s.from, len(s.recipients), s.ip)
 	return nil
+}
+
+// storeRaw persists the verbatim message and returns its content address.
+//
+// A blob failure is logged and swallowed: the message still lands in the
+// mailbox with its parsed body, and IMAP falls back to the synthesized form
+// used for pre-blob rows. Losing a delivery because a disk write failed would
+// be a far worse outcome than losing attachment fidelity on one message.
+func (s *Session) storeRaw(body []byte) string {
+	if s.backend.blobs == nil {
+		return ""
+	}
+	ref, err := s.backend.blobs.Put(body)
+	if err != nil {
+		log.Printf("[SMTP] Raw message store failed (sender=%s size=%d): %v", s.from, len(body), err)
+		return ""
+	}
+	return ref
 }
 
 // Reset is called between transactions (RSET command).

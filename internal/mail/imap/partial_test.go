@@ -46,7 +46,7 @@ func TestWriteBodySectionPartialRange(t *testing.T) {
 
 			c := &Connection{conn: server}
 			msg := &storage.MessageRow{Text: sql.NullString{String: body, Valid: true}}
-			c.writeBodySection(tt.items, msg)
+			c.writeBodySection(tt.items, msg, newRawView(c, msg))
 			server.Close()
 
 			out := <-got
