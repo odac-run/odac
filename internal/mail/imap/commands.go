@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"odac/internal/mail/auth"
+	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
+	"odac/internal/mail/message"
 	"odac/internal/mail/storage"
 
 	"golang.org/x/text/cases"
@@ -1298,7 +1300,9 @@ func (c *Connection) cmdAppend(tag, args string) {
 		return
 	}
 
-	const maxLiteralSize = 10 * 1024 * 1024 // 10MB hard limit
+	// The ceiling matches SMTP's, so a message the server accepted for delivery
+	// can always be copied back into a mailbox by the client.
+	maxLiteralSize := config.MaxMessageBytes()
 
 	flags := storage.EncodeFlags(storage.CanonicalFlags(appendFlagGroup(parts[1:])))
 	var literalSize int64
@@ -1326,18 +1330,42 @@ func (c *Connection) cmdAppend(tag, args string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// An appended message is a complete RFC 5322 message, so it is stored the
+	// same way a delivered one is: the verbatim bytes are the record and the
+	// columns are derived from them. Writing the raw message into the html
+	// column instead, as this used to, loses every attachment on a saved draft
+	// and leaves the client with no envelope to list it by.
 	msg := &storage.MessageRow{
 		Email:   c.auth,
 		Flags:   toNullString(flags),
-		HTML:    toNullString(string(buf[:n])),
 		Mailbox: mailbox,
+		RawRef:  toNullString(c.storeRaw(buf[:n])),
 	}
+	message.Parse(buf[:n]).Apply(msg)
 
 	if err := c.store.MessageStore(ctx, msg); err != nil {
+		log.Printf("[IMAP] APPEND to %q for %q failed: %v", mailbox, c.auth, err)
 		c.write(fmt.Sprintf("%s NO APPEND failed\r\n", tag))
 		return
 	}
 	c.write(fmt.Sprintf("%s OK APPEND completed\r\n", tag))
+}
+
+// storeRaw writes the verbatim message to the blob store and returns its
+// reference, or an empty string when no store is configured or the write fails.
+// A failed blob write must not fail the APPEND: the message still lands in the
+// mailbox through the derived columns, on the same fallback path that serves
+// rows delivered before the blob store existed.
+func (c *Connection) storeRaw(raw []byte) string {
+	if c.blobs == nil {
+		return ""
+	}
+	ref, err := c.blobs.Put(raw)
+	if err != nil {
+		log.Printf("[IMAP] Failed to store raw message for %q: %v", c.auth, err)
+		return ""
+	}
+	return ref
 }
 
 func (c *Connection) write(data string) {

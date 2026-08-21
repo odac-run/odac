@@ -1,32 +1,34 @@
-package smtp
+package message
 
 import (
 	"crypto/md5"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
 
 	"odac/internal/mail/mimetree"
+	"odac/internal/mail/storage"
 )
 
-// parsedMessage holds the extracted fields from an RFC 2822 message,
+// Parsed holds the extracted fields from an RFC 2822 message,
 // structured to match the existing SQLite schema from the Node.js implementation.
-type parsedMessage struct {
-	attachmentsJSON string // JSON array of attachment metadata, empty when none
-	from            string // JSON: {"value":[{"address":"...","name":"..."}]}
-	headerLinesJSON string // JSON array of {key, line} objects
-	headersJSON     string // JSON object of header key→value
-	html            string
-	messageID       string
-	subject         string
-	text            string
-	to              string // JSON: {"value":[{"address":"...","name":"..."}]}
+type Parsed struct {
+	AttachmentsJSON string // JSON array of attachment metadata, empty when none
+	From            string // JSON: {"value":[{"address":"...","name":"..."}]}
+	HTML            string
+	HeaderLinesJSON string // JSON array of {key, line} objects
+	HeadersJSON     string // JSON object of header key→value
+	MessageID       string
+	Subject         string
+	Text            string
+	To              string // JSON: {"value":[{"address":"...","name":"..."}]}
 }
 
-// parseMessage splits an RFC 2822 message into headers and body,
+// Parse splits an RFC 2822 message into headers and body,
 // extracting structured fields compatible with the Node.js mailparser output format.
-func parseMessage(raw []byte) parsedMessage {
-	msg := parsedMessage{}
+func Parse(raw []byte) Parsed {
+	msg := Parsed{}
 	content := string(raw)
 
 	// Split headers from body at the first empty line
@@ -82,35 +84,35 @@ func parseMessage(raw []byte) parsedMessage {
 
 		switch keyLower {
 		case "subject":
-			msg.subject = value
+			msg.Subject = value
 		case "message-id":
-			msg.messageID = value
+			msg.MessageID = value
 		case "from":
-			msg.from = formatAddressJSON(value)
+			msg.From = formatAddressJSON(value)
 		case "to":
-			msg.to = formatAddressJSON(value)
+			msg.To = formatAddressJSON(value)
 		}
 	}
 
 	headerLinesBytes, _ := json.Marshal(headerLines)
-	msg.headerLinesJSON = string(headerLinesBytes)
+	msg.HeaderLinesJSON = string(headerLinesBytes)
 
 	headersBytes, _ := json.Marshal(headers)
-	msg.headersJSON = string(headersBytes)
+	msg.HeadersJSON = string(headersBytes)
 
 	// One parse feeds both the display bodies and the attachment index; the
 	// tree walk is over the header block's actual structure rather than a
 	// guess made from the Content-Type header alone.
 	tree := mimetree.Parse(raw)
-	pickBodies(raw, tree, &msg.html, &msg.text)
-	msg.attachmentsJSON = buildAttachmentsJSON(raw, tree)
+	pickBodies(raw, tree, &msg.HTML, &msg.Text)
+	msg.AttachmentsJSON = buildAttachmentsJSON(raw, tree)
 
 	// If from/to weren't in headers, build from envelope
-	if msg.from == "" {
-		msg.from = `{"value":[]}`
+	if msg.From == "" {
+		msg.From = `{"value":[]}`
 	}
-	if msg.to == "" {
-		msg.to = `{"value":[]}`
+	if msg.To == "" {
+		msg.To = `{"value":[]}`
 	}
 
 	return msg
@@ -254,4 +256,33 @@ func buildAttachmentsJSON(raw []byte, tree *mimetree.Part) string {
 		return ""
 	}
 	return string(out)
+}
+
+// Apply fills the derived display columns of a stored message from the parse
+// result, leaving identity and placement (Email, Mailbox, Flags, RawRef) to the
+// caller. Delivery over SMTP and APPEND over IMAP both land in the same table
+// and must agree on how a raw message maps onto it, so the mapping lives here
+// rather than being spelled out again at each call site.
+//
+// These columns are derived display data. The verbatim message in the blob
+// store remains the record, and rebuilding one from these fields is lossy.
+func (p Parsed) Apply(row *storage.MessageRow) {
+	row.Attachments = toNullString(p.AttachmentsJSON)
+	row.From = toNullString(p.From)
+	row.HTML = toNullString(p.HTML)
+	row.HeaderLines = toNullString(p.HeaderLinesJSON)
+	row.Headers = toNullString(p.HeadersJSON)
+	row.MessageID = toNullString(p.MessageID)
+	row.Subject = toNullString(p.Subject)
+	row.Text = toNullString(p.Text)
+	row.To = toNullString(p.To)
+}
+
+// toNullString maps an empty string to SQL NULL so an absent header is stored
+// as NULL rather than as an empty value.
+func toNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
 }

@@ -19,6 +19,7 @@ import (
 	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
+	"odac/internal/mail/message"
 	"odac/internal/mail/storage"
 )
 
@@ -255,10 +256,10 @@ func (s *Session) Data(r io.Reader) error {
 	rawRef := s.storeRaw(body)
 
 	// Parse RFC 2822 message into headers and body parts
-	parsed := parseMessage(body)
+	parsed := message.Parse(body)
 	log.Printf("[SMTP] DATA received: %d bytes sender=%s rcpts=%v ip=%s msg-id=%q subject=%q html=%dB text=%dB",
 		len(body), s.from, s.recipients, s.ip,
-		parsed.messageID, parsed.subject, len(parsed.html), len(parsed.text))
+		parsed.MessageID, parsed.Subject, len(parsed.HTML), len(parsed.Text))
 
 	sentStored := false
 	storedCount := 0
@@ -293,26 +294,18 @@ func (s *Session) Data(r io.Reader) error {
 		// Store locally for local recipients
 		if rcptIsLocal && rcpt != s.from {
 			msg := &storage.MessageRow{
-				Attachments: toNullString(parsed.attachmentsJSON),
-				Email:       rcpt,
-				Flags:       toNullString("[]"),
-				From:        toNullString(parsed.from),
-				Headers:     toNullString(parsed.headersJSON),
-				HeaderLines: toNullString(parsed.headerLinesJSON),
-				HTML:        toNullString(parsed.html),
-				Mailbox:     "INBOX",
-				MessageID:   toNullString(parsed.messageID),
-				RawRef:      toNullString(rawRef),
-				Subject:     toNullString(parsed.subject),
-				Text:        toNullString(parsed.text),
-				To:          toNullString(parsed.to),
+				Email:   rcpt,
+				Flags:   toNullString("[]"),
+				Mailbox: "INBOX",
+				RawRef:  toNullString(rawRef),
 			}
+			parsed.Apply(msg)
 			if err := s.backend.store.MessageStore(ctx, msg); err != nil {
 				log.Printf("[SMTP] Failed to store message for %s: %v", rcpt, err)
 			} else {
 				storedCount++
 				log.Printf("[SMTP] Stored INBOX message: rcpt=%s msg-id=%q subject=%q",
-					rcpt, parsed.messageID, parsed.subject)
+					rcpt, parsed.MessageID, parsed.Subject)
 			}
 		} else if rcptIsLocal && rcpt == s.from {
 			log.Printf("[SMTP] Skipped store (self-loop, rcpt==from): %s", rcpt)
@@ -332,24 +325,16 @@ func (s *Session) Data(r io.Reader) error {
 		if senderIsLocal && !sentStored {
 			sentStored = true
 			sentMsg := &storage.MessageRow{
-				Attachments: toNullString(parsed.attachmentsJSON),
-				Email:       s.from,
-				Flags:       toNullString(`["seen"]`),
-				From:        toNullString(parsed.from),
-				Headers:     toNullString(parsed.headersJSON),
-				HeaderLines: toNullString(parsed.headerLinesJSON),
-				HTML:        toNullString(parsed.html),
-				Mailbox:     "Sent",
-				MessageID:   toNullString(parsed.messageID),
-				RawRef:      toNullString(rawRef),
-				Subject:     toNullString(parsed.subject),
-				Text:        toNullString(parsed.text),
-				To:          toNullString(parsed.to),
+				Email:   s.from,
+				Flags:   toNullString(`["seen"]`),
+				Mailbox: "Sent",
+				RawRef:  toNullString(rawRef),
 			}
+			parsed.Apply(sentMsg)
 			if err := s.backend.store.MessageStore(ctx, sentMsg); err != nil {
 				log.Printf("[SMTP] Failed to store sent message for %s: %v", s.from, err)
 			} else {
-				log.Printf("[SMTP] Stored Sent message: from=%s msg-id=%q", s.from, parsed.messageID)
+				log.Printf("[SMTP] Stored Sent message: from=%s msg-id=%q", s.from, parsed.MessageID)
 			}
 		}
 	}
