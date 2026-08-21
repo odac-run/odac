@@ -31,20 +31,17 @@ func Parse(raw []byte) Parsed {
 	msg := Parsed{}
 	content := string(raw)
 
-	// Split headers from body at the first empty line
+	// Only the header block is scanned here. The body is not split off: the
+	// bodies and the attachment index both come from the mimetree walk below,
+	// which reads the raw bytes directly.
 	headerEnd := strings.Index(content, "\r\n\r\n")
 	if headerEnd < 0 {
 		headerEnd = strings.Index(content, "\n\n")
 	}
 
-	var headerSection, bodySection string
+	headerSection := content
 	if headerEnd >= 0 {
 		headerSection = content[:headerEnd]
-		bodySection = content[headerEnd:]
-		// Trim leading \r\n or \n\n separator
-		bodySection = strings.TrimLeft(bodySection, "\r\n")
-	} else {
-		headerSection = content
 	}
 
 	// Parse headers — unfold continuation lines (RFC 2822 §2.2.3)
