@@ -108,6 +108,11 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	// Data repair runs last, once the schema it reads is guaranteed to exist.
+	if err := repairFlags(ctx, tx); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 
@@ -376,7 +381,7 @@ func (s *Store) MessageExpunge(ctx context.Context, email, mailbox string) ([]in
 
 	rows, err := tx.QueryContext(ctx,
 		`SELECT uid FROM mail_received WHERE email = ? AND mailbox = ?
-		AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'deleted')`,
+		AND EXISTS (SELECT 1 FROM JSON_EACH(`+safeFlagsExpr+`) WHERE value = 'deleted')`,
 		email, mailbox)
 	if err != nil {
 		return nil, fmt.Errorf("expunge query failed: %w", err)
@@ -396,7 +401,7 @@ func (s *Store) MessageExpunge(ctx context.Context, email, mailbox string) ([]in
 	if len(uids) > 0 {
 		_, err = tx.ExecContext(ctx,
 			`DELETE FROM mail_received WHERE email = ? AND mailbox = ?
-			AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'deleted')`,
+			AND EXISTS (SELECT 1 FROM JSON_EACH(`+safeFlagsExpr+`) WHERE value = 'deleted')`,
 			email, mailbox)
 		if err != nil {
 			return nil, fmt.Errorf("expunge delete failed: %w", err)
@@ -422,7 +427,7 @@ func (s *Store) MailboxSelect(ctx context.Context, email, mailbox string) (*Mail
 	row := s.db.QueryRowContext(ctx,
 		`SELECT
 			(SELECT COUNT(*) FROM mail_received WHERE email = ? AND mailbox = ?),
-			COALESCE((SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = 'seen') THEN 0 ELSE 1 END) FROM mail_received WHERE email = ? AND mailbox = ?), 0),
+			COALESCE((SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM JSON_EACH(`+safeFlagsExpr+`) WHERE value = 'seen') THEN 0 ELSE 1 END) FROM mail_received WHERE email = ? AND mailbox = ?), 0),
 			COALESCE((SELECT MAX(uid) + 1 FROM mail_received WHERE email = ?), 1),
 			COALESCE(CAST(strftime('%s', (SELECT created FROM mail_account WHERE email = ?)) AS INTEGER), 1)`,
 		email, mailbox, email, mailbox, email, email)
@@ -580,14 +585,14 @@ func storeFlagsBatch(ctx context.Context, tx *sql.Tx, email string, uids []int64
 		var query string
 		if action == "add" {
 			query = fmt.Sprintf(`UPDATE mail_received
-				SET flags = JSON_INSERT(flags, '$[#]', ?)
+				SET flags = JSON_INSERT(`+safeFlagsExpr+`, '$[#]', ?)
 				WHERE email = ? AND uid IN (%s)
-				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
+				AND NOT EXISTS (SELECT 1 FROM JSON_EACH(`+safeFlagsExpr+`) WHERE value = ?)`, inClause)
 		} else {
 			query = fmt.Sprintf(`UPDATE mail_received
-				SET flags = (SELECT JSON_GROUP_ARRAY(value) FROM JSON_EACH(flags) WHERE value != ?)
+				SET flags = (SELECT JSON_GROUP_ARRAY(value) FROM JSON_EACH(`+safeFlagsExpr+`) WHERE value != ?)
 				WHERE email = ? AND uid IN (%s)
-				AND EXISTS (SELECT 1 FROM JSON_EACH(flags) WHERE value = ?)`, inClause)
+				AND EXISTS (SELECT 1 FROM JSON_EACH(`+safeFlagsExpr+`) WHERE value = ?)`, inClause)
 		}
 		args := append([]any{flag, email}, uidArgs...)
 		args = append(args, flag)

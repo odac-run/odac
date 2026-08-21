@@ -232,6 +232,7 @@ func (c *Connection) cmdSelect(tag, args string) {
 
 	stats, err := c.store.MailboxSelect(ctx, c.auth, c.mailbox)
 	if err != nil {
+		log.Printf("[IMAP] SELECT %q for %q failed: %v", c.mailbox, c.auth, err)
 		c.write(fmt.Sprintf("%s NO SELECT failed\r\n", tag))
 		return
 	}
@@ -267,6 +268,7 @@ func (c *Connection) cmdExamine(tag, args string) {
 
 	stats, err := c.store.MailboxSelect(ctx, c.auth, c.mailbox)
 	if err != nil {
+		log.Printf("[IMAP] EXAMINE %q for %q failed: %v", c.mailbox, c.auth, err)
 		c.write(fmt.Sprintf("%s NO EXAMINE failed\r\n", tag))
 		return
 	}
@@ -1080,11 +1082,7 @@ func (c *Connection) cmdStore(tag, args string, isUID bool) {
 	}
 
 	// Parse flags
-	flagStr = strings.Trim(flagStr, "()")
-	var flags []string
-	for _, f := range strings.Fields(flagStr) {
-		flags = append(flags, strings.ToLower(strings.TrimPrefix(f, "\\")))
-	}
+	flags := storage.CanonicalFlags(strings.Fields(strings.Trim(flagStr, "()")))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1302,12 +1300,9 @@ func (c *Connection) cmdAppend(tag, args string) {
 
 	const maxLiteralSize = 10 * 1024 * 1024 // 10MB hard limit
 
-	flags := "[]"
+	flags := storage.EncodeFlags(storage.CanonicalFlags(appendFlagGroup(parts[1:])))
 	var literalSize int64
 	for _, p := range parts[1:] {
-		if strings.HasPrefix(p, "(") {
-			flags = "[" + strings.Trim(p, "()") + "]"
-		}
 		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
 			literalSize, _ = strconv.ParseInt(p[1:len(p)-1], 10, 64)
 		}
@@ -1359,6 +1354,29 @@ func (c *Connection) write(data string) {
 }
 
 // --- Helpers ---
+
+// appendFlagGroup extracts the parenthesized flag list from APPEND arguments.
+// splitArgs breaks on spaces without honoring parentheses, so `(\Seen \Draft)`
+// arrives as several tokens and has to be rejoined before it can be parsed;
+// reading only the first token silently dropped every flag but one.
+func appendFlagGroup(parts []string) []string {
+	start := -1
+	for i, p := range parts {
+		if strings.HasPrefix(p, "(") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	end := start
+	for end < len(parts)-1 && !strings.HasSuffix(parts[end], ")") {
+		end++
+	}
+	group := strings.Join(parts[start:end+1], " ")
+	return strings.Fields(strings.Trim(group, "()"))
+}
 
 func splitArgs(s string) []string {
 	var parts []string
