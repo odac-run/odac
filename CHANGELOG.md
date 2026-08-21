@@ -1,5 +1,20 @@
 ### 🛠️ Fixes & Improvements
 
+- **mail:** drop the dead body split from the message parser
+- **mail:** keep the raw message in a content-addressed blob store
+- **mail:** parse MIME into a tree with byte-offset sections
+- **mail:** serve attachments from the raw message instead of dropping them
+- **mail:** stop APPEND from writing malformed JSON into the flags column
+- **mail:** store appended messages raw instead of dumping them into html
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### 🛠️ Fixes & Improvements
+
 - **app:** make recipe config files produce a valid mount
 
 
