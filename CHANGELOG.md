@@ -1,3 +1,17 @@
+### ✨ What's New
+
+- **app:** add kernel capabilities, sysctls and UDP port support
+- **app:** let an app size its own /dev/shm
+- **gpu:** add GPU reservation functionality and CLI commands
+- **gpu:** make a GPU reservation optional and report what a container holds
+- **mail:** implement RFC 5321 address handling and validation functions
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - **mail:** drop the dead body split from the message parser
