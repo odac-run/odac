@@ -248,3 +248,69 @@ func TestNormalize(t *testing.T) {
 		}
 	})
 }
+
+func TestParseProto(t *testing.T) {
+	valid := []struct {
+		in   any
+		want string
+	}{
+		{nil, TCP},
+		{"", TCP},
+		{"tcp", TCP},
+		{"TCP", TCP},
+		{" udp ", UDP},
+		{"udp", UDP},
+	}
+	for _, c := range valid {
+		got, ok := ParseProto(c.in)
+		if !ok || got != c.want {
+			t.Errorf("ParseProto(%#v) = %q, %v; want %q, true", c.in, got, ok, c.want)
+		}
+	}
+	// A mistyped protocol must fail loudly: silently publishing a VPN's
+	// tunnel as TCP gives it a port that answers nothing.
+	for _, in := range []any{"sctp", "u dp", 17.0, true, []any{"udp"}} {
+		if _, ok := ParseProto(in); ok {
+			t.Errorf("ParseProto(%#v) accepted", in)
+		}
+	}
+}
+
+func TestProtoDegrades(t *testing.T) {
+	if got := Proto(nil); got != TCP {
+		t.Errorf("Proto(nil) = %q", got)
+	}
+	if got := Proto(map[string]any{"host": 80.0, "container": 80.0}); got != TCP {
+		t.Errorf("an entry with no proto = %q, want tcp", got)
+	}
+	// Only a hand-edited config reaches this; the run path needs a decision.
+	if got := Proto(map[string]any{"proto": "sctp"}); got != TCP {
+		t.Errorf("Proto(garbage) = %q, want the tcp default", got)
+	}
+	if !IsUDP(map[string]any{"host": 51820.0, "container": 51820.0, "proto": "udp"}) {
+		t.Error("udp entry not reported as udp")
+	}
+}
+
+// Everything downstream of Primary speaks TCP (the proxy dials it for HTTP,
+// the poller probes it), so a UDP entry may not become the primary while a
+// TCP one exists. All-TCP sets resolve exactly as they did before.
+func TestPrimarySkipsUDP(t *testing.T) {
+	udp := map[string]any{"host": 51820.0, "container": 51820.0, "proto": "udp"}
+	tcp := map[string]any{"host": 8080.0, "container": 80.0}
+	proxied := map[string]any{"host": Proxy, "container": 3000.0}
+
+	if got := Primary([]any{udp, tcp}); !reflect.DeepEqual(got, tcp) {
+		t.Errorf("Primary = %#v, want the tcp entry", got)
+	}
+	if got := Primary([]any{udp, proxied}); !reflect.DeepEqual(got, proxied) {
+		t.Errorf("Primary = %#v, want the proxy entry", got)
+	}
+	// A UDP-only app still has a primary: nothing else can be it.
+	if got := Primary([]any{udp}); !reflect.DeepEqual(got, udp) {
+		t.Errorf("Primary = %#v, want the only entry", got)
+	}
+	if got := Primary([]any{tcp, proxied}); !reflect.DeepEqual(got, proxied) {
+		t.Errorf("Primary = %#v, want the proxy entry (unchanged behaviour)", got)
+	}
+}

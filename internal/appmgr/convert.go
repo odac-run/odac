@@ -3,7 +3,9 @@ package appmgr
 import (
 	"odac/internal/docker"
 	"odac/internal/gpu"
+	"odac/internal/kernel"
 	"odac/internal/netmode"
+	"odac/internal/resources"
 )
 
 // copyMap shallow-copies a decoded-JSON map.
@@ -48,6 +50,32 @@ func toMounts(v any) []docker.Mount {
 // config: it degrades to no GPU rather than failing the start.
 func toGPU(v any) *gpu.Spec {
 	spec, err := gpu.Parse(v)
+	if err != nil {
+		return nil
+	}
+	return spec
+}
+
+// toKernel converts a persisted app record's `caps` / `sysctls` members into
+// a request. Like toGPU the values were validated at creation time, so a
+// malformed one here means a hand-edited config: it degrades to no request
+// rather than failing the start, because the alternative is an app the
+// engine never brings back.
+func toKernel(app map[string]any) *kernel.Spec {
+	spec, err := kernel.Parse(app)
+	if err != nil {
+		return nil
+	}
+	return spec
+}
+
+// toResources converts a persisted app record's `shmSize` member into a
+// request. Like toGPU the value was validated at creation time, so a
+// malformed one here means a hand-edited config: it degrades to the engine
+// default rather than failing the start, because the alternative is an app
+// the engine never brings back.
+func toResources(app map[string]any) *resources.Spec {
+	spec, err := resources.Parse(app)
 	if err != nil {
 		return nil
 	}

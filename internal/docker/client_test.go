@@ -16,7 +16,9 @@ import (
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 
 	"odac/internal/gpu"
+	"odac/internal/kernel"
 	"odac/internal/logx"
+	"odac/internal/resources"
 )
 
 func newTestClient(t *testing.T, f *fakeAPI) *Client {
@@ -962,5 +964,253 @@ func TestRunAppRefusalWithoutGPURequest(t *testing.T) {
 	_, err := newTestClient(t, f).RunApp("cpu", RunOptions{Image: "img"}, nil, nil)
 	if errors.Is(err, ErrGPUUnavailable) {
 		t.Fatalf("CPU app classified as a GPU refusal: %v", err)
+	}
+}
+
+// A UDP entry becomes a udp port key on both the exposed set and the
+// bindings, and TCP entries keep the shape they always had. The two may
+// share a number: they are different bindings to the kernel.
+func TestRunAppUDPPorts(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	_, err := c.RunApp("wg", RunOptions{
+		Image: "img",
+		Ports: []map[string]any{
+			{"host": 51820.0, "container": 51820.0, "proto": "udp", "public": true},
+			{"host": 51820.0, "container": 51820.0},
+			{"host": 8080.0, "container": 80.0, "proto": "tcp"},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := f.created[0]
+	want := nat.PortMap{
+		"51820/udp": {{HostIP: "", HostPort: "51820"}},
+		"51820/tcp": {{HostIP: "127.0.0.1", HostPort: "51820"}},
+		"80/tcp":    {{HostIP: "127.0.0.1", HostPort: "8080"}},
+	}
+	if !reflect.DeepEqual(call.HostConfig.PortBindings, want) {
+		t.Errorf("port bindings = %#v", call.HostConfig.PortBindings)
+	}
+	for _, key := range []string{"51820/udp", "51820/tcp", "80/tcp"} {
+		if _, ok := call.Config.ExposedPorts[nat.Port(key)]; !ok {
+			t.Errorf("exposed ports missing %s: %#v", key, call.Config.ExposedPorts)
+		}
+	}
+}
+
+// Capabilities and sysctls reach HostConfig verbatim, and an app that asked
+// for neither must produce the container config it always produced.
+// /dev/shm sizing reaches the host config, and an app that asked for none
+// keeps the engine default (0 means "unset" on the wire).
+func TestRunAppShmSize(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	if _, err := c.RunApp("frigate", RunOptions{Image: "img", Resources: &resources.Spec{ShmSize: 512 << 20}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.created[0].HostConfig.ShmSize; got != 512<<20 {
+		t.Errorf("shm size = %d, want %d", got, int64(512)<<20)
+	}
+
+	if _, err := c.RunApp("plain", RunOptions{Image: "img"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.created[1].HostConfig.ShmSize; got != 0 {
+		t.Errorf("an app requesting none must send 0, got %d", got)
+	}
+}
+
+func TestRunAppKernelSpec(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	spec := &kernel.Spec{
+		Caps:    []string{kernel.CapNetAdmin},
+		Sysctls: map[string]string{"net.ipv4.ip_forward": "1", "kernel.shmmax": "1024"},
+	}
+	if _, err := c.RunApp("wg", RunOptions{Image: "img", Kernel: spec}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.created[0].HostConfig
+	if !reflect.DeepEqual([]string(hc.CapAdd), []string{kernel.CapNetAdmin}) {
+		t.Errorf("cap add = %#v", hc.CapAdd)
+	}
+	if !reflect.DeepEqual(hc.Sysctls, map[string]string{"net.ipv4.ip_forward": "1", "kernel.shmmax": "1024"}) {
+		t.Errorf("sysctls = %#v", hc.Sysctls)
+	}
+
+	if _, err := c.RunApp("plain", RunOptions{Image: "img"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	hc = f.created[1].HostConfig
+	if hc.CapAdd != nil || hc.Sysctls != nil {
+		t.Errorf("an app requesting neither must send neither: caps %#v sysctls %#v", hc.CapAdd, hc.Sysctls)
+	}
+}
+
+// Host networking shares the host's network namespace, so the daemon refuses
+// a create carrying net.* sysctls. They are dropped (the engine would
+// otherwise refuse every recreate), while the namespaced IPC ones and the
+// capabilities stay.
+func TestRunAppHostNetworkDropsNetSysctls(t *testing.T) {
+	f := newFakeAPI()
+	f.images["img"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	spec := &kernel.Spec{
+		Caps:    []string{kernel.CapNetAdmin},
+		Sysctls: map[string]string{"net.ipv4.ip_forward": "1", "kernel.shmmax": "1024"},
+	}
+	if _, err := c.RunApp("wg", RunOptions{Image: "img", NetworkMode: "host", Kernel: spec}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.created[0].HostConfig
+	if !reflect.DeepEqual(hc.Sysctls, map[string]string{"kernel.shmmax": "1024"}) {
+		t.Errorf("sysctls = %#v, want the net ones dropped", hc.Sysctls)
+	}
+	if !reflect.DeepEqual([]string(hc.CapAdd), []string{kernel.CapNetAdmin}) {
+		t.Errorf("cap add = %#v, capabilities are unaffected by the namespace", hc.CapAdd)
+	}
+	// The caller's spec must survive: it is the persisted record.
+	if len(spec.Sysctls) != 2 {
+		t.Errorf("RunApp mutated the caller's spec: %#v", spec.Sysctls)
+	}
+}
+
+// An optional request that resolved to a runtime is passed through exactly
+// like a required one. Optional decides whether the app gets a GPU at all,
+// never how the container is built once it does: an app that accelerated
+// "when possible" must get the same /dev/dri and the same render groups as
+// one that demanded the card.
+func TestRunAppGPUOptionalPassthroughIsIdentical(t *testing.T) {
+	hostConfigFor := func(t *testing.T, spec *gpu.Spec) *container.HostConfig {
+		t.Helper()
+		fakeRenderGroups(t, "44", "993")
+		f := newFakeAPI()
+		f.images["img"] = image.InspectResponse{}
+		if _, err := newTestClient(t, f).RunApp("cam", RunOptions{Image: "img", GPU: spec}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		return f.created[0].HostConfig
+	}
+
+	required := hostConfigFor(t, &gpu.Spec{Vendor: gpu.VendorIntel, Runtime: gpu.RuntimeIntel, Count: gpu.CountAll})
+	optional := hostConfigFor(t, &gpu.Spec{Vendor: gpu.VendorIntel, Runtime: gpu.RuntimeIntel, Count: gpu.CountAll, Optional: true})
+
+	if !reflect.DeepEqual(required.Resources.Devices, optional.Resources.Devices) {
+		t.Errorf("devices differ: required=%+v optional=%+v", required.Resources.Devices, optional.Resources.Devices)
+	}
+	if !reflect.DeepEqual(required.GroupAdd, optional.GroupAdd) {
+		t.Errorf("GroupAdd differs: required=%v optional=%v", required.GroupAdd, optional.GroupAdd)
+	}
+	if len(optional.Resources.Devices) == 0 || len(optional.GroupAdd) == 0 {
+		t.Fatalf("an optional Intel request reached the engine without DRI access: %+v", optional)
+	}
+}
+
+// GetStatus answers what a container actually holds, which after an optional
+// reservation is no longer derivable from the app's config.
+func TestGetStatusGPUAttachment(t *testing.T) {
+	dev := func(paths ...string) []container.DeviceMapping {
+		out := make([]container.DeviceMapping, 0, len(paths))
+		for _, p := range paths {
+			out = append(out, container.DeviceMapping{PathOnHost: p, PathInContainer: p, CgroupPermissions: "rwm"})
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name      string
+		hostCfg   *container.HostConfig
+		want      *GPUAttachment
+		wantNodes []string
+	}{{
+		name:    "no host config",
+		hostCfg: nil,
+	}, {
+		name:    "CPU app",
+		hostCfg: &container.HostConfig{},
+	}, {
+		name: "app device that is not a GPU node",
+		hostCfg: &container.HostConfig{
+			Resources: container.Resources{Devices: dev("/dev/ttyACM0")},
+		},
+	}, {
+		name: "intel",
+		hostCfg: &container.HostConfig{
+			Resources: container.Resources{Devices: dev("/dev/ttyACM0", "/dev/dri")},
+		},
+		want:      &GPUAttachment{Vendor: gpu.VendorIntel},
+		wantNodes: []string{"/dev/dri"},
+	}, {
+		name: "rocm is told apart by the compute interface",
+		hostCfg: &container.HostConfig{
+			Resources: container.Resources{Devices: dev("/dev/kfd", "/dev/dri")},
+		},
+		want:      &GPUAttachment{Vendor: gpu.VendorAMD},
+		wantNodes: []string{"/dev/kfd", "/dev/dri"},
+	}, {
+		name: "nvidia by driver name",
+		hostCfg: &container.HostConfig{
+			Resources: container.Resources{DeviceRequests: []container.DeviceRequest{
+				{Driver: "nvidia", Count: gpu.CountAll, Capabilities: [][]string{{"gpu"}}},
+			}},
+		},
+		want: &GPUAttachment{Vendor: gpu.VendorNvidia, Count: gpu.CountAll},
+	}, {
+		// `docker run --gpus 2` names no driver at all.
+		name: "nvidia by capability alone",
+		hostCfg: &container.HostConfig{
+			Resources: container.Resources{DeviceRequests: []container.DeviceRequest{
+				{Count: 2, Capabilities: [][]string{{"gpu"}}},
+			}},
+		},
+		want: &GPUAttachment{Vendor: gpu.VendorNvidia, Count: 2},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeAPI()
+			f.inspects["ai"] = container.InspectResponse{
+				ContainerJSONBase: &container.ContainerJSONBase{
+					State:      &container.State{Running: true},
+					HostConfig: tc.hostCfg,
+				},
+			}
+			got := newTestClient(t, f).GetStatus("ai").GPU
+
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("reported %+v, want no attachment", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("attachment lost")
+			}
+			if got.Vendor != tc.want.Vendor || got.Count != tc.want.Count {
+				t.Errorf("attachment = %+v, want %+v", got, tc.want)
+			}
+			if !reflect.DeepEqual(got.Nodes, tc.wantNodes) {
+				t.Errorf("nodes = %v, want %v", got.Nodes, tc.wantNodes)
+			}
+		})
+	}
+}
+
+// The node set the reader recognises must stay tied to the one the writer
+// passes, or an added runtime would attach devices nothing reports back.
+func TestGPUNodePathsCoverEveryRuntime(t *testing.T) {
+	for runtime, nodes := range renderDeviceNodes {
+		for _, node := range nodes {
+			if !gpuNodePaths[node] {
+				t.Errorf("%s passes %s but gpuAttachment does not recognise it", runtime, node)
+			}
+		}
 	}
 }

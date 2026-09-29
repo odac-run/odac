@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -41,9 +43,11 @@ import (
 
 	"odac/internal/applog"
 	"odac/internal/gpu"
+	"odac/internal/kernel"
 	"odac/internal/logx"
 	"odac/internal/netmode"
 	"odac/internal/ports"
+	"odac/internal/resources"
 )
 
 // networkName is the shared bridge network every ODAC app joins.
@@ -124,6 +128,15 @@ type RunOptions struct {
 	// alongside the bridge: a host-namespace container has no bridge to
 	// isolate, so the two never combine (appmgr refuses it).
 	Isolated bool
+	// Kernel is the validated capability / sysctl request, nil for an app
+	// that asked for neither — which must produce byte-identical container
+	// config to what it produced before the field existed. SECURITY: every
+	// name in it passed kernel's allowlist; do not fill it from raw payload.
+	Kernel *kernel.Spec
+	// Resources is the validated sizing request, nil for an app that asked
+	// for none, which must produce byte-identical container config to what
+	// it produced before the field existed.
+	Resources *resources.Spec
 }
 
 // BuildLog is the phase-aware build log control the container operations
@@ -444,6 +457,76 @@ var renderDeviceNodes = map[string][]string{
 // renderGroups is a test seam over the host's render group ids.
 var renderGroups = gpu.RenderGroups
 
+// kernelHostSpec is the host-config contribution of a capability / sysctl
+// request.
+type kernelHostSpec struct {
+	caps    strslice.StrSlice
+	sysctls map[string]string
+}
+
+// kernelHostConfig translates a validated kernel request into host config,
+// logging what a container is being handed: an added capability is host
+// privilege crossing into a container, and the only place an operator can
+// later see that it happened is this log line.
+//
+// Host networking drops the net.* sysctls. The container joins the host's
+// network namespace, so those settings would retune the host itself and the
+// daemon refuses the create outright — and a refused create is not a visible
+// failure here, it is a container the app manager recreates on every check
+// tick. appmgr already drops them when an app switches to host mode; this is
+// the second door, for a hand-edited config that never passed through it.
+func (c *Client) kernelHostConfig(name string, spec *kernel.Spec, hostNetwork bool) kernelHostSpec {
+	if spec == nil {
+		return kernelHostSpec{}
+	}
+	if hostNetwork {
+		if dropped := spec.NetSysctls(); len(dropped) > 0 {
+			c.log.Log("App %s uses host networking: ignoring the network sysctls %s (they would configure the host's own namespace, which the engine refuses).",
+				name, strings.Join(dropped, ", "))
+			spec = spec.WithoutNetSysctls()
+		}
+	}
+	if spec == nil {
+		return kernelHostSpec{}
+	}
+	out := kernelHostSpec{}
+	if len(spec.Caps) > 0 {
+		c.log.Log("App %s runs with extra kernel capabilities: %s.", name, strings.Join(spec.Caps, ", "))
+		out.caps = strslice.StrSlice(append([]string(nil), spec.Caps...))
+	}
+	if len(spec.Sysctls) > 0 {
+		keys := make([]string, 0, len(spec.Sysctls))
+		for k := range spec.Sysctls {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out.sysctls = make(map[string]string, len(spec.Sysctls))
+		pairs := make([]string, 0, len(keys))
+		for _, k := range keys {
+			out.sysctls[k] = spec.Sysctls[k]
+			pairs = append(pairs, k+"="+spec.Sysctls[k])
+		}
+		c.log.Log("App %s sets container sysctls: %s.", name, strings.Join(pairs, ", "))
+	}
+	return out
+}
+
+// shmHostConfig translates a validated sizing request into the /dev/shm
+// size, 0 meaning "leave the engine's 64 MiB default alone", which is what
+// every app that never asked for this gets, byte for byte.
+//
+// It is logged because /dev/shm is a RAM-backed tmpfs: the pages a container
+// puts there come out of the host's memory, so a host under pressure needs a
+// record of which containers were handed a bigger one.
+func (c *Client) shmHostConfig(name string, spec *resources.Spec) int64 {
+	size := spec.Shm()
+	if size <= 0 {
+		return 0
+	}
+	c.log.Log("App %s runs with a %s /dev/shm (default is %s).", name, resources.FormatSize(size), resources.FormatSize(resources.DefaultShmSize))
+	return size
+}
+
 // gpuHostSpec is the host-config contribution of a GPU request.
 type gpuHostSpec struct {
 	requests []container.DeviceRequest
@@ -543,9 +626,10 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 				name, jsString(entry["container"]))
 			continue
 		}
-		portKey := nat.Port(jsString(entry["container"]) + "/tcp")
+		proto := ports.Proto(entry)
+		portKey := nat.Port(jsString(entry["container"]) + "/" + proto)
 		if ports.IsPublic(entry) {
-			c.log.Log("Publishing %s port %s on every interface (public).", name, jsString(entry["host"]))
+			c.log.Log("Publishing %s port %s/%s on every interface (public).", name, jsString(entry["host"]), proto)
 		}
 		// Append: Docker takes a list of host bindings per container port, so a
 		// single container port may be published on several host ports.
@@ -587,6 +671,9 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 	default:
 		c.ensureNetwork(ctx, networkName, false)
 	}
+
+	kernelSpec := c.kernelHostConfig(name, options.Kernel, hostNetwork)
+	shmSize := c.shmHostConfig(name, options.Resources)
 
 	c.log.Log("Starting app container %s (%s)...", name, options.Image)
 
@@ -630,6 +717,9 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 		NetworkMode:   container.NetworkMode(netMode),
 		GroupAdd:      gpuCfg.groups,
 		Privileged:    options.Privileged,
+		CapAdd:        kernelSpec.caps,
+		Sysctls:       kernelSpec.sysctls,
+		ShmSize:       shmSize,
 	}
 
 	created, err := c.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
@@ -921,14 +1011,90 @@ func (c *Client) GetImageExposedPorts(imageName string) []int {
 
 // Status is Container.getStatus's shape.
 type Status struct {
-	Running   bool     `json:"running"`
-	Restarts  int      `json:"restarts"`
-	StartTime string   `json:"startTime,omitempty"`
-	Networks  []string `json:"networks,omitempty"`
+	Running   bool           `json:"running"`
+	Restarts  int            `json:"restarts"`
+	StartTime string         `json:"startTime,omitempty"`
+	Networks  []string       `json:"networks,omitempty"`
+	GPU       *GPUAttachment `json:"gpu,omitempty"`
 }
 
-// GetStatus returns run state, restart count, start time and networks
-// (zero Status on errors).
+// GPUAttachment is the accelerator a container actually holds, read back from
+// the engine instead of from the app's request.
+//
+// The two genuinely differ. An optional reservation falls back to the CPU on
+// a host that cannot serve it, and the fallback can happen at the engine's
+// refusal rather than at ODAC's pre-flight, so the config alone can no longer
+// answer "is this app using a GPU right now". Only the container can.
+type GPUAttachment struct {
+	// Vendor is inferred from the passthrough shape, which is unambiguous:
+	// only NVIDIA uses DeviceRequests, and only ROCm carries /dev/kfd.
+	Vendor string `json:"vendor"`
+	// Nodes are the device paths the container holds, empty for NVIDIA
+	// (whose runtime injects the devices itself). These are the paths as
+	// passed, so Intel and ROCm report the /dev/dri directory rather than
+	// the individual renderD* nodes the daemon expands it into.
+	Nodes []string `json:"nodes,omitempty"`
+	// Count is the NVIDIA device count, gpu.CountAll for every device.
+	Count int `json:"count,omitempty"`
+}
+
+// gpuNodePaths is the set of device paths that mean "this is GPU passthrough"
+// rather than an app-declared device. Derived from renderDeviceNodes so the
+// reader and the writer can never drift apart.
+var gpuNodePaths = func() map[string]bool {
+	set := map[string]bool{}
+	for _, nodes := range renderDeviceNodes {
+		for _, node := range nodes {
+			set[node] = true
+		}
+	}
+	return set
+}()
+
+// gpuAttachment reads a container's GPU passthrough back out of its host
+// config, nil when it has none. It runs off an inspect the caller already
+// made: List calls GetStatus once per app, and a second round-trip per app
+// to answer the same question would be a Docker call per row.
+func gpuAttachment(hostConfig *container.HostConfig) *GPUAttachment {
+	if hostConfig == nil {
+		return nil
+	}
+	for _, request := range hostConfig.Resources.DeviceRequests {
+		if strings.EqualFold(request.Driver, gpu.RuntimeNvidia) || requestsGPUCapability(request) {
+			return &GPUAttachment{Vendor: gpu.VendorNvidia, Count: request.Count}
+		}
+	}
+
+	var nodes []string
+	for _, device := range hostConfig.Resources.Devices {
+		if gpuNodePaths[device.PathOnHost] {
+			nodes = append(nodes, device.PathOnHost)
+		}
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	// /dev/kfd is the ROCm compute interface; Intel passthrough is DRM only.
+	vendor := gpu.VendorIntel
+	if slices.Contains(nodes, "/dev/kfd") {
+		vendor = gpu.VendorAMD
+	}
+	return &GPUAttachment{Vendor: vendor, Nodes: nodes}
+}
+
+// requestsGPUCapability recognises a DeviceRequest that names no driver but
+// asks for the "gpu" capability, the shape `docker run --gpus all` produces.
+func requestsGPUCapability(request container.DeviceRequest) bool {
+	for _, set := range request.Capabilities {
+		if slices.Contains(set, "gpu") {
+			return true
+		}
+	}
+	return false
+}
+
+// GetStatus returns run state, restart count, start time, networks and the
+// GPU the container actually holds (zero Status on errors).
 func (c *Client) GetStatus(name string) Status {
 	if !c.available {
 		return Status{}
@@ -952,7 +1118,7 @@ func (c *Client) GetStatus(name string) Status {
 		networks = []string{string(data.HostConfig.NetworkMode)}
 	}
 
-	st := Status{Restarts: data.RestartCount, Networks: networks}
+	st := Status{Restarts: data.RestartCount, Networks: networks, GPU: gpuAttachment(data.HostConfig)}
 	if data.State != nil {
 		st.Running = data.State.Running
 		st.StartTime = data.State.StartedAt

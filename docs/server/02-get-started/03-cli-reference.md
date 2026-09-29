@@ -127,6 +127,19 @@ odac app device delete -a my-app -d /dev/ttyACM0
 odac app device delete --app my-app --device /dev/ttyACM0
 ```
 
+#### `odac app gpu`
+Reserve host GPUs for an application. See [GPU Reservation](../03-app/09-gpu-reservation.md).
+
+```bash
+odac app gpu my-app                     # Reserve the detected GPU, all devices
+odac app gpu my-app --nvidia            # Name the runtime (--amd, --intel)
+odac app gpu my-app --nvidia --count 2  # Reserve two devices
+odac app gpu my-app --optional          # Use a GPU when the host has one, else CPU
+odac app gpu my-app --off               # Release the reservation
+```
+
+A restart is required for the change to take effect.
+
 #### `odac app isolate`
 Cut off an application's outbound network access. See [Network Isolation](../03-app/07-network-isolation.md).
 

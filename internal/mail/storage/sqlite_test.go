@@ -553,3 +553,69 @@ func TestMigrate_IsIdempotent(t *testing.T) {
 		t.Errorf("RawRefExists on reopened store: %v", err)
 	}
 }
+
+// One address is one mailbox regardless of case: a binary comparison here
+// refused the login outright, or delivered into rows no IMAP session could open.
+func TestAccountExists_CaseInsensitive(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := store.AccountCreate(ctx, "ali@emre.red", "hash", "emre.red"); err != nil {
+		t.Fatalf("AccountCreate failed: %v", err)
+	}
+
+	for _, probe := range []string{"ali@emre.red", "ALI@EMRE.RED", "Ali@Emre.Red"} {
+		account, err := store.AccountExists(ctx, probe)
+		if err != nil {
+			t.Fatalf("AccountExists(%q) failed: %v", probe, err)
+		}
+		if account == nil {
+			t.Fatalf("AccountExists(%q) = nil, want the stored account", probe)
+		}
+		// Callers key mailbox rows off this, so it must be the stored spelling.
+		if account.Email != "ali@emre.red" {
+			t.Errorf("AccountExists(%q).Email = %q, want the stored spelling", probe, account.Email)
+		}
+	}
+
+	missing, err := store.AccountExists(ctx, "veli@emre.red")
+	if err != nil {
+		t.Fatalf("AccountExists failed: %v", err)
+	}
+	if missing != nil {
+		t.Error("an unrelated address must not match")
+	}
+}
+
+func TestAccountDeleteAndPassword_CaseInsensitive(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := store.AccountCreate(ctx, "ali@emre.red", "hash", "emre.red"); err != nil {
+		t.Fatalf("AccountCreate failed: %v", err)
+	}
+
+	if err := store.AccountUpdatePassword(ctx, "ALI@EMRE.RED", "newhash"); err != nil {
+		t.Fatalf("AccountUpdatePassword failed: %v", err)
+	}
+	account, err := store.AccountExists(ctx, "ali@emre.red")
+	if err != nil || account == nil {
+		t.Fatalf("AccountExists failed: %v", err)
+	}
+	if account.Password != "newhash" {
+		t.Errorf("password not updated through a differently cased address, got %q", account.Password)
+	}
+
+	if err := store.AccountDelete(ctx, "Ali@Emre.Red"); err != nil {
+		t.Fatalf("AccountDelete failed: %v", err)
+	}
+	account, err = store.AccountExists(ctx, "ali@emre.red")
+	if err != nil {
+		t.Fatalf("AccountExists failed: %v", err)
+	}
+	if account != nil {
+		t.Error("account survived a delete through a differently cased address")
+	}
+}

@@ -2,7 +2,7 @@
 // the shared semantics of app port mappings, used by the app manager (Docker
 // publishing) and the proxy payload builder (backend routing).
 //
-// A port entry is `{host, container, public?, auto?}` decoded from config
+// A port entry is `{host, container, public?, auto?, proto?}` decoded from config
 // JSON, so entries are map[string]any and numbers are float64. `container` is
 // always the port the process listens on inside the container; `host` decides
 // how it is exposed:
@@ -27,9 +27,18 @@
 // `auto` (the boolean field, distinct from the 'auto' host input) marks a
 // container port ODAC guessed rather than one the user or a recipe declared.
 // Only a guess may be corrected by runtime auto-discovery.
+//
+// `proto` selects the transport, 'tcp' (the default) or 'udp'. It is absent
+// on every entry that speaks TCP, and stays absent: the dashboard decides
+// whether an app's ports changed by comparing their serialization, so
+// stamping a cosmetic proto:'tcp' would mark every app on every server as
+// changed once and rewrite the column for nothing.
 package ports
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 // Proxy is the sentinel `host` value marking an entry as reverse-proxy routed.
 const Proxy = "proxy"
@@ -96,14 +105,78 @@ func IsAuto(entry map[string]any) bool {
 	return entry != nil && entry["auto"] == true
 }
 
+// Transport protocols an entry may name. These are wire values: the Cloud
+// sends them in app.create / app.port.set and reads them back in app.list.
+const (
+	// TCP is the default and is never persisted, see ParseProto.
+	TCP = "tcp"
+	// UDP publishes the entry as a datagram port. A UDP port is what makes
+	// a VPN (WireGuard, OpenVPN) deployable: published as TCP it would
+	// answer nothing at all.
+	UDP = "udp"
+)
+
+// ParseProto coerces an entry's `proto` value, which may have crossed a JSON
+// or form boundary. Absent, null and empty mean TCP, so every entry written
+// before this field existed keeps resolving to exactly what it did. Returns
+// ok=false for anything else: a mistyped protocol silently downgraded to TCP
+// gives a VPN app a port that accepts connections and speaks nothing, which
+// is worse than a refused edit.
+func ParseProto(value any) (proto string, ok bool) {
+	switch x := value.(type) {
+	case nil:
+		return TCP, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "":
+			return TCP, true
+		case TCP:
+			return TCP, true
+		case UDP:
+			return UDP, true
+		}
+	}
+	return "", false
+}
+
+// Proto is the canonical protocol of a persisted entry. Like the other
+// readers here it never fails: only a hand-edited config can hold a value
+// ParseProto rejects, and the run and route paths need a decision, so an
+// unreadable value degrades to the default rather than blocking a start.
+func Proto(entry map[string]any) string {
+	if entry == nil {
+		return TCP
+	}
+	if proto, ok := ParseProto(entry["proto"]); ok {
+		return proto
+	}
+	return TCP
+}
+
+// IsUDP reports whether the entry is published as a datagram port.
+func IsUDP(entry map[string]any) bool {
+	return Proto(entry) == UDP
+}
+
 // Primary ports Ports.primary: the entry the reverse proxy routes, and the
 // app's main container port — the first proxy-routed entry, else the first
-// entry (an app may publish a port and also sit behind the proxy, and the
-// dashboard does not guarantee an order between the two). Nil when there are
-// no entries.
+// TCP entry, else the first entry (an app may publish a port and also sit
+// behind the proxy, and the dashboard does not guarantee an order between
+// the two). Nil when there are no entries.
+//
+// The TCP step exists because everything downstream of Primary speaks TCP:
+// the proxy dials this address for HTTP, and the port poller probes it. An
+// app whose first entry is its UDP tunnel (WireGuard) would otherwise hand
+// the proxy a port that cannot answer a single request. Sets that are all
+// TCP resolve exactly as they did before the step existed.
 func Primary(portList []any) map[string]any {
 	for _, p := range portList {
 		if pm, _ := p.(map[string]any); IsProxy(pm) {
+			return pm
+		}
+	}
+	for _, p := range portList {
+		if pm, _ := p.(map[string]any); pm != nil && !IsUDP(pm) {
 			return pm
 		}
 	}

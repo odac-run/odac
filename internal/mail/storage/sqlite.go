@@ -155,12 +155,23 @@ func (s *Store) Close() error {
 
 // AccountExists checks if a mail account exists and returns its data.
 // Returns nil if the account does not exist.
+//
+// The match is case-insensitive and the row carries the address in its stored
+// spelling, so callers key everything downstream off AccountRow.Email rather
+// than off what the peer typed. That is what keeps <Ali@x.com> and <ali@x.com>
+// one mailbox: a binary comparison here would refuse the login, or worse,
+// deliver into a second set of rows no IMAP session could ever open.
+//
+// Ordering by id makes the answer deterministic if two rows already differ
+// only by case: the UNIQUE index is binary-collated, so such a pair could be
+// created before this became case-insensitive, and the older one wins.
 func (s *Store) AccountExists(ctx context.Context, email string) (*AccountRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, email, password, domain FROM mail_account WHERE email = ?", email)
+		`SELECT id, email, password, domain FROM mail_account
+		 WHERE email = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1`, email)
 
 	var a AccountRow
 	err := row.Scan(&a.ID, &a.Email, &a.Password, &a.Domain)
@@ -203,26 +214,28 @@ func (s *Store) AccountCreate(ctx context.Context, email, hashedPassword, domain
 	return tx.Commit()
 }
 
-// AccountDelete removes a mail account by email address.
+// AccountDelete removes a mail account by email address, matched
+// case-insensitively so it reaches the same row AccountExists reported.
 func (s *Store) AccountDelete(ctx context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_, err := s.db.ExecContext(ctx,
-		"DELETE FROM mail_account WHERE email = ?", email)
+		"DELETE FROM mail_account WHERE email = ? COLLATE NOCASE", email)
 	if err != nil {
 		return fmt.Errorf("account deletion failed: %w", err)
 	}
 	return nil
 }
 
-// AccountUpdatePassword updates the password for an existing account.
+// AccountUpdatePassword updates the password for an existing account, matched
+// case-insensitively so it reaches the same row AccountExists reported.
 func (s *Store) AccountUpdatePassword(ctx context.Context, email, hashedPassword string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE mail_account SET password = ? WHERE email = ?",
+		"UPDATE mail_account SET password = ? WHERE email = ? COLLATE NOCASE",
 		hashedPassword, email)
 	if err != nil {
 		return fmt.Errorf("password update failed: %w", err)
@@ -237,9 +250,14 @@ type AccountEntry struct {
 }
 
 // AccountList returns all accounts of a given domain.
+//
+// The domain is matched case-insensitively, for the same reason AccountExists
+// is: DNS names carry no case, so a listing for "Example.com" must reach rows
+// stored as "example.com". This gives up idx_account_domain, which an admin
+// listing over a small table can afford.
 func (s *Store) AccountList(ctx context.Context, domain string) ([]AccountEntry, error) {
 	return s.accountQuery(ctx,
-		"SELECT domain, email FROM mail_account WHERE domain = ? ORDER BY email", domain)
+		"SELECT domain, email FROM mail_account WHERE domain = ? COLLATE NOCASE ORDER BY email", domain)
 }
 
 // AccountListAll returns every account across all domains, sorted by domain

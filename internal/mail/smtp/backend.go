@@ -15,6 +15,7 @@ import (
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 
+	"odac/internal/mail/address"
 	"odac/internal/mail/auth"
 	"odac/internal/mail/blob"
 	"odac/internal/mail/config"
@@ -95,7 +96,7 @@ func (s *Session) AuthMechanisms() []string {
 // Returns a sasl.Server that validates credentials against the SQLite store.
 func (s *Session) Auth(mech string) (sasl.Server, error) {
 	return sasl.NewPlainServer(func(identity, username, password string) error {
-		if !isValidEmail(username) {
+		if !address.Valid(username) {
 			log.Printf("[SMTP] Auth failed (invalid username format) %q from %s", username, s.ip)
 			s.backend.firewall.HandleFailedAuth(s.ip)
 			return errors.New("invalid username or password")
@@ -135,7 +136,10 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 
 		// Successful login — clear failed attempts
 		s.backend.firewall.ClearAttempts(s.ip)
-		s.user = username
+		// The account's stored spelling, not the peer's: every mailbox row this
+		// session writes is keyed off it, so a login as <Ali@x.com> must not
+		// open a second set of rows beside <ali@x.com>.
+		s.user = account.Email
 		log.Printf("[SMTP %s] User authenticated: %s from %s", s.backend.tag, username, s.ip)
 
 		// Transparent password upgrade: rehash legacy N=16384 → current N=32768
@@ -161,7 +165,7 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 // When the session is authenticated, the sender address must match the
 // authenticated user to prevent impersonation of other accounts.
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
-	if !isValidEmail(from) {
+	if !address.Valid(from) {
 		log.Printf("[SMTP] MAIL FROM rejected (invalid email %q) from %s", from, s.ip)
 		return errors.New("invalid email address")
 	}
@@ -178,7 +182,7 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 // Enforces anti-relay: unauthenticated sessions can only deliver to local accounts.
 // Authenticated users can send to any address (outbound delivery).
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
-	if !isValidEmail(to) {
+	if !address.Valid(to) {
 		log.Printf("[SMTP] RCPT TO rejected (invalid email %q) from=%s ip=%s", to, s.from, s.ip)
 		return errors.New("invalid email address")
 	}
@@ -194,14 +198,9 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	localPart := to
-	if idx := strings.Index(to, "@"); idx >= 0 {
-		localPart = to[:idx]
-	}
-
-	if localPart == "postmaster" || localPart == "hostmaster" {
+	if s.isRoleAddress(to) {
 		s.recipients = append(s.recipients, to)
-		log.Printf("[SMTP] RCPT TO <%s> accepted (postmaster/hostmaster) from=%s ip=%s", to, s.from, s.ip)
+		log.Printf("[SMTP] RCPT TO <%s> accepted (role address, configured domain) from=%s ip=%s", to, s.from, s.ip)
 		return nil
 	}
 
@@ -276,25 +275,38 @@ func (s *Session) Data(r io.Reader) error {
 		}
 		rcptIsLocal := rcptAccount != nil
 
-		// Also accept postmaster/hostmaster for any configured domain
-		if !rcptIsLocal {
-			localPart := strings.SplitN(rcpt, "@", 2)[0]
-			rcptIsLocal = localPart == "postmaster" || localPart == "hostmaster"
-		}
+		// The role addresses answer for a configured domain even with no
+		// account behind them, the same rule Rcpt applied. Both doors ask the
+		// same helper: a domain check that held only at RCPT would still let a
+		// hand-built transaction store a row here.
+		roleAddress := !rcptIsLocal && s.isRoleAddress(rcpt)
 
-		log.Printf("[SMTP] DATA dispatch: rcpt=%s sender_local=%v rcpt_local=%v from=%s ip=%s",
-			rcpt, senderIsLocal, rcptIsLocal, s.from, s.ip)
+		log.Printf("[SMTP] DATA dispatch: rcpt=%s sender_local=%v rcpt_local=%v role=%v from=%s ip=%s",
+			rcpt, senderIsLocal, rcptIsLocal, roleAddress, s.from, s.ip)
 
 		// Reject if neither sender nor recipient is local
-		if !senderIsLocal && !rcptIsLocal {
+		if !senderIsLocal && !rcptIsLocal && !roleAddress {
 			log.Printf("[SMTP] Rejected relay attempt: %s -> %s from %s", s.from, rcpt, s.ip)
 			return errors.New("relay access denied")
 		}
 
+		// A role address with no account behind it is accepted and dropped.
+		// Storing it would write a row keyed to an address no session can log
+		// in as, so nothing could ever open it while the row and its blob still
+		// consume disk. Creating the mailbox is what makes the mail readable.
+		// The sender's own Sent copy below is unaffected: the drop concerns the
+		// recipient's missing mailbox, not the transaction.
+		if roleAddress {
+			log.Printf("[SMTP] Accepted and discarded (role address, no mailbox): rcpt=%s from=%s ip=%s", rcpt, s.from, s.ip)
+		}
+
 		// Store locally for local recipients
-		if rcptIsLocal && rcpt != s.from {
+		if rcptIsLocal && !strings.EqualFold(rcpt, s.from) {
 			msg := &storage.MessageRow{
-				Email:   rcpt,
+				// The account's stored spelling keys the row, so a message
+				// addressed to <Ali@x.com> lands in the same mailbox IMAP opens
+				// for <ali@x.com> instead of a set of rows nothing can reach.
+				Email:   rcptAccount.Email,
 				Flags:   toNullString("[]"),
 				Mailbox: "INBOX",
 				RawRef:  toNullString(rawRef),
@@ -307,12 +319,14 @@ func (s *Session) Data(r io.Reader) error {
 				log.Printf("[SMTP] Stored INBOX message: rcpt=%s msg-id=%q subject=%q",
 					rcpt, parsed.MessageID, parsed.Subject)
 			}
-		} else if rcptIsLocal && rcpt == s.from {
+		} else if rcptIsLocal {
 			log.Printf("[SMTP] Skipped store (self-loop, rcpt==from): %s", rcpt)
 		}
 
-		// Outbound delivery for authenticated local senders
-		if senderIsLocal && !rcptIsLocal {
+		// Outbound delivery for authenticated local senders. A role address on
+		// a configured domain is local even without a mailbox, so it is never
+		// sent outward: that would hand the message straight back to us.
+		if senderIsLocal && !rcptIsLocal && !roleAddress {
 			outboundCount++
 			go func(recipient string, data []byte) {
 				if err := GetClient().Send(s.from, recipient, data); err != nil {
@@ -325,7 +339,7 @@ func (s *Session) Data(r io.Reader) error {
 		if senderIsLocal && !sentStored {
 			sentStored = true
 			sentMsg := &storage.MessageRow{
-				Email:   s.from,
+				Email:   s.user,
 				Flags:   toNullString(`["seen"]`),
 				Mailbox: "Sent",
 				RawRef:  toNullString(rawRef),
@@ -389,14 +403,20 @@ func extractIP(addr string) string {
 	return addr
 }
 
-func isValidEmail(email string) bool {
-	if email == "" || len(email) > 254 {
+// isRoleAddress reports whether to is one of the RFC 5321 role addresses that
+// must be reachable without an account, on a domain this server is configured
+// to carry.
+//
+// The domain check is the point. Without it the bypass accepted mail for
+// postmaster@anything, so any sender could have rows written under an address
+// belonging to a domain the server does not host, on a mailbox nobody can open:
+// unbounded disk growth behind a trivially discoverable open acceptor.
+func (s *Session) isRoleAddress(to string) bool {
+	switch address.Local(to) {
+	case "postmaster", "hostmaster":
+	default:
 		return false
 	}
-	at := strings.LastIndex(email, "@")
-	if at < 1 || at >= len(email)-1 {
-		return false
-	}
-	domain := email[at+1:]
-	return len(domain) >= 3 && strings.Contains(domain, ".")
+	_, ok := s.backend.getConfig().MatchDomain(address.Domain(to))
+	return ok
 }

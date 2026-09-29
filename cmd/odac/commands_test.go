@@ -75,6 +75,17 @@ func TestDispatchActionsAndData(t *testing.T) {
 			"app.isolate", []any{"blog", true}},
 		{"isolate off", []string{"app", "isolate", "-i", "blog", "--off"}, "",
 			"app.isolate", []any{"blog", false}},
+		{"gpu infers the runtime", []string{"app", "gpu", "blog"}, "",
+			"app.gpu", []any{"blog", map[string]any{}}},
+		{"gpu nvidia", []string{"app", "gpu", "blog", "--nvidia"}, "",
+			"app.gpu", []any{"blog", map[string]any{"runtime": "nvidia"}}},
+		{"gpu amd with count", []string{"app", "gpu", "-i", "blog", "--amd", "--count", "2"}, "",
+			"app.gpu", []any{"blog", map[string]any{"runtime": "rocm", "count": "2"}}},
+		// --count's value is a bare argument too; the app must still be "blog".
+		{"gpu count before app", []string{"app", "gpu", "--count", "2", "blog"}, "",
+			"app.gpu", []any{"blog", map[string]any{"count": "2"}}},
+		{"gpu off", []string{"app", "gpu", "blog", "--off"}, "",
+			"app.gpu", []any{"blog", false}},
 		{"api allow list", []string{"app", "api", "blog", "--allow", "app.list,mail.send"}, "",
 			"app.api", []any{"blog", "app.list,mail.send"}},
 		// --allow's value is a bare argument too; the app must still be "blog".

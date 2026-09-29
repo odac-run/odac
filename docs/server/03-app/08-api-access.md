@@ -42,6 +42,7 @@ These are the actions available to applications. An app may call the ones you gr
 | `app.restart` | `[app]` | Restart an app |
 | `app.network` | `[app, "bridge"\|"host"]` | Set the network mode |
 | `app.isolate` | `[app, true\|false]` | Cut off or restore outbound access |
+| `app.gpu` | `[app, {"runtime": "nvidia"}]`, or `[app, false]` to release | Reserve host GPUs for an app |
 | `app.device.add` | `[app, hostPath, containerPath]` | Connect a host device |
 | `app.device.delete` | `[app, hostPath]` | Disconnect a host device |
 | `domain.list` | `[]`, or `[app]` to filter | List domains |

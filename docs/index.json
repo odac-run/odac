@@ -71,6 +71,18 @@
         {
           "file": "08-api-access.md",
           "title": "API Access"
+        },
+        {
+          "file": "09-gpu-reservation.md",
+          "title": "GPU Reservation"
+        },
+        {
+          "file": "10-kernel-capabilities.md",
+          "title": "Capabilities & Sysctls"
+        },
+        {
+          "file": "11-shared-memory.md",
+          "title": "Shared Memory"
         }
       ]
     },

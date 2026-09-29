@@ -199,7 +199,11 @@ func validBranch(branch string) bool {
 // findPortCollision ports #findPortCollision: reject sets Docker or the
 // Proxy would resolve ambiguously. Returns a localized message or "".
 func findPortCollision(portList []map[string]any) string {
-	seenHost := map[float64]bool{}
+	type binding struct {
+		host  float64
+		proto string
+	}
+	seenHost := map[binding]bool{}
 	proxyCount := 0
 
 	for _, entry := range portList {
@@ -214,17 +218,22 @@ func findPortCollision(portList []map[string]any) string {
 			continue
 		}
 		hostPort, _ := jsNumber(entry["host"])
-		if seenHost[hostPort] {
-			return __("Duplicate host port: %s. Each host port may be bound once.", jsString(entry["host"]))
+		// Keyed by protocol: 51820/tcp and 51820/udp are two different
+		// bindings to the kernel, and a VPN app publishing both is a normal
+		// shape rather than a collision.
+		key := binding{host: hostPort, proto: ports.Proto(entry)}
+		if seenHost[key] {
+			return __("Duplicate host port: %s/%s. Each host port may be bound once per protocol.", jsString(entry["host"]), key.proto)
 		}
-		seenHost[hostPort] = true
+		seenHost[key] = true
 	}
 	return ""
 }
 
 // preparePorts ports #preparePorts: canonicalize entries before persisting —
 // resolve 'auto' host ports, default an omitted host to the proxy sentinel,
-// coerce ports to numbers, stamp `public` only when true.
+// coerce ports to numbers, stamp `public` and `proto` only when they carry
+// information.
 func (m *Manager) preparePorts(recipePorts []map[string]any) []map[string]any {
 	if recipePorts == nil {
 		return []map[string]any{}
@@ -235,12 +244,13 @@ func (m *Manager) preparePorts(recipePorts []map[string]any) []map[string]any {
 	prepared := make([]map[string]any, 0, len(recipePorts))
 
 	for _, port := range recipePorts {
+		proto := ports.Proto(port)
 		var host any = ports.Proxy
 		if h, present := port["host"]; present && h != nil {
 			host = h
 		}
 		if host == "auto" {
-			host = float64(m.findAvailablePort(30000, assigned))
+			host = float64(m.findAvailablePort(30000, proto, assigned))
 		} else if host != ports.Proxy {
 			host, _ = jsNumber(host)
 		}
@@ -256,22 +266,39 @@ func (m *Manager) preparePorts(recipePorts []map[string]any) []map[string]any {
 		if isPublic, ok := ports.ParsePublic(port["public"]); host != ports.Proxy && ok && isPublic {
 			entry["public"] = true
 		}
+		// Same rule for the transport: TCP is what an absent `proto` already
+		// means, and the dashboard diffs these entries by serialization, so
+		// a cosmetic proto:'tcp' would mark every app as changed once.
+		if proto == ports.UDP && host != ports.Proxy {
+			entry["proto"] = ports.UDP
+		}
 		prepared = append(prepared, entry)
 	}
 	return prepared
 }
 
-// findAvailablePort ports #findAvailablePort.
-func (m *Manager) findAvailablePort(start int, assigned map[float64]bool) int {
+// findAvailablePort ports #findAvailablePort, per protocol: a free TCP port
+// says nothing about the same number being free for UDP.
+func (m *Manager) findAvailablePort(start int, proto string, assigned map[float64]bool) int {
 	port := start
-	for assigned[float64(port)] || isPortInUse(port) {
+	for assigned[float64(port)] || isPortInUse(port, proto) {
 		port++
 	}
 	return port
 }
 
-// isPortInUse ports #isPortInUse: a bind probe on 127.0.0.1.
-func isPortInUse(port int) bool {
+// isPortInUse ports #isPortInUse: a bind probe on 127.0.0.1, on the entry's
+// own transport — probing a datagram port with a stream listener would call
+// a busy UDP port free.
+func isPortInUse(port int, proto string) bool {
+	if proto == ports.UDP {
+		conn, err := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		return false
+	}
 	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
 		return true

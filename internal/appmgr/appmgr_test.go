@@ -372,6 +372,7 @@ type fakeGPUHost struct {
 	mu       sync.Mutex
 	runtimes map[string]bool // nil = allow everything
 	asked    []string
+	runtime  string // what GPURuntime reports ("" = no card detected)
 }
 
 func (f *fakeGPUHost) CanPassthrough(runtime string) bool {
@@ -382,6 +383,12 @@ func (f *fakeGPUHost) CanPassthrough(runtime string) bool {
 		return true
 	}
 	return f.runtimes[runtime]
+}
+
+func (f *fakeGPUHost) GPURuntime() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runtime
 }
 
 func (f *fakeGPUHost) allow(runtimes ...string) {

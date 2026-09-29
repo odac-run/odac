@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"odac/internal/mail/address"
 	"odac/internal/mail/auth"
 	"odac/internal/mail/config"
 	"odac/internal/mail/storage"
@@ -111,15 +112,19 @@ func (s *Server) HandleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isValidEmail(req.Email) {
+	if !address.Valid(req.Email) {
 		jsonError(w, "Invalid email address", http.StatusBadRequest)
 		return
 	}
+	// New accounts are stored canonically. Lookups match case-insensitively
+	// either way, so this is about the spelling every mailbox row inherits
+	// from AccountRow.Email, not about whether the account can be found.
+	email := address.Normalize(req.Email)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	existing, err := s.store.AccountExists(ctx, req.Email)
+	existing, err := s.store.AccountExists(ctx, email)
 	if err != nil {
 		log.Printf("[Mail-API] Account exists check failed: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
@@ -137,7 +142,7 @@ func (s *Server) HandleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.AccountCreate(ctx, req.Email, hashed, req.Domain); err != nil {
+	if err := s.store.AccountCreate(ctx, email, hashed, address.Normalize(req.Domain)); err != nil {
 		log.Printf("[Mail-API] Account creation failed: %v", err)
 		jsonError(w, "Account creation failed", http.StatusInternalServerError)
 		return
@@ -178,7 +183,7 @@ func (s *Server) HandleAccountDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.AccountDelete(ctx, req.Email); err != nil {
+	if err := s.store.AccountDelete(ctx, existing.Email); err != nil {
 		log.Printf("[Mail-API] Account deletion failed: %v", err)
 		jsonError(w, "Account deletion failed", http.StatusInternalServerError)
 		return
@@ -230,7 +235,7 @@ func (s *Server) HandleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.AccountUpdatePassword(ctx, req.Email, hashed); err != nil {
+	if err := s.store.AccountUpdatePassword(ctx, existing.Email, hashed); err != nil {
 		log.Printf("[Mail-API] Password update failed: %v", err)
 		jsonError(w, "Password update failed", http.StatusInternalServerError)
 		return
@@ -361,38 +366,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Helpers ---
-
-func isValidEmail(email string) bool {
-	if email == "" || len(email) > 254 {
-		return false
-	}
-	at := -1
-	for i, c := range email {
-		if c == '@' {
-			if at >= 0 {
-				return false // Multiple @
-			}
-			at = i
-		}
-	}
-	if at < 1 || at >= len(email)-1 {
-		return false
-	}
-	domain := email[at+1:]
-	if len(domain) < 3 || !containsDot(domain) {
-		return false
-	}
-	return true
-}
-
-func containsDot(s string) bool {
-	for _, c := range s {
-		if c == '.' {
-			return true
-		}
-	}
-	return false
-}
 
 type apiResponse struct {
 	Message string `json:"message"`

@@ -101,11 +101,14 @@ type Hub interface {
 	GetApp(appType string) (map[string]any, error)
 }
 
-// GPUHost answers whether the container engine on this host can actually
-// hand a GPU to an app container. *sysinfo.Info provides it; a nil GPUHost
-// skips the pre-flight and lets Docker be the judge at start time.
+// GPUHost answers what this host can do with GPUs: CanPassthrough gates a
+// request (can the engine hand this runtime to a container), GPURuntime
+// names the card that is present so a request need not spell out a vendor
+// ODAC already detected. *sysinfo.Info provides both; a nil GPUHost skips
+// the pre-flight and lets Docker be the judge at start time.
 type GPUHost interface {
 	CanPassthrough(runtime string) bool
+	GPURuntime() string
 }
 
 // DomainDeleter cascades app deletion into the domain table (task 3.5).

@@ -41,3 +41,5 @@ $ odac app create -n my-app -u https://github.com/user/repo.git
 ```
 
 > 📝 **Note:** After creating an app, you can link a domain to it using the [Add a Domain](../06-domain/01-add-a-domain.md) command.
+
+> 📝 **Note:** An app that needs more of the kernel than the container defaults give it (a VPN, say) declares that on the create payload: see [Capabilities & Sysctls](10-kernel-capabilities.md) for `caps`, `sysctls` and UDP ports. An app that moves data between its processes through shared memory (Frigate, say) sizes its `/dev/shm` the same way: see [Shared Memory](11-shared-memory.md) for `shmSize`.

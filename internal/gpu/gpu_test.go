@@ -53,6 +53,26 @@ func TestParseAccepts(t *testing.T) {
 			`{"vendor":"intel","runtime":"intel","count":"all"}`,
 			Spec{Vendor: VendorIntel, Runtime: RuntimeIntel, Count: CountAll},
 		},
+		"optional pins a runtime": {
+			`{"runtime":"intel","optional":true}`,
+			Spec{Vendor: VendorIntel, Runtime: RuntimeIntel, Count: CountAll, Optional: true},
+		},
+		"optional alone means auto": {
+			`{"optional":true}`,
+			Spec{Count: CountAll, Optional: true},
+		},
+		"optional auto keeps its count": {
+			`{"optional":true,"count":2}`,
+			Spec{Count: 2, Optional: true},
+		},
+		"optional as a string": {
+			`{"runtime":"nvidia","optional":"true"}`,
+			Spec{Vendor: VendorNvidia, Runtime: RuntimeNvidia, Count: CountAll, Optional: true},
+		},
+		"optional false is the plain required form": {
+			`{"runtime":"nvidia","optional":false}`,
+			Spec{Vendor: VendorNvidia, Runtime: RuntimeNvidia, Count: CountAll},
+		},
 	}
 
 	for name, tc := range cases {
@@ -113,6 +133,9 @@ func TestMapRoundTrip(t *testing.T) {
 		{Vendor: VendorNvidia, Runtime: RuntimeNvidia, Count: CountAll},
 		{Vendor: VendorNvidia, Runtime: RuntimeNvidia, Count: 2},
 		{Vendor: VendorAMD, Runtime: RuntimeROCm, Count: CountAll},
+		{Vendor: VendorIntel, Runtime: RuntimeIntel, Count: CountAll, Optional: true},
+		{Count: CountAll, Optional: true},
+		{Count: 4, Optional: true},
 	} {
 		raw, err := json.Marshal(want.Map())
 		if err != nil {
@@ -130,5 +153,69 @@ func TestMapRoundTrip(t *testing.T) {
 	var nilSpec *Spec
 	if nilSpec.Map() != nil || nilSpec.String() != "none" {
 		t.Error("nil Spec must render as nothing")
+	}
+}
+
+// The dashboard diffs app.list rows by serialization, so Map must not invent
+// members. A required request keeps the exact shape it has always had, and an
+// auto one carries no empty runtime/vendor to churn every row.
+func TestMapOmitsAbsentFields(t *testing.T) {
+	required := (&Spec{Vendor: VendorNvidia, Runtime: RuntimeNvidia, Count: CountAll}).Map()
+	if _, ok := required["optional"]; ok {
+		t.Errorf("a required request must not serialize an optional member: %v", required)
+	}
+	if len(required) != 3 {
+		t.Errorf("required shape changed: %v", required)
+	}
+
+	auto := (&Spec{Count: CountAll, Optional: true}).Map()
+	for _, key := range []string{"runtime", "vendor"} {
+		if _, ok := auto[key]; ok {
+			t.Errorf("an auto request must not serialize %q: %v", key, auto)
+		}
+	}
+	if auto["optional"] != true {
+		t.Errorf("auto request lost its optional member: %v", auto)
+	}
+}
+
+// Auto is a shape only an optional request may take: a required one that
+// resolves to nothing has no honest outcome left but a start failure.
+func TestAutoRequiresOptional(t *testing.T) {
+	if _, err := Parse(decode(t, `{"count":"all"}`)); err == nil {
+		t.Error("a required request naming no runtime must be rejected")
+	}
+
+	spec, err := Parse(decode(t, `{"optional":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.IsAuto() {
+		t.Errorf("%+v should report as auto", spec)
+	}
+	if got := spec.String(); got != "auto×all (optional)" {
+		t.Errorf("String() = %q", got)
+	}
+
+	pinned, err := Parse(decode(t, `{"runtime":"rocm"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.IsAuto() {
+		t.Error("a pinned runtime is not auto")
+	}
+}
+
+func TestVendorFor(t *testing.T) {
+	for runtime, want := range map[string]string{
+		RuntimeNvidia: VendorNvidia,
+		RuntimeROCm:   VendorAMD,
+		RuntimeIntel:  VendorIntel,
+		"":            "",
+		"tpu":         "",
+	} {
+		if got := VendorFor(runtime); got != want {
+			t.Errorf("VendorFor(%q) = %q, want %q", runtime, got, want)
+		}
 	}
 }

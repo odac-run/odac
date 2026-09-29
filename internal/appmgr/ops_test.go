@@ -6,6 +6,8 @@ package appmgr
 import (
 	"strings"
 	"testing"
+
+	"odac/internal/gpu"
 )
 
 // ---- privileged access ----
@@ -226,6 +228,145 @@ func TestSetNetworkMode(t *testing.T) {
 }
 
 // ---- egress isolation (its own axis, not a network mode) ----
+
+// ---- GPU reservation ----
+
+func TestSetGPU(t *testing.T) {
+	newGPU := func(t *testing.T, extra map[string]any) *fixture {
+		app := map[string]any{"id": float64(1), "name": "gpu-app", "type": "container"}
+		for k, v := range extra {
+			app[k] = v
+		}
+		fx := newFixture(t, []any{app})
+		fx.gpuHost.runtime = gpu.RuntimeNvidia
+		return fx
+	}
+
+	t.Run("persists the create-time shape", func(t *testing.T) {
+		fx := newGPU(t, nil)
+		if r := fx.m.SetGPU("gpu-app", map[string]any{"runtime": "nvidia"}); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		persisted, _ := fx.app(0)["gpu"].(map[string]any)
+		if persisted["runtime"] != gpu.RuntimeNvidia || persisted["vendor"] != gpu.VendorNvidia || persisted["count"] != "all" {
+			t.Fatalf("persisted gpu = %v", fx.app(0)["gpu"])
+		}
+	})
+
+	// The zero-config path: no vendor named, so the host's own card decides.
+	t.Run("infers the runtime from the host", func(t *testing.T) {
+		fx := newGPU(t, nil)
+		fx.gpuHost.runtime = gpu.RuntimeROCm
+		if r := fx.m.SetGPU("gpu-app", map[string]any{}); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		persisted, _ := fx.app(0)["gpu"].(map[string]any)
+		if persisted["runtime"] != gpu.RuntimeROCm || persisted["vendor"] != gpu.VendorAMD {
+			t.Fatalf("persisted gpu = %v", fx.app(0)["gpu"])
+		}
+	})
+
+	t.Run("refuses inference when the host has no GPU", func(t *testing.T) {
+		fx := newGPU(t, nil)
+		fx.gpuHost.runtime = ""
+		if r := fx.m.SetGPU("gpu-app", map[string]any{}); r.Status {
+			t.Fatal("reservation accepted on a GPU-less host")
+		}
+		if _, present := fx.app(0)["gpu"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	t.Run("keeps an explicit count", func(t *testing.T) {
+		fx := newGPU(t, nil)
+		if r := fx.m.SetGPU("gpu-app", map[string]any{"runtime": "nvidia", "count": "2"}); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		persisted, _ := fx.app(0)["gpu"].(map[string]any)
+		if persisted["count"] != float64(2) {
+			t.Fatalf("count = %v", persisted["count"])
+		}
+	})
+
+	// The reservation only takes effect on the next start, and that start
+	// reads the persisted object back through toGPU.
+	t.Run("reaches the container on the next start", func(t *testing.T) {
+		fx := newGPU(t, map[string]any{"image": "ml:latest", "ports": []any{map[string]any{"container": float64(3000)}}})
+		if r := fx.m.SetGPU("gpu-app", map[string]any{"runtime": "nvidia", "count": float64(1)}); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		fx.setHTTPPorts(3000)
+		if err := fx.m.run("gpu-app", nil); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		spec := fx.dock.runCallAt(0).options.GPU
+		if spec == nil || spec.Runtime != gpu.RuntimeNvidia || spec.Count != 1 {
+			t.Fatalf("RunOptions.GPU = %+v", spec)
+		}
+	})
+
+	t.Run("off releases the reservation", func(t *testing.T) {
+		fx := newGPU(t, map[string]any{"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"}})
+		if r := fx.m.SetGPU("gpu-app", false); !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		if _, present := fx.app(0)["gpu"]; present {
+			t.Fatalf("reservation kept: %v", fx.app(0))
+		}
+	})
+
+	// An unusable request must never read as a release: the app would keep
+	// running on the CPU while its operator believes the GPU is reserved.
+	t.Run("rejects a malformed request without touching the app", func(t *testing.T) {
+		fx := newGPU(t, map[string]any{"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"}})
+		for _, request := range []any{float64(2), []any{"nvidia"}, map[string]any{"runtime": "cuda"}, map[string]any{"runtime": "nvidia", "count": "half"}} {
+			if r := fx.m.SetGPU("gpu-app", request); r.Status {
+				t.Fatalf("accepted %v", request)
+			}
+		}
+		if persisted, _ := fx.app(0)["gpu"].(map[string]any); persisted["runtime"] != gpu.RuntimeNvidia {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	// Same pre-flight as create: a host whose engine cannot pass the runtime
+	// through says so now, not on every start from here on.
+	t.Run("refuses a runtime the host cannot pass through", func(t *testing.T) {
+		fx := newGPU(t, nil)
+		fx.gpuHost.allow(gpu.RuntimeROCm)
+		r := fx.m.SetGPU("gpu-app", map[string]any{"runtime": "nvidia"})
+		if r.Status {
+			t.Fatal("reservation accepted on a host without the runtime")
+		}
+		if !strings.Contains(jsString(r.Message), "nvidia-container-toolkit") {
+			t.Fatalf("unhelpful refusal: %v", r.Message)
+		}
+		if _, present := fx.app(0)["gpu"]; present {
+			t.Fatalf("app touched after refusal: %v", fx.app(0))
+		}
+	})
+
+	// Releasing must stay possible on a host that has lost its GPU, or an app
+	// created with a reservation could never be moved back to the CPU.
+	t.Run("off skips the host pre-flight", func(t *testing.T) {
+		fx := newGPU(t, map[string]any{"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"}})
+		fx.gpuHost.allow()
+		fx.gpuHost.runtime = ""
+		if r := fx.m.SetGPU("gpu-app", false); !r.Status {
+			t.Fatalf("release refused: %v", r.Message)
+		}
+		if _, present := fx.app(0)["gpu"]; present {
+			t.Fatalf("reservation kept: %v", fx.app(0))
+		}
+	})
+
+	t.Run("unknown app", func(t *testing.T) {
+		fx := newGPU(t, nil)
+		if r := fx.m.SetGPU("nope", map[string]any{"runtime": "nvidia"}); r.Status {
+			t.Fatal("unknown app accepted")
+		}
+	})
+}
 
 func TestSetIsolated(t *testing.T) {
 	newIso := func(t *testing.T, extra map[string]any) *fixture {
@@ -939,4 +1080,155 @@ func TestListTransientStatus(t *testing.T) {
 			t.Fatalf("status = %v, want running", got)
 		}
 	})
+}
+
+// app.port.set is the path a user's first config edit takes, so it must
+// carry `proto` through rather than swallow it: a dropped proto republishes
+// a VPN's tunnel as TCP, which listens and answers nothing.
+func TestSetPortsProto(t *testing.T) {
+	t.Run("udp is persisted", func(t *testing.T) {
+		fx := portsFixture(t)
+		r := fx.m.SetPorts("web", []any{
+			map[string]any{"host": float64(51820), "container": float64(51820), "proto": "udp", "public": true},
+		}, true)
+		if !r.Status {
+			t.Fatalf("failed: %v", r.Message)
+		}
+		portEq(t, portsOf(fx)[0], map[string]any{
+			"host": float64(51820), "container": float64(51820), "proto": "udp", "public": true,
+		})
+	})
+
+	t.Run("tcp is never stamped", func(t *testing.T) {
+		// The dashboard diffs these entries by serialization, so a cosmetic
+		// proto:'tcp' would mark every app on every server as changed once.
+		for _, proto := range []any{"tcp", "TCP", nil} {
+			fx := portsFixture(t)
+			entry := map[string]any{"host": float64(8080), "container": float64(3000)}
+			if proto != nil {
+				entry["proto"] = proto
+			}
+			if r := fx.m.SetPorts("web", []any{entry}, true); !r.Status {
+				t.Fatalf("failed: %v", r.Message)
+			}
+			portEq(t, portsOf(fx)[0], map[string]any{"host": float64(8080), "container": float64(3000)})
+		}
+	})
+
+	t.Run("same host port on both protocols", func(t *testing.T) {
+		fx := portsFixture(t)
+		r := fx.m.SetPorts("web", []any{
+			map[string]any{"host": float64(51820), "container": float64(51820), "proto": "udp"},
+			map[string]any{"host": float64(51820), "container": float64(51820)},
+		}, true)
+		if !r.Status {
+			t.Fatalf("tcp and udp on one number are two bindings, not a collision: %v", r.Message)
+		}
+	})
+
+	t.Run("duplicate udp host ports still collide", func(t *testing.T) {
+		fx := portsFixture(t)
+		r := fx.m.SetPorts("web", []any{
+			map[string]any{"host": float64(51820), "container": float64(51820), "proto": "udp"},
+			map[string]any{"host": float64(51820), "container": float64(51821), "proto": "udp"},
+		}, true)
+		if r.Status || !strings.Contains(jsString(r.Message), "Duplicate host port") {
+			t.Fatalf("r = %+v", r)
+		}
+	})
+
+	t.Run("unknown protocol is refused", func(t *testing.T) {
+		fx := portsFixture(t)
+		r := fx.m.SetPorts("web", []any{
+			map[string]any{"host": float64(51820), "container": float64(51820), "proto": "sctp"},
+		}, true)
+		if r.Status || !strings.Contains(jsString(r.Message), "Invalid protocol") {
+			t.Fatalf("r = %+v", r)
+		}
+		portEq(t, portsOf(fx)[0], map[string]any{"host": "proxy", "container": float64(3000)})
+	})
+
+	t.Run("a proxy-routed entry cannot be udp", func(t *testing.T) {
+		fx := portsFixture(t)
+		r := fx.m.SetPorts("web", []any{
+			map[string]any{"host": "proxy", "container": float64(3000), "proto": "udp"},
+		}, true)
+		if r.Status || !strings.Contains(jsString(r.Message), "the proxy routes HTTP over TCP") {
+			t.Fatalf("r = %+v", r)
+		}
+	})
+}
+
+// Host networking puts the container in the host's own network namespace, so
+// the daemon refuses a create carrying net.* sysctls. SetNetworkMode drops
+// them and names them, rather than leaving an app the engine recreates on
+// every check tick.
+func TestSetNetworkModeDropsNetSysctls(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "wg", "type": "container", "image": "wireguard",
+		"caps":    []any{"NET_ADMIN"},
+		"sysctls": map[string]any{"net.ipv4.ip_forward": "1", "kernel.shmmax": "1024"},
+	}})
+
+	r := fx.m.SetNetworkMode("wg", "host")
+	if !r.Status {
+		t.Fatalf("failed: %v", r.Message)
+	}
+	if !strings.Contains(jsString(r.Message), "net.ipv4.ip_forward") {
+		t.Errorf("the reply must name what it dropped: %v", r.Message)
+	}
+	app := fx.app(0)
+	sysctls, _ := app["sysctls"].(map[string]any)
+	if len(sysctls) != 1 || sysctls["kernel.shmmax"] != "1024" {
+		t.Errorf("sysctls = %#v, want only the namespaced IPC one", app["sysctls"])
+	}
+	caps, _ := app["caps"].([]any)
+	if len(caps) != 1 || caps[0] != "NET_ADMIN" {
+		t.Errorf("caps = %#v, capabilities are unaffected by the namespace", app["caps"])
+	}
+
+	// Nothing to drop: the message stays the one it always was.
+	fx2 := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "web", "type": "container", "image": "nginx",
+	}})
+	r = fx2.m.SetNetworkMode("web", "host")
+	if !r.Status || strings.Contains(jsString(r.Message), "Dropped") {
+		t.Fatalf("r = %+v", r)
+	}
+	if _, ok := fx2.app(0)["sysctls"]; ok {
+		t.Error("an app that requested no sysctls must not grow the field")
+	}
+}
+
+// app.list reports `proto` for UDP entries and omits it entirely for TCP
+// ones. The dashboard answers "did this app's ports change?" by comparing
+// their serialization, so a cosmetic proto:'tcp' would mark every app on
+// every server as changed once and rewrite the column for nothing.
+func TestListReportsProtoForUDPOnly(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "wg", "type": "container", "image": "wireguard",
+		"ports": []any{
+			map[string]any{"host": float64(51820), "container": float64(51820), "proto": "udp", "public": true},
+			map[string]any{"host": float64(8080), "container": float64(80)},
+			map[string]any{"host": "proxy", "container": float64(3000)},
+		},
+	}})
+
+	data, _ := fx.m.List(true).Data.([]any)
+	app, _ := data[0].(map[string]any)
+	portList, _ := app["ports"].([]any)
+	if len(portList) != 3 {
+		t.Fatalf("ports = %#v", app["ports"])
+	}
+	udp, _ := portList[0].(map[string]any)
+	if udp["proto"] != "udp" {
+		t.Errorf("udp entry = %#v, want proto reported", udp)
+	}
+	for _, entry := range portList[1:] {
+		if pm, _ := entry.(map[string]any); pm != nil {
+			if _, present := pm["proto"]; present {
+				t.Errorf("tcp entry carries a proto key: %#v", pm)
+			}
+		}
+	}
 }

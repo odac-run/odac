@@ -13,6 +13,7 @@ import (
 
 	"odac/internal/docker"
 	"odac/internal/gpu"
+	"odac/internal/kernel"
 )
 
 func (fx *fixture) setRecipe(recipe map[string]any) {
@@ -1251,5 +1252,365 @@ func TestConfigContent(t *testing.T) {
 				t.Fatalf("configContent = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// The WireGuard shape end to end: caps + sysctls at the payload root and a
+// published UDP port, persisted on the record and handed to the engine.
+func TestCreateWithKernelRequest(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{
+		"name": "wireguard", "image": "linuxserver/wireguard",
+		"ports": []any{map[string]any{
+			"host": float64(51820), "container": float64(51820), "proto": "udp", "public": true,
+		}},
+	})
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "app": "wireguard", "name": "wg-a1b2c3",
+		"caps":    []any{"NET_ADMIN"},
+		"sysctls": map[string]any{"net.ipv4.ip_forward": "1"},
+	})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	app := fx.findApp("wg-a1b2c3")
+	if app == nil {
+		t.Fatal("app not persisted")
+	}
+	caps, _ := app["caps"].([]any)
+	if len(caps) != 1 || caps[0] != "NET_ADMIN" {
+		t.Fatalf("persisted caps = %v", app["caps"])
+	}
+	sysctls, _ := app["sysctls"].(map[string]any)
+	if len(sysctls) != 1 || sysctls["net.ipv4.ip_forward"] != "1" {
+		t.Fatalf("persisted sysctls = %v", app["sysctls"])
+	}
+	portList, _ := app["ports"].([]any)
+	entry, _ := portList[0].(map[string]any)
+	if entry["proto"] != "udp" || entry["host"] != float64(51820) || entry["public"] != true {
+		t.Fatalf("persisted port = %v", entry)
+	}
+
+	opts := fx.dock.runCallAt(0).options
+	if opts.Kernel == nil || len(opts.Kernel.Caps) != 1 || opts.Kernel.Caps[0] != kernel.CapNetAdmin {
+		t.Fatalf("RunOptions.Kernel = %+v", opts.Kernel)
+	}
+	if opts.Kernel.Sysctls["net.ipv4.ip_forward"] != "1" {
+		t.Fatalf("RunOptions sysctls = %+v", opts.Kernel.Sysctls)
+	}
+	if len(opts.Ports) != 1 || opts.Ports[0]["proto"] != "udp" {
+		t.Fatalf("published ports = %+v", opts.Ports)
+	}
+}
+
+// A recipe may declare what its image needs; an explicit payload still wins,
+// exactly like the GPU request.
+func TestCreateKernelPayloadOverridesRecipe(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{
+		"name": "wireguard", "image": "linuxserver/wireguard",
+		"caps": []any{"NET_ADMIN"},
+	})
+	if r := fx.m.Create(map[string]any{"type": "app", "app": "wireguard", "name": "recipe-caps"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+	if spec := fx.dock.runCallAt(0).options.Kernel; spec == nil || spec.Caps[0] != kernel.CapNetAdmin {
+		t.Fatalf("recipe caps ignored: %+v", spec)
+	}
+
+	fx2 := newFixture(t, []any{})
+	fx2.setRecipe(map[string]any{
+		"name": "wireguard", "image": "linuxserver/wireguard",
+		"caps": []any{"NET_ADMIN"},
+	})
+	if r := fx2.m.Create(map[string]any{
+		"type": "app", "app": "wireguard", "name": "payload-caps",
+		"caps": []any{"NET_RAW"},
+	}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx2.waitIdle(t)
+	spec := fx2.dock.runCallAt(0).options.Kernel
+	if spec == nil || len(spec.Caps) != 1 || spec.Caps[0] != kernel.CapNetRaw {
+		t.Fatalf("payload caps did not win: %+v", spec)
+	}
+}
+
+// Every other app's record and container config must be what it was before
+// these fields existed.
+func TestCreateWithoutKernelRequest(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
+
+	if r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	app := fx.findApp("plain")
+	if _, present := app["caps"]; present {
+		t.Fatalf("app carries a caps key: %v", app["caps"])
+	}
+	if _, present := app["sysctls"]; present {
+		t.Fatalf("app carries a sysctls key: %v", app["sysctls"])
+	}
+	if spec := fx.dock.runCallAt(0).options.Kernel; spec != nil {
+		t.Fatalf("RunOptions.Kernel = %+v, want nil", spec)
+	}
+}
+
+// A capability outside the allowlist fails the create. Passing it through
+// would only move the refusal to container create, which the app manager
+// retries on every check tick.
+func TestCreateRejectsDisallowedKernelRequest(t *testing.T) {
+	for _, payload := range []map[string]any{
+		{"caps": []any{"SYS_ADMIN"}},
+		{"caps": []any{"NET_ADMIN", "SYS_MODULE"}},
+		{"sysctls": map[string]any{"vm.max_map_count": "262144"}},
+		{"sysctls": map[string]any{"net.ipv4.ip_forward": []any{"1"}}},
+	} {
+		fx := newFixture(t, []any{})
+		fx.setRecipe(map[string]any{"name": "wireguard", "image": "linuxserver/wireguard"})
+
+		cfg := map[string]any{"type": "app", "app": "wireguard", "name": "bad-kernel"}
+		for k, v := range payload {
+			cfg[k] = v
+		}
+		r := fx.m.Create(cfg)
+		if r.Status || !strings.Contains(jsString(r.Message), "Invalid kernel configuration") {
+			t.Fatalf("payload %v: r = %+v", payload, r)
+		}
+		if fx.appCount() != 0 || fx.dock.runCallCount() != 0 {
+			t.Fatalf("a rejected create must persist and start nothing: %d apps, %d runs", fx.appCount(), fx.dock.runCallCount())
+		}
+	}
+}
+
+// The Frigate shape: a bigger /dev/shm asked for at the payload root,
+// persisted as a canonical byte count and handed to the engine.
+func TestCreateWithShmSize(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "frigate", "image": "blakeblackshear/frigate"})
+
+	r := fx.m.Create(map[string]any{
+		"type": "app", "app": "frigate", "name": "frigate-a1b2c3",
+		"shmSize": "512m",
+	})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	app := fx.findApp("frigate-a1b2c3")
+	if app == nil {
+		t.Fatal("app not persisted")
+	}
+	if app["shmSize"] != float64(512<<20) {
+		t.Fatalf("persisted shmSize = %v, want %v", app["shmSize"], float64(512<<20))
+	}
+	if spec := fx.dock.runCallAt(0).options.Resources; spec.Shm() != 512<<20 {
+		t.Fatalf("RunOptions.Resources = %+v", spec)
+	}
+}
+
+// A recipe may size its own image's /dev/shm; an explicit payload still
+// wins, because only the operator knows how many cameras are pointed at it.
+func TestCreateShmSizePayloadOverridesRecipe(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{
+		"name": "frigate", "image": "blakeblackshear/frigate",
+		"shmSize": "256m",
+	})
+	if r := fx.m.Create(map[string]any{"type": "app", "app": "frigate", "name": "recipe-shm"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+	if spec := fx.dock.runCallAt(0).options.Resources; spec.Shm() != 256<<20 {
+		t.Fatalf("recipe shmSize ignored: %+v", spec)
+	}
+
+	fx2 := newFixture(t, []any{})
+	fx2.setRecipe(map[string]any{
+		"name": "frigate", "image": "blakeblackshear/frigate",
+		"shmSize": "256m",
+	})
+	if r := fx2.m.Create(map[string]any{
+		"type": "app", "app": "frigate", "name": "payload-shm",
+		"shmSize": float64(1 << 30),
+	}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx2.waitIdle(t)
+	if spec := fx2.dock.runCallAt(0).options.Resources; spec.Shm() != 1<<30 {
+		t.Fatalf("payload shmSize did not win: %+v", spec)
+	}
+}
+
+// Every other app's record and container config must be what it was before
+// the field existed.
+func TestCreateWithoutShmSize(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
+
+	if r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "plain-shm"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	if app := fx.findApp("plain-shm"); app != nil {
+		if _, present := app["shmSize"]; present {
+			t.Fatalf("app carries a shmSize key: %v", app["shmSize"])
+		}
+	}
+	if spec := fx.dock.runCallAt(0).options.Resources; spec != nil {
+		t.Fatalf("RunOptions.Resources = %+v, want nil", spec)
+	}
+}
+
+// An unreadable size fails the create rather than falling back to the
+// default: an app sized for shared memory that silently gets 64 MiB dies
+// under load with nothing naming the cause.
+func TestCreateRejectsBadShmSize(t *testing.T) {
+	for _, value := range []any{"512", "lots", float64(int64(1) << 40), float64(-1)} {
+		fx := newFixture(t, []any{})
+		fx.setRecipe(map[string]any{"name": "frigate", "image": "blakeblackshear/frigate"})
+
+		r := fx.m.Create(map[string]any{
+			"type": "app", "app": "frigate", "name": "bad-shm",
+			"shmSize": value,
+		})
+		if r.Status || !strings.Contains(jsString(r.Message), "Invalid resource configuration") {
+			t.Fatalf("shmSize %v: r = %+v", value, r)
+		}
+		if fx.appCount() != 0 || fx.dock.runCallCount() != 0 {
+			t.Fatalf("a rejected create must persist and start nothing: %d apps, %d runs", fx.appCount(), fx.dock.runCallCount())
+		}
+	}
+}
+
+// Template shape: the size belongs to the container that needs it, and a bad
+// one fails the stack before a single container exists.
+func TestTemplateShmSizePerContainer(t *testing.T) {
+	fx := newFixture(t, []any{})
+
+	r := fx.m.Create(map[string]any{
+		"type": "template", "name": "nvr",
+		"apps": map[string]any{
+			"ui": map[string]any{"container": "nvr-ui", "image": "nginx"},
+			"detector": map[string]any{
+				"container": "nvr-detector", "image": "blakeblackshear/frigate",
+				"linked":  []any{"ui"},
+				"shmSize": "512m",
+			},
+		},
+	})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	if detector := fx.findApp("nvr-detector"); detector["shmSize"] != float64(512<<20) {
+		t.Fatalf("detector shmSize = %v", detector["shmSize"])
+	}
+	if ui := fx.findApp("nvr-ui"); ui != nil {
+		if _, present := ui["shmSize"]; present {
+			t.Fatalf("the plain member must not inherit shmSize: %v", ui["shmSize"])
+		}
+	}
+
+	bad := newFixture(t, []any{})
+	r = bad.m.Create(map[string]any{
+		"type": "template", "name": "nvr",
+		"apps": map[string]any{
+			"ui": map[string]any{"container": "bad-ui", "image": "nginx"},
+			"detector": map[string]any{
+				"container": "bad-detector", "image": "blakeblackshear/frigate",
+				"linked":  []any{"ui"},
+				"shmSize": "512",
+			},
+		},
+	})
+	if r.Status || !strings.Contains(jsString(r.Message), "Invalid resource configuration") {
+		t.Fatalf("bad template shmSize: r = %+v", r)
+	}
+	if bad.appCount() != 0 || bad.dock.runCallCount() != 0 {
+		t.Fatalf("a rejected template must persist and start nothing: %d apps, %d runs", bad.appCount(), bad.dock.runCallCount())
+	}
+}
+
+// Template shape: caps live per container under apps.<key>, and only that
+// member gets them.
+func TestTemplateKernelPerContainer(t *testing.T) {
+	fx := newFixture(t, []any{})
+
+	r := fx.m.Create(map[string]any{
+		"type": "template", "name": "vpn",
+		"apps": map[string]any{
+			"web": map[string]any{"container": "vpn-web", "image": "nginx"},
+			"tunnel": map[string]any{
+				"container": "vpn-tunnel", "image": "linuxserver/wireguard",
+				"linked":  []any{"web"},
+				"caps":    []any{"NET_ADMIN"},
+				"sysctls": map[string]any{"net.ipv4.ip_forward": float64(1)},
+			},
+		},
+	})
+	if !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+
+	tunnel := fx.findApp("vpn-tunnel")
+	if caps, _ := tunnel["caps"].([]any); len(caps) != 1 || caps[0] != "NET_ADMIN" {
+		t.Fatalf("tunnel caps = %v", tunnel["caps"])
+	}
+	if sysctls, _ := tunnel["sysctls"].(map[string]any); sysctls["net.ipv4.ip_forward"] != "1" {
+		t.Fatalf("tunnel sysctls = %v", tunnel["sysctls"])
+	}
+	web := fx.findApp("vpn-web")
+	if _, present := web["caps"]; present {
+		t.Fatalf("the plain member must not inherit caps: %v", web["caps"])
+	}
+	if _, present := web["sysctls"]; present {
+		t.Fatalf("the plain member must not inherit sysctls: %v", web["sysctls"])
+	}
+
+	byName := map[string]*kernel.Spec{}
+	for i := 0; i < fx.dock.runCallCount(); i++ {
+		call := fx.dock.runCallAt(i)
+		byName[call.name] = call.options.Kernel
+	}
+	if spec := byName["vpn-tunnel"]; spec == nil || spec.Caps[0] != kernel.CapNetAdmin {
+		t.Fatalf("vpn-tunnel kernel = %+v", spec)
+	}
+	if spec := byName["vpn-web"]; spec != nil {
+		t.Fatalf("vpn-web kernel = %+v, want nil", spec)
+	}
+}
+
+// A bad request anywhere in a template fails the whole stack before a single
+// container is created.
+func TestTemplateRejectsDisallowedKernelBeforeDeploying(t *testing.T) {
+	fx := newFixture(t, []any{})
+
+	r := fx.m.Create(map[string]any{
+		"type": "template", "name": "vpn",
+		"apps": map[string]any{
+			"web": map[string]any{"container": "vpn-web", "image": "nginx"},
+			"tunnel": map[string]any{
+				"container": "vpn-tunnel", "image": "linuxserver/wireguard",
+				"caps": []any{"SYS_ADMIN"},
+			},
+		},
+	})
+	if r.Status || !strings.Contains(jsString(r.Message), "Invalid kernel configuration for tunnel") {
+		t.Fatalf("r = %+v", r)
+	}
+	if fx.appCount() != 0 || fx.dock.runCallCount() != 0 {
+		t.Fatalf("nothing may be created: %d apps, %d runs", fx.appCount(), fx.dock.runCallCount())
 	}
 }

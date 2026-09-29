@@ -227,22 +227,6 @@ func TestExtractIP(t *testing.T) {
 	}
 }
 
-func TestIsValidEmail(t *testing.T) {
-	valid := []string{"user@example.com", "a@b.co", "test+tag@domain.org"}
-	invalid := []string{"", "@", "user@", "@domain", "user@d", "nope"}
-
-	for _, e := range valid {
-		if !isValidEmail(e) {
-			t.Errorf("expected %q to be valid", e)
-		}
-	}
-	for _, e := range invalid {
-		if isValidEmail(e) {
-			t.Errorf("expected %q to be invalid", e)
-		}
-	}
-}
-
 func TestEncodeDataBody_DotStuffing(t *testing.T) {
 	in := []byte("Subject: x\r\n\r\n<style>\r\n.foo { color: red; }\r\n.\r\nbar\r\n</style>\r\n")
 	got := string(encodeDataBody(in))

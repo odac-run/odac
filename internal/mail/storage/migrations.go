@@ -74,6 +74,11 @@ var indexes = []string{
 
 	// rawRef is probed per candidate by the blob sweeper to find live references.
 	`CREATE INDEX IF NOT EXISTS idx_received_rawref ON mail_received (rawRef)`,
+
+	// Account lookups match COLLATE NOCASE (one mailbox per address regardless
+	// of case), and a binary-collated index cannot serve that comparison. Every
+	// SMTP RCPT and every login would fall back to a table scan without this.
+	`CREATE INDEX IF NOT EXISTS idx_account_email_nocase ON mail_account (email COLLATE NOCASE)`,
 }
 
 // addedColumns lists columns introduced after the original Node.js schema.

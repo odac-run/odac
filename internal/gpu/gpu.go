@@ -53,8 +53,9 @@ const (
 	// ReasonNoRenderNode: ROCm/Intel need DRM render nodes to pass through
 	// and the host exposes none.
 	ReasonNoRenderNode = "no_render_node"
-	// ReasonUnsupportedDevice: a GPU is present that ODAC does not schedule
-	// on (an Intel iGPU, say — slower than the CPU for inference).
+	// ReasonUnsupportedDevice: a display controller is present from a vendor
+	// ODAC has no passthrough story for at all. NVIDIA, AMD and Intel each
+	// have their own reason above, so this is the genuinely unknown card.
 	ReasonUnsupportedDevice = "unsupported_device"
 )
 
@@ -81,13 +82,35 @@ var vendorRuntimes = map[string]string{
 	VendorIntel:  RuntimeIntel,
 }
 
+// VendorFor names the vendor a runtime implies, "" for an unknown runtime.
+// It exists for the callers that learn the runtime from the host rather than
+// from the request (an auto reservation resolved at start), so they can fill
+// the other half of the pair without re-deriving the table.
+func VendorFor(runtime string) string { return runtimeVendors[runtime] }
+
 // Spec is a validated GPU request attached to an app. Count is either
 // CountAll or a positive number of devices.
+//
+// Two axes, deliberately kept apart. Runtime answers "which accelerator"
+// and may be empty, meaning "whatever this host has" (see IsAuto). Optional
+// answers "and if there is none": false fails the create and every start
+// after it, true falls back to the CPU. Folding them into one enum was
+// rejected for the same reason networkMode and isolated stay separate: an
+// image that only ships a CUDA build wants a pinned runtime AND a hard
+// failure, while an app like a video recorder that merely accelerates when
+// it can wants neither.
 type Spec struct {
-	Vendor  string
-	Runtime string
-	Count   int
+	Vendor   string
+	Runtime  string
+	Count    int
+	Optional bool
 }
+
+// IsAuto reports whether the request named no runtime, leaving the choice to
+// whatever the host turns out to have. Only optional requests may take this
+// shape: a required request that resolves to nothing has no honest outcome
+// left but a start failure the operator never asked for.
+func (s *Spec) IsAuto() bool { return s != nil && s.Runtime == "" }
 
 // Parse validates the `gpu` member of an app.create payload (or of a
 // persisted app). A missing, null or empty value is not an error: it means
@@ -108,10 +131,19 @@ func Parse(v any) (*Spec, error) {
 
 	vendor := lower(raw["vendor"])
 	runtime := lower(raw["runtime"])
-	switch {
-	case runtime == "" && vendor == "":
-		return nil, fmt.Errorf("gpu needs a runtime or a vendor")
-	case runtime == "":
+	optional := truthy(raw["optional"])
+
+	if runtime == "" && vendor == "" {
+		if !optional {
+			return nil, fmt.Errorf("gpu needs a runtime or a vendor")
+		}
+		count, err := parseCount(raw["count"])
+		if err != nil {
+			return nil, err
+		}
+		return &Spec{Count: count, Optional: true}, nil
+	}
+	if runtime == "" {
 		runtime = vendorRuntimes[vendor]
 		if runtime == "" {
 			return nil, fmt.Errorf("unsupported GPU vendor: %s", vendor)
@@ -132,7 +164,25 @@ func Parse(v any) (*Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Spec{Vendor: vendor, Runtime: runtime, Count: count}, nil
+	return &Spec{Vendor: vendor, Runtime: runtime, Count: count, Optional: optional}, nil
+}
+
+// truthy reads the `optional` member. JSON gives a bool, but the CLI and
+// hand-edited configs reach here with the string spellings too, and a
+// request meant to be forgiving must not fail closed on "true".
+func truthy(v any) bool {
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "true", "1", "yes", "on":
+			return true
+		}
+	case float64:
+		return value != 0
+	}
+	return false
 }
 
 // parseCount accepts "all" (or nothing) plus decimal counts in either JSON
@@ -175,22 +225,37 @@ func (s *Spec) Map() map[string]any {
 	if s.Count != CountAll {
 		count = float64(s.Count) // JSON number, like a decoded payload
 	}
-	return map[string]any{
-		"vendor":  s.Vendor,
-		"runtime": s.Runtime,
-		"count":   count,
+	out := map[string]any{"count": count}
+	// Absent fields rather than empty ones, the same rule kernel.Spec.Apply
+	// follows: the dashboard diffs app.list rows by serialization, so a
+	// cosmetic "" would mark every GPU app on every server as changed.
+	if !s.IsAuto() {
+		out["vendor"] = s.Vendor
+		out["runtime"] = s.Runtime
 	}
+	if s.Optional {
+		out["optional"] = true
+	}
+	return out
 }
 
-// String is the log form: "nvidia×all", "rocm×2".
+// String is the log form: "nvidia×all", "rocm×2", "auto×all (optional)".
 func (s *Spec) String() string {
 	if s == nil {
 		return "none"
 	}
-	if s.Count == CountAll {
-		return s.Runtime + "×all"
+	runtime := s.Runtime
+	if runtime == "" {
+		runtime = "auto"
 	}
-	return s.Runtime + "×" + strconv.Itoa(s.Count)
+	out := runtime + "×all"
+	if s.Count != CountAll {
+		out = runtime + "×" + strconv.Itoa(s.Count)
+	}
+	if s.Optional {
+		out += " (optional)"
+	}
+	return out
 }
 
 func lower(v any) string {

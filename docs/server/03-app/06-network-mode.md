@@ -60,6 +60,20 @@ Both entry points into that state are guarded, so it is unreachable through norm
 
 ---
 
+### Network Sysctls Are Dropped
+
+An app carrying `net.*` [sysctls](10-kernel-capabilities.md) loses them when it moves to host mode. In the host namespace those settings would retune the host's own network stack, so the container engine refuses to start a container that carries them, and a container the engine refuses is one ODAC keeps recreating rather than a visible failure. The switch drops them and names what it dropped:
+
+```
+my-app now uses HOST networking (no network isolation from the host). Dropped
+the network sysctls net.ipv4.ip_forward: they configure the host's own
+namespace, so set them on the host instead. Restart required to apply.
+```
+
+Capabilities (`caps`) and the non-network sysctls are unaffected: they have nothing to do with which network namespace the container joins.
+
+---
+
 ### Examples
 
 **Media server needing DLNA/mDNS discovery (no domain routed to it):**

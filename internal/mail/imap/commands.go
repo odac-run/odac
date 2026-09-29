@@ -151,7 +151,10 @@ func (c *Connection) authenticateUser(tag, username, password string) {
 	}
 
 	c.firewall.ClearAttempts(ip)
-	c.auth = username
+	// The account's stored spelling keys every mailbox query this connection
+	// makes, so a login as <Ali@x.com> opens the same mailbox as <ali@x.com>
+	// instead of an empty one beside it.
+	c.auth = account.Email
 	log.Printf("[IMAP] User authenticated: %s from %s", username, ip)
 
 	// Transparent password upgrade: rehash legacy N=16384 → current N=32768

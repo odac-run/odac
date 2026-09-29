@@ -229,6 +229,18 @@ func TestForcedGPURuntime(t *testing.T) {
 		t.Errorf("runtime = %q, want rocm", snap.runtime)
 	}
 
+	// The escape hatch covers every runtime ODAC can pass through, Intel
+	// included: a host whose /sys/class/drm ODAC cannot see has no other way
+	// to say what it has.
+	t.Setenv("ODAC_GPU_RUNTIME", "Intel")
+	snap := probeGPU(nil)
+	if snap.runtime != gpu.RuntimeIntel {
+		t.Errorf("runtime = %q, want intel", snap.runtime)
+	}
+	if !snap.schedulable || snap.reason != "" {
+		t.Errorf("the operator's word must open the gate: schedulable=%v reason=%q", snap.schedulable, snap.reason)
+	}
+
 	t.Setenv("ODAC_GPU_RUNTIME", "junk")
 	if snap := probeGPU(nil); snap.runtime != gpu.RuntimeNvidia {
 		t.Errorf("runtime = %q, an unknown override must fall back to detection", snap.runtime)
@@ -367,6 +379,40 @@ func TestCanPassthrough(t *testing.T) {
 	}
 }
 
+// GPURuntime is the inventory answer appmgr infers an unspelled vendor from,
+// so it must report the detected card even where passthrough is impossible,
+// and honour the operator override on hosts ODAC cannot see into.
+func TestGPURuntime(t *testing.T) {
+	fs := newFakeSysfs(t)
+	info := New(nil, nil)
+	if rt := info.GPURuntime(); rt != "" {
+		t.Errorf("bare host reported %q", rt)
+	}
+
+	// An iGPU with a render node is a real answer: it is what an app that
+	// accelerates video rather than inference gets handed.
+	fs.pciDevice(t, "0000:00:02.0", "0x030000", pciVendorIntel, "0x9bc4", nil)
+	fs.dir(t, "class", "drm", "renderD128")
+	if rt := New(nil, nil).GPURuntime(); rt != gpu.RuntimeIntel {
+		t.Errorf("GPURuntime = %q, want intel", rt)
+	}
+
+	fs.pciDevice(t, "0000:01:00.0", "0x030000", pciVendorNvidia, "0x2684", nil)
+	fs.dir(t, "module", "nvidia")
+	if rt := New(nil, nil).GPURuntime(); rt != gpu.RuntimeNvidia {
+		t.Errorf("GPURuntime = %q, want nvidia to outrank the iGPU", rt)
+	}
+
+	t.Setenv("ODAC_GPU_RUNTIME", "rocm")
+	if rt := New(nil, nil).GPURuntime(); rt != gpu.RuntimeROCm {
+		t.Errorf("the override must win: %q", rt)
+	}
+	t.Setenv("ODAC_GPU_RUNTIME", "none")
+	if rt := New(nil, nil).GPURuntime(); rt != "" {
+		t.Errorf("a disabled host must report no runtime: %q", rt)
+	}
+}
+
 func TestCanPassthroughDeviceNodes(t *testing.T) {
 	fs := newFakeSysfs(t)
 	info := New(nil, nil)
@@ -478,12 +524,40 @@ func TestGPUCapabilityReasons(t *testing.T) {
 		wantRuntime:     gpu.RuntimeROCm,
 		wantSchedulable: true,
 	}, {
-		// Found a GPU, but not one ODAC schedules on.
-		name: "Intel iGPU only",
+		// An iGPU with no DRM node is a card nothing can be passed through.
+		name: "Intel iGPU, no render node",
 		setup: func(t *testing.T, fs *fakeSysfs) {
 			fs.pciDevice(t, "0000:00:02.0", "0x030000", pciVendorIntel, "0x9bc4", nil)
 		},
-		wantReason: gpu.ReasonUnsupportedDevice,
+		wantReason: gpu.ReasonNoRenderNode,
+	}, {
+		// The i915/xe case: no engine support needed, the node is enough.
+		name: "Intel iGPU with render node",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:00:02.0", "0x030000", pciVendorIntel, "0x9bc4", nil)
+			fs.dir(t, "class", "drm", "renderD128")
+		},
+		wantRuntime:     gpu.RuntimeIntel,
+		wantSchedulable: true,
+	}, {
+		// Intel is the last resort, never the pick when a real card answers.
+		name: "NVIDIA card outranks an iGPU on the same host",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:00:02.0", "0x030000", pciVendorIntel, "0x9bc4", nil)
+			nvidiaCard(t, fs)
+			fs.dir(t, "module", "nvidia")
+			fs.dir(t, "class", "drm", "renderD128")
+		},
+		engineRuntimes:  []string{"runc", "nvidia"},
+		wantRuntime:     gpu.RuntimeNvidia,
+		wantSchedulable: true,
+	}, {
+		// A display controller from a vendor with no passthrough story.
+		name: "unknown vendor GPU",
+		setup: func(t *testing.T, fs *fakeSysfs) {
+			fs.pciDevice(t, "0000:04:00.0", "0x030000", "0x1234", "0x0001", nil)
+		},
+		wantReason: gpu.ReasonNoDevice,
 	}}
 
 	for _, tc := range cases {

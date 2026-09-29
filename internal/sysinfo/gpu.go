@@ -112,6 +112,18 @@ func (i *Info) gpuField() jscanon.Obj {
 	}
 }
 
+// GPURuntime names the kind of working GPU this host has ("" when there is
+// none). It is the inventory half of the question CanPassthrough answers,
+// exported so appmgr can infer the runtime an operator did not spell out:
+// `odac app gpu my-app` should reserve the card that is actually here rather
+// than make the operator name a vendor ODAC already knows.
+func (i *Info) GPURuntime() string {
+	if forced, ok := forcedGPURuntime(); ok {
+		return forced
+	}
+	return i.gpuState().runtime
+}
+
 // CanPassthrough answers a stricter question than the system.info gate: not
 // "is there a GPU here" but "can the container engine actually hand one to
 // an app container". The two differ on purpose — a host with drivers but no
@@ -285,6 +297,10 @@ func gpuCapability(devices []gpuDevice, runtime string, engineRuntimes []string,
 	case hasVendor(devices, gpu.VendorAMD):
 		// A card with no /sys/class/kfd means the ROCm stack is not loaded.
 		return false, gpu.ReasonNoDriver
+	case hasVendor(devices, gpu.VendorIntel):
+		// gpuRuntime takes any Intel card that has a render node, so
+		// reaching here means the DRM node is what is missing.
+		return false, gpu.ReasonNoRenderNode
 	}
 	return false, gpu.ReasonUnsupportedDevice
 }
@@ -293,7 +309,7 @@ func gpuCapability(devices []gpuDevice, runtime string, engineRuntimes []string,
 // operator override; the daemon advertising an nvidia runtime (proof on its
 // own — sysfs is not always visible from inside ODAC's container); an NVIDIA
 // card whose driver answered; an AMD card on a host with the ROCm compute
-// interface (/sys/class/kfd) up.
+// interface (/sys/class/kfd) up; last, an Intel GPU with a DRM render node.
 func gpuRuntime(devices []gpuDevice, engineRuntimes []string, nvidiaDriverSeen bool) string {
 	if forced, ok := forcedGPURuntime(); ok {
 		return forced
@@ -307,18 +323,28 @@ func gpuRuntime(devices []gpuDevice, engineRuntimes []string, nvidiaDriverSeen b
 	if hasVendor(devices, gpu.VendorAMD) && dirExists(filepath.Join(sysfsRoot, "class", "kfd")) {
 		return gpu.RuntimeROCm
 	}
+	// Intel last, and only when nothing better answered. An iGPU is a poor
+	// inference device, which is why it was left out at first, but it is a
+	// real media engine: the apps that auto-detect (transcoders, recorders)
+	// want it, and the ones that do not are CUDA images whose recipe pins
+	// `nvidia` and therefore never reaches this line.
+	if hasVendor(devices, gpu.VendorIntel) && hasRenderNode() {
+		return gpu.RuntimeIntel
+	}
 	return ""
 }
 
-// forcedGPURuntime honours ODAC_GPU_RUNTIME ("nvidia" | "rocm" | "none"): the
-// escape hatch for hosts whose driver state ODAC cannot see through the
-// container wall. Unset or unrecognised means auto-detect.
+// forcedGPURuntime honours ODAC_GPU_RUNTIME ("nvidia" | "rocm" | "intel" |
+// "none"): the escape hatch for hosts whose driver state ODAC cannot see
+// through the container wall. Unset or unrecognised means auto-detect.
 func forcedGPURuntime() (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ODAC_GPU_RUNTIME"))) {
 	case gpu.RuntimeNvidia:
 		return gpu.RuntimeNvidia, true
 	case gpu.RuntimeROCm:
 		return gpu.RuntimeROCm, true
+	case gpu.RuntimeIntel:
+		return gpu.RuntimeIntel, true
 	case "none", "off", "disabled":
 		return "", true
 	}

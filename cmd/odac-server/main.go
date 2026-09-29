@@ -267,6 +267,9 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 		apiSrv.Register("app.device.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.DeviceDelete(a.At(0), argStr(a.At(1))), nil
 		})
+		apiSrv.Register("app.gpu", func(a api.Args, _ api.Progress) (*api.Result, error) {
+			return appMgr.SetGPU(a.At(0), a.At(1)), nil
+		})
 		apiSrv.Register("app.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.List(a.At(0) == true), nil
 		})

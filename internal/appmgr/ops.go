@@ -1,6 +1,7 @@
 package appmgr
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"odac/internal/applog"
 	"odac/internal/appstatus"
 	"odac/internal/docker"
+	"odac/internal/gpu"
 	"odac/internal/netmode"
 	"odac/internal/ports"
 )
@@ -738,6 +740,18 @@ func (m *Manager) SetPorts(id any, portsPayload []any, payloadOK bool) *api.Resu
 		if isPublic && hv == ports.Proxy {
 			return res(false, __("A \"%s\" port cannot be public. Give it a host port to publish it.", ports.Proxy))
 		}
+
+		// The transport is validated here rather than defaulted, because
+		// this is the path a user's first config edit takes: swallowing an
+		// unreadable `proto` would quietly republish a VPN's tunnel as TCP,
+		// which listens and answers nothing.
+		proto, ok := ports.ParseProto(entry["proto"])
+		if !ok {
+			return res(false, __("Invalid protocol: %s. Must be \"%s\" or \"%s\".", jsString(entry["proto"]), ports.TCP, ports.UDP))
+		}
+		if proto == ports.UDP && hv == ports.Proxy {
+			return res(false, __("A \"%s\" port cannot be %s: the proxy routes HTTP over TCP. Publish it on a host port instead.", ports.Proxy, ports.UDP))
+		}
 		entries = append(entries, entry)
 	}
 
@@ -1022,6 +1036,7 @@ func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
 	// a View nested inside a Mutate deadlocks.
 	var name string
 	var idNum float64
+	var netSysctls []string
 	found, isolated := false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
@@ -1029,6 +1044,7 @@ func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
 			name, _ = app["name"].(string)
 			idNum, _ = app["id"].(float64)
 			isolated = jsTruthy(app["isolated"])
+			netSysctls = toKernel(app).NetSysctls()
 		}
 	})
 	if !found {
@@ -1062,6 +1078,15 @@ func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
 			delete(app, "networkMode")
 		} else {
 			app["networkMode"] = parsed
+			// A host-namespace container configures the host's own network
+			// namespace, so the engine refuses a create carrying net.*
+			// sysctls outright — and a refused create is not a visible
+			// failure, it is a container recreated on every check tick.
+			// They are dropped here, named in the reply, rather than left to
+			// turn the app into a respawn loop.
+			if len(netSysctls) > 0 {
+				toKernel(app).WithoutNetSysctls().Apply(app)
+			}
 		}
 		// The cached address belongs to the old namespace; keeping it would
 		// point the proxy at a dead bridge IP (or a stale loopback) until the
@@ -1070,6 +1095,11 @@ func (m *Manager) SetNetworkMode(id any, mode string) *api.Result {
 		m.saveAppsLocked()
 
 		if parsed == netmode.Host {
+			if len(netSysctls) > 0 {
+				result = res(true, __("%s now uses HOST networking (no network isolation from the host). Dropped the network sysctls %s: they configure the host's own namespace, so set them on the host instead. Restart required to apply.",
+					app["name"], strings.Join(netSysctls, ", ")))
+				return
+			}
 			result = res(true, __("%s now uses HOST networking (no network isolation from the host). Restart required to apply.", app["name"]))
 			return
 		}
@@ -1128,6 +1158,119 @@ func (m *Manager) SetIsolated(id any, isolated bool) *api.Result {
 		result = res(true, __("%s can reach the network again. Restart required to apply.", app["name"]))
 	})
 	return result
+}
+
+// SetGPU attaches or clears an app's GPU reservation after create time. The
+// Cloud fills the same `gpu` field when it installs a ready-made AI app;
+// this is the path for an app that was created without one, or that has
+// outgrown the CPU.
+//
+// request is the app.create `gpu` object (runtime/vendor/count/optional);
+// nil, false or "off" releases the reservation. An object that names neither
+// runtime nor vendor inherits the host's detected runtime, so the common case
+// needs no vendor at all. Persisted only: a container's device requests are
+// fixed at create time, so it takes a restart.
+func (m *Manager) SetGPU(id any, request any) *api.Result {
+	wanted, reserve, err := gpuRequest(request)
+	if err != nil {
+		return res(false, __("Invalid GPU configuration: %s", err.Error()))
+	}
+
+	var spec *gpu.Spec
+	if reserve {
+		// A bare request pins the host's current card, so `odac app list`
+		// shows what the app actually holds. An optional one deliberately
+		// does not: it stays unresolved on purpose, so the app follows the
+		// host across a card being added or removed instead of freezing
+		// today's answer into the config.
+		if gpuFieldEmpty(wanted, "runtime") && gpuFieldEmpty(wanted, "vendor") && !jsTruthy(wanted["optional"]) {
+			runtime := ""
+			if m.deps.GPUHost != nil {
+				runtime = m.deps.GPUHost.GPURuntime()
+			}
+			if runtime == "" {
+				return res(false, __("No GPU was detected on this host. Name the runtime explicitly (--nvidia, --amd or --intel), or pass --optional to run on the CPU until one appears."))
+			}
+			wanted["runtime"] = runtime
+		}
+		spec, err = gpu.Parse(wanted)
+		if err != nil {
+			return res(false, __("Invalid GPU configuration: %s", err.Error()))
+		}
+	}
+
+	// The same create-time pre-flight, for the same reason: a host that
+	// cannot pass this runtime through should say so now, with the missing
+	// piece named, instead of failing every start from here on.
+	if reason := m.checkGPUHost(spec); reason != "" {
+		return res(false, reason)
+	}
+
+	var result *api.Result
+	m.cfg.Mutate(func() {
+		app := m.getLocked(id)
+		if app == nil {
+			result = res(false, __("App %s not found.", jsString(id)))
+			return
+		}
+
+		if spec == nil {
+			had := app["gpu"] != nil
+			delete(app, "gpu")
+			m.saveAppsLocked()
+			if !had {
+				result = res(true, __("%s has no GPU reservation.", app["name"]))
+				return
+			}
+			result = res(true, __("GPU reservation removed from %s. Restart required to apply.", app["name"]))
+			return
+		}
+
+		app["gpu"] = spec.Map()
+		m.saveAppsLocked()
+		result = res(true, __("%s now reserves %s. Restart required to apply.", app["name"], spec.String()))
+	})
+	return result
+}
+
+// gpuRequest normalizes a SetGPU request into the object gpu.Parse takes.
+// reserve is false for a release (nil, false, or an "off"/"none"/"" string).
+// An object always means a reservation, the empty one included: the CLI's
+// bare `odac app gpu my-app` sends {} to mean "whatever this host has", so
+// only an explicit release may clear the field. Anything else is an error
+// rather than a silent release, which would drop a GPU an operator believes
+// is still reserved.
+func gpuRequest(request any) (map[string]any, bool, error) {
+	switch v := request.(type) {
+	case nil:
+		return nil, false, nil
+	case bool:
+		if !v {
+			return nil, false, nil
+		}
+		return map[string]any{}, true, nil
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "", "off", "none", "false":
+			return nil, false, nil
+		default:
+			return map[string]any{"runtime": v}, true, nil
+		}
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, val := range v {
+			out[key] = val
+		}
+		return out, true, nil
+	}
+	return nil, false, errors.New("gpu must be an object")
+}
+
+// gpuFieldEmpty reports whether a request member is absent or blank, so an
+// unspelled runtime can be inferred from the host.
+func gpuFieldEmpty(request map[string]any, key string) bool {
+	s, _ := request[key].(string)
+	return strings.TrimSpace(s) == ""
 }
 
 // SetAPI grants or revokes an app's access to ODAC's own API. permissions is
@@ -1340,6 +1483,11 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 		if len(statusInfo.Networks) > 0 {
 			cp["networks"] = statusInfo.Networks
+		}
+		// Only apps that asked for a GPU get the answer: inventing the member
+		// on every other row would mark them all changed for nothing.
+		if request, ok := cp["gpu"].(map[string]any); ok {
+			cp["gpu"] = gpuRow(request, isRunning, statusInfo.GPU)
 		}
 		if isRunning && statusInfo.StartTime != "" {
 			if t, err := time.Parse(time.RFC3339Nano, statusInfo.StartTime); err == nil {
