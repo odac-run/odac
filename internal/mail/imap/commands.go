@@ -563,6 +563,9 @@ func (c *Connection) cmdFetch(tag, args string, isUID bool) {
 		c.write(fmt.Sprintf("* %d FETCH (", seqMap[uid]))
 		c.writeFetchItems(dataItems, &messages[0], newRawView(c, &messages[0]), isUID)
 		c.write(")\r\n")
+		if c.writeErr != nil {
+			return
+		}
 	}
 	c.write(fmt.Sprintf("%s OK FETCH completed\r\n", tag))
 }
@@ -602,7 +605,7 @@ func (c *Connection) writeFetchItems(items string, msg *storage.MessageRow, rv *
 		if body == nil {
 			body = []byte(buildFullBody(msg))
 		}
-		c.write(fmt.Sprintf("RFC822 {%d}\r\n%s", len(body), body))
+		c.writeLiteral("RFC822", body)
 	}
 
 	// BODY / BODY.PEEK handling — check for BODY[ or BODY.PEEK[ pattern
@@ -698,13 +701,13 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow, rv 
 	// represent at all.
 	if rv.available() {
 		if data, ok := rv.section(section); ok {
-			c.writeSectionResult(section, string(data), hasPartial, partialOrigin, partialCount)
+			c.writeSectionResult(section, data, hasPartial, partialOrigin, partialCount)
 			return
 		}
 		// A section the message does not contain is answered with an empty
 		// string rather than a synthesized substitute, which would be a
 		// different message than the one BODYSTRUCTURE described.
-		c.writeSectionResult(section, "", hasPartial, partialOrigin, partialCount)
+		c.writeSectionResult(section, nil, hasPartial, partialOrigin, partialCount)
 		return
 	}
 
@@ -792,32 +795,33 @@ func (c *Connection) writeBodySection(items string, msg *storage.MessageRow, rv 
 		}
 	}
 
-	c.writeSectionResult(section, content, hasPartial, partialOrigin, partialCount)
+	c.writeSectionResult(section, []byte(content), hasPartial, partialOrigin, partialCount)
 }
 
 // writeSectionResult emits one BODY[section] response, applying the partial
 // range when the client asked for one.
-func (c *Connection) writeSectionResult(section, content string, hasPartial bool, partialOrigin, partialCount int64) {
+func (c *Connection) writeSectionResult(section string, content []byte, hasPartial bool, partialOrigin, partialCount int64) {
 	if !hasPartial {
-		c.write(fmt.Sprintf("BODY[%s] {%d}\r\n%s ", section, len(content), content))
+		c.writeLiteral(fmt.Sprintf("BODY[%s]", section), content)
+		c.write(" ")
 		return
 	}
 
-	contentBytes := []byte(content)
-	total := int64(len(contentBytes))
+	total := int64(len(content))
 	if partialOrigin >= total {
-		content = ""
+		content = nil
 	} else {
 		end := partialOrigin + partialCount
 		// end < partialOrigin catches int64 overflow on an absurd count.
 		if end > total || end < partialOrigin {
 			end = total
 		}
-		content = string(contentBytes[partialOrigin:end])
+		content = content[partialOrigin:end]
 	}
 
 	// RFC 3501 §7.4.2: response includes BODY[section]<origin> with the origin octet
-	c.write(fmt.Sprintf("BODY[%s]<%d> {%d}\r\n%s ", section, partialOrigin, len(content), content))
+	c.writeLiteral(fmt.Sprintf("BODY[%s]<%d>", section, partialOrigin), content)
+	c.write(" ")
 }
 
 // buildFilteredHeaders returns only the requested header fields from the message.
@@ -1372,8 +1376,7 @@ func (c *Connection) storeRaw(raw []byte) string {
 }
 
 func (c *Connection) write(data string) {
-	c.conn.SetWriteDeadline(time.Now().Add(commandTimeout))
-	c.conn.Write([]byte(data))
+	c.writeBytes([]byte(data))
 	if imapDebug {
 		preview := data
 		if len(preview) > 200 {
@@ -1382,6 +1385,35 @@ func (c *Connection) write(data string) {
 		preview = strings.ReplaceAll(preview, "\r\n", "\\r\\n")
 		log.Printf("[IMAP] S->C %s: %s", c.conn.RemoteAddr(), preview)
 	}
+}
+
+// writeBytes sends data in writeChunkSize pieces, renewing the deadline before
+// each one. A single deadline over a whole literal cut off every attachment the
+// client could not receive within commandTimeout, at a point the client could
+// only report as a failed download. A failed write closes the connection: the
+// client has lost its place in the response stream and can only reconnect.
+func (c *Connection) writeBytes(data []byte) {
+	if c.writeErr != nil {
+		return
+	}
+	for len(data) > 0 {
+		n := min(len(data), writeChunkSize)
+		c.conn.SetWriteDeadline(time.Now().Add(commandTimeout))
+		if _, err := c.conn.Write(data[:n]); err != nil {
+			c.writeErr = err
+			log.Printf("[IMAP] Write to %s failed, closing connection: %v", c.conn.RemoteAddr(), err)
+			c.conn.Close()
+			return
+		}
+		data = data[n:]
+	}
+}
+
+// writeLiteral emits "<prefix> {n}\r\n<body>" without copying body, which for
+// an attachment section is the largest buffer the connection holds.
+func (c *Connection) writeLiteral(prefix string, body []byte) {
+	c.write(fmt.Sprintf("%s {%d}\r\n", prefix, len(body)))
+	c.writeBytes(body)
 }
 
 // --- Helpers ---

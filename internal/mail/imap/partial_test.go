@@ -2,8 +2,6 @@ package imap
 
 import (
 	"database/sql"
-	"io"
-	"net"
 	"strings"
 	"testing"
 
@@ -32,24 +30,11 @@ func TestWriteBodySectionPartialRange(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, server := net.Pipe()
-			defer client.Close()
-			defer server.Close()
-
-			got := make(chan string, 1)
-			go func() {
-				buf := make([]byte, 4096)
-				n, _ := client.Read(buf)
-				got <- string(buf[:n])
-				io.Copy(io.Discard, client)
-			}()
-
-			c := &Connection{conn: server}
 			msg := &storage.MessageRow{Text: sql.NullString{String: body, Valid: true}}
-			c.writeBodySection(tt.items, msg, newRawView(c, msg))
-			server.Close()
+			out := capture(t, nil, func(c *Connection) {
+				c.writeBodySection(tt.items, msg, newRawView(c, msg))
+			})
 
-			out := <-got
 			// Response is "BODY[...]{n}\r\n<payload> "; the payload follows the literal.
 			idx := strings.Index(out, "}\r\n")
 			if idx < 0 {

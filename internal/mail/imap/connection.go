@@ -22,6 +22,9 @@ const (
 	commandTimeout = 30 * time.Second
 	maxCommandSize = 8192
 	maxLineSize    = 64 * 1024
+	// writeChunkSize bounds each socket write so commandTimeout limits how
+	// long the client may stall, not how long a large literal takes to send.
+	writeChunkSize = 64 * 1024
 )
 
 // imapDebug enables verbose protocol logging when ODAC_DEV=true.
@@ -51,6 +54,7 @@ type Connection struct {
 	lastUnseen int64          // RECENT count last reported to client
 	reader     *bufio.Reader
 	store      *storage.Store
+	writeErr   error // First failed write; the connection is closed and later writes are dropped
 }
 
 // NewConnection creates a new IMAP connection handler.
