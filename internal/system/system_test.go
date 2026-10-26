@@ -214,6 +214,63 @@ func TestStopSemantics(t *testing.T) {
 	}
 }
 
+// gatedChecker parks inside Check until released, holding a tick in flight.
+type gatedChecker struct {
+	fakeService
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedChecker) Check() {
+	g.once.Do(func() {
+		close(g.entered)
+		<-g.release
+	})
+	g.fakeService.Check()
+}
+
+// Stop must not stop a service while a tick that started before it is still
+// running checks: a late Proxy or Mail check would respawn what Stop just
+// stopped, and a late Swap check would overlap the incoming instance's.
+func TestStopWaitsForInFlightTick(t *testing.T) {
+	tr := &trace{}
+	s, _ := newTestSystem(t, tr)
+	gate := &gatedChecker{
+		fakeService: fakeService{"app", tr},
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	s.svc.App = gate
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	<-gate.entered
+
+	stopped := make(chan struct{})
+	go func() {
+		s.Stop(false)
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatalf("Stop returned while a tick was in flight: %v", tr.snapshot())
+	case <-time.After(50 * time.Millisecond):
+	}
+	if tr.count("mail.stop") != 0 {
+		t.Fatalf("services stopped while a tick was in flight: %v", tr.snapshot())
+	}
+
+	close(gate.release)
+	<-stopped
+
+	ev := tr.snapshot()
+	if hc, ms := indexOf(ev, "hub.check"), indexOf(ev, "mail.stop"); hc == -1 || hc > ms {
+		t.Fatalf("in-flight tick did not finish before services stopped: %v", ev)
+	}
+}
+
 func TestStopCancelsPendingStartupTimers(t *testing.T) {
 	tr := &trace{}
 	s, _ := newTestSystem(t, tr)
