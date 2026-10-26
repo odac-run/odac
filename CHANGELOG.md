@@ -1,3 +1,16 @@
+### 🛠️ Fixes & Improvements
+
+- **deps:** build with Go 1.26 to pick up standard library security fixes
+- **imap:** stream large literals so big attachments finish downloading
+- **system:** wait for an in-flight tick before stopping services
+- **updater:** check the cloned source for a Dockerfile, not package.json
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ✨ What's New
 
 - **app:** add kernel capabilities, sysctls and UDP port support
