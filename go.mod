@@ -1,6 +1,6 @@
 module odac
 
-go 1.25.12
+go 1.26.10
 
 require (
 	github.com/andybalholm/brotli v1.2.0
