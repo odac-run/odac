@@ -50,8 +50,9 @@ func (u *Updater) buildFromSource() error {
 			return err
 		}
 
-		if _, err := os.Stat(filepath.Join(downloadPath, "package.json")); err != nil {
-			return fmt.Errorf("Clone failed: package.json not found")
+		// The clone is only usable if `docker build` has something to build.
+		if _, err := os.Stat(filepath.Join(downloadPath, "Dockerfile")); err != nil {
+			return fmt.Errorf("Clone failed: Dockerfile not found")
 		}
 
 		u.log.Log("Building Docker Image...")

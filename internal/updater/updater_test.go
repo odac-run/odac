@@ -549,7 +549,7 @@ func TestBuildFromSourceCloneAndBuild(t *testing.T) {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Error(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch"), 0o644); err != nil {
 				t.Error(err)
 			}
 		case "docker:cli":
@@ -572,6 +572,42 @@ func TestBuildFromSourceCloneAndBuild(t *testing.T) {
 	// Source dir cleaned up after the build.
 	if _, err := os.Stat(fx.u.downloadPath()); err == nil {
 		t.Fatal("download path must be removed after a successful build")
+	}
+}
+
+// A clone without a Dockerfile must stop before the build runner is spawned.
+// The check used to look for package.json, which the Go repo no longer has,
+// so every build-mode update failed.
+func TestBuildFromSourceRequiresDockerfile(t *testing.T) {
+	fx := newFixture(t)
+	t.Setenv("ODAC_CHANNEL", "beta")
+	fx.w.world["odac"] = &fakeContainer{
+		policy: "unless-stopped", running: true,
+		binds: []string{"/host/.odac:" + fx.u.baseDir},
+	}
+
+	built := false
+	fx.w.onCreate = func(name string, opts CreateOptions) {
+		switch opts.Image {
+		case "alpine/git":
+			dir := fx.u.downloadPath()
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Error(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module odac"), 0o644); err != nil {
+				t.Error(err)
+			}
+		case "docker:cli":
+			built = true
+		}
+	}
+
+	err := fx.u.download()
+	if err == nil || !strings.Contains(err.Error(), "Clone failed: Dockerfile not found") {
+		t.Fatalf("err = %v", err)
+	}
+	if built {
+		t.Fatal("build runner must not start without a Dockerfile")
 	}
 }
 
