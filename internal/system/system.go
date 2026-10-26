@@ -88,6 +88,7 @@ type System struct {
 
 	mu       sync.Mutex
 	tickStop chan struct{}
+	tickDone chan struct{} // closed when the tick goroutine has returned
 	timers   []*time.Timer
 }
 
@@ -159,15 +160,23 @@ func (s *System) Init() error {
 // (a latent race never hit in practice).
 func (s *System) Stop(exceptWeb bool) {
 	s.mu.Lock()
+	tickDone := s.tickDone
 	if s.tickStop != nil {
 		close(s.tickStop)
 		s.tickStop = nil
+		s.tickDone = nil
 	}
 	for _, t := range s.timers {
 		t.Stop()
 	}
 	s.timers = nil
 	s.mu.Unlock()
+
+	// A tick already past its select would otherwise keep running checks
+	// while the services below stop, and could respawn one of them.
+	if tickDone != nil {
+		<-tickDone
+	}
 
 	stop(s.svc.Mail)
 	stop(s.svc.Api)
@@ -186,10 +195,13 @@ func (s *System) startTick() {
 		close(s.tickStop)
 	}
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	s.tickStop = done
+	s.tickDone = exited
 	s.mu.Unlock()
 
 	go func() {
+		defer close(exited)
 		t := time.NewTicker(s.tickEvery)
 		defer t.Stop()
 		for {

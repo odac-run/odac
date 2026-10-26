@@ -28,8 +28,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # Must satisfy the root go.mod directive (go 1.25.0)
-          go-version: '1.25'
+          # Must satisfy the root go.mod directive
+          go-version: '1.26'
 
       - name: Verify Dependencies
         run: go mod verify
