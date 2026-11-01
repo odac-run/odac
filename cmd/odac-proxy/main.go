@@ -222,30 +222,8 @@ func main() {
 	}
 
 	// Start HTTP/3 Server (UDP :443)
-	h3Server := proxy.NewHTTP3Server(":443", handler, tlsConfig)
-
-	// Bind the UDP :443 socket ourselves with SO_REUSEPORT (via netutil.SetSocketOptions),
-	// exactly like the TCP listeners above. quic-go's h3Server.ListenAndServe()
-	// does a plain net.ListenUDP without SO_REUSEPORT, so during a zero-downtime
-	// update the new process cannot bind UDP :443 while the old process still holds
-	// it ("address already in use"). It would then log the error and never retry,
-	// leaving HTTP/3 silently down for the lifetime of the new process. Binding via
-	// ListenPacket + proxy.ServeHTTP3() lets the old and new sockets overlap.
-	udpConn, err := (&net.ListenConfig{Control: netutil.SetSocketOptions}).
-		ListenPacket(context.Background(), "udp", ":443")
-	if err != nil {
-		// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
-		log.Printf("HTTP/3 UDP listener failed: %v", err)
-		log.Println("Hint: If you see 'message too long' or performance issues, run: sysctl -w net.core.rmem_max=2500000")
-	} else {
-		resetKey := loadResetKey()
-		go func() {
-			log.Println("Starting HTTP/3 server on :443 (UDP)")
-			if err := proxy.ServeHTTP3(h3Server, udpConn, resetKey); err != nil && err != http.ErrServerClosed {
-				log.Printf("HTTP/3 server failed: %v", err)
-			}
-		}()
-	}
+	h3Service := proxy.NewHTTP3Service(proxy.NewHTTP3Server(":443", handler, tlsConfig), loadResetKey())
+	h3Service.Start()
 
 	// Same rationale as HTTP above: bind synchronously, flip readiness, then Serve.
 	httpsListener, err := listen("tcp", ":443")
@@ -286,7 +264,7 @@ func main() {
 
 	go func() {
 		defer wg.Done()
-		if err := h3Server.Shutdown(ctx); err != nil {
+		if err := h3Service.Stop(ctx); err != nil {
 			log.Printf("HTTP/3 server shutdown error: %v", err)
 		}
 	}()
