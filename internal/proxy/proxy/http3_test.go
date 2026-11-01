@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -70,6 +71,21 @@ func writeTestCert(t *testing.T) (certPath, keyPath string) {
 	return certPath, keyPath
 }
 
+// dialH3 binds the client to loopback as well: a wildcard socket can land on the
+// server's port number, and the server's replies then come back to the server itself.
+func dialH3(ctx context.Context, t *testing.T, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { udp.Close() })
+	remote, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return quic.Dial(ctx, udp, remote, tlsCfg, cfg)
+}
+
 func newH3Rig(t *testing.T, upstream http.HandlerFunc) *h3Rig {
 	t.Helper()
 	backend := httptest.NewServer(upstream)
@@ -94,13 +110,13 @@ func newH3Rig(t *testing.T, upstream http.HandlerFunc) *h3Rig {
 		t.Fatal(err)
 	}
 	srv := NewHTTP3Server(":443", handler, &tls.Config{GetCertificate: p.GetCertificate, MinVersion: tls.VersionTLS13})
-	go srv.Serve(udp)
+	go ServeHTTP3(srv, udp, nil)
 
 	transport := &http3.Transport{
 		DisableCompression: true,
 		TLSClientConfig:    &tls.Config{InsecureSkipVerify: true, ServerName: h3TestHost},
 		Dial: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-			return quic.DialAddrEarly(ctx, udp.LocalAddr().String(), tlsCfg, cfg)
+			return dialH3(ctx, t, udp.LocalAddr().String(), tlsCfg, cfg)
 		},
 	}
 	t.Cleanup(func() {
@@ -236,5 +252,241 @@ func TestHTTP3CompleteResponseIsCached(t *testing.T) {
 	}
 	if !bytes.Equal(entry.body, h3TestAsset) {
 		t.Fatalf("cached %d of %d bytes", entry.size, len(h3TestAsset))
+	}
+}
+
+func h3TestServer(t *testing.T, handler http.Handler) *http3.Server {
+	t.Helper()
+	certPath, keyPath := writeTestCert(t)
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewHTTP3Server(":443", handler, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13})
+}
+
+func h3ClientTLS() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true, ServerName: h3TestHost, NextProtos: []string{http3.NextProtoH3}}
+}
+
+// rebindUDP retries because the old socket's read loop can hold the port briefly after Close.
+func rebindUDP(t *testing.T, addr string) net.PacketConn {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		udp, err := net.ListenPacket("udp", addr)
+		if err == nil {
+			return udp
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestHTTP3RestartResetsStaleConnections(t *testing.T) {
+	newKey := func() *quic.StatelessResetKey {
+		key := &quic.StatelessResetKey{}
+		rand.Read(key[:])
+		return key
+	}
+	key := newKey()
+
+	cases := []struct {
+		name      string
+		restartAs *quic.StatelessResetKey
+		wantReset bool
+	}{
+		{name: "same key", restartAs: key, wantReset: true},
+		// The client must ignore a reset it cannot verify, so this is what a
+		// key regenerated on every start would look like.
+		{name: "regenerated key", restartAs: newKey()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.NewServeMux()
+			udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := udp.LocalAddr().String()
+			go ServeHTTP3(h3TestServer(t, handler), udp, key)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			conn, err := dialH3(ctx, t, addr, h3ClientTLS(), &quic.Config{MaxIdleTimeout: 30 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.CloseWithError(0, "")
+
+			// A crash sends no CONNECTION_CLOSE, closing the socket first keeps it that way.
+			udp.Close()
+			restarted := rebindUDP(t, addr)
+			defer restarted.Close()
+			go ServeHTTP3(h3TestServer(t, handler), restarted, tc.restartAs)
+
+			str, err := conn.OpenStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := str.Write(make([]byte, 512)); err != nil {
+				t.Fatal(err)
+			}
+
+			wait := time.Second
+			if tc.wantReset {
+				wait = 5 * time.Second
+			}
+			select {
+			case <-conn.Context().Done():
+				var reset *quic.StatelessResetError
+				if !errors.As(context.Cause(conn.Context()), &reset) {
+					t.Fatalf("connection ended with %v, not a stateless reset", context.Cause(conn.Context()))
+				}
+				if !tc.wantReset {
+					t.Fatal("client accepted a reset signed with a different key")
+				}
+			case <-time.After(wait):
+				if tc.wantReset {
+					t.Fatalf("client still waiting %v after the restart", wait)
+				}
+			}
+		})
+	}
+}
+
+func TestHTTP3ShutdownFinishesInFlightAndRefusesNewConnections(t *testing.T) {
+	release := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(h3TestAsset[:1024])
+		w.(http.Flusher).Flush()
+		<-release
+		w.Write(h3TestAsset[1024:])
+	})
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	addr := udp.LocalAddr().String()
+
+	srv := h3TestServer(t, handler)
+	served := make(chan error, 1)
+	go func() { served <- ServeHTTP3(srv, udp, nil) }()
+
+	transport := &http3.Transport{
+		TLSClientConfig: h3ClientTLS(),
+		Dial: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			return dialH3(ctx, t, addr, tlsCfg, cfg)
+		},
+	}
+	defer transport.Close()
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	resp, err := client.Get("https://" + h3TestHost + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Shutdown(ctx) }()
+
+	select {
+	case err := <-served:
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("ServeHTTP3 returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeHTTP3 did not return after Shutdown")
+	}
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer dialCancel()
+	if conn, err := dialH3(dialCtx, t, addr, h3ClientTLS(), nil); err == nil {
+		conn.CloseWithError(0, "")
+		t.Error("a server shutting down accepted a new connection")
+	}
+
+	close(release)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("in-flight response failed: %v", err)
+	}
+	if len(body) != len(h3TestAsset) {
+		t.Fatalf("in-flight response got %d of %d bytes", len(body), len(h3TestAsset))
+	}
+
+	transport.Close()
+	if err := <-stopped; err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+func TestLoadStatelessResetKeyPersists(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "proxy")
+	path := filepath.Join(dir, "reset.key")
+
+	first, err := LoadStatelessResetKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadStatelessResetKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *first != *second {
+		t.Fatal("key changed between loads")
+	}
+	if *first == (quic.StatelessResetKey{}) {
+		t.Fatal("key is all zeroes")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("key file mode is %o", perm)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only the key file, found %d entries", len(entries))
+	}
+}
+
+func TestLoadStatelessResetKeyReplacesCorruptFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reset.key")
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := LoadStatelessResetKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(onDisk, key[:]) {
+		t.Fatal("replacement key was not persisted")
+	}
+}
+
+func TestLoadStatelessResetKeyReportsReadFailure(t *testing.T) {
+	// A directory fails to read with something other than "not found".
+	path := t.TempDir()
+	if _, err := LoadStatelessResetKey(path); err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }

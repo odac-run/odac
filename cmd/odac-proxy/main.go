@@ -22,6 +22,8 @@ import (
 	"odac/internal/proxy/api"
 	"odac/internal/proxy/config"
 	"odac/internal/proxy/proxy"
+
+	"github.com/quic-go/quic-go"
 )
 
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
@@ -228,7 +230,7 @@ func main() {
 	// update the new process cannot bind UDP :443 while the old process still holds
 	// it ("address already in use"). It would then log the error and never retry,
 	// leaving HTTP/3 silently down for the lifetime of the new process. Binding via
-	// ListenPacket + h3Server.Serve() lets the old and new sockets overlap.
+	// ListenPacket + proxy.ServeHTTP3() lets the old and new sockets overlap.
 	udpConn, err := (&net.ListenConfig{Control: netutil.SetSocketOptions}).
 		ListenPacket(context.Background(), "udp", ":443")
 	if err != nil {
@@ -236,9 +238,10 @@ func main() {
 		log.Printf("HTTP/3 UDP listener failed: %v", err)
 		log.Println("Hint: If you see 'message too long' or performance issues, run: sysctl -w net.core.rmem_max=2500000")
 	} else {
+		resetKey := loadResetKey()
 		go func() {
 			log.Println("Starting HTTP/3 server on :443 (UDP)")
-			if err := h3Server.Serve(udpConn); err != nil {
+			if err := proxy.ServeHTTP3(h3Server, udpConn, resetKey); err != nil && err != http.ErrServerClosed {
 				log.Printf("HTTP/3 server failed: %v", err)
 			}
 		}()
@@ -299,6 +302,22 @@ func main() {
 	wg.Wait()
 
 	log.Println("ODAC Proxy stopped.")
+}
+
+// loadResetKey is best-effort like the rest of HTTP/3. Without a key the proxy still
+// serves; clients just wait out the idle timeout after a restart instead of reconnecting.
+func loadResetKey() *quic.StatelessResetKey {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[WARN] HTTP/3 stateless resets disabled: %v", err)
+		return nil
+	}
+	key, err := proxy.LoadStatelessResetKey(filepath.Join(home, ".odac", "proxy", "quic_reset.key"))
+	if err != nil {
+		log.Printf("[WARN] HTTP/3 stateless resets disabled: %v", err)
+		return nil
+	}
+	return key
 }
 
 // optimizeUDPBuffers attempts to increase UDP buffer sizes for better QUIC performance.
