@@ -123,6 +123,21 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) error {
 
 func nowMs() float64 { return float64(time.Now().UnixMilli()) }
 
+// publishedPorts returns copies of the app's entries that become Docker
+// PortBindings; proxy-routed entries are routing metadata, not bindings. Every
+// container start path reads this, because app.port.set accepts a binding for
+// any app type.
+func publishedPorts(app map[string]any) []map[string]any {
+	portList, _ := app["ports"].([]any)
+	var published []map[string]any
+	for _, p := range portList {
+		if pm, _ := p.(map[string]any); ports.IsPublished(pm) {
+			published = append(published, copyMap(pm))
+		}
+	}
+	return published
+}
+
 // runGitApp ports #runGitApp. containerName overrides the app's own name for
 // Blue-Green green containers ("" = the app itself); the green container is
 // NOT in the working set, so every config effect targets the real app.
@@ -143,6 +158,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		kernel                *kernel.Spec
 		resources             *resources.Spec
 		port                  int
+		published             []map[string]any
 	}
 	var s snap
 	found := false
@@ -195,6 +211,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 			app["ports"] = []any{ports.Discovered(3000)}
 			m.saveAppsLocked()
 		}
+		s.published = publishedPorts(app)
 
 		s.env = m.resolveEnvLocked(app, true)
 		if jsTruthy(app["api"]) {
@@ -226,7 +243,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 
 	runOptions := docker.RunOptions{
 		Image:       s.image,
-		Ports:       []map[string]any{},
+		Ports:       s.published,
 		Volumes:     s.volumes,
 		Devices:     s.devices,
 		GPU:         s.gpu,
@@ -329,15 +346,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 			s.hasAPI = true
 			s.apiPerms = app["api"]
 		}
-		// Only published ports go to Docker; proxy-routed entries are
-		// routing metadata, not PortBindings.
-		if portList, _ := app["ports"].([]any); portList != nil {
-			for _, p := range portList {
-				if pm, _ := p.(map[string]any); pm != nil && ports.IsPublished(pm) {
-					s.published = append(s.published, copyMap(pm))
-				}
-			}
-		}
+		s.published = publishedPorts(app)
 	})
 	if !found {
 		return errors.New("app not found")
@@ -538,6 +547,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		apiPerms             any
 		devices              []docker.Device
 		gpu                  *gpu.Spec
+		published            []map[string]any
 		privileged           string
 		networkMode          string
 		isolated             bool
@@ -565,6 +575,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.resources = toResources(app)
 		s.devices = toDevices(app["devices"])
 		s.gpu = toGPU(app["gpu"])
+		s.published = publishedPorts(app)
 		if jsTruthy(app["api"]) {
 			s.hasAPI = true
 			s.apiPerms = app["api"]
@@ -597,6 +608,7 @@ func (m *Manager) runScriptContainer(id any) error {
 	runOptions := docker.RunOptions{
 		Image:       runner.image,
 		Cmd:         append(append([]string{runner.cmd}, runner.args...), filename),
+		Ports:       s.published,
 		Volumes:     volumes,
 		Devices:     s.devices,
 		GPU:         s.gpu,
