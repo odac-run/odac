@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +60,54 @@ const (
 	// assets are cached and low-frequency entries are aggressively evicted.
 	memoryPressurePercent = 30
 )
+
+// replayedHeaders are the app's policies for a response, which a cached copy has to
+// enforce just as the original did.
+var replayedHeaders = []string{
+	"Access-Control-Allow-Origin", "Access-Control-Expose-Headers",
+	"Content-Security-Policy", "Content-Security-Policy-Report-Only",
+	"Cross-Origin-Embedder-Policy", "Cross-Origin-Opener-Policy", "Cross-Origin-Resource-Policy",
+	"Permissions-Policy", "Referrer-Policy", "Timing-Allow-Origin",
+	"X-Content-Type-Options", "X-Frame-Options", "X-XSS-Protection",
+}
+
+// storedHeaders copies names out of src, keeping repeated headers: browsers enforce
+// every Content-Security-Policy line, so storing only the first would weaken the policy.
+func storedHeaders(src http.Header, names ...[]string) http.Header {
+	dst := make(http.Header)
+	for _, group := range names {
+		for _, name := range group {
+			if vals := src.Values(name); len(vals) > 0 {
+				dst[http.CanonicalHeaderKey(name)] = slices.Clone(vals)
+			}
+		}
+	}
+	return dst
+}
+
+// restoreHeaders writes a cached entry's headers onto a response.
+func restoreHeaders(dst, stored http.Header) {
+	for key, vals := range stored {
+		dst[key] = slices.Clone(vals)
+	}
+	applySecurityDefaults(dst)
+}
+
+// isCompressedBody reports a body the backend encoded itself. The caches store raw bytes
+// and compress on serve, and do not replay Content-Encoding, so such a body would reach
+// clients as undecodable bytes.
+func isCompressedBody(h http.Header) bool {
+	return h.Get("Content-Encoding") != ""
+}
+
+// varyPreventsAssetCache rejects Vary fields the asset cache cannot honor, since its key
+// is only host and path. Origin belongs here because an app that reflects it would have
+// one site's Access-Control-Allow-Origin served to every other site.
+func varyPreventsAssetCache(h http.Header) bool {
+	vary := strings.ToLower(h.Get("Vary"))
+	return strings.Contains(vary, "*") || strings.Contains(vary, "cookie") ||
+		strings.Contains(vary, "authorization") || strings.Contains(vary, "origin")
+}
 
 // cacheEntry represents a single cached response.
 type cacheEntry struct {
@@ -243,10 +292,8 @@ func IsCacheableResponse(resp *http.Response) bool {
 	if resp.Header.Get("Set-Cookie") != "" {
 		return false
 	}
-	if vary := strings.ToLower(resp.Header.Get("Vary")); vary != "" {
-		if strings.Contains(vary, "*") || strings.Contains(vary, "cookie") || strings.Contains(vary, "authorization") {
-			return false
-		}
+	if isCompressedBody(resp.Header) || varyPreventsAssetCache(resp.Header) {
+		return false
 	}
 	return true
 }
@@ -333,11 +380,8 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 		return
 	}
 
-	// Never cache responses with Vary: Cookie or Vary: * (uncacheable by definition)
-	if vary := strings.ToLower(resp.Header.Get("Vary")); vary != "" {
-		if strings.Contains(vary, "*") || strings.Contains(vary, "cookie") || strings.Contains(vary, "authorization") {
-			return
-		}
+	if isCompressedBody(resp.Header) || varyPreventsAssetCache(resp.Header) {
+		return
 	}
 
 	key := cacheKey(host, urlPath)
@@ -347,16 +391,10 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 		return
 	}
 
-	// Preserve relevant headers
-	headers := make(http.Header)
-	for _, h := range []string{
+	headers := storedHeaders(resp.Header, replayedHeaders, []string{
 		"Cache-Control", "Content-Type", "ETag",
 		"Last-Modified", "Vary",
-	} {
-		if v := resp.Header.Get(h); v != "" {
-			headers.Set(h, v)
-		}
-	}
+	})
 
 	now := time.Now()
 	entry := &cacheEntry{
@@ -449,12 +487,7 @@ func (cm *CacheManager) Stats() map[string]interface{} {
 
 // ServeFromCache writes a cached response to the client.
 func ServeFromCache(w http.ResponseWriter, r *http.Request, entry *cacheEntry) {
-	// Copy preserved headers (only safe-to-cache headers were stored in Put)
-	for key, vals := range entry.headers {
-		for _, v := range vals {
-			w.Header().Set(key, v)
-		}
-	}
+	restoreHeaders(w.Header(), entry.headers)
 
 	// Age header (RFC 7234): how many seconds the response has been in cache
 	age := int(time.Since(time.Unix(0, entry.createdAt)).Seconds())

@@ -248,7 +248,7 @@ func (pc *PageCache) Get(host, urlPath string, r *http.Request) *pageEntry {
 
 // Put stores a page response in cache.
 func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Response, body []byte, ttl time.Duration) {
-	if !pc.cache.enabled.Load() || ttl <= 0 {
+	if !pc.cache.enabled.Load() || ttl <= 0 || isCompressedBody(resp.Header) {
 		return
 	}
 
@@ -315,16 +315,10 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 		debugLog("[PageCache] Content changed (dynamic?): %s", key)
 	}
 
-	// Preserve safe headers
-	headers := make(http.Header)
-	for _, h := range []string{
+	headers := storedHeaders(resp.Header, replayedHeaders, []string{
 		"Cache-Control", "Content-Language", "Content-Type",
 		"ETag", "Last-Modified", "Link", "Vary", "X-Robots-Tag",
-	} {
-		if v := resp.Header.Get(h); v != "" {
-			headers.Set(h, v)
-		}
-	}
+	})
 
 	now := time.Now()
 	entry := &pageEntry{
@@ -350,11 +344,7 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 
 // ServePageFromCache writes a cached page response to the client.
 func ServePageFromCache(w http.ResponseWriter, r *http.Request, entry *pageEntry) {
-	for key, vals := range entry.headers {
-		for _, v := range vals {
-			w.Header().Set(key, v)
-		}
-	}
+	restoreHeaders(w.Header(), entry.headers)
 
 	age := int(time.Since(time.Unix(0, entry.createdAt)).Seconds())
 	w.Header().Set("Age", strconv.Itoa(age))

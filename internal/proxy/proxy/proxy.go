@@ -170,20 +170,7 @@ func NewProxy() *Proxy {
 			// ServeHTTP owns this header, and ReverseProxy would append the upstream's value to it
 			r.Header.Del("Alt-Svc")
 
-			// Security Headers: Apply defaults only if upstream didn't set them
-			// This allows apps to override these (e.g. allowing iframes via X-Frame-Options)
-			if r.Header.Get("X-Frame-Options") == "" {
-				r.Header.Set("X-Frame-Options", "SAMEORIGIN")
-			}
-			if r.Header.Get("X-Content-Type-Options") == "" {
-				r.Header.Set("X-Content-Type-Options", "nosniff")
-			}
-			if r.Header.Get("X-XSS-Protection") == "" {
-				r.Header.Set("X-XSS-Protection", "1; mode=block")
-			}
-			if r.Header.Get("Referrer-Policy") == "" {
-				r.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-			}
+			applySecurityDefaults(r.Header)
 
 			// Security: Minimize information leakage from frameworks
 			r.Header.Del("X-Powered-By")
@@ -210,6 +197,24 @@ func NewProxy() *Proxy {
 	}
 
 	return p
+}
+
+// applySecurityDefaults fills in only what the app left unset, so an app can still
+// override a default (e.g. allowing iframes via X-Frame-Options). Cache hits never pass
+// through ModifyResponse, so they call this too.
+func applySecurityDefaults(h http.Header) {
+	if h.Get("X-Frame-Options") == "" {
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+	}
+	if h.Get("X-Content-Type-Options") == "" {
+		h.Set("X-Content-Type-Options", "nosniff")
+	}
+	if h.Get("X-XSS-Protection") == "" {
+		h.Set("X-XSS-Protection", "1; mode=block")
+	}
+	if h.Get("Referrer-Policy") == "" {
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	}
 }
 
 // SetHTTP3Available controls the Alt-Svc advertisement. Clients remember it for 30 days,
@@ -534,12 +539,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// cacheRecordWriter MUST wrap the compressionResponseWriter (not vice versa)
 		// so it captures the raw uncompressed body from the backend.
 		// Chain: backend → reverseProxy → cacheRecordWriter → compressionWriter → client
-		crw := newCacheRecordWriter(w, encoding)
+		crw := newCacheRecordWriter(w, encoding, cacheMaxFileSize)
 		defer crw.Close()
 		p.reverseProxy.ServeHTTP(crw, r)
 
 		// Store in cache if response was cacheable (runs inline, body already buffered)
-		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 && crw.body.Len() <= cacheMaxFileSize {
+		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 {
 			p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
 		}
 		return
@@ -563,7 +568,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Page cache miss: proxy to backend, capture response to check for X-Odac-Cache
 		if r.Header.Get("Authorization") == "" {
-			crw := newCacheRecordWriter(w, encoding)
+			crw := newCacheRecordWriter(w, encoding, pageMaxBodySize)
 			defer crw.Close()
 			p.reverseProxy.ServeHTTP(crw, r)
 
@@ -951,15 +956,17 @@ type cacheRecordWriter struct {
 	body         bytes.Buffer
 	compressor   *compressionResponseWriter // nil if no compression needed
 	headers      http.Header
+	limit        int           // Largest body the destination cache accepts
 	pageTTL      time.Duration // Parsed X-Odac-Cache value (0 = no page caching)
 	statusCode   int
 	wroteHead    bool
 	shouldBuffer bool // Only buffer body when response is potentially cacheable
 }
 
-func newCacheRecordWriter(w http.ResponseWriter, encoding string) *cacheRecordWriter {
+func newCacheRecordWriter(w http.ResponseWriter, encoding string, limit int) *cacheRecordWriter {
 	crw := &cacheRecordWriter{
 		w:          w,
+		limit:      limit,
 		statusCode: http.StatusOK,
 	}
 	if encoding != "" {
@@ -983,7 +990,7 @@ func (crw *cacheRecordWriter) WriteHeader(code int) {
 	crw.headers = crw.w.Header().Clone()
 
 	// Decide whether to buffer body before stripping internal headers
-	if code == http.StatusOK {
+	if code == http.StatusOK && crw.bodyStorable() {
 		if ttlStr := crw.headers.Get(pageCacheHeader); ttlStr != "" {
 			crw.shouldBuffer = true
 			if seconds, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil && seconds > 0 {
@@ -1005,14 +1012,29 @@ func (crw *cacheRecordWriter) WriteHeader(code int) {
 	}
 }
 
+// bodyStorable rejects what the caches would refuse anyway before any of it is buffered.
+func (crw *cacheRecordWriter) bodyStorable() bool {
+	if isCompressedBody(crw.headers) {
+		return false
+	}
+	length, err := strconv.ParseInt(crw.headers.Get("Content-Length"), 10, 64)
+	return err != nil || length <= int64(crw.limit)
+}
+
 func (crw *cacheRecordWriter) Write(b []byte) (int, error) {
 	if !crw.wroteHead {
 		crw.WriteHeader(http.StatusOK)
 	}
 
 	// Only buffer when response is cacheable (avoids overhead for non-cached responses)
-	if crw.shouldBuffer && crw.body.Len()+len(b) <= pageMaxBodySize {
-		crw.body.Write(b)
+	if crw.shouldBuffer {
+		if crw.body.Len()+len(b) > crw.limit {
+			// The caches only know the body's length, so a partial one would pass as whole
+			crw.shouldBuffer = false
+			crw.body = bytes.Buffer{}
+		} else {
+			crw.body.Write(b)
+		}
 	}
 
 	// Send to client (compressed if compressor is active, raw otherwise)

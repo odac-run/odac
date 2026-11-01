@@ -92,12 +92,13 @@ Only the following `Vary` fields are supported. Responses with any other `Vary` 
 
 ## What is and isn't cached
 
-ODAC intentionally strips `Set-Cookie` from cached entries — cookies are never replayed from cache. Other safe headers are preserved: `Cache-Control`, `Content-Type`, `ETag`, `Last-Modified`, `Link`, `Vary`, `X-Robots-Tag`.
+ODAC intentionally strips `Set-Cookie` from cached entries, so cookies are never replayed from cache. Other safe headers are preserved: `Cache-Control`, `Content-Language`, `Content-Type`, `ETag`, `Last-Modified`, `Link`, `Vary`, `X-Robots-Tag`, along with the security and cross-origin headers your app sent (`Content-Security-Policy`, `X-Frame-Options`, `Access-Control-Allow-Origin`, and similar). ODAC's security defaults apply to anything your app left unset, the same as on a response from your backend.
 
 Responses are **not cached** if:
 - Status code is not `200 OK`
 - `Cache-Control` contains `no-store` or `private`
 - Body is empty or exceeds 2 MB
+- Your app compressed the body itself (`Content-Encoding` is set). Let ODAC compress instead: it stores the raw bytes and compresses on serve
 - The proxy is running low on shared cache memory
 
 ## Automatic cache purge

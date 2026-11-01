@@ -28,8 +28,9 @@ A response is cached only when **all** of the following hold:
 | **Content-Type** | Must match a static asset type (validated against the extension) |
 | **No `Set-Cookie`** | Per-user / session responses are never cached |
 | **`Cache-Control`** | Must not contain `no-store` or `private` |
-| **`Vary`** | Must not contain `*`, `Cookie`, or `Authorization` |
-| **Size** | Maximum 5 MB per asset |
+| **`Vary`** | Must not contain `*`, `Cookie`, `Authorization`, or `Origin` |
+| **No `Content-Encoding`** | A body your app compressed itself is not cached. Let ODAC compress instead: it stores the raw bytes and compresses on serve |
+| **Size** | Maximum 5 MB per asset; a larger response is passed through and not cached |
 
 ## Admission control — only popular assets are cached
 
@@ -80,6 +81,8 @@ X-Odac-Cache: HIT
 Age: <seconds since cached>
 Server: ODAC
 ```
+
+Security and cross-origin headers your app sent (`Content-Security-Policy`, `X-Frame-Options`, `Access-Control-Allow-Origin`, and similar) are replayed from the cached copy, and ODAC's security defaults apply to anything your app left unset, the same as on a response from your backend.
 
 Conditional requests are supported — if your `If-None-Match` (ETag) or `If-Modified-Since` matches the cached entry, ODAC returns `304 Not Modified` without sending the body.
 
