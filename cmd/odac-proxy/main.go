@@ -22,9 +22,6 @@ import (
 	"odac/internal/proxy/api"
 	"odac/internal/proxy/config"
 	"odac/internal/proxy/proxy"
-
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
@@ -223,14 +220,7 @@ func main() {
 	}
 
 	// Start HTTP/3 Server (UDP :443)
-	h3Server := &http3.Server{
-		Addr:      ":443",
-		Handler:   handler,
-		TLSConfig: tlsConfig,
-		QUICConfig: &quic.Config{
-			Allow0RTT: true,
-		},
-	}
+	h3Server := proxy.NewHTTP3Server(":443", handler, tlsConfig)
 
 	// Bind the UDP :443 socket ourselves with SO_REUSEPORT (via netutil.SetSocketOptions),
 	// exactly like the TCP listeners above. quic-go's h3Server.ListenAndServe()
