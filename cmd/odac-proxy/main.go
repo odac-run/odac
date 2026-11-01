@@ -222,7 +222,7 @@ func main() {
 	}
 
 	// Start HTTP/3 Server (UDP :443)
-	h3Service := proxy.NewHTTP3Service(proxy.NewHTTP3Server(":443", handler, tlsConfig), loadResetKey())
+	h3Service := proxy.NewHTTP3Service(proxy.NewHTTP3Server(":443", handler, tlsConfig), loadResetKey(), prx.SetHTTP3Available)
 	h3Service.Start()
 
 	// Same rationale as HTTP above: bind synchronously, flip readiness, then Serve.

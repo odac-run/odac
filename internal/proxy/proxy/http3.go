@@ -26,16 +26,19 @@ const udpBindRetryInterval = 100 * time.Millisecond
 // sends about half of the old process's connections to a process that cannot read them.
 // A replacement waits for the port instead and clients use TCP in the meantime.
 type HTTP3Service struct {
-	server   *http3.Server
-	resetKey *quic.StatelessResetKey
-	cancel   context.CancelFunc
-	done     chan struct{}
-	conn     net.PacketConn // written before done closes
+	server      *http3.Server
+	resetKey    *quic.StatelessResetKey
+	onAvailable func(bool)
+	cancel      context.CancelFunc
+	done        chan struct{}
+	conn        net.PacketConn // written before done closes
 }
 
-// NewHTTP3Service wraps srv, which binds srv.Addr once started.
-func NewHTTP3Service(srv *http3.Server, resetKey *quic.StatelessResetKey) *HTTP3Service {
-	return &HTTP3Service{server: srv, resetKey: resetKey}
+// NewHTTP3Service wraps srv, which binds srv.Addr once started. onAvailable reports
+// whether the service is accepting new connections, which the port being held does not
+// imply: it stays bound for the whole drain.
+func NewHTTP3Service(srv *http3.Server, resetKey *quic.StatelessResetKey, onAvailable func(bool)) *HTTP3Service {
+	return &HTTP3Service{server: srv, resetKey: resetKey, onAvailable: onAvailable}
 }
 
 // Start returns at once because the port may stay busy for as long as the previous
@@ -57,6 +60,8 @@ func (s *HTTP3Service) Start() {
 		}
 		s.conn = conn
 		log.Printf("Starting HTTP/3 server on %s (UDP)", s.server.Addr)
+		s.onAvailable(true)
+		defer s.onAvailable(false)
 		if err := ServeHTTP3(s.server, conn, s.resetKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("HTTP/3 server failed: %v", err)
 		}

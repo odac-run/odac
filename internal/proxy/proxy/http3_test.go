@@ -458,7 +458,7 @@ func TestHTTP3ServiceWaitsForPortThenServes(t *testing.T) {
 
 	srv := h3TestServer(t, http.NewServeMux())
 	srv.Addr = addr
-	svc := NewHTTP3Service(srv, nil)
+	svc := NewHTTP3Service(srv, nil, func(bool) {})
 	svc.Start()
 	defer stopH3Service(t, svc)
 	time.Sleep(3 * udpBindRetryInterval)
@@ -499,7 +499,7 @@ func TestHTTP3ServiceStopEndsWaiting(t *testing.T) {
 
 	srv := h3TestServer(t, http.NewServeMux())
 	srv.Addr = addr
-	svc := NewHTTP3Service(srv, nil)
+	svc := NewHTTP3Service(srv, nil, func(bool) {})
 	svc.Start()
 	time.Sleep(udpBindRetryInterval)
 	stopH3Service(t, svc)
@@ -513,7 +513,7 @@ func TestHTTP3ServiceStopEndsWaiting(t *testing.T) {
 func TestHTTP3ServiceGivesUpOnPermanentBindError(t *testing.T) {
 	srv := h3TestServer(t, http.NewServeMux())
 	srv.Addr = "127.0.0.1:99999"
-	svc := NewHTTP3Service(srv, nil)
+	svc := NewHTTP3Service(srv, nil, func(bool) {})
 	svc.Start()
 	defer stopH3Service(t, svc)
 
@@ -541,7 +541,8 @@ func TestHTTP3ServiceKeepsPortUntilDrained(t *testing.T) {
 
 	srv := h3TestServer(t, handler)
 	srv.Addr = addr
-	svc := NewHTTP3Service(srv, nil)
+	var available atomic.Bool
+	svc := NewHTTP3Service(srv, nil, available.Store)
 	svc.Start()
 
 	transport := &http3.Transport{
@@ -565,6 +566,9 @@ func TestHTTP3ServiceKeepsPortUntilDrained(t *testing.T) {
 	}()
 	<-svc.done // Shutdown has begun and the drain is under way
 
+	if available.Load() {
+		t.Error("still advertising a service that refuses new connections")
+	}
 	if conn, err := net.ListenPacket("udp", addr); !errors.Is(err, syscall.EADDRINUSE) {
 		if err == nil {
 			conn.Close()

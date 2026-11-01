@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -31,6 +32,8 @@ const (
 	// proxyBufferSize is the buffer size for proxying request/response bodies.
 	// 32KB is the Go default for io.Copy, but we pool these to achieve zero-allocation.
 	proxyBufferSize = 32 * 1024
+
+	altSvcHTTP3 = `h3=":443"; ma=2592000`
 )
 
 // Define buffer pools to reduce GC pressure and memory allocation
@@ -106,7 +109,8 @@ type Proxy struct {
 	cache          *CacheManager     // Smart adaptive asset cache
 	domains        map[string]config.Website
 	hints          *HintsStore // 103 Early Hints engine
-	pages          *PageCache  // App-controlled HTML page cache
+	http3Available atomic.Bool
+	pages          *PageCache // App-controlled HTML page cache
 	sslCache       map[string]*tls.Certificate
 	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
 	globalSSL      *config.SSL
@@ -163,8 +167,8 @@ func NewProxy() *Proxy {
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
-			// Advertise HTTP/3 (QUIC) support
-			r.Header.Set("Alt-Svc", `h3=":443"; ma=2592000`)
+			// ServeHTTP owns this header, and ReverseProxy would append the upstream's value to it
+			r.Header.Del("Alt-Svc")
 
 			// Security Headers: Apply defaults only if upstream didn't set them
 			// This allows apps to override these (e.g. allowing iframes via X-Frame-Options)
@@ -206,6 +210,13 @@ func NewProxy() *Proxy {
 	}
 
 	return p
+}
+
+// SetHTTP3Available controls the Alt-Svc advertisement. Clients remember it for 30 days,
+// so a process must not advertise a QUIC listener it does not hold: during an update the
+// replacement serves TCP while it waits for the UDP port.
+func (p *Proxy) SetHTTP3Available(available bool) {
+	p.http3Available.Store(available)
 }
 
 // DeleteACMEChallenge removes an HTTP-01 ACME challenge token after validation completes.
@@ -452,6 +463,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// HSTS: Only send on HTTPS and valid domains (not IP or localhost)
 	if r.TLS != nil && !isIP && !isLocalhost {
 		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+	}
+
+	// Set here rather than in ModifyResponse so cache hits and errors carry it too.
+	// HTTP/3 requires a certificate, so a cleartext response has nothing to offer.
+	if r.TLS != nil && p.http3Available.Load() {
+		w.Header().Set("Alt-Svc", altSvcHTTP3)
 	}
 
 	// Compression negotiation
