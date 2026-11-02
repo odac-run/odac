@@ -103,6 +103,9 @@ func (bufferPool) Put(buf []byte) {
 	proxyBufferPool.Put(buf)
 }
 
+// pageRecordingKey marks a request whose response cacheRecordWriter will read as a page.
+type pageRecordingKey struct{}
+
 type Proxy struct {
 	acmeChallenges map[string]string // ACME HTTP-01 challenge tokens: token -> keyAuthorization
 	acmeMu         sync.RWMutex      // Separate mutex for ACME challenges to avoid contention
@@ -189,8 +192,11 @@ func NewProxy() *Proxy {
 				p.hints.Learn(host, r.Request.URL.Path, r)
 			}
 
-			// Strip internal header — never expose to client
-			r.Header.Del(pageCacheHeader)
+			// Internal header, never exposed to clients. A recorded page keeps it for
+			// cacheRecordWriter, the only place that can act on the TTL, which removes it.
+			if r.Request == nil || r.Request.Context().Value(pageRecordingKey{}) == nil {
+				r.Header.Del(pageCacheHeader)
+			}
 
 			return nil
 		},
@@ -569,8 +575,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Page cache miss: proxy to backend, capture response to check for X-Odac-Cache
 		if r.Header.Get("Authorization") == "" {
 			crw := newCacheRecordWriter(w, encoding, pageMaxBodySize)
+			crw.pageOnly = true
 			defer crw.Close()
-			p.reverseProxy.ServeHTTP(crw, r)
+			p.reverseProxy.ServeHTTP(crw, r.WithContext(context.WithValue(r.Context(), pageRecordingKey{}, true)))
 
 			// Check if backend opted in to page caching
 			fakeResp := crw.toFakeResponse()
@@ -592,6 +599,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.reverseProxy.ServeHTTP(w, r)
+}
+
+// isInterimStatus reports a 1xx response that a final status still follows. ReverseProxy
+// forwards the backend's through WriteHeader, so treating one as final would lose the
+// real status. 101 is excluded because it does end the response.
+func isInterimStatus(code int) bool {
+	return code >= 100 && code < 200 && code != http.StatusSwitchingProtocols
 }
 
 // compressionResponseWriter wraps http.ResponseWriter to handle compression
@@ -616,6 +630,10 @@ func (cw *compressionResponseWriter) Header() http.Header {
 }
 
 func (cw *compressionResponseWriter) WriteHeader(code int) {
+	if isInterimStatus(code) {
+		cw.w.WriteHeader(code)
+		return
+	}
 	if cw.wroteHeader {
 		return
 	}
@@ -641,10 +659,17 @@ func (cw *compressionResponseWriter) WriteHeader(code int) {
 
 	// Decide whether to compress based on type and size (skip for SSE)
 	if isCompressible(contentType) && !isSSE && (contentLength == -1 || contentLength > 1024) {
-		cw.shouldCompress = true
-
 		cw.Header().Del("Content-Length")
-		cw.Header().Set("Vary", "Accept-Encoding")
+		if !strings.Contains(strings.ToLower(varyFields(cw.Header())), "accept-encoding") {
+			cw.Header().Add("Vary", "Accept-Encoding")
+		}
+
+		// A 304 has no body for Content-Encoding to describe, but must keep the 200's Vary
+		if code == http.StatusNotModified {
+			cw.w.WriteHeader(code)
+			return
+		}
+		cw.shouldCompress = true
 
 		switch cw.encoding {
 		case "zstd":
@@ -957,6 +982,7 @@ type cacheRecordWriter struct {
 	compressor   *compressionResponseWriter // nil if no compression needed
 	headers      http.Header
 	limit        int           // Largest body the destination cache accepts
+	pageOnly     bool          // Only an opted-in page can be stored, so nothing else is buffered
 	pageTTL      time.Duration // Parsed X-Odac-Cache value (0 = no page caching)
 	statusCode   int
 	wroteHead    bool
@@ -980,6 +1006,10 @@ func (crw *cacheRecordWriter) Header() http.Header {
 }
 
 func (crw *cacheRecordWriter) WriteHeader(code int) {
+	if isInterimStatus(code) {
+		crw.w.WriteHeader(code)
+		return
+	}
 	if crw.wroteHead {
 		return
 	}
@@ -991,14 +1021,8 @@ func (crw *cacheRecordWriter) WriteHeader(code int) {
 
 	// Decide whether to buffer body before stripping internal headers
 	if code == http.StatusOK && crw.bodyStorable() {
-		if ttlStr := crw.headers.Get(pageCacheHeader); ttlStr != "" {
-			crw.shouldBuffer = true
-			if seconds, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil && seconds > 0 {
-				crw.pageTTL = time.Duration(seconds) * time.Second
-			}
-		} else if cacheableContentType(crw.headers.Get("Content-Type")) {
-			crw.shouldBuffer = true
-		}
+		crw.pageTTL = ParseTTL(crw.toFakeResponse())
+		crw.shouldBuffer = crw.pageTTL > 0 || (!crw.pageOnly && cacheableContentType(crw.headers.Get("Content-Type")))
 	}
 
 	// Strip internal headers from client response and snapshot
@@ -1116,8 +1140,7 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 		req.Header.Set("If-Modified-Since", entry.lastMod)
 	}
 
-	// Preserve original Host header so backend routes correctly
-	req.Host = host
+	p.prepareRevalidation(req, originalReq)
 
 	resp, err := revalidationClient.Do(req)
 	if err != nil {
@@ -1144,10 +1167,23 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 	}
 }
 
+// prepareRevalidation forwards a background check the way a client request is forwarded.
+// An app that renders from X-Forwarded-Proto or the Host would otherwise answer with a
+// different body, and every check would look like a content change.
+func (p *Proxy) prepareRevalidation(req, originalReq *http.Request) {
+	req.Host = originalReq.Host
+	req.TLS = originalReq.TLS
+	p.director(req)
+}
+
 // revalidationClient is a dedicated HTTP client for background cache revalidation.
 // Separate from the main proxy transport to avoid interference with user traffic.
+// Redirects are not followed: the target's body does not belong under the original URL.
 var revalidationClient = &http.Client{
 	Timeout: 5 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 	Transport: &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -1171,7 +1207,8 @@ func (p *Proxy) Pages() *PageCache {
 }
 
 // revalidatePageCache sends a conditional request to check if a cached page changed.
-// If the backend no longer sends X-Odac-Cache, the entry is removed.
+// A 200 without X-Odac-Cache removes the entry. A 304 does not: it says the content is
+// unchanged, and backends commonly leave custom headers off it.
 func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entry *pageEntry) {
 	defer entry.FinishRevalidation()
 
@@ -1207,17 +1244,19 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 		req.Header.Set("If-Modified-Since", entry.lastMod)
 	}
 
-	// Copy Vary-relevant headers from original request so backend returns the right variant
-	if vary := entry.headers.Get("Vary"); vary != "" {
+	// Copy Vary-relevant headers from original request so backend returns the right variant.
+	// Accept-Encoding stays out: the transport only decodes the body when it asked itself,
+	// and the cache stores raw bytes.
+	if vary := varyFields(entry.headers); vary != "" {
 		for _, field := range strings.Split(vary, ",") {
 			field = strings.TrimSpace(field)
-			if val := originalReq.Header.Get(field); val != "" {
+			if val := originalReq.Header.Get(field); val != "" && !strings.EqualFold(field, "Accept-Encoding") {
 				req.Header.Set(field, val)
 			}
 		}
 	}
 
-	req.Host = host
+	p.prepareRevalidation(req, originalReq)
 
 	resp, err := revalidationClient.Do(req)
 	if err != nil {
@@ -1226,21 +1265,10 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 	}
 	defer resp.Body.Close()
 
-	// If backend no longer sends X-Odac-Cache, remove the entry
-	newTTL := ParseTTL(resp)
-
-	if resp.StatusCode == http.StatusNotModified {
-		if newTTL <= 0 {
-			// Backend withdrew caching — purge this entry
-			p.pages.Purge(host)
-			debugLog("[PageCache] Backend withdrew cache for %s%s", host, originalReq.URL.Path)
-		}
-		return
-	}
-
 	if resp.StatusCode == http.StatusOK {
+		newTTL := ParseTTL(resp)
 		if newTTL <= 0 || !IsPageCacheAllowed(resp) {
-			p.pages.Purge(host)
+			p.pages.remove(entry)
 			debugLog("[PageCache] Backend no longer cacheable: %s%s", host, originalReq.URL.Path)
 			return
 		}

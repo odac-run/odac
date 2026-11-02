@@ -31,6 +31,12 @@ const (
 
 	// pageCacheHeader is the response header apps use to opt-in to page caching.
 	pageCacheHeader = "X-Odac-Cache"
+
+	// pageCandidateWindow is how long a first observation waits for a second client.
+	pageCandidateWindow = 10 * time.Minute
+
+	// pageCandidateOverhead approximates a candidate's memory beyond its key.
+	pageCandidateOverhead = 512
 )
 
 // varyWhitelist defines which Vary header fields are safe to use as cache
@@ -42,14 +48,20 @@ var varyWhitelist = map[string]bool{
 	"x-requested-with": true,
 }
 
-// pageEntry represents a cached HTML page response.
+// pageEntry represents a cached HTML page response. An entry starts as a candidate that
+// holds only the body's hash, and a confirmed copy replaces it, so these fields never
+// change once the entry is stored. Keeping no body until then matters because scanners
+// request endless URLs: on an app that opts in from a catch-all route, each one would
+// otherwise pin a full page in the shared budget for the whole TTL.
 type pageEntry struct {
+	key        string
+	urlKey     string
 	body       []byte
 	bodyHash   uint64 // FNV-1a hash of body for stability detection
 	headers    http.Header
 	etag       string
 	lastMod    string
-	size       int
+	size       int // Bytes charged against the budget
 	statusCode int
 	stable     bool          // True after two distinct clients saw the same body
 	ttl        time.Duration // App-specified TTL from X-Odac-Cache
@@ -92,7 +104,50 @@ type PageCache struct {
 
 // NewPageCache creates a page cache that shares memory limits with the asset cache.
 func NewPageCache(cm *CacheManager) *PageCache {
-	return &PageCache{cache: cm}
+	pc := &PageCache{cache: cm}
+	cm.pages.Store(pc)
+	return pc
+}
+
+// hasRoom caps pages at half the shared budget, because the asset cache cannot evict them
+// and would otherwise stop admitting anything once they filled it.
+func (pc *PageCache) hasRoom(size int64) bool {
+	maxSize := pc.cache.maxSize.Load()
+	return pc.totalSize.Load()+size <= maxSize/2 && pc.cache.totalSize.Load()+size <= maxSize
+}
+
+func (pc *PageCache) charge(size int64) {
+	pc.totalSize.Add(size)
+	pc.cache.totalSize.Add(size)
+}
+
+// remove releases the entry's budget only if this call is the one that removed it, so
+// racing requests for an expired page cannot release it twice.
+func (pc *PageCache) remove(entry *pageEntry) {
+	if pc.entries.CompareAndDelete(entry.key, entry) {
+		pc.charge(-int64(entry.size))
+	}
+}
+
+// evictExpired drops what no request will ever come back for, since Get only notices
+// expiry on the URL it was asked about.
+func (pc *PageCache) evictExpired() {
+	live := make(map[string]struct{})
+	pc.entries.Range(func(_, value interface{}) bool {
+		entry := value.(*pageEntry)
+		if entry.expired() {
+			pc.remove(entry)
+		} else {
+			live[entry.urlKey] = struct{}{}
+		}
+		return true
+	})
+	pc.varyMap.Range(func(key, _ interface{}) bool {
+		if _, ok := live[key.(string)]; !ok {
+			pc.varyMap.Delete(key)
+		}
+		return true
+	})
 }
 
 // clientIP returns the source IP of a request (without the port), used to tell
@@ -181,7 +236,7 @@ func IsPageCacheAllowed(resp *http.Response) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	cc := resp.Header.Get("Cache-Control")
+	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
 	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
 		return false
 	}
@@ -230,9 +285,7 @@ func (pc *PageCache) Get(host, urlPath string, r *http.Request) *pageEntry {
 
 	// Hard TTL expiration — entry is stale, remove it
 	if entry.expired() {
-		pc.entries.Delete(key)
-		pc.totalSize.Add(-int64(entry.size))
-		pc.cache.totalSize.Add(-int64(entry.size))
+		pc.remove(entry)
 		return nil
 	}
 
@@ -248,7 +301,7 @@ func (pc *PageCache) Get(host, urlPath string, r *http.Request) *pageEntry {
 
 // Put stores a page response in cache.
 func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Response, body []byte, ttl time.Duration) {
-	if !pc.cache.enabled.Load() || ttl <= 0 || isCompressedBody(resp.Header) {
+	if !pc.cache.enabled.Load() || pc.cache.underPressure.Load() || ttl <= 0 || isCompressedBody(resp.Header) {
 		return
 	}
 
@@ -265,13 +318,7 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 		return
 	}
 
-	// Check shared memory budget
-	totalUsed := pc.cache.totalSize.Load() + pc.totalSize.Load()
-	if totalUsed+int64(len(body)) > pc.cache.maxSize.Load() {
-		return // No room — don't evict asset cache for page cache
-	}
-
-	varyHeader := resp.Header.Get("Vary")
+	varyHeader := varyFields(resp.Header)
 	variant, safe := buildVariant(r, varyHeader)
 	if !safe {
 		return
@@ -302,44 +349,64 @@ func (pc *PageCache) Put(host, urlPath string, r *http.Request, resp *http.Respo
 			// exactly how one user's page would otherwise be pinned and served
 			// to everyone.
 			if !entry.stable && ip != entry.firstIP {
-				entry.stable = true
-				entry.lastAccess.Store(time.Now().UnixNano())
-				debugLog("[PageCache] Stability confirmed (2 clients): %s", key)
+				pc.promote(entry, resp, body, ttl)
 			}
 			return
 		}
-		// Content changed — replace entry, reset stability
-		pc.entries.Delete(key)
-		pc.totalSize.Add(-int64(entry.size))
-		pc.cache.totalSize.Add(-int64(entry.size))
+		// Content changed: replace entry, reset stability
+		pc.remove(entry)
 		debugLog("[PageCache] Content changed (dynamic?): %s", key)
 	}
 
-	headers := storedHeaders(resp.Header, replayedHeaders, []string{
-		"Cache-Control", "Content-Language", "Content-Type",
-		"ETag", "Last-Modified", "Link", "Vary", "X-Robots-Tag",
-	})
+	candidate := &pageEntry{
+		key:       key,
+		urlKey:    urlKey,
+		bodyHash:  newHash,
+		createdAt: time.Now().UnixNano(),
+		size:      pageCandidateOverhead + len(key),
+		ttl:       min(ttl, pageCandidateWindow),
+		firstIP:   ip,
+	}
+	if !pc.hasRoom(int64(candidate.size)) {
+		return
+	}
+	if _, loaded := pc.entries.LoadOrStore(key, candidate); !loaded {
+		pc.charge(int64(candidate.size))
+	}
+}
+
+// promote replaces a candidate with a servable copy. The TTL starts here, since this is
+// the body's first time being served.
+func (pc *PageCache) promote(candidate *pageEntry, resp *http.Response, body []byte, ttl time.Duration) {
+	if !pc.hasRoom(int64(len(body))) {
+		return
+	}
 
 	now := time.Now()
 	entry := &pageEntry{
-		body:       body,
-		bodyHash:   newHash,
-		createdAt:  now.UnixNano(),
+		key:      candidate.key,
+		urlKey:   candidate.urlKey,
+		body:     body,
+		bodyHash: candidate.bodyHash,
+		headers: storedHeaders(resp.Header, replayedHeaders, []string{
+			"Cache-Control", "Content-Language", "Content-Type",
+			"ETag", "Last-Modified", "Link", "Vary", "X-Robots-Tag",
+		}),
 		etag:       resp.Header.Get("ETag"),
-		headers:    headers,
 		lastMod:    resp.Header.Get("Last-Modified"),
 		size:       len(body),
-		stable:     false, // Needs a second, distinct client to confirm
 		statusCode: resp.StatusCode,
+		stable:     true,
 		ttl:        ttl,
-		firstIP:    ip,
+		createdAt:  now.UnixNano(),
 	}
 	entry.lastAccess.Store(now.UnixNano())
 	entry.hitCount.Store(1)
 
-	pc.entries.Store(key, entry)
-	pc.totalSize.Add(int64(entry.size))
-	pc.cache.totalSize.Add(int64(entry.size))
+	if pc.entries.CompareAndSwap(entry.key, candidate, entry) {
+		pc.charge(int64(entry.size - candidate.size))
+		debugLog("[PageCache] Stability confirmed (2 clients): %s", entry.key)
+	}
 }
 
 // ServePageFromCache writes a cached page response to the client.
@@ -374,15 +441,13 @@ func ServePageFromCache(w http.ResponseWriter, r *http.Request, entry *pageEntry
 
 // Purge removes all page cache entries for a domain.
 func (pc *PageCache) Purge(host string) int {
-	prefix := "page:" + host
+	// The slash keeps example.co from matching example.com
+	prefix := "page:" + host + "/"
 	count := 0
 	pc.entries.Range(func(key, value interface{}) bool {
 		k := key.(string)
 		if strings.HasPrefix(k, prefix) {
-			entry := value.(*pageEntry)
-			pc.entries.Delete(key)
-			pc.totalSize.Add(-int64(entry.size))
-			pc.cache.totalSize.Add(-int64(entry.size))
+			pc.remove(value.(*pageEntry))
 			count++
 		}
 		return true
@@ -391,7 +456,7 @@ func (pc *PageCache) Purge(host string) int {
 	// Clear vary mappings for this domain
 	pc.varyMap.Range(func(key, _ interface{}) bool {
 		k := key.(string)
-		if strings.HasPrefix(k, host) {
+		if strings.HasPrefix(k, host+"/") {
 			pc.varyMap.Delete(key)
 		}
 		return true
@@ -403,11 +468,8 @@ func (pc *PageCache) Purge(host string) int {
 // PurgeAll clears all page cache entries.
 func (pc *PageCache) PurgeAll() int {
 	count := 0
-	pc.entries.Range(func(key, value interface{}) bool {
-		entry := value.(*pageEntry)
-		pc.entries.Delete(key)
-		pc.totalSize.Add(-int64(entry.size))
-		pc.cache.totalSize.Add(-int64(entry.size))
+	pc.entries.Range(func(_, value interface{}) bool {
+		pc.remove(value.(*pageEntry))
 		count++
 		return true
 	})

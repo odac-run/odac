@@ -6,7 +6,9 @@ ODAC's built-in proxy includes an in-memory page cache that can dramatically red
 
 When your app sends a response with the `X-Odac-Cache: <seconds>` header, ODAC caches that page's HTML in memory and serves subsequent requests directly from the proxy — without hitting your backend.
 
-To protect against caching dynamic content (e.g. pages with CSRF tokens or per-user data), ODAC uses a **stability check**: a page is only promoted to cache after two consecutive requests return identical content. On the first request, ODAC fetches from your backend and stores a fingerprint. On the second request, if the content matches, the page is marked stable and served from cache from that point on.
+To protect against caching dynamic content (e.g. pages with CSRF tokens or per-user data), ODAC uses a **stability check**: a page is only promoted to cache after two different clients (source IPs) receive identical content from your backend within 10 minutes. On the first request, ODAC stores only a fingerprint of the page. When a second client gets the same content, the page is stored and served from cache from that point on. A single visitor reloading a page never promotes it.
+
+Only cookieless requests can populate the cache, but **a cached page is served to everyone, including visitors who send cookies**. If a URL shows logged-in users different content, do not send `X-Odac-Cache` on it: those users would see the anonymous version.
 
 ## Enabling cache from your app
 
@@ -34,11 +36,11 @@ Odac.cache(3600)
 | Behavior | Detail |
 |---|---|
 | **Opt-in only** | Pages without `X-Odac-Cache` are never cached |
-| **Stability guard** | Only served from cache after two consecutive identical responses |
+| **Stability guard** | Only served from cache after two different clients received identical responses within 10 minutes |
 | **Stale-while-revalidate** | Cached response is served instantly; backend is re-checked asynchronously (at most once per second per entry) |
-| **TTL** | Set by your app via `X-Odac-Cache: <seconds>`. Entry is hard-expired and removed after TTL |
+| **TTL** | Set by your app via `X-Odac-Cache: <seconds>`, counted from when the page is promoted. Entry is hard-expired and removed after TTL |
 | **Max body size** | 2 MB — larger responses are not cached |
-| **Methods** | Only `GET` and `HEAD` requests |
+| **Methods** | Only `GET` requests |
 | **Query strings** | Requests with query parameters (`?foo=bar`) are never served from cache |
 | **Authorization** | Requests with an `Authorization` header bypass the cache |
 
@@ -48,7 +50,7 @@ ODAC's page cache is designed to be safe by default. Several mechanisms automati
 
 ### Per-user / dynamic content is never cached
 
-The stability guard is what protects pages that differ between visitors. If two consecutive responses for the same URL produce **different** content (for example a per-user greeting, a unique CSRF token, or any randomized markup), ODAC concludes the page is dynamic, discards the candidate entry, and **never promotes it to cache**. Such pages always hit your backend, even if they send `X-Odac-Cache`.
+The stability guard is what protects pages that differ between anonymous visitors. If consecutive responses for the same URL produce **different** content (for example a unique CSRF token or any randomized markup), ODAC concludes the page is dynamic, discards the candidate entry, and **does not promote it to cache**. Such pages always hit your backend, even if they send `X-Odac-Cache`.
 
 ### Cookies do not disable caching — they are stripped
 
@@ -60,7 +62,7 @@ ODAC doesn't blindly wait for the full TTL to expire. While serving a cached pag
 
 ### Caching can be withdrawn at runtime
 
-If, on a later revalidation, your backend **stops sending `X-Odac-Cache`** (or switches to `Cache-Control: no-store` / `private`), ODAC automatically purges the cached entry. You can turn caching off for a page simply by no longer sending the header.
+If a later revalidation gets a `200` that **no longer carries `X-Odac-Cache`** (or uses `Cache-Control: no-store` / `private`), ODAC removes that page from the cache. A `304` means the content is unchanged, so it never removes a page, whatever headers it carries: if your backend answers revalidations with `304`, the entry stays until its TTL ends or the next deploy purges it.
 
 ## Cache hit headers
 
@@ -99,7 +101,7 @@ Responses are **not cached** if:
 - `Cache-Control` contains `no-store` or `private`
 - Body is empty or exceeds 2 MB
 - Your app compressed the body itself (`Content-Encoding` is set). Let ODAC compress instead: it stores the raw bytes and compresses on serve
-- The proxy is running low on shared cache memory
+- The proxy is running low on memory, or pages already use half of the shared cache budget
 
 ## Automatic cache purge
 

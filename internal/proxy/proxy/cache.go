@@ -100,11 +100,17 @@ func isCompressedBody(h http.Header) bool {
 	return h.Get("Content-Encoding") != ""
 }
 
+// varyFields joins every Vary line, since one line of several can make a response
+// uncacheable.
+func varyFields(h http.Header) string {
+	return strings.Join(h.Values("Vary"), ", ")
+}
+
 // varyPreventsAssetCache rejects Vary fields the asset cache cannot honor, since its key
 // is only host and path. Origin belongs here because an app that reflects it would have
 // one site's Access-Control-Allow-Origin served to every other site.
 func varyPreventsAssetCache(h http.Header) bool {
-	vary := strings.ToLower(h.Get("Vary"))
+	vary := strings.ToLower(varyFields(h))
 	return strings.Contains(vary, "*") || strings.Contains(vary, "cookie") ||
 		strings.Contains(vary, "authorization") || strings.Contains(vary, "origin")
 }
@@ -172,6 +178,8 @@ type CacheManager struct {
 	maxSize       atomic.Int64 // Dynamic max size based on available RAM
 	enabled       atomic.Bool  // Master switch — disabled under extreme memory pressure
 	underPressure atomic.Bool  // True when memory is tight (only cache hot assets)
+
+	pages atomic.Pointer[PageCache] // Shares this memory budget and maintenance loop
 
 	stopCh chan struct{}
 }
@@ -593,6 +601,9 @@ func (cm *CacheManager) UpdateMemory(total, used uint64) {
 				freePercent, total/(1024*1024))
 			cm.enabled.Store(false)
 			cm.PurgeAll()
+			if pc := cm.pages.Load(); pc != nil {
+				pc.PurgeAll()
+			}
 		}
 		return
 	}
@@ -752,8 +763,15 @@ func (cm *CacheManager) maintenanceLoop() {
 		case <-cm.stopCh:
 			return
 		case <-cleanupTicker.C:
-			cm.evictExpired()
-			cm.evictUnderPressure()
+			cm.runMaintenance()
 		}
+	}
+}
+
+func (cm *CacheManager) runMaintenance() {
+	cm.evictExpired()
+	cm.evictUnderPressure()
+	if pc := cm.pages.Load(); pc != nil {
+		pc.evictExpired()
 	}
 }
