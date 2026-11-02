@@ -245,6 +245,8 @@ func cacheKey(host, urlPath string) string {
 // has to reach it too.
 func keyBelongsToHost(key, host string) bool {
 	keyHost, _, _ := strings.Cut(key, "/")
+	// A *.x record caches under the names it serves, never under its own.
+	host = strings.TrimPrefix(host, "*.")
 	return keyHost == host || strings.HasSuffix(keyHost, "."+host)
 }
 

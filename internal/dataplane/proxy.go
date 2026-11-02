@@ -13,6 +13,7 @@ import (
 
 	"odac/internal/config"
 	"odac/internal/logx"
+	"odac/internal/mtls"
 	"odac/internal/netmode"
 	"odac/internal/ports"
 	"odac/internal/supervise"
@@ -36,6 +37,14 @@ type Tunnel struct {
 	Token     string
 }
 
+// ClientCertStore is where issued client certificates live. They left the config
+// store because of their number, so the proxy payload has to ask for them.
+// domains.MTLS implements it. It must not take the config lock: payloads are
+// assembled around it.
+type ClientCertStore interface {
+	CertSnapshot(now time.Time) (mtls.CertSnapshot, error)
+}
+
 // Proxy is the Go port of server/src/Proxy.js: supervises bin/odac-proxy and
 // pushes routing/firewall/tunnel config per contracts/proxy-control.md.
 type Proxy struct {
@@ -49,11 +58,13 @@ type Proxy struct {
 	dockerWait time.Duration // max Docker wait on first sync (3s)
 	dockerPoll time.Duration // Docker availability poll (100ms)
 
-	syncMu sync.Mutex // serializes config pushes (Node's event loop did)
+	syncMu    sync.Mutex // serializes config pushes (Node's event loop did)
+	lastCerts *mtls.CertSnapshot
 
-	mu      sync.Mutex
-	active  bool
-	tunnels map[string]Tunnel // by domain; full-replace semantics
+	mu        sync.Mutex
+	active    bool
+	certStore ClientCertStore
+	tunnels   map[string]Tunnel // by domain; full-replace semantics
 }
 
 // NewProxy wires the service. containers may be nil until task 3.4.
@@ -244,6 +255,17 @@ func (p *Proxy) SetTunnels(tunnels []Tunnel) int {
 	return len(incoming)
 }
 
+// TunnelDomains lists the tunnel routes pointing at an app.
+func (p *Proxy) TunnelDomains(app string) []string {
+	var out []string
+	for _, tn := range p.tunnelList() {
+		if tn.Container == app {
+			out = append(out, tn.Domain)
+		}
+	}
+	return out
+}
+
 // WaitForReady ports waitForReady(): poll /ready every 200ms until both :80
 // and :443 are bound, then push config immediately so the binary routes with
 // current state the moment it serves. Used by the updater handshake (3.7).
@@ -262,6 +284,71 @@ func (p *Proxy) WaitForReady(timeout time.Duration) bool {
 		time.Sleep(p.readyPoll)
 	}
 	return false
+}
+
+// SetClientCerts closes the seam with domains.MTLS, which already needs this
+// service to push its changes.
+func (p *Proxy) SetClientCerts(store ClientCertStore) {
+	p.mu.Lock()
+	p.certStore = store
+	p.mu.Unlock()
+}
+
+// certSnapshot reads the certificates for a push, outside the value lock since it
+// scans the whole store. On a read failure the last good copy is the right answer:
+// sending nothing would lock out every required host over a disk hiccup. Only with
+// no good copy at all does it report false, and the proxy then gets no CAs and
+// trusts nothing, because an empty revocation list would revive revoked certificates.
+// Caller holds syncMu.
+func (p *Proxy) certSnapshot() (mtls.CertSnapshot, bool) {
+	p.mu.Lock()
+	store := p.certStore
+	p.mu.Unlock()
+	if store == nil {
+		return mtls.CertSnapshot{}, true
+	}
+	certs, err := store.CertSnapshot(time.Now())
+	if err == nil {
+		p.lastCerts = &certs
+		return certs, true
+	}
+	p.log.Error(fmt.Sprintf("Failed to read client certificates: %s", err))
+	if p.lastCerts != nil {
+		return *p.lastCerts, true
+	}
+	return mtls.CertSnapshot{}, false
+}
+
+// SyncClientCerts pushes only the client certificates. Issuing one must not cost
+// every other site what a full push costs: /config resets the proxy's TLS and OCSP
+// caches. A proxy from before this route answers 404, so anything but success falls
+// back to the full push, which carries the same data.
+func (p *Proxy) SyncClientCerts() {
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
+	if !p.proc.Running() {
+		return
+	}
+	sock := p.proc.SocketPath()
+	if _, err := os.Stat(sock); err != nil {
+		return
+	}
+	certs, ok := p.certSnapshot()
+	if !ok {
+		return // the proxy keeps the table it has
+	}
+	var body []byte
+	var marshalErr error
+	p.cfg.View(func() {
+		body, marshalErr = json.Marshal(mtls.StorePayload(p.cfg.Map("mtls"), certs))
+	})
+	if marshalErr == nil {
+		status, err := postStatus(sock, "/client-certs", body)
+		if err == nil && status == http.StatusOK {
+			return
+		}
+	}
+	p.syncConfig(0)
 }
 
 // SyncConfig pushes the full routing config (Proxy.js syncConfig).
@@ -283,6 +370,8 @@ func (p *Proxy) syncConfig(retry int) {
 
 	p.dockerWaitFirstSync(retry)
 
+	certs, certsOK := p.certSnapshot()
+
 	// Payload assembly and marshal run under the config value WRITE lock:
 	// resolveBackend caches container IPs back onto the live app entries
 	// (app.ip), so this is a mutation, not just a read. The send happens
@@ -290,7 +379,13 @@ func (p *Proxy) syncConfig(retry int) {
 	var body []byte
 	var marshalErr error
 	p.cfg.Mutate(func() {
-		body, marshalErr = json.Marshal(p.buildPayload())
+		payload := p.buildPayload()
+		if certsOK {
+			if store := mtls.StorePayload(p.cfg.Map("mtls"), certs); store != nil {
+				payload["mtls"] = store
+			}
+		}
+		body, marshalErr = json.Marshal(payload)
 	})
 	if marshalErr != nil {
 		p.log.Error(fmt.Sprintf("Failed to sync config to proxy: %s", marshalErr))
@@ -328,11 +423,14 @@ func (p *Proxy) dockerWaitFirstSync(retry int) {
 	}
 }
 
-// buildPayload assembles the /config body. Caller holds cfg.Mutate (see
-// syncConfig).
+// buildPayload assembles the /config body, except its mtls member, which syncConfig
+// adds. Caller holds cfg.Mutate (see syncConfig).
 func (p *Proxy) buildPayload() map[string]any {
 	domains := p.cfg.Map("domains")
 	apps, _ := p.cfg.Get("apps").([]any)
+
+	clientAuthApps := mtls.AppIDs(domains)
+	authKey, _ := p.cfg.Map("api")["auth"].(string)
 
 	proxyDomains := map[string]any{}
 	for name, rec := range domains {
@@ -367,6 +465,9 @@ func (p *Proxy) buildPayload() map[string]any {
 		if backend.internal {
 			entry["container"] = backend.host
 		}
+		if clientAuthApps[fmt.Sprint(record["appId"])] {
+			entry["mtls"] = mtls.DomainPayload(record, mtls.AppKey(authKey, mtls.AppIdentity(app)))
+		}
 		proxyDomains[name] = entry
 	}
 
@@ -375,6 +476,13 @@ func (p *Proxy) buildPayload() map[string]any {
 		app := findAppByName(apps, tn.Container)
 		if app == nil {
 			p.log.Log(fmt.Sprintf("Tunnel: App not found for container %s (domain: %s)", tn.Container, tn.Domain))
+			continue
+		}
+		// A tunnel dials the backend directly, past every check in the proxy. The
+		// mTLS door refuses this pairing too; this one covers a tunnel set later
+		// and a hand-edited config.
+		if clientAuthApps[fmt.Sprint(app["name"])] || clientAuthApps[fmt.Sprint(app["id"])] {
+			p.log.Log(fmt.Sprintf("Tunnel: Skipping %s, app %s uses client certificates", tn.Domain, tn.Container))
 			continue
 		}
 		backend := p.resolveBackend(app)

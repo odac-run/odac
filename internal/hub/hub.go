@@ -78,6 +78,15 @@ type DomainService interface {
 	List(appIDArg any) api.Result
 }
 
+// MTLSService is the slice of domains.MTLS the command table calls.
+type MTLSService interface {
+	Issue(domainArg, optsArg any) api.Result
+	List(domainArg any) api.Result
+	Revoke(fingerprintArg any) api.Result
+	Scope(fingerprintArg, hostsArg any) api.Result
+	Set(domainArg, modeArg, optsArg any) api.Result
+}
+
 // ProxyService is the slice of dataplane.Proxy the command table calls.
 type ProxyService interface {
 	SetTunnels(tunnels []dataplane.Tunnel) int
@@ -116,6 +125,7 @@ type Deps struct {
 	App       AppService
 	DNS       DNSService
 	Domain    DomainService
+	MTLS      MTLSService
 	Proxy     ProxyService
 	Mail      MailService
 	Container ContainerService
@@ -186,7 +196,7 @@ func New(cfg *config.Store, baseURL string, deps Deps) *Hub {
 
 	h.ws.onConnect = func() {
 		h.spawn(func() {
-			for _, task := range []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list"} {
+			for _, task := range []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list", "domain.mtls.cert.list"} {
 				h.triggerSync(task)
 			}
 		})
@@ -895,6 +905,46 @@ func (h *Hub) buildCommands() {
 			}
 			return h.deps.SysUpdate()
 		},
+	})
+	// domain.mtls.*: appended here because this table's order is pinned.
+	withMTLS := func(fn func(payload any) (any, error)) func(payload any) (any, error) {
+		if h.deps.MTLS == nil {
+			return func(any) (any, error) { return nil, errors.New("Client certificates are not available") }
+		}
+		return fn
+	}
+	h.register("domain.mtls.set", &command{
+		fn: withMTLS(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.MTLS.Set(m["domain"], m["mode"], m), nil
+		}),
+		triggers: []string{"domain.list", "domain.mtls.cert.list"},
+	})
+	h.register("domain.mtls.cert.issue", &command{
+		fn: withMTLS(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.MTLS.Issue(m["domain"], m), nil
+		}),
+		triggers: []string{"domain.list", "domain.mtls.cert.list"},
+	})
+	h.register("domain.mtls.cert.scope", &command{
+		fn: withMTLS(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.MTLS.Scope(m["fingerprint"], m["hosts"]), nil
+		}),
+		triggers: []string{"domain.mtls.cert.list"},
+	})
+	h.register("domain.mtls.cert.revoke", &command{
+		fn: withMTLS(func(p any) (any, error) {
+			return h.deps.MTLS.Revoke(pmap(p)["fingerprint"]), nil
+		}),
+		triggers: []string{"domain.mtls.cert.list"},
+	})
+	h.register("domain.mtls.cert.list", &command{
+		fn: withMTLS(func(p any) (any, error) {
+			return h.deps.MTLS.List(pmap(p)["domain"]), nil
+		}),
+		interval: 30 * time.Minute,
 	})
 }
 

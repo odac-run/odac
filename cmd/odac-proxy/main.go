@@ -169,9 +169,10 @@ func main() {
 	// 4. Renegotiation: Disabled to prevent CVE-2009-3555 class attacks
 	// ============================================================================
 	tlsConfig := &tls.Config{
-		GetCertificate: prx.GetCertificate,
-		NextProtos:     []string{"h3", "h2", "http/1.1"},
-		MinVersion:     tls.VersionTLS12,
+		GetCertificate:     prx.GetCertificate,
+		GetConfigForClient: prx.GetConfigForClient,
+		NextProtos:         []string{"h3", "h2", "http/1.1"},
+		MinVersion:         tls.VersionTLS12,
 
 		// Session Resumption: Critical for reducing handshake latency
 		// Go's TLS server automatically handles session tickets when SessionTicketsDisabled=false
@@ -209,6 +210,8 @@ func main() {
 		},
 	}
 
+	prx.SetTLSBase(tlsConfig)
+
 	httpsServer := &http.Server{
 		Handler:   handler,
 		TLSConfig: tlsConfig,
@@ -222,7 +225,9 @@ func main() {
 	}
 
 	// Start HTTP/3 Server (UDP :443)
-	h3Service := proxy.NewHTTP3Service(proxy.NewHTTP3Server(":443", handler, tlsConfig), loadResetKey(), prx.SetHTTP3Available)
+	h3TLSConfig := tlsConfig.Clone()
+	h3TLSConfig.GetConfigForClient = prx.GetHTTP3ConfigForClient
+	h3Service := proxy.NewHTTP3Service(proxy.NewHTTP3Server(":443", handler, h3TLSConfig), loadResetKey(), prx.SetHTTP3Available)
 	h3Service.Start()
 
 	// Same rationale as HTTP above: bind synchronously, flip readiness, then Serve.

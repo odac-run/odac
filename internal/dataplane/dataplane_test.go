@@ -63,10 +63,12 @@ func (f *fakeProc) counts() (ensures, stops int) {
 
 // controlServer fakes a data-plane control API on a unix socket.
 type controlServer struct {
-	sock      string
-	configs   chan []byte
-	sslClears chan []byte
-	ready     atomic.Int32
+	sock             string
+	clientCerts      chan []byte
+	clientCertStatus atomic.Int32
+	configs          chan []byte
+	sslClears        chan []byte
+	ready            atomic.Int32
 }
 
 func newControlServer(t *testing.T) *controlServer {
@@ -78,10 +80,12 @@ func newControlServer(t *testing.T) *controlServer {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	cs := &controlServer{
-		sock:      filepath.Join(dir, "mod.sock"),
-		configs:   make(chan []byte, 16),
-		sslClears: make(chan []byte, 16),
+		sock:        filepath.Join(dir, "mod.sock"),
+		clientCerts: make(chan []byte, 16),
+		configs:     make(chan []byte, 16),
+		sslClears:   make(chan []byte, 16),
 	}
+	cs.clientCertStatus.Store(http.StatusOK)
 	cs.ready.Store(http.StatusOK)
 
 	mux := http.NewServeMux()
@@ -89,6 +93,14 @@ func newControlServer(t *testing.T) *controlServer {
 		body, _ := io.ReadAll(r.Body)
 		cs.configs <- body
 		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/client-certs", func(w http.ResponseWriter, r *http.Request) {
+		status := int(cs.clientCertStatus.Load())
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			body, _ := io.ReadAll(r.Body)
+			cs.clientCerts <- body
+		}
 	})
 	mux.HandleFunc("/ssl/clear", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)

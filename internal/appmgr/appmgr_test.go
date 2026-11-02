@@ -18,6 +18,7 @@ import (
 	"odac/internal/config"
 	"odac/internal/docker"
 	"odac/internal/lang"
+	"odac/internal/mtls"
 )
 
 func init() { lang.SetLocale("en-US") }
@@ -653,6 +654,34 @@ func (b *blockingCloneDocker) CloneRepo(url, branch, dir, token string, l docker
 }
 
 // ---- api permission handling ----
+
+func TestClientCertKeyReachesOnlyAppsWithAPolicy(t *testing.T) {
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(101), "name": "secured", "active": true, "type": "container", "image": "test:latest"},
+		map[string]any{"id": float64(102), "name": "plain", "active": true, "type": "container", "image": "test:latest"},
+	})
+	fx.cfg.Mutate(func() {
+		fx.cfg.Set("api", map[string]any{"auth": "root"})
+		fx.cfg.Set("domains", map[string]any{
+			"sec.test": map[string]any{"appId": "secured", "mtls": map[string]any{"mode": "optional", "ca": []any{"c"}}},
+			"pub.test": map[string]any{"appId": "plain"},
+		})
+	})
+
+	fx.checkAndSettle(t)
+
+	seen := map[string]string{}
+	for i := 0; i < fx.dock.runCallCount(); i++ {
+		call := fx.dock.runCallAt(i)
+		seen[call.name] = call.options.Env[mtls.KeyEnv]
+	}
+	if got, want := seen["secured"], mtls.AppKey("root", "secured"); got != want {
+		t.Fatalf("secured key = %q, want %q", got, want)
+	}
+	if got, ran := seen["plain"]; !ran || got != "" {
+		t.Fatalf("plain: ran=%v key=%q", ran, got)
+	}
+}
 
 func TestAPITokenAndSocketInjection(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{

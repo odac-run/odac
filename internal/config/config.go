@@ -29,6 +29,7 @@ var moduleKeys = map[string][]string{
 	"firewall": {"firewall"},
 	"hub":      {"hub"},
 	"mail":     {"mail"},
+	"mtls":     {"mtls"},
 	"proxy":    {"tunnels"},
 	"server":   {"server"},
 	"service":  {"services"},

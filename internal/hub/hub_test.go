@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -302,6 +303,36 @@ func (fakeDomain) List(appIDArg any) api.Result {
 	return api.Res(true, json.RawMessage(`[]`))
 }
 
+type fakeMTLS struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeMTLS) record(call string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, call)
+	f.mu.Unlock()
+}
+func (f *fakeMTLS) Issue(domainArg, optsArg any) api.Result {
+	f.record("issue " + str(domainArg) + " " + str(pmap(optsArg)["csr"]))
+	return api.Res(true, "issued", map[string]any{"fingerprint": "aa"})
+}
+func (f *fakeMTLS) List(domainArg any) api.Result {
+	return api.Res(true, json.RawMessage(`[]`))
+}
+func (f *fakeMTLS) Revoke(fingerprintArg any) api.Result {
+	f.record("revoke " + str(fingerprintArg))
+	return api.Res(true, "revoked")
+}
+func (f *fakeMTLS) Scope(fingerprintArg, hostsArg any) api.Result {
+	f.record("scope " + str(fingerprintArg))
+	return api.Res(true, "scoped")
+}
+func (f *fakeMTLS) Set(domainArg, modeArg, optsArg any) api.Result {
+	f.record("set " + str(domainArg) + " " + str(modeArg) + " " + str(pmap(optsArg)["caPem"]))
+	return api.Res(true, "set")
+}
+
 type fakeProxy struct {
 	mu      sync.Mutex
 	tunnels [][]dataplane.Tunnel
@@ -405,6 +436,7 @@ type hubFixture struct {
 	proxy  *fakeProxy
 	mail   *fakeMail
 	cont   *fakeContainer
+	mtls   *fakeMTLS
 	dials  chan string
 	noApp  bool
 	noMail bool
@@ -421,6 +453,7 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 		proxy: &fakeProxy{},
 		mail:  &fakeMail{},
 		cont:  &fakeContainer{},
+		mtls:  &fakeMTLS{},
 		dials: make(chan string, 16),
 	}
 	for _, opt := range opts {
@@ -439,6 +472,7 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 	deps := Deps{
 		DNS:       fx.dns,
 		Domain:    fakeDomain{},
+		MTLS:      fx.mtls,
 		Proxy:     fx.proxy,
 		Container: fx.cont,
 		SysInfo: func() jscanon.Obj {
@@ -482,7 +516,7 @@ func (fx *hubFixture) connect() []string {
 	fx.t.Helper()
 	fx.h.Start()
 	fx.h.Check()
-	expected := 5
+	expected := 6
 	if fx.noApp {
 		expected--
 	}
@@ -539,7 +573,7 @@ func TestConnectSendsInitialTasksAndBearer(t *testing.T) {
 	fx := newHubFixture(t)
 	types := fx.connect()
 
-	want := []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list"}
+	want := []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list", "domain.mtls.cert.list"}
 	for i, w := range want {
 		if types[i] != w {
 			t.Fatalf("initial pushes = %v, want %v", types, want)
@@ -1153,7 +1187,8 @@ func TestCommandTableOrder(t *testing.T) {
 		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
 		"app.logs.on", "app.logs.off", "app.build_logs.on", "app.build_logs.off",
 		"terminal.open", "terminal.close", "mail.create", "mail.delete", "mail.list",
-		"mail.password", "system.update",
+		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
+		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1170,13 +1205,33 @@ func TestCommandTableOrder(t *testing.T) {
 	intervals := map[string]time.Duration{
 		"app.list": 30 * time.Minute, "app.stats": 60 * time.Second,
 		"dns.list": 60 * time.Minute, "domain.list": 30 * time.Minute,
-		"mail.list":   60 * time.Minute,
-		"system.info": 60 * time.Minute, "system.stats": 60 * time.Second,
+		"domain.mtls.cert.list": 30 * time.Minute,
+		"mail.list":             60 * time.Minute,
+		"system.info":           60 * time.Minute, "system.stats": 60 * time.Second,
 	}
 	for name, want := range intervals {
 		if got := fx.h.commands[name].interval; got != want {
 			t.Errorf("%s interval = %v, want %v", name, got, want)
 		}
+	}
+}
+
+func TestMTLSCommandsReachTheService(t *testing.T) {
+	fx := newHubFixture(t)
+	run := func(name string, payload map[string]any) {
+		t.Helper()
+		if _, err := fx.h.commands[name].fn(payload); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	run("domain.mtls.set", map[string]any{"domain": "x.com", "mode": "optional", "caPem": "PEM"})
+	run("domain.mtls.cert.issue", map[string]any{"domain": "x.com", "csr": "CSR"})
+	run("domain.mtls.cert.scope", map[string]any{"fingerprint": "aa", "hosts": []any{"x.com"}})
+	run("domain.mtls.cert.revoke", map[string]any{"fingerprint": "aa"})
+
+	want := []string{"set x.com optional PEM", "issue x.com CSR", "scope aa", "revoke aa"}
+	if got := fx.mtls.calls; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
 	}
 }
 

@@ -141,13 +141,21 @@ func (s *Server) HostSocketDir() string {
 // its Cloud pairing), and the two that hand out privilege (app.privileged
 // elevates a container to root or full Docker privileged; app.api rewrites
 // the grants this table protects, so an app holding it could simply widen
-// itself). Nothing an app legitimately automates needs them.
+// itself; the domain.mtls actions would let it mint its way past a client
+// certificate policy, or switch one off, on any domain). Nothing an app
+// legitimately automates needs them: an app certifying its own users brings
+// its own CA.
 var appDeniedActions = map[string]bool{
-	"auth":           true,
-	"update":         true,
-	"server.stop":    true,
-	"app.privileged": true,
-	"app.api":        true,
+	"auth":                    true,
+	"update":                  true,
+	"server.stop":             true,
+	"app.privileged":          true,
+	"app.api":                 true,
+	"domain.mtls.set":         true,
+	"domain.mtls.cert.issue":  true,
+	"domain.mtls.cert.scope":  true,
+	"domain.mtls.cert.revoke": true,
+	"domain.mtls.cert.list":   true,
 }
 
 // AppMayCall reports whether an app token is ever allowed to call an action.

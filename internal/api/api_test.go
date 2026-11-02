@@ -506,3 +506,11 @@ func TestResNormalization(t *testing.T) {
 }
 
 func ptr(r Result) *Result { return &r }
+
+func TestAppsCannotManageClientCertificates(t *testing.T) {
+	for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.issue", "domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list"} {
+		if AppMayCall(action) {
+			t.Errorf("an app grant could reach %s", action)
+		}
+	}
+}

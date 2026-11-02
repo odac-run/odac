@@ -133,6 +133,10 @@
         {
           "file": "03-delete-a-domain.md",
           "title": "Delete a Domain"
+        },
+        {
+          "file": "04-client-certificates.md",
+          "title": "Client Certificates (mTLS)"
         }
       ]
     },

@@ -81,6 +81,9 @@ func main() {
 	// fills appmgr's DomainDeleter seam for app-delete cascades.
 	sslSvc := domains.NewSSL(cfg, dnsSvc, proxySvc, mailSvc)
 	domainSvc := domains.NewDomain(cfg, dnsSvc, sslSvc, proxySvc, mailSvc)
+	mtlsSvc := domains.NewMTLS(cfg, proxySvc)
+	proxySvc.SetClientCerts(mtlsSvc)
+	domainSvc.SetClientAuth(mtlsSvc)
 
 	// System inventory. Built before appmgr because it also answers the GPU
 	// pre-flight ("can this engine hand a card to a container"), which app
@@ -133,6 +136,7 @@ func main() {
 	hubDeps := hub.Deps{
 		DNS:      dnsSvc,
 		Domain:   domainSvc,
+		MTLS:     mtlsSvc,
 		Proxy:    proxySvc,
 		Mail:     mailSvc,
 		SysInfo:  sysInfo.Get,
@@ -191,7 +195,7 @@ func main() {
 	sys := system.New(cfg, svc, upd)
 	upd.SetSystem(sys) // closes the System↔Updater cycle (rollback re-Init)
 
-	registerActions(apiSrv, sys, upd, dnsSvc, mailSvc, appMgr, domainSvc, sslSvc, hubSvc)
+	registerActions(apiSrv, sys, upd, dnsSvc, mailSvc, appMgr, domainSvc, mtlsSvc, sslSvc, hubSvc)
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())
@@ -217,7 +221,7 @@ func (h hubContainers) CreateTerminalSession(appName string, opts docker.Termina
 
 // registerActions wires the full contract-0.1 action table (complete as of
 // task 3.7 — every action in Node's Api.js #commands is registered).
-func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Updater, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, sslSvc *domains.SSL, hubSvc *hub.Hub) {
+func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Updater, dnsSvc *dataplane.DNS, mailSvc *dataplane.Mail, appMgr *appmgr.Manager, domainSvc *domains.Domain, mtlsSvc *domains.MTLS, sslSvc *domains.SSL, hubSvc *hub.Hub) {
 	res := func(r api.Result) (*api.Result, error) { return &r, nil }
 
 	apiSrv.Register("auth", func(a api.Args, _ api.Progress) (*api.Result, error) {
@@ -304,6 +308,21 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 	})
 	apiSrv.Register("domain.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(domainSvc.List(a.At(0)))
+	})
+	apiSrv.Register("domain.mtls.set", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.Set(a.At(0), a.At(1), a.At(2)))
+	})
+	apiSrv.Register("domain.mtls.cert.issue", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.Issue(a.At(0), a.At(1)))
+	})
+	apiSrv.Register("domain.mtls.cert.scope", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.Scope(a.At(0), a.At(1)))
+	})
+	apiSrv.Register("domain.mtls.cert.revoke", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.Revoke(a.At(0)))
+	})
+	apiSrv.Register("domain.mtls.cert.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.List(a.At(0)))
 	})
 	apiSrv.Register("ssl.renew", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(sslSvc.Renew(a.At(0)))

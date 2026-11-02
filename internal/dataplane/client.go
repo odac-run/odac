@@ -69,6 +69,18 @@ func postRaw(socketPath, path string, body []byte) error {
 	return nil
 }
 
+// postStatus is postRaw for a caller that has to know whether the other side
+// understood the request.
+func postStatus(socketPath, path string, body []byte) (int, error) {
+	resp, err := socketClient(socketPath, 0).Post("http://localhost"+path, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
 // requestJSON ports Mail.#apiRequest: any method, JSON body, any HTTP status
 // accepted, response body parsed as the module's JSON envelope ({success,
 // message, ...}). A non-JSON body yields a nil map — like Node, where

@@ -179,8 +179,30 @@ func (s *Server) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received config update: %d domains, firewall enabled: %v, tunnels: %d", len(cfg.Domains), cfg.Firewall.Enabled, len(cfg.Tunnels))
 
+	s.proxy.UpdateClientAuth(cfg.Domains, cfg.MTLS)
 	s.proxy.UpdateConfig(cfg.Domains, cfg.SSL, cfg.Tunnels, cfg.Memory)
 	s.firewall.UpdateConfig(cfg.Firewall)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+// HandleClientCerts takes client certificate changes alone, so issuing or revoking
+// one leaves the TLS and OCSP caches a full config push resets.
+func (s *Server) HandleClientCerts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var store *config.MTLS
+	if err := json.NewDecoder(r.Body).Decode(&store); err != nil {
+		log.Printf("Failed to decode client certificates: %v", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	s.proxy.UpdateClientCerts(store)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -191,6 +213,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/acme/challenge", s.HandleACMEChallenge)
 	mux.HandleFunc("/cache/purge", s.HandleCachePurge)
 	mux.HandleFunc("/cache/stats", s.HandleCacheStats)
+	mux.HandleFunc("/client-certs", s.HandleClientCerts)
 	mux.HandleFunc("/config", s.HandleConfig)
 	mux.HandleFunc("/ready", s.HandleReady)
 	mux.ServeHTTP(w, r)

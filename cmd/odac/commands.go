@@ -251,6 +251,7 @@ func init() {
 						return a.call("domain.list", data, false)
 					},
 				}},
+				{"mtls", mtlsCommand()},
 			},
 		}},
 		{"mail", &command{

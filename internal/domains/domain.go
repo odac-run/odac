@@ -74,15 +74,22 @@ type Renewer interface {
 	Renew(domain any) api.Result
 }
 
+// ClientAuthPruner drops client certificate state a deleted domain leaves
+// behind. *MTLS implements it.
+type ClientAuthPruner interface {
+	Prune()
+}
+
 // Domain is the Domain.js singleton. All collaborators are nil-tolerant,
 // like the Node registry which never resolves a missing module.
 type Domain struct {
-	cfg   *config.Store
-	log   *logx.Logger
-	dns   DNSService
-	ssl   Renewer
-	proxy ProxyService
-	mail  MailService
+	cfg        *config.Store
+	log        *logx.Logger
+	dns        DNSService
+	ssl        Renewer
+	proxy      ProxyService
+	mail       MailService
+	clientAuth ClientAuthPruner
 }
 
 // NewDomain wires the manager. baseDir-derived paths come from cfg.
@@ -115,6 +122,12 @@ func validate(raw any) (string, string) {
 		return "", __("Invalid domain format.")
 	}
 	return domain, ""
+}
+
+// SetClientAuth wires the pruner after construction: MTLS needs the proxy, not
+// Domain, so it is built separately at the composition root.
+func (d *Domain) SetClientAuth(pruner ClientAuthPruner) {
+	d.clientAuth = pruner
 }
 
 // keysByLengthDesc sorts domain names longest-first (the subdomain walk must
@@ -409,6 +422,9 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 			delete(d.domainsLocked(false), domain)
 			d.cfg.Touch("domains")
 		})
+		if d.clientAuth != nil {
+			d.clientAuth.Prune()
+		}
 
 		d.log.Log("Domain %s deleted (was assigned to app %s)", domain, str(recordAppID))
 
@@ -434,6 +450,9 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 			record["subdomain"] = kept
 			d.cfg.Touch("domains")
 		})
+		if d.clientAuth != nil {
+			d.clientAuth.Prune()
+		}
 
 		d.dns.Delete(map[string]any{"name": domain, "type": "CNAME"})
 		d.log.Log("Deleted CNAME record for subdomain %s", domain)
@@ -536,10 +555,12 @@ func (d *Domain) List(appIDArg any) api.Result {
 			{"subdomain", r.record["subdomain"]},
 			{"app", r.record["appId"]},
 			{"created", r.record["created"]},
+			{"mtls", r.record["mtls"]},
 		}, map[string]bool{
 			"subdomain": hasKey(r.record, "subdomain"),
 			"app":       hasKey(r.record, "appId"),
 			"created":   hasKey(r.record, "created"),
+			"mtls":      hasKey(r.record, "mtls"),
 		})
 	}
 	out = append(out, ']')

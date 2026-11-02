@@ -25,6 +25,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/crypto/ocsp"
 
+	"odac/internal/mtls"
 	"odac/internal/proxy/config"
 )
 
@@ -110,15 +111,20 @@ type Proxy struct {
 	acmeChallenges map[string]string // ACME HTTP-01 challenge tokens: token -> keyAuthorization
 	acmeMu         sync.RWMutex      // Separate mutex for ACME challenges to avoid contention
 	cache          *CacheManager     // Smart adaptive asset cache
+	clientAuth     atomic.Pointer[clientAuthTable]
 	domains        map[string]config.Website
 	hints          *HintsStore // 103 Early Hints engine
 	http3Available atomic.Bool
+	liveAuth       map[*liveClientAuth]struct{}
+	liveAuthMu     sync.Mutex
 	pages          *PageCache // App-controlled HTML page cache
 	sslCache       map[string]*tls.Certificate
 	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
+	verdicts       *verdictCache
 	globalSSL      *config.SSL
 	mu             sync.RWMutex
 	reverseProxy   *httputil.ReverseProxy
+	tlsBase        *tls.Config
 	tunnel         *TunnelManager
 	httpClient     *http.Client // For OCSP requests
 }
@@ -136,10 +142,12 @@ func NewProxy() *Proxy {
 		cache:          cm,
 		domains:        make(map[string]config.Website),
 		hints:          NewHintsStore(),
+		liveAuth:       make(map[*liveClientAuth]struct{}),
 		pages:          NewPageCache(cm),
 		sslCache:       make(map[string]*tls.Certificate),
 		ocspCache:      make(map[string]*ocspCacheEntry),
 		tunnel:         NewTunnelManager(),
+		verdicts:       newVerdictCache(),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // OCSP requests should be fast
 		},
@@ -183,7 +191,7 @@ func NewProxy() *Proxy {
 			r.Header.Del("X-Runtime")
 
 			// Learn Link:rel=preload headers for 103 Early Hints
-			if r.Request != nil {
+			if r.Request != nil && !presentsClientCert(r.Request) {
 				host := r.Request.Host
 				if idx := strings.Index(host, ":"); idx != -1 {
 					host = host[:idx]
@@ -266,9 +274,17 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 	if memory != nil && memory.Total > 0 {
 		p.cache.UpdateMemory(memory.Total, memory.Used)
 	}
+
+	p.reauthorizeLive()
 }
 
 func (p *Proxy) director(req *http.Request) {
+	for _, header := range mtls.Headers {
+		req.Header.Del(header)
+	}
+	req.Header.Del("X-Odac-Connection-RemoteAddress")
+	req.Header.Del("X-Odac-Connection-Ssl")
+	req.Header.Del("X-Odac-Websocket")
 	req.Header.Del("X-Forwarded-For")
 	req.Header.Del("X-Real-IP")
 	req.Header.Del("X-Forwarded-Proto")
@@ -338,6 +354,10 @@ func (p *Proxy) director(req *http.Request) {
 		strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
 		req.Header.Set("X-Odac-Websocket", "true")
 	}
+
+	if state := clientAuthFrom(req); state != nil {
+		applyClientAuthHeaders(req, state, time.Now())
+	}
 }
 
 func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
@@ -348,6 +368,13 @@ func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
 	parts := strings.Split(host, ".")
 	for i := 1; i < len(parts); i++ {
 		parent := strings.Join(parts[i:], ".")
+		// A *.x record exists when x itself is not registered for the same app.
+		// It covers one label, the same reach as its certificate.
+		if i == 1 {
+			if site, ok := p.domains["*."+parent]; ok {
+				return site, true
+			}
+		}
 		if site, ok := p.domains[parent]; ok {
 			return site, true
 		}
@@ -369,7 +396,7 @@ func (p *Proxy) setEdgeHeaders(h http.Header, r *http.Request) {
 	if net.ParseIP(host) == nil && host != "localhost" {
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 	}
-	if p.http3Available.Load() {
+	if p.http3Available.Load() && clientAuthFrom(r) == nil {
 		h.Set("Alt-Svc", altSvcHTTP3)
 	}
 }
@@ -395,6 +422,7 @@ func (p *Proxy) Tunnel() *TunnelManager {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Host = strings.ToLower(r.Host)
 	host := r.Host
 	if strings.Contains(host, ":") {
 		host, _, _ = net.SplitHostPort(host)
@@ -453,16 +481,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// This prevents IP-based scanners from fingerprinting the server.
 	if !exists {
 		debugLog("[SECURITY] Unknown host '%s' - rejecting request (anti-scan)", host)
-		if hijacker, ok := w.(http.Hijacker); ok {
-			conn, _, err := hijacker.Hijack()
-			if err == nil {
-				conn.Close()
-				return
-			}
-		}
-		http.Error(w, "", http.StatusNotFound)
+		dropConnection(w)
 		return
 	}
+
+	r, releaseClientAuth, handled := p.gateClientAuth(w, r, host, website, hasSSL)
+	if handled {
+		return
+	}
+	defer releaseClientAuth()
+	identified := presentsClientCert(r)
 
 	// Security: Prevent Domain Fronting (SNI Mismatch)
 	// If TLS SNI exists but Host header differs significantly, it might be an attack.
@@ -528,12 +556,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 
 	// ── 103 Early Hints: send learned preload hints before proxying ──
-	if !isWebSocket && r.Method == http.MethodGet {
+	if !identified && !isWebSocket && r.Method == http.MethodGet {
 		p.hints.Send(w, host, r.URL.Path)
 	}
 
 	// ── Smart Cache: Serve static assets from memory ──
-	if !isWebSocket && IsCacheable(r) {
+	if !identified && !isWebSocket && IsCacheable(r) {
 		if entry := p.cache.Get(host, r.URL.Path); entry != nil {
 			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
@@ -568,7 +596,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Page Cache: App-controlled HTML caching via X-Odac-Cache header ──
-	if !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
+	if !identified && !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
 		if entry := p.pages.Get(host, r.URL.Path, r); entry != nil {
 			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
@@ -789,7 +817,7 @@ func isCompressible(contentType string) bool {
 // Requests without SNI or with unknown SNI are rejected to prevent IP-based scanning
 // (Shodan, Censys, etc.) from discovering which domains are hosted on this server.
 func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	host := hello.ServerName
+	host := strings.ToLower(hello.ServerName)
 	debugLog("[DEBUG] TLS Handshake for SNI: %s", host)
 
 	// Security: Reject empty SNI to prevent IP-based domain discovery
