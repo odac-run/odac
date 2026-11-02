@@ -439,14 +439,12 @@ func ServePageFromCache(w http.ResponseWriter, r *http.Request, entry *pageEntry
 	w.Write(entry.body)
 }
 
-// Purge removes all page cache entries for a domain.
+// Purge removes all page cache entries for a domain and its subdomains.
 func (pc *PageCache) Purge(host string) int {
-	// The slash keeps example.co from matching example.com
-	prefix := "page:" + host + "/"
 	count := 0
 	pc.entries.Range(func(key, value interface{}) bool {
 		k := key.(string)
-		if strings.HasPrefix(k, prefix) {
+		if keyBelongsToHost(strings.TrimPrefix(k, "page:"), host) {
 			pc.remove(value.(*pageEntry))
 			count++
 		}
@@ -456,7 +454,7 @@ func (pc *PageCache) Purge(host string) int {
 	// Clear vary mappings for this domain
 	pc.varyMap.Range(func(key, _ interface{}) bool {
 		k := key.(string)
-		if strings.HasPrefix(k, host+"/") {
+		if keyBelongsToHost(k, host) {
 			pc.varyMap.Delete(key)
 		}
 		return true

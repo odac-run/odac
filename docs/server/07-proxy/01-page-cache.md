@@ -105,4 +105,4 @@ Responses are **not cached** if:
 
 ## Automatic cache purge
 
-ODAC automatically purges the page cache for a domain after every app **deploy** or **restart**. You don't need to do anything — stale cached pages are cleared before fresh traffic arrives.
+ODAC automatically purges the page cache for a domain and its subdomains after every app **deploy** or **restart**. You don't need to do anything — stale cached pages are cleared before fresh traffic arrives.

@@ -224,6 +224,14 @@ func cacheKey(host, urlPath string) string {
 	return host + urlPath
 }
 
+// keyBelongsToHost matches a "host/path" key against a purge target. A subdomain routes to
+// its parent's app but is cached under its own name, so a deploy that purges the parent
+// has to reach it too.
+func keyBelongsToHost(key, host string) bool {
+	keyHost, _, _ := strings.Cut(key, "/")
+	return keyHost == host || strings.HasSuffix(keyHost, "."+host)
+}
+
 // IsCacheable checks if a request is eligible for caching based on method and URL.
 func IsCacheable(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -427,15 +435,14 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 	cm.totalSize.Add(int64(entry.size))
 }
 
-// Purge removes all cache entries for a specific domain (app).
+// Purge removes all cache entries for a specific domain (app) and its subdomains.
 // Called after deployments to ensure fresh assets are served.
 func (cm *CacheManager) Purge(host string) int {
-	prefix := host + "/"
 	count := 0
 
 	cm.entries.Range(func(key, value interface{}) bool {
 		k := key.(string)
-		if k == host || strings.HasPrefix(k, prefix) {
+		if keyBelongsToHost(k, host) {
 			entry := value.(*cacheEntry)
 			cm.entries.Delete(key)
 			cm.totalSize.Add(-int64(entry.size))
@@ -447,7 +454,7 @@ func (cm *CacheManager) Purge(host string) int {
 	// Also clear frequency records for this domain
 	cm.frequency.Range(func(key, _ interface{}) bool {
 		k := key.(string)
-		if k == host || strings.HasPrefix(k, prefix) {
+		if keyBelongsToHost(k, host) {
 			cm.frequency.Delete(key)
 		}
 		return true
