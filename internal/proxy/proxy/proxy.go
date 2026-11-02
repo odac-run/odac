@@ -170,8 +170,10 @@ func NewProxy() *Proxy {
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
-			// ServeHTTP owns this header, and ReverseProxy would append the upstream's value to it
 			r.Header.Del("Alt-Svc")
+			if r.Request != nil {
+				p.setEdgeHeaders(r.Header, r.Request)
+			}
 
 			applySecurityDefaults(r.Header)
 
@@ -353,6 +355,25 @@ func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
 	return config.Website{}, false
 }
 
+// setEdgeHeaders writes the headers that describe this proxy rather than the app, replacing
+// whatever the app sent. It runs where a final response is produced: ReverseProxy clears the
+// writer's headers after forwarding a backend 1xx, so setting them any earlier loses them.
+func (p *Proxy) setEdgeHeaders(h http.Header, r *http.Request) {
+	if r.TLS == nil {
+		return
+	}
+	host := r.Host
+	if strings.Contains(host, ":") {
+		host, _, _ = net.SplitHostPort(host)
+	}
+	if net.ParseIP(host) == nil && host != "localhost" {
+		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+	}
+	if p.http3Available.Load() {
+		h.Set("Alt-Svc", altSvcHTTP3)
+	}
+}
+
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	if err == context.Canceled {
 		return
@@ -363,6 +384,7 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	}
 
 	log.Printf("Proxy error for %s: %v", r.Host, err)
+	p.setEdgeHeaders(w.Header(), r)
 	w.WriteHeader(http.StatusBadGateway)
 	w.Write([]byte("Bad Gateway"))
 }
@@ -467,21 +489,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security Headers
-	// Note: Other security headers (X-Frame-Options, etc.) are handled in ModifyResponse
-	// to allow upstream overrides. HSTS is forced here because we handle SSL termination.
-
-	// HSTS: Only send on HTTPS and valid domains (not IP or localhost)
-	if r.TLS != nil && !isIP && !isLocalhost {
-		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
-	}
-
-	// Set here rather than in ModifyResponse so cache hits and errors carry it too.
-	// HTTP/3 requires a certificate, so a cleartext response has nothing to offer.
-	if r.TLS != nil && p.http3Available.Load() {
-		w.Header().Set("Alt-Svc", altSvcHTTP3)
-	}
-
 	// Compression negotiation
 	acceptEncoding := r.Header.Get("Accept-Encoding")
 	var encoding string
@@ -528,6 +535,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ── Smart Cache: Serve static assets from memory ──
 	if !isWebSocket && IsCacheable(r) {
 		if entry := p.cache.Get(host, r.URL.Path); entry != nil {
+			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
 				cw := newCompressionResponseWriter(w, encoding)
 				ServeFromCache(cw, r, entry)
@@ -559,6 +567,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ── Page Cache: App-controlled HTML caching via X-Odac-Cache header ──
 	if !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
 		if entry := p.pages.Get(host, r.URL.Path, r); entry != nil {
+			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
 				cw := newCompressionResponseWriter(w, encoding)
 				ServePageFromCache(cw, r, entry)
