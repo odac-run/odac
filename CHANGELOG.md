@@ -1,5 +1,24 @@
 ### 🛠️ Fixes & Improvements
 
+- **app:** enhance Blue-Green deployment logic for published host ports
+- **proxy:** advertise HTTP/3 only while it accepts connections
+- **proxy:** keep fetches from before a purge out of the cache
+- **proxy:** keep HSTS and Alt-Svc after a backend 1xx
+- **proxy:** make the page cache work on real traffic
+- **proxy:** purge subdomains along with their parent domain
+- **proxy:** recover HTTP/3 clients quickly after a proxy restart
+- **proxy:** serve complete and correctly labeled responses from cache
+- **proxy:** stop caching truncated responses served over HTTP/3
+- **proxy:** stop sharing the HTTP/3 port during updates
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### 🛠️ Fixes & Improvements
+
 - **deps:** build with Go 1.26 to pick up standard library security fixes
 - **imap:** stream large literals so big attachments finish downloading
 - **system:** wait for an in-flight tick before stopping services
