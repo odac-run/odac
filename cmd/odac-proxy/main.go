@@ -24,7 +24,6 @@ import (
 	"odac/internal/proxy/proxy"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
 // listen creates a net.Listener with SO_REUSEPORT support on Linux
@@ -223,36 +222,8 @@ func main() {
 	}
 
 	// Start HTTP/3 Server (UDP :443)
-	h3Server := &http3.Server{
-		Addr:      ":443",
-		Handler:   handler,
-		TLSConfig: tlsConfig,
-		QUICConfig: &quic.Config{
-			Allow0RTT: true,
-		},
-	}
-
-	// Bind the UDP :443 socket ourselves with SO_REUSEPORT (via netutil.SetSocketOptions),
-	// exactly like the TCP listeners above. quic-go's h3Server.ListenAndServe()
-	// does a plain net.ListenUDP without SO_REUSEPORT, so during a zero-downtime
-	// update the new process cannot bind UDP :443 while the old process still holds
-	// it ("address already in use"). It would then log the error and never retry,
-	// leaving HTTP/3 silently down for the lifetime of the new process. Binding via
-	// ListenPacket + h3Server.Serve() lets the old and new sockets overlap.
-	udpConn, err := (&net.ListenConfig{Control: netutil.SetSocketOptions}).
-		ListenPacket(context.Background(), "udp", ":443")
-	if err != nil {
-		// Don't fatal on HTTP/3 failure, it might be a permission/network issue, just log it
-		log.Printf("HTTP/3 UDP listener failed: %v", err)
-		log.Println("Hint: If you see 'message too long' or performance issues, run: sysctl -w net.core.rmem_max=2500000")
-	} else {
-		go func() {
-			log.Println("Starting HTTP/3 server on :443 (UDP)")
-			if err := h3Server.Serve(udpConn); err != nil {
-				log.Printf("HTTP/3 server failed: %v", err)
-			}
-		}()
-	}
+	h3Service := proxy.NewHTTP3Service(proxy.NewHTTP3Server(":443", handler, tlsConfig), loadResetKey(), prx.SetHTTP3Available)
+	h3Service.Start()
 
 	// Same rationale as HTTP above: bind synchronously, flip readiness, then Serve.
 	httpsListener, err := listen("tcp", ":443")
@@ -293,7 +264,7 @@ func main() {
 
 	go func() {
 		defer wg.Done()
-		if err := h3Server.Shutdown(ctx); err != nil {
+		if err := h3Service.Stop(ctx); err != nil {
 			log.Printf("HTTP/3 server shutdown error: %v", err)
 		}
 	}()
@@ -309,6 +280,22 @@ func main() {
 	wg.Wait()
 
 	log.Println("ODAC Proxy stopped.")
+}
+
+// loadResetKey is best-effort like the rest of HTTP/3. Without a key the proxy still
+// serves; clients just wait out the idle timeout after a restart instead of reconnecting.
+func loadResetKey() *quic.StatelessResetKey {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[WARN] HTTP/3 stateless resets disabled: %v", err)
+		return nil
+	}
+	key, err := proxy.LoadStatelessResetKey(filepath.Join(home, ".odac", "proxy", "quic_reset.key"))
+	if err != nil {
+		log.Printf("[WARN] HTTP/3 stateless resets disabled: %v", err)
+		return nil
+	}
+	return key
 }
 
 // optimizeUDPBuffers attempts to increase UDP buffer sizes for better QUIC performance.

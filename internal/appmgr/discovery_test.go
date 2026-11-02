@@ -320,6 +320,36 @@ func TestRunHandsDockerOnlyPublishedPorts(t *testing.T) {
 	portEq(t, opts.Ports[0], map[string]any{"host": float64(9000), "container": float64(9000)})
 }
 
+// A declared binding is the same promise whatever built the image: app.port.set
+// accepts it for every app type, so every start path has to honor it.
+func TestEveryAppTypePublishesDeclaredPorts(t *testing.T) {
+	for typ, fields := range map[string]map[string]any{
+		"git":       {"image": "odac-app-web", "url": "https://github.com/a/b.git"},
+		"container": {"image": "nginx"},
+		"script":    {"file": "/srv/web/index.js"},
+	} {
+		t.Run(typ, func(t *testing.T) {
+			app := map[string]any{
+				"id": float64(1), "name": "web", "type": typ, "active": true,
+				"ports": []any{
+					map[string]any{"host": "proxy", "container": float64(3000)},
+					map[string]any{"host": float64(8730), "container": float64(8730), "public": true},
+				},
+			}
+			for k, v := range fields {
+				app[k] = v
+			}
+			fx, _ := discover(t, app, []int{3000, 8730}, []int{3000})
+
+			opts := fx.dock.runCallAt(0).options
+			if len(opts.Ports) != 1 {
+				t.Fatalf("published ports = %v", opts.Ports)
+			}
+			portEq(t, opts.Ports[0], map[string]any{"host": float64(8730), "container": float64(8730), "public": true})
+		})
+	}
+}
+
 func TestRunCarriesPublicFlagToDocker(t *testing.T) {
 	fx, _ := discover(t, map[string]any{
 		"id": float64(1), "name": "db", "type": "container", "image": "mysql", "active": true,

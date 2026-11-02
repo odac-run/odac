@@ -146,11 +146,10 @@ func (hs *HintsStore) Send(w http.ResponseWriter, host, urlPath string) bool {
 
 // Purge removes all hint entries for a specific domain.
 func (hs *HintsStore) Purge(host string) int {
-	prefix := host + "/"
 	count := 0
 	hs.entries.Range(func(key, _ interface{}) bool {
 		k := key.(string)
-		if k == host || strings.HasPrefix(k, prefix) {
+		if keyBelongsToHost(k, host) {
 			hs.entries.Delete(key)
 			count++
 		}

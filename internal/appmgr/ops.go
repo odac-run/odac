@@ -255,13 +255,24 @@ func (m *Manager) hasDomainsFor(name string, id float64) bool {
 // one dies on bind and every deploy would abort on the readiness probe.
 // Host-mode apps therefore fall back to a stop/start recreate and accept the
 // gap, which is the only correct answer while the port is a host-wide
-// singleton.
+// singleton. A published port is the same singleton: Docker cannot add a
+// binding to a running container, so the green one cannot take it over later.
 func (m *Manager) zddEligible(name string, id float64) bool {
 	if !m.hasDomainsFor(name, id) {
 		return false
 	}
 	if m.hostNetworked(id) {
 		m.log.Log("ZDD skipped for %s: host networking makes the app's port a host-wide singleton, so a green container cannot bind it. Falling back to a recreate (brief downtime).", name)
+		return false
+	}
+	publishes := false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			publishes = len(publishedPorts(app)) > 0
+		}
+	})
+	if publishes {
+		m.log.Log("ZDD skipped for %s: a published host port can only be bound by one container, so a green container cannot start next to the old one. Falling back to a recreate (brief downtime).", name)
 		return false
 	}
 	return true

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -31,6 +32,8 @@ const (
 	// proxyBufferSize is the buffer size for proxying request/response bodies.
 	// 32KB is the Go default for io.Copy, but we pool these to achieve zero-allocation.
 	proxyBufferSize = 32 * 1024
+
+	altSvcHTTP3 = `h3=":443"; ma=2592000`
 )
 
 // Define buffer pools to reduce GC pressure and memory allocation
@@ -100,13 +103,17 @@ func (bufferPool) Put(buf []byte) {
 	proxyBufferPool.Put(buf)
 }
 
+// pageRecordingKey marks a request whose response cacheRecordWriter will read as a page.
+type pageRecordingKey struct{}
+
 type Proxy struct {
 	acmeChallenges map[string]string // ACME HTTP-01 challenge tokens: token -> keyAuthorization
 	acmeMu         sync.RWMutex      // Separate mutex for ACME challenges to avoid contention
 	cache          *CacheManager     // Smart adaptive asset cache
 	domains        map[string]config.Website
 	hints          *HintsStore // 103 Early Hints engine
-	pages          *PageCache  // App-controlled HTML page cache
+	http3Available atomic.Bool
+	pages          *PageCache // App-controlled HTML page cache
 	sslCache       map[string]*tls.Certificate
 	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
 	globalSSL      *config.SSL
@@ -163,23 +170,12 @@ func NewProxy() *Proxy {
 		ModifyResponse: func(r *http.Response) error {
 			// Branding: Always force "ODAC" as the server header (User Rule: Server cannot be changed by upstream)
 			r.Header.Set("Server", "ODAC")
-			// Advertise HTTP/3 (QUIC) support
-			r.Header.Set("Alt-Svc", `h3=":443"; ma=2592000`)
+			r.Header.Del("Alt-Svc")
+			if r.Request != nil {
+				p.setEdgeHeaders(r.Header, r.Request)
+			}
 
-			// Security Headers: Apply defaults only if upstream didn't set them
-			// This allows apps to override these (e.g. allowing iframes via X-Frame-Options)
-			if r.Header.Get("X-Frame-Options") == "" {
-				r.Header.Set("X-Frame-Options", "SAMEORIGIN")
-			}
-			if r.Header.Get("X-Content-Type-Options") == "" {
-				r.Header.Set("X-Content-Type-Options", "nosniff")
-			}
-			if r.Header.Get("X-XSS-Protection") == "" {
-				r.Header.Set("X-XSS-Protection", "1; mode=block")
-			}
-			if r.Header.Get("Referrer-Policy") == "" {
-				r.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-			}
+			applySecurityDefaults(r.Header)
 
 			// Security: Minimize information leakage from frameworks
 			r.Header.Del("X-Powered-By")
@@ -198,14 +194,42 @@ func NewProxy() *Proxy {
 				p.hints.Learn(host, r.Request.URL.Path, r)
 			}
 
-			// Strip internal header — never expose to client
-			r.Header.Del(pageCacheHeader)
+			// Internal header, never exposed to clients. A recorded page keeps it for
+			// cacheRecordWriter, the only place that can act on the TTL, which removes it.
+			if r.Request == nil || r.Request.Context().Value(pageRecordingKey{}) == nil {
+				r.Header.Del(pageCacheHeader)
+			}
 
 			return nil
 		},
 	}
 
 	return p
+}
+
+// applySecurityDefaults fills in only what the app left unset, so an app can still
+// override a default (e.g. allowing iframes via X-Frame-Options). Cache hits never pass
+// through ModifyResponse, so they call this too.
+func applySecurityDefaults(h http.Header) {
+	if h.Get("X-Frame-Options") == "" {
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+	}
+	if h.Get("X-Content-Type-Options") == "" {
+		h.Set("X-Content-Type-Options", "nosniff")
+	}
+	if h.Get("X-XSS-Protection") == "" {
+		h.Set("X-XSS-Protection", "1; mode=block")
+	}
+	if h.Get("Referrer-Policy") == "" {
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	}
+}
+
+// SetHTTP3Available controls the Alt-Svc advertisement. Clients remember it for 30 days,
+// so a process must not advertise a QUIC listener it does not hold: during an update the
+// replacement serves TCP while it waits for the UDP port.
+func (p *Proxy) SetHTTP3Available(available bool) {
+	p.http3Available.Store(available)
 }
 
 // DeleteACMEChallenge removes an HTTP-01 ACME challenge token after validation completes.
@@ -331,6 +355,25 @@ func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
 	return config.Website{}, false
 }
 
+// setEdgeHeaders writes the headers that describe this proxy rather than the app, replacing
+// whatever the app sent. It runs where a final response is produced: ReverseProxy clears the
+// writer's headers after forwarding a backend 1xx, so setting them any earlier loses them.
+func (p *Proxy) setEdgeHeaders(h http.Header, r *http.Request) {
+	if r.TLS == nil {
+		return
+	}
+	host := r.Host
+	if strings.Contains(host, ":") {
+		host, _, _ = net.SplitHostPort(host)
+	}
+	if net.ParseIP(host) == nil && host != "localhost" {
+		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+	}
+	if p.http3Available.Load() {
+		h.Set("Alt-Svc", altSvcHTTP3)
+	}
+}
+
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	if err == context.Canceled {
 		return
@@ -341,6 +384,7 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	}
 
 	log.Printf("Proxy error for %s: %v", r.Host, err)
+	p.setEdgeHeaders(w.Header(), r)
 	w.WriteHeader(http.StatusBadGateway)
 	w.Write([]byte("Bad Gateway"))
 }
@@ -445,15 +489,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security Headers
-	// Note: Other security headers (X-Frame-Options, etc.) are handled in ModifyResponse
-	// to allow upstream overrides. HSTS is forced here because we handle SSL termination.
-
-	// HSTS: Only send on HTTPS and valid domains (not IP or localhost)
-	if r.TLS != nil && !isIP && !isLocalhost {
-		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
-	}
-
 	// Compression negotiation
 	acceptEncoding := r.Header.Get("Accept-Encoding")
 	var encoding string
@@ -500,6 +535,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ── Smart Cache: Serve static assets from memory ──
 	if !isWebSocket && IsCacheable(r) {
 		if entry := p.cache.Get(host, r.URL.Path); entry != nil {
+			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
 				cw := newCompressionResponseWriter(w, encoding)
 				ServeFromCache(cw, r, entry)
@@ -517,13 +553,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// cacheRecordWriter MUST wrap the compressionResponseWriter (not vice versa)
 		// so it captures the raw uncompressed body from the backend.
 		// Chain: backend → reverseProxy → cacheRecordWriter → compressionWriter → client
-		crw := newCacheRecordWriter(w, encoding)
+		crw := newCacheRecordWriter(w, encoding, cacheMaxFileSize)
 		defer crw.Close()
+		gen := p.cache.generation()
 		p.reverseProxy.ServeHTTP(crw, r)
 
 		// Store in cache if response was cacheable (runs inline, body already buffered)
-		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 && crw.body.Len() <= cacheMaxFileSize {
-			p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
+		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 {
+			p.cache.storeUnlessPurged(gen, func() {
+				p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
+			})
 		}
 		return
 	}
@@ -531,6 +570,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ── Page Cache: App-controlled HTML caching via X-Odac-Cache header ──
 	if !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
 		if entry := p.pages.Get(host, r.URL.Path, r); entry != nil {
+			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
 				cw := newCompressionResponseWriter(w, encoding)
 				ServePageFromCache(cw, r, entry)
@@ -546,14 +586,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Page cache miss: proxy to backend, capture response to check for X-Odac-Cache
 		if r.Header.Get("Authorization") == "" {
-			crw := newCacheRecordWriter(w, encoding)
+			crw := newCacheRecordWriter(w, encoding, pageMaxBodySize)
+			crw.pageOnly = true
 			defer crw.Close()
-			p.reverseProxy.ServeHTTP(crw, r)
+			gen := p.cache.generation()
+			p.reverseProxy.ServeHTTP(crw, r.WithContext(context.WithValue(r.Context(), pageRecordingKey{}, true)))
 
 			// Check if backend opted in to page caching
 			fakeResp := crw.toFakeResponse()
 			if crw.pageTTL > 0 && IsPageCacheAllowed(fakeResp) && crw.body.Len() > 0 {
-				p.pages.Put(host, r.URL.Path, r, fakeResp, crw.body.Bytes(), crw.pageTTL)
+				p.cache.storeUnlessPurged(gen, func() {
+					p.pages.Put(host, r.URL.Path, r, fakeResp, crw.body.Bytes(), crw.pageTTL)
+				})
 			}
 			return
 		}
@@ -570,6 +614,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.reverseProxy.ServeHTTP(w, r)
+}
+
+// isInterimStatus reports a 1xx response that a final status still follows. ReverseProxy
+// forwards the backend's through WriteHeader, so treating one as final would lose the
+// real status. 101 is excluded because it does end the response.
+func isInterimStatus(code int) bool {
+	return code >= 100 && code < 200 && code != http.StatusSwitchingProtocols
 }
 
 // compressionResponseWriter wraps http.ResponseWriter to handle compression
@@ -594,6 +645,10 @@ func (cw *compressionResponseWriter) Header() http.Header {
 }
 
 func (cw *compressionResponseWriter) WriteHeader(code int) {
+	if isInterimStatus(code) {
+		cw.w.WriteHeader(code)
+		return
+	}
 	if cw.wroteHeader {
 		return
 	}
@@ -619,10 +674,17 @@ func (cw *compressionResponseWriter) WriteHeader(code int) {
 
 	// Decide whether to compress based on type and size (skip for SSE)
 	if isCompressible(contentType) && !isSSE && (contentLength == -1 || contentLength > 1024) {
-		cw.shouldCompress = true
-
 		cw.Header().Del("Content-Length")
-		cw.Header().Set("Vary", "Accept-Encoding")
+		if !strings.Contains(strings.ToLower(varyFields(cw.Header())), "accept-encoding") {
+			cw.Header().Add("Vary", "Accept-Encoding")
+		}
+
+		// A 304 has no body for Content-Encoding to describe, but must keep the 200's Vary
+		if code == http.StatusNotModified {
+			cw.w.WriteHeader(code)
+			return
+		}
+		cw.shouldCompress = true
 
 		switch cw.encoding {
 		case "zstd":
@@ -934,15 +996,18 @@ type cacheRecordWriter struct {
 	body         bytes.Buffer
 	compressor   *compressionResponseWriter // nil if no compression needed
 	headers      http.Header
+	limit        int           // Largest body the destination cache accepts
+	pageOnly     bool          // Only an opted-in page can be stored, so nothing else is buffered
 	pageTTL      time.Duration // Parsed X-Odac-Cache value (0 = no page caching)
 	statusCode   int
 	wroteHead    bool
 	shouldBuffer bool // Only buffer body when response is potentially cacheable
 }
 
-func newCacheRecordWriter(w http.ResponseWriter, encoding string) *cacheRecordWriter {
+func newCacheRecordWriter(w http.ResponseWriter, encoding string, limit int) *cacheRecordWriter {
 	crw := &cacheRecordWriter{
 		w:          w,
+		limit:      limit,
 		statusCode: http.StatusOK,
 	}
 	if encoding != "" {
@@ -956,6 +1021,10 @@ func (crw *cacheRecordWriter) Header() http.Header {
 }
 
 func (crw *cacheRecordWriter) WriteHeader(code int) {
+	if isInterimStatus(code) {
+		crw.w.WriteHeader(code)
+		return
+	}
 	if crw.wroteHead {
 		return
 	}
@@ -966,15 +1035,9 @@ func (crw *cacheRecordWriter) WriteHeader(code int) {
 	crw.headers = crw.w.Header().Clone()
 
 	// Decide whether to buffer body before stripping internal headers
-	if code == http.StatusOK {
-		if ttlStr := crw.headers.Get(pageCacheHeader); ttlStr != "" {
-			crw.shouldBuffer = true
-			if seconds, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil && seconds > 0 {
-				crw.pageTTL = time.Duration(seconds) * time.Second
-			}
-		} else if cacheableContentType(crw.headers.Get("Content-Type")) {
-			crw.shouldBuffer = true
-		}
+	if code == http.StatusOK && crw.bodyStorable() {
+		crw.pageTTL = ParseTTL(crw.toFakeResponse())
+		crw.shouldBuffer = crw.pageTTL > 0 || (!crw.pageOnly && cacheableContentType(crw.headers.Get("Content-Type")))
 	}
 
 	// Strip internal headers from client response and snapshot
@@ -988,14 +1051,29 @@ func (crw *cacheRecordWriter) WriteHeader(code int) {
 	}
 }
 
+// bodyStorable rejects what the caches would refuse anyway before any of it is buffered.
+func (crw *cacheRecordWriter) bodyStorable() bool {
+	if isCompressedBody(crw.headers) {
+		return false
+	}
+	length, err := strconv.ParseInt(crw.headers.Get("Content-Length"), 10, 64)
+	return err != nil || length <= int64(crw.limit)
+}
+
 func (crw *cacheRecordWriter) Write(b []byte) (int, error) {
 	if !crw.wroteHead {
 		crw.WriteHeader(http.StatusOK)
 	}
 
 	// Only buffer when response is cacheable (avoids overhead for non-cached responses)
-	if crw.shouldBuffer && crw.body.Len()+len(b) <= pageMaxBodySize {
-		crw.body.Write(b)
+	if crw.shouldBuffer {
+		if crw.body.Len()+len(b) > crw.limit {
+			// The caches only know the body's length, so a partial one would pass as whole
+			crw.shouldBuffer = false
+			crw.body = bytes.Buffer{}
+		} else {
+			crw.body.Write(b)
+		}
 	}
 
 	// Send to client (compressed if compressor is active, raw otherwise)
@@ -1039,6 +1117,7 @@ func (crw *cacheRecordWriter) toFakeResponse() *http.Response {
 // This runs in a background goroutine — the client already got the cached response.
 func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *cacheEntry) {
 	defer entry.FinishRevalidation()
+	gen := p.cache.generation()
 
 	// Build a conditional request to the backend
 	p.mu.RLock()
@@ -1077,8 +1156,7 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 		req.Header.Set("If-Modified-Since", entry.lastMod)
 	}
 
-	// Preserve original Host header so backend routes correctly
-	req.Host = host
+	p.prepareRevalidation(req, originalReq)
 
 	resp, err := revalidationClient.Do(req)
 	if err != nil {
@@ -1100,15 +1178,30 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 			return
 		}
 
-		p.cache.Put(host, originalReq.URL.Path, resp, body)
+		p.cache.storeUnlessPurged(gen, func() {
+			p.cache.Put(host, originalReq.URL.Path, resp, body)
+		})
 		debugLog("[Cache] Revalidated (200, updated): %s%s", host, originalReq.URL.Path)
 	}
 }
 
+// prepareRevalidation forwards a background check the way a client request is forwarded.
+// An app that renders from X-Forwarded-Proto or the Host would otherwise answer with a
+// different body, and every check would look like a content change.
+func (p *Proxy) prepareRevalidation(req, originalReq *http.Request) {
+	req.Host = originalReq.Host
+	req.TLS = originalReq.TLS
+	p.director(req)
+}
+
 // revalidationClient is a dedicated HTTP client for background cache revalidation.
 // Separate from the main proxy transport to avoid interference with user traffic.
+// Redirects are not followed: the target's body does not belong under the original URL.
 var revalidationClient = &http.Client{
 	Timeout: 5 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 	Transport: &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -1132,9 +1225,11 @@ func (p *Proxy) Pages() *PageCache {
 }
 
 // revalidatePageCache sends a conditional request to check if a cached page changed.
-// If the backend no longer sends X-Odac-Cache, the entry is removed.
+// A 200 without X-Odac-Cache removes the entry. A 304 does not: it says the content is
+// unchanged, and backends commonly leave custom headers off it.
 func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entry *pageEntry) {
 	defer entry.FinishRevalidation()
+	gen := p.cache.generation()
 
 	p.mu.RLock()
 	website, exists := p.resolveDomain(host)
@@ -1168,17 +1263,19 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 		req.Header.Set("If-Modified-Since", entry.lastMod)
 	}
 
-	// Copy Vary-relevant headers from original request so backend returns the right variant
-	if vary := entry.headers.Get("Vary"); vary != "" {
+	// Copy Vary-relevant headers from original request so backend returns the right variant.
+	// Accept-Encoding stays out: the transport only decodes the body when it asked itself,
+	// and the cache stores raw bytes.
+	if vary := varyFields(entry.headers); vary != "" {
 		for _, field := range strings.Split(vary, ",") {
 			field = strings.TrimSpace(field)
-			if val := originalReq.Header.Get(field); val != "" {
+			if val := originalReq.Header.Get(field); val != "" && !strings.EqualFold(field, "Accept-Encoding") {
 				req.Header.Set(field, val)
 			}
 		}
 	}
 
-	req.Host = host
+	p.prepareRevalidation(req, originalReq)
 
 	resp, err := revalidationClient.Do(req)
 	if err != nil {
@@ -1187,21 +1284,10 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 	}
 	defer resp.Body.Close()
 
-	// If backend no longer sends X-Odac-Cache, remove the entry
-	newTTL := ParseTTL(resp)
-
-	if resp.StatusCode == http.StatusNotModified {
-		if newTTL <= 0 {
-			// Backend withdrew caching — purge this entry
-			p.pages.Purge(host)
-			debugLog("[PageCache] Backend withdrew cache for %s%s", host, originalReq.URL.Path)
-		}
-		return
-	}
-
 	if resp.StatusCode == http.StatusOK {
+		newTTL := ParseTTL(resp)
 		if newTTL <= 0 || !IsPageCacheAllowed(resp) {
-			p.pages.Purge(host)
+			p.pages.remove(entry)
 			debugLog("[PageCache] Backend no longer cacheable: %s%s", host, originalReq.URL.Path)
 			return
 		}
@@ -1215,7 +1301,9 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 		// the backend fetch above carried no cookies, so `body` is the
 		// anonymous variant and is safe to cache. originalReq may be cookied,
 		// which Put would (correctly) reject.
-		p.pages.Put(host, originalReq.URL.Path, req, resp, body, newTTL)
+		p.cache.storeUnlessPurged(gen, func() {
+			p.pages.Put(host, originalReq.URL.Path, req, resp, body, newTTL)
+		})
 		debugLog("[PageCache] Revalidated (200, updated): %s%s", host, originalReq.URL.Path)
 	}
 }

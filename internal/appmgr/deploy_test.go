@@ -277,6 +277,42 @@ func TestHostNetworkSkipsBlueGreen(t *testing.T) {
 	})
 }
 
+// A published host port can only be held by one container and Docker cannot add
+// a binding to a running one, so a green container would fail on "port is
+// already allocated" and every deploy of the app would abort.
+func TestPublishedPortSkipsBlueGreen(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	fx.cfg.Mutate(func() {
+		if app := fx.m.getLocked(float64(1)); app != nil {
+			app["ports"] = []any{
+				map[string]any{"host": "proxy", "container": float64(3000)},
+				map[string]any{"host": float64(8730), "container": float64(8730), "public": true},
+			}
+		}
+	})
+
+	r := fx.m.Restart(float64(1))
+	if !r.Status {
+		t.Fatalf("restart failed: %v", r.Message)
+	}
+	if strings.Contains(jsString(r.Message), "zero-downtime") {
+		t.Fatalf("published-port restart took the ZDD path: %q", jsString(r.Message))
+	}
+	fx.waitIdle(t)
+
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.runCalls) != 1 || fx.dock.runCalls[0].name != "web" {
+		t.Fatalf("runCalls = %v, want a single in-place run named web", fx.dock.runCalls)
+	}
+	if got := fx.dock.runCalls[0].options.Ports; len(got) != 1 {
+		t.Fatalf("published ports = %v", got)
+	}
+	if len(fx.dock.renames) != 0 {
+		t.Fatalf("renames = %v, want none without a green container", fx.dock.renames)
+	}
+}
+
 func TestRestartRejectsConcurrentProcessing(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{
 		"id": float64(1), "name": "busy", "type": "container", "image": "app",
