@@ -441,6 +441,7 @@ func ServePageFromCache(w http.ResponseWriter, r *http.Request, entry *pageEntry
 
 // Purge removes all page cache entries for a domain and its subdomains.
 func (pc *PageCache) Purge(host string) int {
+	pc.cache.invalidateFetches()
 	count := 0
 	pc.entries.Range(func(key, value interface{}) bool {
 		k := key.(string)
@@ -465,6 +466,7 @@ func (pc *PageCache) Purge(host string) int {
 
 // PurgeAll clears all page cache entries.
 func (pc *PageCache) PurgeAll() int {
+	pc.cache.invalidateFetches()
 	count := 0
 	pc.entries.Range(func(_, value interface{}) bool {
 		pc.remove(value.(*pageEntry))

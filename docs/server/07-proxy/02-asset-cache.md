@@ -89,7 +89,7 @@ Conditional requests are supported — if your `If-None-Match` (ETag) or `If-Mod
 ## Auto-refresh & purge
 
 - **Changed assets are picked up automatically.** During background revalidation, if the backend returns updated content (a `200` instead of `304`), ODAC replaces the cached copy. You don't need to fingerprint or version filenames for the cache to stay correct.
-- **Deploys and restarts purge the cache** for the affected domain and its subdomains automatically, so fresh assets are served immediately after you ship.
+- **Deploys and restarts purge the cache** for the affected domain and its subdomains automatically, so fresh assets are served immediately after you ship. A response the old version was still sending when the purge ran reaches its client but is not stored.
 
 ## Relationship to the Page Cache
 

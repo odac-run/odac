@@ -555,11 +555,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Chain: backend → reverseProxy → cacheRecordWriter → compressionWriter → client
 		crw := newCacheRecordWriter(w, encoding, cacheMaxFileSize)
 		defer crw.Close()
+		gen := p.cache.generation()
 		p.reverseProxy.ServeHTTP(crw, r)
 
 		// Store in cache if response was cacheable (runs inline, body already buffered)
 		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 {
-			p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
+			p.cache.storeUnlessPurged(gen, func() {
+				p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
+			})
 		}
 		return
 	}
@@ -586,12 +589,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			crw := newCacheRecordWriter(w, encoding, pageMaxBodySize)
 			crw.pageOnly = true
 			defer crw.Close()
+			gen := p.cache.generation()
 			p.reverseProxy.ServeHTTP(crw, r.WithContext(context.WithValue(r.Context(), pageRecordingKey{}, true)))
 
 			// Check if backend opted in to page caching
 			fakeResp := crw.toFakeResponse()
 			if crw.pageTTL > 0 && IsPageCacheAllowed(fakeResp) && crw.body.Len() > 0 {
-				p.pages.Put(host, r.URL.Path, r, fakeResp, crw.body.Bytes(), crw.pageTTL)
+				p.cache.storeUnlessPurged(gen, func() {
+					p.pages.Put(host, r.URL.Path, r, fakeResp, crw.body.Bytes(), crw.pageTTL)
+				})
 			}
 			return
 		}
@@ -1111,6 +1117,7 @@ func (crw *cacheRecordWriter) toFakeResponse() *http.Response {
 // This runs in a background goroutine — the client already got the cached response.
 func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *cacheEntry) {
 	defer entry.FinishRevalidation()
+	gen := p.cache.generation()
 
 	// Build a conditional request to the backend
 	p.mu.RLock()
@@ -1171,7 +1178,9 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 			return
 		}
 
-		p.cache.Put(host, originalReq.URL.Path, resp, body)
+		p.cache.storeUnlessPurged(gen, func() {
+			p.cache.Put(host, originalReq.URL.Path, resp, body)
+		})
 		debugLog("[Cache] Revalidated (200, updated): %s%s", host, originalReq.URL.Path)
 	}
 }
@@ -1220,6 +1229,7 @@ func (p *Proxy) Pages() *PageCache {
 // unchanged, and backends commonly leave custom headers off it.
 func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entry *pageEntry) {
 	defer entry.FinishRevalidation()
+	gen := p.cache.generation()
 
 	p.mu.RLock()
 	website, exists := p.resolveDomain(host)
@@ -1291,7 +1301,9 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 		// the backend fetch above carried no cookies, so `body` is the
 		// anonymous variant and is safe to cache. originalReq may be cookied,
 		// which Put would (correctly) reject.
-		p.pages.Put(host, originalReq.URL.Path, req, resp, body, newTTL)
+		p.cache.storeUnlessPurged(gen, func() {
+			p.pages.Put(host, originalReq.URL.Path, req, resp, body, newTTL)
+		})
 		debugLog("[PageCache] Revalidated (200, updated): %s%s", host, originalReq.URL.Path)
 	}
 }

@@ -181,6 +181,9 @@ type CacheManager struct {
 
 	pages atomic.Pointer[PageCache] // Shares this memory budget and maintenance loop
 
+	purgeGen atomic.Uint64 // Moves on every purge, in either cache
+	purgeMu  sync.RWMutex  // Keeps a store's check and write on one side of a purge
+
 	stopCh chan struct{}
 }
 
@@ -230,6 +233,30 @@ func cacheKey(host, urlPath string) string {
 func keyBelongsToHost(key, host string) bool {
 	keyHost, _, _ := strings.Cut(key, "/")
 	return keyHost == host || strings.HasSuffix(keyHost, "."+host)
+}
+
+// generation is read before a backend fetch and handed to storeUnlessPurged afterwards.
+func (cm *CacheManager) generation() uint64 {
+	return cm.purgeGen.Load()
+}
+
+// storeUnlessPurged drops a response whose fetch began before a purge: it can hold the
+// content the purge removed, and revalidation would keep serving it. A purge on any domain
+// counts, since the only cost is one store that the next request makes instead.
+func (cm *CacheManager) storeUnlessPurged(gen uint64, store func()) {
+	cm.purgeMu.RLock()
+	defer cm.purgeMu.RUnlock()
+	if cm.purgeGen.Load() == gen {
+		store()
+	}
+}
+
+// invalidateFetches must run before a purge walks its entries. Taking the lock means every
+// store that passed its check has finished, so the walk is sure to find it.
+func (cm *CacheManager) invalidateFetches() {
+	cm.purgeMu.Lock()
+	cm.purgeGen.Add(1)
+	cm.purgeMu.Unlock()
 }
 
 // IsCacheable checks if a request is eligible for caching based on method and URL.
@@ -438,6 +465,7 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 // Purge removes all cache entries for a specific domain (app) and its subdomains.
 // Called after deployments to ensure fresh assets are served.
 func (cm *CacheManager) Purge(host string) int {
+	cm.invalidateFetches()
 	count := 0
 
 	cm.entries.Range(func(key, value interface{}) bool {
@@ -465,6 +493,7 @@ func (cm *CacheManager) Purge(host string) int {
 
 // PurgeAll clears the entire cache.
 func (cm *CacheManager) PurgeAll() int {
+	cm.invalidateFetches()
 	count := 0
 	cm.entries.Range(func(key, value interface{}) bool {
 		entry := value.(*cacheEntry)
