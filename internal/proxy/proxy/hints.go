@@ -18,8 +18,11 @@ import (
 // 4. Browser starts fetching CSS/JS/fonts while waiting for the full response
 //
 // Safety:
+// - Send answers every client before the app has checked who is asking, so only an
+//   anonymous GET of the bare URL with a shareable response may teach a hint
+// - A request with credentials or a query says nothing about that view and is ignored
+// - An anonymous response the URL can no longer share withdraws its hints
 // - Only stable hints are served (same hints seen consecutively)
-// - Redirect responses (3xx) clear hints for that URL
 // - Hints expire after hintsDefaultTTL without being refreshed
 // - Purge per domain (on deploy) or globally
 // ============================================================================
@@ -41,7 +44,7 @@ type hintEntry struct {
 	links       []string     // Link header values (e.g. "</style.css>; rel=preload; as=style")
 	fingerprint string       // Sorted concatenation of links for stability comparison
 	stable      bool         // True if last two observations had the same fingerprint
-	lastSeen    atomic.Int64 // Unix nano — refreshed on every backend response
+	lastSeen    atomic.Int64 // Unix nano, the only field that changes after publication
 }
 
 // HintsStore learns and serves 103 Early Hints based on backend Link headers.
@@ -64,17 +67,24 @@ func (hs *HintsStore) Stop() {
 	close(hs.stopCh)
 }
 
-// Learn extracts Link:rel=preload headers from a backend response and
-// records them for the given URL. Called from ModifyResponse on every
-// proxied response — not just cacheable ones.
+// Learn records the Link:rel=preload headers of a backend response for the given URL.
+// Called from ModifyResponse on every proxied response, not just cacheable ones.
 func (hs *HintsStore) Learn(host, urlPath string, resp *http.Response) {
-	// Don't learn from redirects — the target page will have different assets
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		hs.entries.Delete(host + urlPath)
+	if !isAnonymousPageRequest(resp.Request) {
+		return
+	}
+	// A 304 carries no verdict on the page, and a 101 is not the page at all.
+	if resp.StatusCode < http.StatusOK || resp.StatusCode == http.StatusNotModified {
 		return
 	}
 
-	// Only learn from successful HTML responses (pages, not assets)
+	key := host + urlPath
+	if resp.StatusCode >= http.StatusMultipleChoices || isPersonalResponse(resp.Header) {
+		hs.entries.Delete(key)
+		return
+	}
+
+	// Only learn from HTML responses (pages, not assets)
 	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "text/html") {
 		return
@@ -83,8 +93,8 @@ func (hs *HintsStore) Learn(host, urlPath string, resp *http.Response) {
 	// Extract Link: rel=preload headers
 	links := extractPreloadLinks(resp.Header)
 	if len(links) == 0 {
-		// Backend stopped sending preload hints — remove stale entry
-		hs.entries.Delete(host + urlPath)
+		// Backend stopped sending preload hints, so remove the stale entry
+		hs.entries.Delete(key)
 		return
 	}
 
@@ -93,33 +103,21 @@ func (hs *HintsStore) Learn(host, urlPath string, resp *http.Response) {
 		links = links[:hintsMaxPerURL]
 	}
 
-	fingerprint := buildFingerprint(links)
-	key := host + urlPath
-
+	// Entries are replaced rather than edited because Send reads them without a lock.
+	entry := &hintEntry{links: links, fingerprint: buildFingerprint(links)}
 	now := time.Now().UnixNano()
-
-	val, loaded := hs.entries.Load(key)
-	if loaded {
-		entry := val.(*hintEntry)
-		// Check stability: same hints as last time?
-		if entry.fingerprint == fingerprint {
+	if val, loaded := hs.entries.Load(key); loaded {
+		prev := val.(*hintEntry)
+		if prev.fingerprint == entry.fingerprint {
+			if prev.stable {
+				prev.lastSeen.Store(now)
+				return
+			}
 			entry.stable = true
-		} else {
-			// Hints changed — update but mark unstable until confirmed again
-			entry.links = links
-			entry.fingerprint = fingerprint
-			entry.stable = false
 		}
-		entry.lastSeen.Store(now)
-	} else {
-		entry := &hintEntry{
-			links:       links,
-			fingerprint: fingerprint,
-			stable:      false, // Need at least 2 consistent observations
-		}
-		entry.lastSeen.Store(now)
-		hs.entries.Store(key, entry)
 	}
+	entry.lastSeen.Store(now)
+	hs.entries.Store(key, entry)
 }
 
 // Send writes a 103 Early Hints response if stable hints exist for this URL.
@@ -136,11 +134,13 @@ func (hs *HintsStore) Send(w http.ResponseWriter, host, urlPath string) bool {
 		return false
 	}
 
-	// Set Link headers and flush as 103
+	// Set Link headers and flush as 103. They must not stay on the writer: the final
+	// response would carry them next to the app's own, whatever its status.
 	for _, link := range entry.links {
 		w.Header().Add("Link", link)
 	}
 	w.WriteHeader(http.StatusEarlyHints)
+	w.Header().Del("Link")
 	return true
 }
 
@@ -169,6 +169,19 @@ func (hs *HintsStore) PurgeAll() {
 // ============================================================================
 // Internal
 // ============================================================================
+
+// isAnonymousPageRequest reports a request whose response is what any visitor of the bare
+// URL would get. A query can be a capability (/share?token=...), and the key has no room
+// for it: adding it would give scanners an endless supply of entries.
+func isAnonymousPageRequest(r *http.Request) bool {
+	return r != nil && r.Method == http.MethodGet && r.URL.RawQuery == "" &&
+		r.Header.Get("Cookie") == "" && r.Header.Get("Authorization") == ""
+}
+
+// isPersonalResponse reports a response whose headers say it is not meant for everyone.
+func isPersonalResponse(h http.Header) bool {
+	return cacheControlForbidsSharing(h) || h.Get("Set-Cookie") != "" || varyIsPersonal(h)
+}
 
 // extractPreloadLinks returns Link header values that contain rel=preload.
 func extractPreloadLinks(h http.Header) []string {

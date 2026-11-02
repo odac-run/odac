@@ -152,8 +152,8 @@ func TestLearnedHintsKeepEdgeHeadersOnTheFinalResponse(t *testing.T) {
 			return nil
 		},
 	})
-	for range 4 {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, front.URL+"/page?a=1", nil)
+	for _, target := range []string{"/page", "/page", "/page", "/page?a=1"} {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, front.URL+target, nil)
 		assertEdgeHeaders(t, "learned hints", edgeDo(t, front, req).Header)
 	}
 	if interim.Load() == 0 {

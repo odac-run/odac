@@ -236,11 +236,7 @@ func IsPageCacheAllowed(resp *http.Response) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
-		return false
-	}
-	return true
+	return !cacheControlForbidsSharing(resp.Header)
 }
 
 // Get retrieves a cached page. Returns nil on miss or if expired.

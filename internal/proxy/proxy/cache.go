@@ -106,13 +106,26 @@ func varyFields(h http.Header) string {
 	return strings.Join(h.Values("Vary"), ", ")
 }
 
+// varyIsPersonal reports a response that differs per visitor, which no store keyed by URL
+// may share.
+func varyIsPersonal(h http.Header) bool {
+	vary := strings.ToLower(varyFields(h))
+	return strings.Contains(vary, "*") || strings.Contains(vary, "cookie") ||
+		strings.Contains(vary, "authorization")
+}
+
 // varyPreventsAssetCache rejects Vary fields the asset cache cannot honor, since its key
 // is only host and path. Origin belongs here because an app that reflects it would have
 // one site's Access-Control-Allow-Origin served to every other site.
 func varyPreventsAssetCache(h http.Header) bool {
-	vary := strings.ToLower(varyFields(h))
-	return strings.Contains(vary, "*") || strings.Contains(vary, "cookie") ||
-		strings.Contains(vary, "authorization") || strings.Contains(vary, "origin")
+	return varyIsPersonal(h) || strings.Contains(strings.ToLower(varyFields(h)), "origin")
+}
+
+// cacheControlForbidsSharing reads every Cache-Control line, ignoring case, since one
+// line of several can make a response private.
+func cacheControlForbidsSharing(h http.Header) bool {
+	cc := strings.ToLower(strings.Join(h.Values("Cache-Control"), ", "))
+	return strings.Contains(cc, "no-store") || strings.Contains(cc, "private")
 }
 
 // cacheEntry represents a single cached response.
@@ -328,8 +341,7 @@ func IsCacheableResponse(resp *http.Response) bool {
 	if !cacheableContentType(resp.Header.Get("Content-Type")) {
 		return false
 	}
-	cc := resp.Header.Get("Cache-Control")
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
+	if cacheControlForbidsSharing(resp.Header) {
 		return false
 	}
 	if resp.Header.Get("Set-Cookie") != "" {
@@ -413,8 +425,7 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 	}
 
 	// Respect Cache-Control: no-store, private
-	cc := resp.Header.Get("Cache-Control")
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
+	if cacheControlForbidsSharing(resp.Header) {
 		return
 	}
 
