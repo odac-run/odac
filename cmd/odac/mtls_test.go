@@ -229,3 +229,23 @@ func TestCertFileName(t *testing.T) {
 		}
 	}
 }
+
+// set answers its warnings twice, as a sentence and as data for the dashboard;
+// the CLI shows the sentence only.
+func TestSetPrintsTheMessageWithoutItsData(t *testing.T) {
+	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
+		conn.Write([]byte(`{"id":"e","result":true,"message":"Client certificates are optional for x.com.","data":{"published":[8080],"restart":true,"siblings":[]}}`))
+	})
+	for _, args := range [][]string{
+		{"domain", "mtls", "set", "-d", "x.com", "--mode", "optional"},
+		{"domain", "mtls", "off", "-d", "x.com"},
+	} {
+		a, out, errOut := testApp(t, addr)
+		if code := a.dispatch(args); code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, errOut.String())
+		}
+		if got := out.String(); got != "Client certificates are optional for x.com.\n" {
+			t.Fatalf("%v printed %q", args, got)
+		}
+	}
+}

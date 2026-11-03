@@ -34,7 +34,7 @@ func mtlsCommand() *command {
 				description: "Stop asking for client certificates on a host",
 				args:        []string{"-d", "--domain"},
 				action: func(a *app, args []string) int {
-					return a.call("domain.mtls.set", []any{mtlsDomainArg(a, args), "off"}, false)
+					return a.callMessage("domain.mtls.set", []any{mtlsDomainArg(a, args), "off"})
 				},
 			}},
 			{"issue", &command{
@@ -116,7 +116,7 @@ func (a *app) mtlsSet(args []string) int {
 		}
 		opts["caPem"] = string(raw)
 	}
-	return a.call("domain.mtls.set", []any{domain, mode, opts}, false)
+	return a.callMessage("domain.mtls.set", []any{domain, mode, opts})
 }
 
 // mtlsIssue signs a certificate. With --csr the private key was made elsewhere
