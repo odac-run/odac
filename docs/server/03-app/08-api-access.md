@@ -55,6 +55,9 @@ These are the actions available to applications. An app may call the ones you gr
 | `mail.create` | `[email, password, passwordAgain]` | Create a mailbox |
 | `mail.password` | `[email, password, passwordAgain]` | Change a mailbox password |
 | `mail.delete` | `[email]` | Delete a mailbox |
+| `domain.mtls.cert.issue` | `[domain, {"csr", "name", "hosts", "days"?, "renews"?}]` | Sign a client certificate for the app's own hosts. See below |
+| `domain.mtls.cert.revoke` | `[fingerprint]` | Revoke one of the app's client certificates |
+| `domain.mtls.cert.list` | `[]`, or `[domain]` to filter | List the app's client certificates |
 
 `app` is an App ID or name, exactly like the CLI's `-i` argument.
 
@@ -76,6 +79,17 @@ These are the actions available to applications. An app may call the ones you gr
 ```
 
 `from` must belong to a domain configured on this server. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both.
+
+### Client Certificates for the App's Own Domains
+
+The `domain.mtls.cert.*` actions let an app hand out [client certificates](../06-domain/04-client-certificates.md) for its own domains, for example to its users' devices. They are narrowed to the calling app on every request, whatever the grant says:
+
+- Every host must belong to a domain routed to this app. A host of another app is reported as not registered.
+- The domain must already have a client CA, which `odac domain mtls set` creates. An app cannot create one.
+- An app sees and revokes only certificates whose CA belongs to one of its domains and whose hosts are all its own. Anything else, including a fingerprint ODAC has no record of, answers `"result": false` with `"data": {"code": "not_found"}`.
+- Revoking a certificate that is already revoked succeeds, so a retry is safe.
+
+Setting a mode (`domain.mtls.set`) and changing a certificate's hosts (`domain.mtls.cert.scope`) are never available to apps, not even with `--all`. Those stay with the CLI and the dashboard.
 
 ### Usage
 
@@ -112,4 +126,4 @@ Action names are validated against the server's registered actions when you gran
 
 ### Choosing Permissions
 
-Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).
+Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `domain.mtls.set` or `domain.mtls.cert.scope`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).

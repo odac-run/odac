@@ -78,11 +78,12 @@ type DomainService interface {
 	List(appIDArg any) api.Result
 }
 
-// MTLSService is the slice of domains.MTLS the command table calls.
+// MTLSService is the slice of domains.MTLS the command table calls. The hub
+// acts for the server's owner, so it passes api.Operator where a caller is asked.
 type MTLSService interface {
-	Issue(domainArg, optsArg any) api.Result
-	List(domainArg any) api.Result
-	Revoke(fingerprintArg any) api.Result
+	Issue(caller api.Caller, domainArg, optsArg any) api.Result
+	List(caller api.Caller, domainArg any) api.Result
+	Revoke(caller api.Caller, fingerprintArg any) api.Result
 	Scope(fingerprintArg, hostsArg any) api.Result
 	Set(domainArg, modeArg, optsArg any) api.Result
 }
@@ -923,7 +924,7 @@ func (h *Hub) buildCommands() {
 	h.register("domain.mtls.cert.issue", &command{
 		fn: withMTLS(func(p any) (any, error) {
 			m := pmap(p)
-			return h.deps.MTLS.Issue(m["domain"], m), nil
+			return h.deps.MTLS.Issue(api.Operator, m["domain"], m), nil
 		}),
 		triggers: []string{"domain.list", "domain.mtls.cert.list"},
 	})
@@ -936,13 +937,13 @@ func (h *Hub) buildCommands() {
 	})
 	h.register("domain.mtls.cert.revoke", &command{
 		fn: withMTLS(func(p any) (any, error) {
-			return h.deps.MTLS.Revoke(pmap(p)["fingerprint"]), nil
+			return h.deps.MTLS.Revoke(api.Operator, pmap(p)["fingerprint"]), nil
 		}),
 		triggers: []string{"domain.mtls.cert.list"},
 	})
 	h.register("domain.mtls.cert.list", &command{
 		fn: withMTLS(func(p any) (any, error) {
-			return h.deps.MTLS.List(pmap(p)["domain"]), nil
+			return h.deps.MTLS.List(api.Operator, pmap(p)["domain"]), nil
 		}),
 		interval: 30 * time.Minute,
 	})

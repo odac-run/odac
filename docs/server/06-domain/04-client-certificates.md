@@ -89,6 +89,17 @@ ODAC has no record of certificates another CA issues, so:
 - They are revoked by fingerprint.
 - Public CAs are refused, because anyone holding a certificate from one would be let in.
 
+### Issuing From an App
+
+An app can issue, list and revoke certificates for its own domains through the [local API](../03-app/08-api-access.md#client-certificates-for-the-apps-own-domains), once you grant it:
+
+```bash
+odac app api my-app --allow domain.mtls.cert.issue,domain.mtls.cert.revoke,domain.mtls.cert.list
+odac app restart my-app
+```
+
+Turn the mode on yourself first: an app cannot set a mode, create a CA or change a certificate's hosts, and it never reaches another app's domains.
+
 ### Verifying in Your App
 
 On a host with a mode set, your app receives these headers:

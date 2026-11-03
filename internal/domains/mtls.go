@@ -170,6 +170,83 @@ func locateHost(domains map[string]any, host string) (string, bool) {
 	return "", false
 }
 
+// reach decides which records a caller acts on. The operator reaches every
+// record, reported as app "". An app token reaches only the records routed to it,
+// matched by the name its token carries, which is also what its signing key is
+// derived from. Anything else (a domain token, a caller nobody filled in) is not
+// ok and reaches nothing.
+func reach(caller api.Caller) (app string, ok bool) {
+	if caller.App != "" {
+		return caller.App, true
+	}
+	return "", caller.Root
+}
+
+func permissionDenied() api.Result {
+	return api.Res(false, "permission_denied")
+}
+
+// notFoundForApp is what an app hears about a certificate it cannot act on,
+// whether it exists or belongs to another app, so a fingerprint cannot be probed.
+// The code lets a caller close a queued revocation without parsing the message.
+func notFoundForApp() api.Result {
+	return api.Res(false, __("Certificate not found."), map[string]any{"code": "not_found"})
+}
+
+// ownedLocked reports whether app may act on a record. The operator ("") may act
+// on any.
+func ownedLocked(domains map[string]any, record, app string) bool {
+	if app == "" {
+		return true
+	}
+	rec, _ := domains[record].(map[string]any)
+	return rec != nil && rec["appId"] == any(app)
+}
+
+// appCAsLocked returns the CAs bound to the records routed to app, record-wide
+// or on a host override.
+func appCAsLocked(domains map[string]any, app string) map[string]bool {
+	out := map[string]bool{}
+	for name := range domains {
+		if !ownedLocked(domains, name, app) {
+			continue
+		}
+		cfg := recordConfig(domains, name)
+		for _, id := range stringList(cfg["ca"]) {
+			out[id] = true
+		}
+		hosts, _ := cfg["hosts"].(map[string]any)
+		for _, h := range hosts {
+			override, _ := h.(map[string]any)
+			for _, id := range stringList(override["ca"]) {
+				out[id] = true
+			}
+		}
+	}
+	return out
+}
+
+// ownsCertLocked reports whether a certificate record is app's: its CA is bound
+// to one of app's records and every host it opens is one of app's. The second
+// half matters when a CA is shared with another app's record, which would
+// otherwise hand that app's certificates over too. cas is appCAsLocked's answer.
+func ownsCertLocked(domains map[string]any, app string, cas map[string]bool, cert map[string]any) bool {
+	if app == "" {
+		return true
+	}
+	ca, _ := cert["ca"].(string)
+	if ca == "" || !cas[ca] {
+		return false
+	}
+	for _, host := range stringList(cert["hosts"]) {
+		record, ok := locateHost(domains, host)
+		if !ok || !ownedLocked(domains, record, app) {
+			return false
+		}
+	}
+	return true
+}
+
 func recordConfig(domains map[string]any, name string) map[string]any {
 	record, _ := domains[name].(map[string]any)
 	cfg, _ := record["mtls"].(map[string]any)
@@ -758,7 +835,9 @@ func validName(name string) bool {
 // must name a host that exists and trusts this CA, otherwise the certificate
 // would look broader in the dashboard than it is. No entries is an error: the
 // default must be nothing, and a certificate opening nothing should not be issued.
-func cleanScope(domains map[string]any, raw any, caID string) ([]string, string) {
+// For an app (app != "") every host must also be routed to it, and one that is
+// not reads as unregistered, so the answer does not reveal another app's hosts.
+func cleanScope(domains map[string]any, raw any, caID, app string) ([]string, string) {
 	entries := stringList(raw)
 	if len(entries) == 0 {
 		return nil, __("At least one host is required.")
@@ -775,7 +854,7 @@ func cleanScope(domains map[string]any, raw any, caID string) ([]string, string)
 		}
 		seen[host] = true
 		record, ok := locateHost(domains, host)
-		if !ok {
+		if !ok || !ownedLocked(domains, record, app) {
 			return nil, __("Host %s is not registered.", host)
 		}
 		if !contains(effectiveCAs(domains, record, host), caID) {
@@ -794,8 +873,14 @@ func cleanScope(domains map[string]any, raw any, caID string) ([]string, string)
 // the key it would retry with. opts carries name, hosts, csr, days and renews (the
 // fingerprint being replaced, which keeps the old certificate valid until it is
 // revoked). A renewal may keep its key, so it is repeated only if it names the
-// same certificate and its earlier result has not expired.
-func (m *MTLS) Issue(domainArg, optsArg any) api.Result {
+// same certificate and its earlier result has not expired. An app may issue
+// only on records routed to it, for hosts routed to it, and only where a CA is
+// already set up: creating one is the operator's decision.
+func (m *MTLS) Issue(caller api.Caller, domainArg, optsArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
 	host, errMsg := cleanHost(domainArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
@@ -808,7 +893,7 @@ func (m *MTLS) Issue(domainArg, optsArg any) api.Result {
 	}
 
 	m.mu.Lock()
-	result, signed, newCA := m.issueLocked(host, csr, opts)
+	result, signed, newCA := m.issueLocked(app, host, csr, opts)
 	m.mu.Unlock()
 
 	if signed && m.proxy != nil {
@@ -823,7 +908,7 @@ func (m *MTLS) Issue(domainArg, optsArg any) api.Result {
 
 // issueLocked reports whether it signed a certificate, and whether that took a new
 // CA, which changes a domain record and not only the certificates.
-func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[string]any) (result api.Result, signed, newCA bool) {
+func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts map[string]any) (result api.Result, signed, newCA bool) {
 	var record string
 	var found bool
 	var caID string
@@ -832,6 +917,9 @@ func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[s
 	m.cfg.View(func() {
 		domains := m.domainsLocked()
 		record, found = locateHost(domains, host)
+		if found && !ownedLocked(domains, record, app) {
+			found = false
+		}
 		if !found {
 			return
 		}
@@ -858,6 +946,9 @@ func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[s
 	}
 	if tunnels := m.tunnelsFor(appID); len(tunnels) > 0 {
 		return api.Res(false, __("App %s is exposed through a tunnel (%s), which reaches it directly and would bypass client certificates. Remove the tunnel first.", str(appID), strings.Join(tunnels, ", "))), false, false
+	}
+	if caID == "" && app != "" {
+		return api.Res(false, __("Client certificates are not set up on %s.", host)), false, false
 	}
 	if caID == "" {
 		id, err := m.createCA(record)
@@ -941,7 +1032,7 @@ func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[s
 
 	var hosts []string
 	m.cfg.View(func() {
-		hosts, failure = cleanScope(m.domainsLocked(), rawHosts, caID)
+		hosts, failure = cleanScope(m.domainsLocked(), rawHosts, caID, app)
 	})
 	if failure != "" {
 		return api.Res(false, failure), false, false
@@ -1106,7 +1197,7 @@ func (m *MTLS) Scope(fingerprintArg, hostsArg any) api.Result {
 	var failure string
 	var hosts []string
 	m.cfg.View(func() {
-		hosts, failure = cleanScope(m.domainsLocked(), hostsArg, str(cert["ca"]))
+		hosts, failure = cleanScope(m.domainsLocked(), hostsArg, str(cert["ca"]), "")
 	})
 	if failure != "" {
 		m.mu.Unlock()
@@ -1127,8 +1218,16 @@ func (m *MTLS) Scope(fingerprintArg, hostsArg any) api.Result {
 
 // Revoke ends a certificate on the next request and cuts its open connections.
 // It accepts a fingerprint ODAC has no record of, which is the only way to
-// revoke something an external CA issued.
-func (m *MTLS) Revoke(fingerprintArg any) api.Result {
+// revoke something an external CA issued. Revoking twice succeeds both times,
+// so a caller retrying a lost reply cannot end up stuck. An app may revoke only
+// a recorded certificate it owns (ownsCertLocked): the unknown-fingerprint branch
+// would let it plant a revocation for a certificate it never saw, and anything
+// it may not touch answers not_found.
+func (m *MTLS) Revoke(caller api.Caller, fingerprintArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
 	fingerprint, errMsg := cleanFingerprint(fingerprintArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
@@ -1140,12 +1239,26 @@ func (m *MTLS) Revoke(fingerprintArg any) api.Result {
 		m.mu.Unlock()
 		return m.storeFailure(err)
 	}
+	if app != "" {
+		cert, err := store.get(fingerprint)
+		if err != nil {
+			m.mu.Unlock()
+			return m.storeFailure(err)
+		}
+		if !m.ownsCert(app, cert) {
+			m.mu.Unlock()
+			return notFoundForApp()
+		}
+	}
 	now := float64(m.now().UnixMilli())
 	if err := store.revoke(fingerprint, now); err != nil {
 		m.mu.Unlock()
 		return m.storeFailure(err)
 	}
 	sameKey, err := sameKeyAs(store, fingerprint, now)
+	if err == nil && app != "" {
+		sameKey, err = m.ownedOnly(store, app, sameKey)
+	}
 	m.mu.Unlock()
 	if err != nil {
 		// The revocation itself is stored, so it still has to reach the proxy.
@@ -1164,6 +1277,36 @@ func (m *MTLS) Revoke(fingerprintArg any) api.Result {
 		return api.Res(true, __("Certificate revoked. The same key still works with %s. Revoke those as well if the key was exposed.", strings.Join(list, ", ")), map[string]any{"sameKey": sameKey})
 	}
 	return api.Res(true, __("Certificate revoked."))
+}
+
+// ownsCert is ownsCertLocked for a record read from the store. A missing record
+// is nobody's.
+func (m *MTLS) ownsCert(app string, cert map[string]any) bool {
+	if cert == nil {
+		return false
+	}
+	owned := false
+	m.cfg.View(func() {
+		domains := m.domainsLocked()
+		owned = ownsCertLocked(domains, app, appCAsLocked(domains, app), cert)
+	})
+	return owned
+}
+
+// ownedOnly keeps the fingerprints app owns, so a reply never names another
+// app's certificate that happens to share a key and a CA.
+func (m *MTLS) ownedOnly(store *certStore, app string, fingerprints []any) ([]any, error) {
+	var out []any
+	for _, fp := range fingerprints {
+		cert, err := store.get(str(fp))
+		if err != nil {
+			return nil, err
+		}
+		if m.ownsCert(app, cert) {
+			out = append(out, fp)
+		}
+	}
+	return out, nil
 }
 
 func sameKeyAs(store *certStore, fingerprint string, now float64) ([]any, error) {
@@ -1202,8 +1345,14 @@ func liveOnSameKey(certs map[string]any, fingerprint string, now float64) []any 
 }
 
 // List returns certificate records, optionally only those a domain's record
-// trusts. PEMs are left out: this runs on the hub's interval.
-func (m *MTLS) List(domainArg any) api.Result {
+// trusts. PEMs are left out: this runs on the hub's interval. An app sees only
+// the certificates it owns (ownsCertLocked), and its domain filter must name one
+// of its own records.
+func (m *MTLS) List(caller api.Caller, domainArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
 	filter := ""
 	if s, ok := domainArg.(string); ok {
 		norm := strings.ToLower(strings.TrimSpace(s))
@@ -1215,12 +1364,15 @@ func (m *MTLS) List(domainArg any) api.Result {
 	var failure string
 	var ids []string
 	m.cfg.View(func() {
+		domains := m.domainsLocked()
 		if filter == "" {
+			if app != "" {
+				ids = sortedSet(appCAsLocked(domains, app))
+			}
 			return
 		}
-		domains := m.domainsLocked()
 		record, ok := locateHost(domains, filter)
-		if !ok {
+		if !ok || !ownedLocked(domains, record, app) {
 			failure = __("Domain %s not found.", filter)
 			return
 		}
@@ -1244,6 +1396,9 @@ func (m *MTLS) List(domainArg any) api.Result {
 	if failure != "" {
 		return api.Res(false, failure)
 	}
+	if ids != nil && len(ids) == 0 {
+		return api.Res(true, []any{})
+	}
 
 	store, err := m.certs()
 	if err != nil {
@@ -1256,17 +1411,39 @@ func (m *MTLS) List(domainArg any) api.Result {
 
 	rows := make([]any, 0, len(certs))
 	m.cfg.View(func() {
-		cas := m.casLocked(false)
+		domains := m.domainsLocked()
+		var owned map[string]bool
+		if app != "" {
+			owned = appCAsLocked(domains, app)
+		}
 		for _, row := range certs {
-			if caID := str(row["ca"]); caID != "" {
-				if ca, _ := cas[caID].(map[string]any); ca != nil {
-					row["caName"] = ca["name"]
-				}
+			if !ownsCertLocked(domains, app, owned, row) {
+				continue
 			}
-			rows = append(rows, row)
+			rows = append(rows, m.withCANameLocked(row))
 		}
 	})
 	return api.Res(true, rows)
+}
+
+// withCANameLocked adds the name of a row's CA, which a dashboard shows next to
+// the certificate.
+func (m *MTLS) withCANameLocked(row map[string]any) map[string]any {
+	if caID, _ := row["ca"].(string); caID != "" {
+		if ca, _ := m.casLocked(false)[caID].(map[string]any); ca != nil {
+			row["caName"] = ca["name"]
+		}
+	}
+	return row
+}
+
+func sortedSet(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Prune drops what a deleted domain leaves behind. Without it, a domain added

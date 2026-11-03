@@ -569,7 +569,7 @@ func appAPIAction(a *app, args []string) int {
 
 	var permissions any = allow
 	if all {
-		fmt.Fprintln(a.out, __("WARNING: This grants the app every API action, including creating and deleting apps, domains and mailboxes. Server control and privilege management (auth, update, server.stop, app.privileged, app.api) are never granted. Prefer --allow with the actions it actually needs."))
+		fmt.Fprintln(a.out, __("WARNING: This grants the app every API action, including creating and deleting apps, domains and mailboxes. Server control and privilege management (auth, update, server.stop, app.privileged, app.api, domain.mtls.set, domain.mtls.cert.scope) are never granted. Prefer --allow with the actions it actually needs."))
 		if !strings.EqualFold(a.question(__(`Type "yes" to continue: `)), "yes") {
 			fmt.Fprintln(a.out, __("Aborted."))
 			return 1
