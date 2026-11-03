@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -751,6 +752,41 @@ func TestWarnsAboutWhatStaysOpen(t *testing.T) {
 	}
 	if !strings.Contains(msg, "y.com") {
 		t.Fatalf("unprotected sibling not mentioned: %q", msg)
+	}
+}
+
+// The dashboard shows each warning as its own callout and offers the restart, so
+// they travel as data and not only inside the sentence.
+func TestSetReportsWhatStaysOpenAsData(t *testing.T) {
+	fx := newMTLSFixture(t)
+	fx.cfg.Mutate(func() {
+		apps := fx.cfg.Get("apps").([]any)
+		apps[0].(map[string]any)["ports"] = []any{
+			map[string]any{"host": "8080", "container": float64(3000)},
+			map[string]any{"host": float64(10022), "container": float64(22)},
+			map[string]any{"host": "proxy", "container": float64(3001)},
+		}
+	})
+	data := mustOK(t, fx.m.Set("x.com", "optional", nil)).Data.(map[string]any)
+	if got := data["published"].([]int); !reflect.DeepEqual(got, []int{8080, 10022}) {
+		t.Fatalf("published = %#v", data["published"])
+	}
+	if got := data["siblings"].([]string); !reflect.DeepEqual(got, []string{"y.com"}) {
+		t.Fatalf("siblings = %#v", data["siblings"])
+	}
+	if data["restart"] != true {
+		t.Fatal("the app's first mode needs a restart to deliver its signing key")
+	}
+
+	// The app already holds its key, and y.com is now protected too.
+	data = mustOK(t, fx.m.Set("y.com", "optional", nil)).Data.(map[string]any)
+	if data["restart"] != false || len(data["siblings"].([]string)) != 0 {
+		t.Fatalf("second mode = %#v", data)
+	}
+
+	raw, _ := json.Marshal(mustOK(t, fx.m.Set("x.com", "off", nil)).Data)
+	if string(raw) != `{"published":[],"restart":false,"siblings":[]}` {
+		t.Fatalf("off = %s, want empty lists rather than null", raw)
 	}
 }
 

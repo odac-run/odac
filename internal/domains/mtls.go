@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -333,7 +334,7 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 		})
 		m.saveLocked()
 		m.log.Log("Client certificates turned off for %s", host)
-		return api.Res(true, __("Client certificates are off for %s.", host)), true
+		return api.Res(true, __("Client certificates are off for %s.", host), setReply(nil, nil, false)), true
 	}
 
 	if tunnels := m.tunnelsFor(appID); len(tunnels) > 0 {
@@ -397,7 +398,22 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 	if !hadPolicy {
 		notes = append(notes, __("Restart %s so it receives %s and can verify the signed identity headers.", str(appID), mtls.KeyEnv))
 	}
-	return api.Res(true, strings.Join(notes, " ")), true
+	return api.Res(true, strings.Join(notes, " "), setReply(published, siblings, !hadPolicy)), true
+}
+
+// setReply carries the warnings of a mode change as data, next to the message
+// that spells them out, so a dashboard can show each one on its own and offer the
+// restart instead of parsing a sentence. Empty lists mean nothing to warn about.
+func setReply(published, siblings []string, restart bool) map[string]any {
+	ports := []int{}
+	for _, raw := range published {
+		if port, err := strconv.Atoi(raw); err == nil && port > 0 {
+			ports = append(ports, port)
+		}
+	}
+	sort.Ints(ports)
+	hosts := append([]string{}, siblings...)
+	return map[string]any{"published": ports, "siblings": hosts, "restart": restart}
 }
 
 func contains(list []string, s string) bool {
