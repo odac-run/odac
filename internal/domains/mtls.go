@@ -1,6 +1,7 @@
 package domains
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -730,6 +731,125 @@ func (m *MTLS) createCA(domain string) (string, error) {
 	})
 	m.log.Log("Created client CA %s for %s", id, domain)
 	return id, nil
+}
+
+// ImportCA adds a CA together with its signing key as a managed CA, so several
+// servers can sign certificates that each of them accepts. The id comes from the
+// certificate as it does for every CA, so the CA gets the same id on each server
+// it is imported to and a second import changes nothing. It is the operator's
+// alone and only the local API registers it: a CA key must never cross the hub
+// or reach an app. The key is stored like a created CA's, 0600 and before the
+// record, and is never logged or echoed.
+func (m *MTLS) ImportCA(caller api.Caller, certArg, keyArg any) api.Result {
+	if caller.App != "" || !caller.Root {
+		return permissionDenied()
+	}
+	certPEM, _ := certArg.(string)
+	keyPEM, _ := keyArg.(string)
+	cert, cleaned, errText := parseExternalCA(certPEM)
+	if errText != "" {
+		return api.Res(false, errText)
+	}
+	if cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return api.Res(false, __("That CA certificate is not allowed to sign certificates."))
+	}
+	key, errText := parseCAKey(keyPEM, cert)
+	if errText != "" {
+		return api.Res(false, errText)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return api.Res(false, __("Invalid CA key."))
+	}
+	id := mtls.Fingerprint(cert.Raw)[:16]
+	name := strings.TrimSpace(cert.Subject.CommonName)
+	if name == "" {
+		name = "Client CA " + id
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var existing map[string]any
+	m.cfg.View(func() { existing, _ = m.casLocked(false)[id].(map[string]any) })
+	if existing != nil && existing["managed"] != true {
+		// Managed means a certificate needs a record here, so switching would lock
+		// out every certificate that CA issued outside ODAC.
+		return api.Res(false, __("CA %s is already trusted here as an external CA, so its certificates need no record. Importing it as managed would refuse every one of them.", id))
+	}
+	if err := writeSecret(m.caKeyPath(id), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})); err != nil {
+		m.log.Error("Failed to store the key of client CA %s: %s", id, err.Error())
+		return api.Res(false, __("Failed to store the CA key."))
+	}
+	reply := map[string]any{"id": id, "name": name}
+	if existing != nil {
+		return api.Res(true, __("Client CA %s is already managed here.", id), reply)
+	}
+	m.cfg.Mutate(func() {
+		m.casLocked(true)[id] = map[string]any{
+			"cert":    cleaned,
+			"created": float64(m.now().UnixMilli()),
+			"managed": true,
+			"name":    name,
+		}
+		m.cfg.Touch("mtls")
+	})
+	m.saveLocked()
+	m.log.Log("Imported client CA %s (%s)", id, logSafeName(name))
+	return api.Res(true, __("Imported client CA %s. Trust it on a domain with: odac domain mtls set -d <domain> --mode optional --ca %s", id, id), reply)
+}
+
+// parseCAKey reads the signing key of a CA being imported and checks that it
+// belongs to that CA. It accepts the PEM forms openssl writes (PKCS#8, SEC 1 and
+// PKCS#1) and refuses an encrypted one rather than asking for its passphrase.
+func parseCAKey(raw string, cert *x509.Certificate) (crypto.Signer, string) {
+	rest := []byte(raw)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, __("Invalid CA key.")
+		}
+		if block.Type == "EC PARAMETERS" {
+			continue
+		}
+		if block.Type == "ENCRYPTED PRIVATE KEY" || strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED") {
+			return nil, __("The CA key is encrypted. Decrypt it first, for example: openssl pkey -in ca.key -out ca-plain.key")
+		}
+		var parsed any
+		var err error
+		switch block.Type {
+		case "PRIVATE KEY":
+			parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+		case "EC PRIVATE KEY":
+			parsed, err = x509.ParseECPrivateKey(block.Bytes)
+		case "RSA PRIVATE KEY":
+			parsed, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		default:
+			return nil, __("Invalid CA key.")
+		}
+		if err != nil {
+			return nil, __("Invalid CA key.")
+		}
+		switch key := parsed.(type) {
+		case *ecdsa.PrivateKey:
+			if key.Curve != elliptic.P256() && key.Curve != elliptic.P384() && key.Curve != elliptic.P521() {
+				return nil, __("Unsupported CA key type.")
+			}
+		case *rsa.PrivateKey:
+			if key.N.BitLen() < mtlsMinRSABits {
+				return nil, __("RSA keys must be at least 2048 bits.")
+			}
+		case ed25519.PrivateKey:
+		default:
+			return nil, __("Unsupported CA key type.")
+		}
+		signer := parsed.(crypto.Signer)
+		public, ok := signer.Public().(interface{ Equal(crypto.PublicKey) bool })
+		if !ok || !public.Equal(cert.PublicKey) {
+			return nil, __("That key does not belong to the CA certificate.")
+		}
+		return signer, ""
+	}
 }
 
 func (m *MTLS) caKeyPath(id string) string {

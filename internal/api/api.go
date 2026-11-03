@@ -161,7 +161,9 @@ func (s *Server) HostSocketDir() string {
 // elevates a container to root or full Docker privileged; app.api rewrites
 // the grants this table protects, so an app holding it could simply widen
 // itself; domain.mtls.set switches a client certificate policy, and
-// domain.mtls.cert.scope widens a certificate, on any domain).
+// domain.mtls.cert.scope widens a certificate, on any domain;
+// domain.mtls.ca.import plants a CA key, which signs for every record that
+// trusts that CA).
 //
 // domain.mtls.cert.issue, revoke and list are deliberately absent.
 // Their danger was reach, not the action: on any domain they mint a way past
@@ -178,6 +180,7 @@ var appDeniedActions = map[string]bool{
 	"app.api":                true,
 	"domain.mtls.set":        true,
 	"domain.mtls.cert.scope": true,
+	"domain.mtls.ca.import":  true,
 }
 
 // AppMayCall reports whether an app token is ever allowed to call an action.

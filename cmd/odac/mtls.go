@@ -65,6 +65,15 @@ func mtlsCommand() *command {
 					return a.call("domain.mtls.cert.revoke", []any{fingerprint}, false)
 				},
 			}},
+			{"ca", &command{
+				sub: []entry{
+					{"import", &command{
+						description: "Import a CA with its key as a managed CA, so several servers sign and accept the same certificates",
+						args:        []string{"--cert", "--key"},
+						action:      (*app).mtlsCAImport,
+					}},
+				},
+			}},
 			{"list", &command{
 				description: "List client certificates",
 				args:        []string{"-d", "--domain"},
@@ -117,6 +126,30 @@ func (a *app) mtlsSet(args []string) int {
 		opts["caPem"] = string(raw)
 	}
 	return a.callMessage("domain.mtls.set", []any{domain, mode, opts})
+}
+
+// mtlsCAImport hands a CA and its key to the server. The key travels only over
+// the local API, which is why there is no dashboard or app equivalent.
+func (a *app) mtlsCAImport(args []string) int {
+	certFile := parseArg(args, "--cert")
+	if certFile == "" {
+		certFile = a.question(__("Enter the CA certificate file: "))
+	}
+	keyFile := parseArg(args, "--key")
+	if keyFile == "" {
+		keyFile = a.question(__("Enter the CA key file: "))
+	}
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		fmt.Fprintln(a.errOut, __("Failed to read %s: %s", certFile, err.Error()))
+		return 1
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		fmt.Fprintln(a.errOut, __("Failed to read %s: %s", keyFile, err.Error()))
+		return 1
+	}
+	return a.callMessage("domain.mtls.ca.import", []any{string(certPEM), string(keyPEM)})
 }
 
 // mtlsIssue signs a certificate. With --csr the private key was made elsewhere

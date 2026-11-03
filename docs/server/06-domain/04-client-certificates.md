@@ -39,6 +39,7 @@ odac domain mtls off -d example.com
 | `odac domain mtls scope --fingerprint <fp> --hosts <hosts>` | Change which hosts a certificate opens |
 | `odac domain mtls revoke --fingerprint <fp>` | Revoke a certificate |
 | `odac domain mtls list [-d <host>]` | List certificates |
+| `odac domain mtls ca import --cert <pem> --key <pem>` | Import a CA with its key, to share it between servers |
 
 Setting a mode on a main domain covers all of its hosts. Setting it on a subdomain overrides that one host, so `example.com` can stay `optional` while `auth.example.com` is `required`.
 
@@ -88,6 +89,32 @@ ODAC has no record of certificates another CA issues, so:
 - They have no scope. To limit one to a host, give that host its own CA or intermediate.
 - They are revoked by fingerprint.
 - Public CAs are refused, because anyone holding a certificate from one would be let in.
+
+### Sharing a CA Between Servers
+
+Several servers can sign and accept the same certificates when they share one CA. Create it once, on a machine you trust:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout ca.key -out ca.crt -days 3650 -subj "/CN=Edge Client CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+```
+
+Then, on every server:
+
+```bash
+odac domain mtls ca import --cert ca.crt --key ca.key
+odac domain mtls set -d example.com --mode optional --ca <id>
+```
+
+The import prints the CA's id. It is derived from the certificate, so it is the same on every server, and importing the same CA again changes nothing. With ODAC in Docker, run it with `docker exec` and pass paths the container can read.
+
+- The key goes only through the local API, never through ODAC Cloud or an app, and is stored like ODAC's own CA keys (`cert/mtls/`, readable by its owner only). Delete the copies you imported from, and keep the original somewhere safe.
+- Bind the CA to a domain right after importing it. Like any CA no domain trusts, it is deleted with its key the next time a domain is removed. Importing it again brings it back.
+- A CA already trusted here as your own (`--ca-file`) cannot be imported as managed, because its existing certificates have no records and would all be refused.
+
+Each server keeps its own records, so a certificate signed on one server works on another only once it has a record there too.
 
 ### Issuing From an App
 
