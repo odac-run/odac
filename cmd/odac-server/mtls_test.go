@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net"
 	"os"
 	"strings"
@@ -179,4 +180,84 @@ func TestAppTokenCannotChangePolicyWhateverItsGrant(t *testing.T) {
 			t.Fatalf("root set: %s", r.Message)
 		}
 	}
+}
+
+// K18 end to end, with the call shapes odac-tunnel uses: the operator imports
+// one CA on two nodes, an app token issues on one, and records it on the other
+// with domain.mtls.cert.import [{cert, hosts, name}].
+func TestCertificateReplicatesBetweenNodesThroughTheAPI(t *testing.T) {
+	grant := []any{"domain.mtls.cert.issue", "domain.mtls.cert.import", "domain.mtls.cert.revoke", "domain.mtls.cert.list"}
+	a, b := newMTLSServer(t, grant), newMTLSServer(t, grant)
+	caPEM, keyPEM := serverCA(t)
+
+	var id string
+	for _, s := range []*mtlsServer{a, b} {
+		if r := s.call(t, s.app, "domain.mtls.ca.import", caPEM, keyPEM); r.Result || r.Message != "permission_denied" {
+			t.Fatalf("an app imported a CA: %+v", r)
+		}
+		r := s.call(t, s.root, "domain.mtls.ca.import", caPEM, keyPEM)
+		if !r.Result {
+			t.Fatalf("ca import: %s", r.Message)
+		}
+		var reply struct {
+			ID string `json:"id"`
+		}
+		json.Unmarshal(r.Data, &reply)
+		if id != "" && reply.ID != id {
+			t.Fatalf("the same CA got ids %s and %s", id, reply.ID)
+		}
+		id = reply.ID
+		if r := s.call(t, s.root, "domain.mtls.set", "edge.test", "optional", map[string]any{"ca": []any{id}}); !r.Result {
+			t.Fatalf("set: %s", r.Message)
+		}
+	}
+
+	name := strings.Repeat("ab", 16) + "/" + "V1StGXR8_Z5jdHi6B-myT"
+	issued := a.call(t, a.app, "domain.mtls.cert.issue", "edge.test", map[string]any{
+		"csr": serverCSR(t), "name": name, "hosts": []any{"edge.test"}, "days": 365,
+	})
+	if !issued.Result {
+		t.Fatalf("issue: %s", issued.Message)
+	}
+	var cert struct {
+		Cert        string `json:"cert"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	json.Unmarshal(issued.Data, &cert)
+
+	r := b.call(t, b.app, "domain.mtls.cert.import", map[string]any{"cert": cert.Cert, "hosts": []any{"edge.test"}, "name": name})
+	if !r.Result || !strings.Contains(string(r.Data), cert.Fingerprint) || !strings.Contains(string(r.Data), `"ca":"`+id+`"`) {
+		t.Fatalf("import = %+v", r)
+	}
+	if r := b.call(t, b.app, "domain.mtls.cert.import", map[string]any{"cert": cert.Cert, "hosts": []any{"shop.test"}, "name": name}); r.Result {
+		t.Fatal("an app imported onto another app's domain")
+	}
+	for i := 0; i < 2; i++ {
+		if r := b.call(t, b.app, "domain.mtls.cert.revoke", cert.Fingerprint); !r.Result {
+			t.Fatalf("revoke %d: %+v", i+1, r)
+		}
+	}
+	if r := b.call(t, b.app, "domain.mtls.cert.import", map[string]any{"cert": cert.Cert, "hosts": []any{"edge.test"}, "name": name}); r.Result {
+		t.Fatal("a revoked certificate came back through an import")
+	}
+}
+
+func serverCA(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Edge Client CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalPKCS8PrivateKey(key)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
 }

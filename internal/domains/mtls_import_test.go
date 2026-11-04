@@ -2,17 +2,25 @@ package domains
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +29,8 @@ import (
 	"odac/internal/api"
 	"odac/internal/logx"
 	"odac/internal/mtls"
+	proxyconfig "odac/internal/proxy/config"
+	"odac/internal/proxy/proxy"
 )
 
 // sharedCA is a CA made outside ODAC, the way an operator makes the one every
@@ -260,4 +270,259 @@ func TestImportCADoesNotTurnAnExternalCAManaged(t *testing.T) {
 	if stored["managed"] != false {
 		t.Fatalf("stored = %v", stored)
 	}
+}
+
+// edgeNode is one server holding the shared CA, bound to x.com.
+func edgeNode(t *testing.T, ca *sharedCA) *mtlsFixture {
+	t.Helper()
+	fx := newMTLSFixture(t)
+	mustOK(t, fx.m.ImportCA(api.Operator, ca.certPEM, ca.keyPEM))
+	mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{ca.id()}}))
+	return fx
+}
+
+func csrWithKey(t *testing.T) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})), key
+}
+
+func importOpts(cert string, hosts ...string) map[string]any {
+	return map[string]any{"cert": cert, "hosts": anyList(hosts)}
+}
+
+func TestImportRecordsWhatAnotherNodeSigned(t *testing.T) {
+	ca := newSharedCA(t, x509.KeyUsageCertSign)
+	a, b := edgeNode(t, ca), edgeNode(t, ca)
+	issued := a.issue(t, "x.com", "dev1", "x.com")
+
+	syncs := b.proxy.certSyncs
+	r := mustOK(t, b.m.Import(asApp, map[string]any{"cert": issued["cert"], "hosts": []any{"x.com"}, "name": "dev1"}))
+	if b.proxy.certSyncs != syncs+1 {
+		t.Fatal("an import must reach the proxy through the certificate-only push")
+	}
+	row := r.Data.(map[string]any)
+	rows := mustOK(t, b.m.List(api.Operator, nil)).Data.([]any)
+	if len(rows) != 1 || !reflect.DeepEqual(rows[0], row) {
+		t.Fatalf("reply %v is not the list row %v", row, rows)
+	}
+	for key, want := range map[string]any{"fingerprint": issued["fingerprint"], "ca": ca.id(), "caName": "Edge Client CA", "name": "dev1", "serial": issued["serial"], "notAfter": issued["notAfter"]} {
+		if row[key] != want {
+			t.Errorf("%s = %v, want %v", key, row[key], want)
+		}
+	}
+	for _, hidden := range []string{"cert", "spki", "renewedFrom"} {
+		if _, ok := row[hidden]; ok {
+			t.Errorf("row carries %s", hidden)
+		}
+	}
+
+	// Again: the same row, no new push. Without a name, the subject's is used.
+	again := mustOK(t, b.m.Import(asApp, importOpts(issued["cert"].(string), "x.com")))
+	if !reflect.DeepEqual(again.Data, row) || b.proxy.certSyncs != syncs+1 {
+		t.Fatalf("second import = %v", again.Data)
+	}
+
+	// The record counts as a way in on this node too.
+	mustOK(t, b.m.Set("x.com", "required", nil))
+}
+
+func TestImportNeverRevivesARevokedCertificate(t *testing.T) {
+	ca := newSharedCA(t, x509.KeyUsageCertSign)
+	a, b := edgeNode(t, ca), edgeNode(t, ca)
+	issued := a.issue(t, "x.com", "dev1", "x.com")
+	mustOK(t, b.m.Import(api.Operator, importOpts(issued["cert"].(string), "x.com")))
+	mustOK(t, b.m.Revoke(api.Operator, issued["fingerprint"]))
+	mustFail(t, b.m.Import(api.Operator, importOpts(issued["cert"].(string), "x.com")), "revoked")
+
+	// A revocation that reached this node first, as the operator's tombstone,
+	// holds the same way.
+	other := a.issue(t, "x.com", "dev2", "x.com")
+	mustOK(t, b.m.Revoke(api.Operator, other["fingerprint"]))
+	mustFail(t, b.m.Import(api.Operator, importOpts(other["cert"].(string), "x.com")), "revoked")
+}
+
+func TestImportFollowsTheIssueRules(t *testing.T) {
+	ca := newSharedCA(t, x509.KeyUsageCertSign)
+	a, b := edgeNode(t, ca), edgeNode(t, ca)
+	mustOK(t, a.m.Set("z.com", "optional", map[string]any{"ca": []any{ca.id()}}))
+	mustOK(t, b.m.Set("z.com", "optional", map[string]any{"ca": []any{ca.id()}}))
+	cert := a.issue(t, "x.com", "dev1", "x.com")["cert"].(string)
+
+	mustFail(t, b.m.Import(api.Operator, importOpts(cert)), "At least one host")
+	mustFail(t, b.m.Import(api.Operator, importOpts(cert, "nope.com")), "not registered")
+	mustFail(t, b.m.Import(api.Operator, importOpts(cert, "y.com")), "not signed by a client CA its hosts trust")
+	mustFail(t, b.m.Import(api.Operator, map[string]any{"cert": cert, "hosts": []any{"x.com"}, "name": "dev2"}), "does not match")
+	mustFail(t, b.m.Import(api.Operator, importOpts(cert+ca.keyPEM, "x.com")), "private key")
+	mustFail(t, b.m.Import(api.Operator, importOpts(ca.certPEM, "x.com")), "CA certificate")
+	mustFail(t, b.m.Import(api.Operator, importOpts("junk", "x.com")), "Invalid certificate")
+
+	// App reach: its own hosts only, and one foreign host refuses everything.
+	mustFail(t, b.m.Import(asOther, importOpts(cert, "x.com")), "Host x.com is not registered")
+	mustFail(t, b.m.Import(asApp, importOpts(cert, "x.com", "z.com")), "Host z.com is not registered")
+	mustFail(t, b.m.Import(api.Caller{}, importOpts(cert, "x.com")), "permission_denied")
+	if rows := mustOK(t, b.m.List(api.Operator, nil)).Data.([]any); len(rows) != 0 {
+		t.Fatalf("refused imports left %v", rows)
+	}
+
+	// The operator may scope it to both, as Issue would allow.
+	mustOK(t, b.m.Import(api.Operator, importOpts(cert, "x.com", "z.com")))
+}
+
+func TestImportNeedsAManagedCAOnThisNode(t *testing.T) {
+	ca := newSharedCA(t, x509.KeyUsageCertSign)
+	a := edgeNode(t, ca)
+	cert := a.issue(t, "x.com", "dev1", "x.com")["cert"].(string)
+
+	// A node that never imported the CA has its own, which did not sign this.
+	b := newMTLSFixture(t)
+	mustOK(t, b.m.Set("x.com", "optional", nil))
+	mustFail(t, b.m.Import(api.Operator, importOpts(cert, "x.com")), "not signed by a client CA")
+
+	// An external CA's certificates need no record, so importing one says so.
+	c := newMTLSFixture(t)
+	mustOK(t, c.m.Set("x.com", "optional", map[string]any{"caPem": ca.certPEM}))
+	mustFail(t, c.m.Import(api.Operator, importOpts(cert, "x.com")), "external CA")
+}
+
+func TestImportRefusesAnExpiredCertificateButToleratesClockSkew(t *testing.T) {
+	ca := newSharedCA(t, x509.KeyUsageCertSign)
+	a, b := edgeNode(t, ca), edgeNode(t, ca)
+	reply := a.issue(t, "x.com", "dev1", "x.com")
+	leaf := parseIssued(t, reply)
+
+	b.m.now = func() time.Time { return leaf.NotAfter.Add(time.Minute) }
+	mustFail(t, b.m.Import(api.Operator, importOpts(reply["cert"].(string), "x.com")), "expired")
+
+	// This node's clock runs behind the signer's: not valid yet here, but it
+	// will be, and the proxy checks the start time on every request.
+	b.m.now = func() time.Time { return leaf.NotBefore.Add(-time.Hour) }
+	mustOK(t, b.m.Import(api.Operator, importOpts(reply["cert"].(string), "x.com")))
+}
+
+// The point of an import: the proxy on the second node refuses the certificate
+// before it, as a managed CA's certificate with no record, and accepts it after.
+// The proxy is fed through the same payload builders the dataplane uses.
+func TestProxyAcceptsAnImportedCertificate(t *testing.T) {
+	ca := newSharedCA(t, x509.KeyUsageCertSign)
+	a, b := edgeNode(t, ca), edgeNode(t, ca)
+	csr, key := csrWithKey(t)
+	reply := mustOK(t, a.m.Issue(api.Operator, "x.com", map[string]any{"name": "dev1", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	client := tls.Certificate{Certificate: [][]byte{parseIssued(t, reply).Raw}, PrivateKey: key}
+
+	edge := newProxyEdge(t, b)
+	if got := edge.verify(t, client); got != mtls.VerifyUntrusted {
+		t.Fatalf("before the import the proxy says %q", got)
+	}
+	mustOK(t, b.m.Import(asApp, map[string]any{"cert": reply["cert"], "hosts": []any{"x.com"}, "name": "dev1"}))
+	edge.sync(t)
+	if got := edge.verify(t, client); got != mtls.VerifySuccess {
+		t.Fatalf("after the import the proxy says %q", got)
+	}
+
+	mustOK(t, b.m.Revoke(asApp, reply["fingerprint"]))
+	edge.sync(t)
+	if got := edge.verify(t, client); got != mtls.VerifyRevoked {
+		t.Fatalf("after the revoke the proxy says %q", got)
+	}
+}
+
+type proxyEdge struct {
+	fx      *mtlsFixture
+	proxy   *proxy.Proxy
+	front   *httptest.Server
+	backend string
+	port    int
+}
+
+func newProxyEdge(t *testing.T, fx *mtlsFixture) *proxyEdge {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Header.Get(mtls.HeaderVerify))
+	}))
+	t.Cleanup(backend.Close)
+	host, portText, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portText)
+
+	edge := &proxyEdge{fx: fx, proxy: proxy.NewProxy(), backend: host, port: port}
+	edge.sync(t)
+
+	server := newSharedCA(t, x509.KeyUsageCertSign|x509.KeyUsageDigitalSignature)
+	serverKey, _ := pem.Decode([]byte(server.keyPEM))
+	signer, _ := x509.ParsePKCS8PrivateKey(serverKey.Bytes)
+	serverCert := tls.Certificate{Certificate: [][]byte{server.cert.Raw}, PrivateKey: signer}
+	base := &tls.Config{
+		GetCertificate:     func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &serverCert, nil },
+		GetConfigForClient: edge.proxy.GetConfigForClient,
+		MinVersion:         tls.VersionTLS12,
+	}
+	edge.proxy.SetTLSBase(base)
+	edge.front = httptest.NewUnstartedServer(edge.proxy)
+	edge.front.TLS = base
+	edge.front.StartTLS()
+	t.Cleanup(edge.front.Close)
+	return edge
+}
+
+// sync hands the proxy this node's state the way a push would: each record's
+// policy through mtls.DomainPayload, the CAs and certificates through
+// mtls.StorePayload, both decoded into the proxy's own types.
+func (e *proxyEdge) sync(t *testing.T) {
+	t.Helper()
+	certs, err := e.fx.m.CertSnapshot(e.fx.m.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sitePayload, storePayload []byte
+	var subdomains []string
+	e.fx.cfg.View(func() {
+		record := e.fx.cfg.Map("domains")["x.com"].(map[string]any)
+		subdomains = stringList(record["subdomain"])
+		sitePayload, _ = json.Marshal(mtls.DomainPayload(record, "app-key"))
+		storePayload, _ = json.Marshal(mtls.StorePayload(e.fx.cfg.Map("mtls"), certs))
+	})
+	var site proxyconfig.WebsiteMTLS
+	var store proxyconfig.MTLS
+	if err := json.Unmarshal(sitePayload, &site); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(storePayload, &store); err != nil {
+		t.Fatal(err)
+	}
+	domains := map[string]proxyconfig.Website{
+		"x.com": {Domain: "x.com", Port: e.port, ContainerIP: e.backend, Subdomains: subdomains, MTLS: &site},
+	}
+	e.proxy.UpdateClientAuth(domains, &store)
+	e.proxy.UpdateConfig(domains, nil, nil, nil)
+}
+
+// verify returns what the proxy told the app about this client certificate.
+func (e *proxyEdge) verify(t *testing.T, cert tls.Certificate) string {
+	t.Helper()
+	addr := e.front.Listener.Addr().String()
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "x.com", Certificates: []tls.Certificate{cert}},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+	}
+	defer tr.CloseIdleConnections()
+	req, _ := http.NewRequest(http.MethodGet, "https://x.com/", nil)
+	resp, err := (&http.Client{Transport: tr, Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	return string(body)
 }

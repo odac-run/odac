@@ -321,6 +321,9 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 	apiSrv.Register("domain.mtls.cert.revoke", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(mtlsSvc.Revoke(a.Caller(), a.At(0)))
 	})
+	apiSrv.Register("domain.mtls.cert.import", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.Import(a.Caller(), a.At(0)))
+	})
 	apiSrv.Register("domain.mtls.cert.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(mtlsSvc.List(a.Caller(), a.At(0)))
 	})

@@ -58,6 +58,7 @@ These are the actions available to applications. An app may call the ones you gr
 | `domain.mtls.cert.issue` | `[domain, {"csr", "name", "hosts", "days"?, "renews"?}]` | Sign a client certificate for the app's own hosts. See below |
 | `domain.mtls.cert.revoke` | `[fingerprint]` | Revoke one of the app's client certificates |
 | `domain.mtls.cert.list` | `[]`, or `[domain]` to filter | List the app's client certificates |
+| `domain.mtls.cert.import` | `[{"cert", "hosts", "name"?}]` | Record a certificate another server signed with a shared CA |
 
 `app` is an App ID or name, exactly like the CLI's `-i` argument.
 
@@ -88,6 +89,7 @@ The `domain.mtls.cert.*` actions let an app hand out [client certificates](../06
 - The domain must already have a client CA, which `odac domain mtls set` creates. An app cannot create one.
 - An app sees and revokes only certificates whose CA belongs to one of its domains and whose hosts are all its own. Anything else, including a fingerprint ODAC has no record of, answers `"result": false` with `"data": {"code": "not_found"}`.
 - Revoking a certificate that is already revoked succeeds, so a retry is safe.
+- Importing a certificate that is already recorded returns its row again. A revoked one is never imported.
 
 Setting a mode (`domain.mtls.set`) and changing a certificate's hosts (`domain.mtls.cert.scope`) are never available to apps, not even with `--all`. Those stay with the CLI and the dashboard.
 

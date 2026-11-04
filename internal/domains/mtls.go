@@ -1,6 +1,7 @@
 package domains
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -1397,6 +1398,216 @@ func (m *MTLS) Revoke(caller api.Caller, fingerprintArg any) api.Result {
 		return api.Res(true, __("Certificate revoked. The same key still works with %s. Revoke those as well if the key was exposed.", strings.Join(list, ", ")), map[string]any{"sameKey": sameKey})
 	}
 	return api.Res(true, __("Certificate revoked."))
+}
+
+// mtlsMaxCertPEM bounds an imported certificate. ODAC's are well under 2 KiB.
+const mtlsMaxCertPEM = 64 << 10
+
+// Import records a certificate another server signed with a CA both share, so
+// this server's proxy accepts it too: a managed CA's certificate with no record
+// is refused. Nothing is signed here. The authority is the signature of a managed
+// CA that every target host trusts, and the record only adds the scope, under the
+// same rules as Issue (and, for an app, the same reach). opts carries cert (PEM),
+// hosts and name, which, when given, must be the certificate's subject CN.
+// Importing a recorded certificate again returns its row, but a revoked one
+// stays revoked: an import must never bring a certificate back.
+func (m *MTLS) Import(caller api.Caller, optsArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
+	opts := optionsOf(optsArg)
+	leaf, certPEM, errMsg := parseClientCert(opts["cert"])
+	if errMsg != "" {
+		return api.Res(false, errMsg)
+	}
+	name := leaf.Subject.CommonName
+	if raw := opts["name"]; raw != nil {
+		given, isString := raw.(string)
+		if !isString || (given != "" && given != name) {
+			return api.Res(false, __("The name does not match the certificate's subject, %s.", logSafeName(name)))
+		}
+	}
+	if !validName(name) {
+		return api.Res(false, __("The certificate's name must be 1 to 64 printable characters."))
+	}
+	now := m.now()
+	if !now.Before(leaf.NotAfter) {
+		return api.Res(false, __("The certificate has expired."))
+	}
+
+	m.mu.Lock()
+	result, imported := m.importLocked(app, leaf, certPEM, name, opts["hosts"], now)
+	m.mu.Unlock()
+
+	if imported && m.proxy != nil {
+		m.proxy.SyncClientCerts()
+	}
+	return result
+}
+
+func (m *MTLS) importLocked(app string, leaf *x509.Certificate, certPEM, name string, rawHosts any, now time.Time) (api.Result, bool) {
+	var candidates map[string]importCandidate
+	var failure string
+	m.cfg.View(func() {
+		candidates, failure = importCandidatesLocked(m.domainsLocked(), m.casLocked(false), rawHosts, app)
+	})
+	if failure != "" {
+		return api.Res(false, failure), false
+	}
+	caID, managed := signingCA(leaf, candidates, now)
+	switch {
+	case caID == "":
+		return api.Res(false, __("The certificate was not signed by a client CA its hosts trust.")), false
+	case !managed:
+		return api.Res(false, __("That certificate comes from an external CA, which needs no record: its hosts already trust it.")), false
+	}
+	var hosts []string
+	m.cfg.View(func() {
+		hosts, failure = cleanScope(m.domainsLocked(), rawHosts, caID, app)
+	})
+	if failure != "" {
+		return api.Res(false, failure), false
+	}
+
+	store, err := m.certs()
+	if err != nil {
+		return m.storeFailure(err), false
+	}
+	fingerprint := mtls.Fingerprint(leaf.Raw)
+	existing, err := store.get(fingerprint)
+	if err != nil {
+		return m.storeFailure(err), false
+	}
+	if existing != nil {
+		if existing["revoked"] != nil {
+			return api.Res(false, __("This certificate has been revoked, and a revoked certificate cannot be imported.")), false
+		}
+		if !m.ownsCert(app, existing) {
+			return api.Res(false, __("This certificate is already registered.")), false
+		}
+		return m.importReply(store, fingerprint, __("Certificate %s is already registered.", name)), false
+	}
+
+	record := map[string]any{
+		"ca":       caID,
+		"cert":     certPEM,
+		"created":  float64(now.UnixMilli()),
+		"hosts":    anyList(hosts),
+		"name":     name,
+		"notAfter": float64(leaf.NotAfter.UnixMilli()),
+		"serial":   hex.EncodeToString(leaf.SerialNumber.Bytes()),
+		"spki":     mtls.Fingerprint(leaf.RawSubjectPublicKeyInfo),
+	}
+	if err := store.insert(fingerprint, record); err != nil {
+		return m.storeFailure(err), false
+	}
+	m.log.Log("Imported client certificate %s (%s)", fingerprint[:16], logSafeName(name))
+	return m.importReply(store, fingerprint, __("Certificate %s imported.", name)), true
+}
+
+// importReply answers with the certificate's list row, the shape the caller
+// already mirrors from domain.mtls.cert.list.
+func (m *MTLS) importReply(store *certStore, fingerprint, message string) api.Result {
+	row, err := store.row(fingerprint)
+	if err != nil {
+		return m.storeFailure(err)
+	}
+	if row == nil {
+		return api.Res(false, __("Certificate not found."))
+	}
+	m.cfg.View(func() { row = m.withCANameLocked(row) })
+	return api.Res(true, message, row)
+}
+
+type importCandidate struct {
+	pem     string
+	managed bool
+}
+
+// importCandidatesLocked validates the target hosts the way cleanScope does,
+// before any CA is known, and returns the CAs they trust: the certificate's
+// issuer has to be one of them.
+func importCandidatesLocked(domains, cas map[string]any, rawHosts any, app string) (map[string]importCandidate, string) {
+	entries := stringList(rawHosts)
+	if len(entries) == 0 {
+		return nil, __("At least one host is required.")
+	}
+	out := map[string]importCandidate{}
+	for _, entry := range entries {
+		host, errMsg := cleanHost(entry)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		record, ok := locateHost(domains, host)
+		if !ok || !ownedLocked(domains, record, app) {
+			return nil, __("Host %s is not registered.", host)
+		}
+		for _, id := range effectiveCAs(domains, record, host) {
+			if ca, _ := cas[id].(map[string]any); ca != nil {
+				certPEM, _ := ca["cert"].(string)
+				out[id] = importCandidate{pem: certPEM, managed: ca["managed"] == true}
+			}
+		}
+	}
+	return out, ""
+}
+
+// signingCA finds which candidate CA signed leaf, checked the way the proxy will
+// check it (chain and client auth usage). It verifies at the certificate's start
+// when this clock is behind the signer's, since two servers' clocks differ and the
+// proxy enforces the start time on every request anyway.
+func signingCA(leaf *x509.Certificate, candidates map[string]importCandidate, now time.Time) (string, bool) {
+	at := now
+	if at.Before(leaf.NotBefore) {
+		at = leaf.NotBefore
+	}
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		block, _ := pem.Decode([]byte(candidates[id].pem))
+		if block == nil {
+			continue
+		}
+		ca, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !bytes.Equal(ca.RawSubject, leaf.RawIssuer) {
+			continue
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(ca)
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: at, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err == nil {
+			return id, candidates[id].managed
+		}
+	}
+	return "", false
+}
+
+// parseClientCert reads the certificate being imported. The PEM may carry the
+// chain after it, as an issue reply's cert and chain concatenated would; only the
+// first certificate is the client's.
+func parseClientCert(raw any) (*x509.Certificate, string, string) {
+	text, _ := raw.(string)
+	if len(text) > mtlsMaxCertPEM {
+		return nil, "", __("Invalid certificate.")
+	}
+	if strings.Contains(text, "PRIVATE KEY") {
+		return nil, "", __("That file contains a private key. Send only the certificate.")
+	}
+	block, _ := pem.Decode([]byte(text))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, "", __("Invalid certificate.")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, "", __("Invalid certificate.")
+	}
+	if cert.IsCA {
+		return nil, "", __("That is a CA certificate, not a client certificate.")
+	}
+	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes})), ""
 }
 
 // ownsCert is ownsCertLocked for a record read from the store. A missing record

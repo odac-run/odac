@@ -40,6 +40,7 @@ odac domain mtls off -d example.com
 | `odac domain mtls revoke --fingerprint <fp>` | Revoke a certificate |
 | `odac domain mtls list [-d <host>]` | List certificates |
 | `odac domain mtls ca import --cert <pem> --key <pem>` | Import a CA with its key, to share it between servers |
+| `odac domain mtls import --cert <pem> --hosts <hosts>` | Record a certificate another server signed with a shared CA. `--name` must match its subject |
 
 Setting a mode on a main domain covers all of its hosts. Setting it on a subdomain overrides that one host, so `example.com` can stay `optional` while `auth.example.com` is `required`.
 
@@ -114,7 +115,13 @@ The import prints the CA's id. It is derived from the certificate, so it is the 
 - Bind the CA to a domain right after importing it. Like any CA no domain trusts, it is deleted with its key the next time a domain is removed. Importing it again brings it back.
 - A CA already trusted here as your own (`--ca-file`) cannot be imported as managed, because its existing certificates have no records and would all be refused.
 
-Each server keeps its own records, so a certificate signed on one server works on another only once it has a record there too.
+Each server keeps its own records, so a certificate signed on one server works on another only once it has a record there too. Give it one with the certificate alone, never its key:
+
+```bash
+odac domain mtls import --cert alice.crt --hosts auth.example.com
+```
+
+The certificate must be signed by a managed CA that every listed host trusts, and the hosts follow the same rules as `issue`. Importing it again changes nothing, and a certificate revoked on this server cannot be imported, so revoke it on every server that has it. Scope and revocation are kept per server, too.
 
 ### Issuing From an App
 

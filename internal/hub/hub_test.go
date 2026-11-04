@@ -326,6 +326,10 @@ func (f *fakeMTLS) Issue(caller api.Caller, domainArg, optsArg any) api.Result {
 	f.record("issue " + operator(caller) + str(domainArg) + " " + str(pmap(optsArg)["csr"]))
 	return api.Res(true, "issued", map[string]any{"fingerprint": "aa"})
 }
+func (f *fakeMTLS) Import(caller api.Caller, optsArg any) api.Result {
+	f.record("import " + operator(caller) + str(pmap(optsArg)["cert"]))
+	return api.Res(true, "imported", map[string]any{"fingerprint": "aa"})
+}
 func (f *fakeMTLS) List(caller api.Caller, domainArg any) api.Result {
 	f.record("list " + operator(caller) + str(domainArg))
 	return api.Res(true, json.RawMessage(`[]`))
@@ -1199,6 +1203,7 @@ func TestCommandTableOrder(t *testing.T) {
 		"terminal.open", "terminal.close", "mail.create", "mail.delete", "mail.list",
 		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
 		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
+		"domain.mtls.cert.import",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1239,10 +1244,15 @@ func TestMTLSCommandsReachTheService(t *testing.T) {
 	run("domain.mtls.cert.scope", map[string]any{"fingerprint": "aa", "hosts": []any{"x.com"}})
 	run("domain.mtls.cert.revoke", map[string]any{"fingerprint": "aa"})
 	run("domain.mtls.cert.list", map[string]any{"domain": "x.com"})
+	run("domain.mtls.cert.import", map[string]any{"cert": "PEM", "hosts": []any{"x.com"}})
 
 	want := []string{
 		"set x.com optional PEM", "issue (operator) x.com CSR", "scope aa",
-		"revoke (operator) aa", "list (operator) x.com",
+		"revoke (operator) aa", "list (operator) x.com", "import (operator) PEM",
+	}
+	// A new record reaches the dashboard's mirror right away, like an issue does.
+	if got := fx.h.commands["domain.mtls.cert.import"].triggers; !reflect.DeepEqual(got, []string{"domain.mtls.cert.list"}) {
+		t.Fatalf("import triggers = %v", got)
 	}
 	if got := fx.mtls.calls; !reflect.DeepEqual(got, want) {
 		t.Fatalf("calls = %v, want %v", got, want)

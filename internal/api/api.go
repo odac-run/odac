@@ -165,7 +165,7 @@ func (s *Server) HostSocketDir() string {
 // domain.mtls.ca.import plants a CA key, which signs for every record that
 // trusts that CA).
 //
-// domain.mtls.cert.issue, revoke and list are deliberately absent.
+// domain.mtls.cert.issue, revoke, list and import are deliberately absent.
 // Their danger was reach, not the action: on any domain they mint a way past
 // a policy. domains.MTLS narrows them to the records routed to the calling
 // app (Args.Caller), on the request path, so a grant lets an edge app such as

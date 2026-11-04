@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -274,6 +275,33 @@ func TestCAImportSendsBothFilesToTheLocalAPI(t *testing.T) {
 		t.Fatalf("request = %+v", got)
 	}
 	if out.String() != "Imported client CA 0123456789abcdef.\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestImportSendsOneObjectWithTheCertificate(t *testing.T) {
+	var got apiproto.Request
+	var mu sync.Mutex
+	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
+		mu.Lock()
+		got = req
+		mu.Unlock()
+		conn.Write([]byte(`{"id":"e","result":true,"message":"Certificate ali imported.","data":{"fingerprint":"aa"}}`))
+	})
+	certFile := filepath.Join(t.TempDir(), "ali.crt")
+	os.WriteFile(certFile, []byte("CERT PEM"), 0o600)
+
+	a, out, errOut := testApp(t, addr)
+	if code := a.dispatch([]string{"domain", "mtls", "import", "--cert", certFile, "--hosts", "a.x.com, b.x.com", "--name", "ali"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []any{map[string]any{"cert": "CERT PEM", "hosts": []any{"a.x.com", "b.x.com"}, "name": "ali"}}
+	if got.Action != "domain.mtls.cert.import" || !reflect.DeepEqual(got.Data, want) {
+		t.Fatalf("request = %+v", got)
+	}
+	if out.String() != "Certificate ali imported.\n" {
 		t.Fatalf("output = %q", out.String())
 	}
 }

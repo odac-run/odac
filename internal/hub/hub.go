@@ -81,6 +81,7 @@ type DomainService interface {
 // MTLSService is the slice of domains.MTLS the command table calls. The hub
 // acts for the server's owner, so it passes api.Operator where a caller is asked.
 type MTLSService interface {
+	Import(caller api.Caller, optsArg any) api.Result
 	Issue(caller api.Caller, domainArg, optsArg any) api.Result
 	List(caller api.Caller, domainArg any) api.Result
 	Revoke(caller api.Caller, fingerprintArg any) api.Result
@@ -946,6 +947,12 @@ func (h *Hub) buildCommands() {
 			return h.deps.MTLS.List(api.Operator, pmap(p)["domain"]), nil
 		}),
 		interval: 30 * time.Minute,
+	})
+	h.register("domain.mtls.cert.import", &command{
+		fn: withMTLS(func(p any) (any, error) {
+			return h.deps.MTLS.Import(api.Operator, pmap(p)), nil
+		}),
+		triggers: []string{"domain.mtls.cert.list"},
 	})
 }
 

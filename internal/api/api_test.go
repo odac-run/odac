@@ -516,7 +516,7 @@ func TestAppsCannotChangeClientCertificatePolicy(t *testing.T) {
 			t.Errorf("an app grant could reach %s", action)
 		}
 	}
-	for _, action := range []string{"domain.mtls.cert.issue", "domain.mtls.cert.revoke", "domain.mtls.cert.list"} {
+	for _, action := range []string{"domain.mtls.cert.issue", "domain.mtls.cert.revoke", "domain.mtls.cert.list", "domain.mtls.cert.import"} {
 		if !AppMayCall(action) {
 			t.Errorf("%s must be grantable: its handler narrows it to the app's records", action)
 		}
