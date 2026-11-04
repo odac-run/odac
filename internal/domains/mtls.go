@@ -249,6 +249,53 @@ func ownsCertLocked(domains map[string]any, app string, cas map[string]bool, cer
 	return true
 }
 
+// mtlsListView is a record's mtls object as domain.list reports it: a copy made
+// under the config lock, since the rows are encoded after it is released, with
+// `external` naming the CAs of each `ca` list that ODAC holds no key for. A
+// dashboard needs that to know a host may be required with no certificate record
+// behind it, which canEnter allows for an external CA. The field is computed, never
+// stored, and left out when empty because the dashboard diffs these rows.
+func mtlsListView(raw any, cas map[string]any) any {
+	cfg, ok := raw.(map[string]any)
+	if !ok {
+		return raw
+	}
+	out := withExternal(cfg, cas)
+	if hosts, _ := cfg["hosts"].(map[string]any); hosts != nil {
+		copied := make(map[string]any, len(hosts))
+		for host, h := range hosts {
+			if override, ok := h.(map[string]any); ok {
+				copied[host] = withExternal(override, cas)
+			} else {
+				copied[host] = h
+			}
+		}
+		out["hosts"] = copied
+	}
+	return out
+}
+
+func withExternal(obj, cas map[string]any) map[string]any {
+	out := make(map[string]any, len(obj)+1)
+	for key, value := range obj {
+		out[key] = value
+	}
+	delete(out, "external")
+	if ca, ok := obj["ca"].([]any); ok {
+		out["ca"] = append([]any(nil), ca...)
+	}
+	var external []any
+	for _, id := range stringList(obj["ca"]) {
+		if ca, _ := cas[id].(map[string]any); ca != nil && ca["managed"] != true {
+			external = append(external, id)
+		}
+	}
+	if len(external) > 0 {
+		out["external"] = external
+	}
+	return out
+}
+
 func recordConfig(domains map[string]any, name string) map[string]any {
 	record, _ := domains[name].(map[string]any)
 	cfg, _ := record["mtls"].(map[string]any)

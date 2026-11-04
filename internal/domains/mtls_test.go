@@ -1048,6 +1048,76 @@ func TestDomainListShowsPolicyOnlyWhenSet(t *testing.T) {
 	}
 }
 
+// A9: the dashboard cannot tell a managed CA from an external one by id, and
+// only an external one lets a host be required with no certificate record.
+func TestDomainListNamesExternalCAs(t *testing.T) {
+	base := newFixture(t)
+	mx := NewMTLS(base.cfg, &fakeMTLSProxy{})
+	t.Cleanup(mx.Stop)
+	mustOK(t, base.d.Add("sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add("auth.sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add("plain.example.com", "myapp"))
+	mustOK(t, mx.Set("plain.example.com", "optional", nil))
+	mustOK(t, mx.Set("sec.example.org", "optional", nil))
+	managed := stringList(mx.recordFor(t, "sec.example.org")["ca"])[0]
+
+	external := newExternalCA(t, true)
+	mustOK(t, mx.Set("auth.sec.example.org", "required", map[string]any{"caPem": external}))
+	block, _ := pem.Decode([]byte(external))
+	externalID := mtls.Fingerprint(block.Bytes)[:16]
+	// The record trusts both kinds at once.
+	mustOK(t, mx.Set("sec.example.org", "optional", map[string]any{"ca": []any{managed, externalID}}))
+
+	raw, _ := json.Marshal(base.d.List(nil).Data)
+	var rows []struct {
+		Domain string `json:"domain"`
+		MTLS   struct {
+			CA       []string `json:"ca"`
+			External []string `json:"external"`
+			Hosts    map[string]struct {
+				CA       []string `json:"ca"`
+				External []string `json:"external"`
+			} `json:"hosts"`
+		} `json:"mtls"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		switch row.Domain {
+		case "sec.example.org":
+			if !reflect.DeepEqual(row.MTLS.External, []string{externalID}) || len(row.MTLS.CA) != 2 {
+				t.Errorf("record = %+v", row.MTLS)
+			}
+			if host := row.MTLS.Hosts["auth.sec.example.org"]; !reflect.DeepEqual(host.External, []string{externalID}) {
+				t.Errorf("override = %+v", host)
+			}
+		case "plain.example.com":
+			if len(row.MTLS.CA) != 1 || row.MTLS.External != nil {
+				t.Errorf("a managed CA is reported external: %+v", row.MTLS)
+			}
+		}
+	}
+	if strings.Count(string(raw), `"external"`) != 2 {
+		t.Fatalf("external must appear only where an external CA is trusted: %s", raw)
+	}
+
+	// Computed for the reply, never written back: the proxy payload and the
+	// config file stay as they were.
+	var stored map[string]any
+	base.cfg.View(func() { stored = base.cfg.Map("domains")["sec.example.org"].(map[string]any)["mtls"].(map[string]any) })
+	if _, leaked := stored["external"]; leaked {
+		t.Fatal("external reached the stored record")
+	}
+}
+
+func (m *MTLS) recordFor(t *testing.T, name string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	m.cfg.View(func() { out = recordConfig(m.domainsLocked(), name) })
+	return out
+}
+
 func TestCleanHostNormalizes(t *testing.T) {
 	host, msg := cleanHost(" HTTPS://WWW.Auth.X.com ")
 	if msg != "" || host != "auth.x.com" {

@@ -87,6 +87,7 @@ odac domain mtls set -d example.com --mode required --ca-file corp-ca.pem
 
 ODAC has no record of certificates another CA issues, so:
 
+- `required` is allowed right away, since ODAC cannot see who holds one. The domain list reports such CAs under `external` in the domain's `mtls` object (and in a host's override), next to the `ca` ids it trusts.
 - They have no scope. To limit one to a host, give that host its own CA or intermediate.
 - They are revoked by fingerprint.
 - Public CAs are refused, because anyone holding a certificate from one would be let in.
