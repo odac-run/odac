@@ -1,0 +1,73 @@
+# mTLS end-to-end harness. Always run through run.sh, which pins the project
+# name (-p mtls-e2e) and tears everything down afterwards.
+#
+# Isolation:
+#   - one network, `internal: true`: no route out of it, so nothing in the run
+#     can reach the internet (ACME, IP lookups, hub.odac.run). Images are built
+#     and pulled on the host engine before the network exists.
+#   - no published ports: the client container is the only visitor.
+#   - each ODAC node owns a private engine (dind), so the apps the agent starts
+#     never touch the host engine's names, ports or networks.
+#   - every image is tagged mtls-e2e/*; teardown removes exactly those.
+name: mtls-e2e
+
+networks:
+  e2e:
+    internal: true
+
+volumes:
+  edge-a-engine:
+  edge-b-engine:
+
+x-node: &node
+  build:
+    context: ./images/node
+    additional_contexts:
+      agent: ${AGENT_SRC:?set AGENT_SRC to the agent source tree (run.sh does this)}
+  image: mtls-e2e/node:local
+  privileged: true
+  networks: [e2e]
+  depends_on: [hub]
+  environment:
+    # The node's hub is the test hub; nothing talks to hub.odac.run.
+    ODAC_HUB_URL: http://hub:8080
+    # ACME has nowhere to go: refused locally, the proxy serves the
+    # self-signed fallback and the client runs with -k.
+    ODAC_ACME_URL: http://127.0.0.1:9/directory
+  healthcheck:
+    test: ["CMD", "/app/bin/odac", "healthcheck"]
+    interval: 2s
+    timeout: 5s
+    retries: 90
+    start_period: 10s
+
+services:
+  hub:
+    build: ./images/hub
+    image: mtls-e2e/hub:local
+    networks: [e2e]
+
+  edge-a:
+    <<: *node
+    hostname: edge-a
+    volumes:
+      - edge-a-engine:/var/lib/docker
+
+  # Second node for the multi-edge scenarios (K17/K18). Not started by default:
+  # run.sh enables the profile once those scenarios exist.
+  edge-b:
+    <<: *node
+    hostname: edge-b
+    profiles: [multi-edge]
+    volumes:
+      - edge-b-engine:/var/lib/docker
+
+  client:
+    build: ./images/client
+    image: mtls-e2e/client:local
+    networks: [e2e]
+    # Reaps the background WebSocket client, so "process gone" means it exited.
+    init: true
+    tmpfs:
+      - /work
+    working_dir: /work
