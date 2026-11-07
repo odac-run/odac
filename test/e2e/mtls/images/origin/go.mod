@@ -1,3 +1,3 @@
 module mtls-e2e/origin
 
-go 1.26
+go 1.25

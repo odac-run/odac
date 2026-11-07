@@ -1,14 +1,17 @@
 # mTLS end-to-end harness. Always run through run.sh, which pins the project
-# name (-p mtls-e2e) and tears everything down afterwards.
+# name (-p mtls-e2e), starts only what the chosen suites need, and tears
+# everything down afterwards.
 #
 # Isolation:
 #   - one network, `internal: true`: no route out of it, so nothing in the run
-#     can reach the internet (ACME, IP lookups, hub.odac.run). Images are built
-#     and pulled on the host engine before the network exists.
+#     can reach the internet (ACME, IP lookups, hub.odac.run, tunnel.odac.run).
+#     Images are built and pulled on the host engine before the network exists.
 #   - no published ports: the client container is the only visitor.
 #   - each ODAC node owns a private engine (dind), so the apps the agent starts
 #     never touch the host engine's names, ports or networks.
 #   - every image is tagged mtls-e2e/*; teardown removes exactly those.
+#   - the run's keys live in the `pki` volume, made fresh by the pki step and
+#     removed with the stack.
 name: mtls-e2e
 
 networks:
@@ -16,8 +19,12 @@ networks:
     internal: true
 
 volumes:
+  # Not a tmpfs: a local tmpfs volume is a fresh mount in every container, so
+  # nothing written by the pki step would reach the others. down -v removes it.
+  pki:
   edge-a-engine:
   edge-b-engine:
+  home-engine:
 
 x-node: &node
   build:
@@ -26,13 +33,16 @@ x-node: &node
       agent: ${AGENT_SRC:?set AGENT_SRC to the agent source tree (run.sh does this)}
   image: mtls-e2e/node:local
   privileged: true
-  networks: [e2e]
-  depends_on: [hub]
+  depends_on:
+    hub:
+      condition: service_started
+    pki:
+      condition: service_completed_successfully
   environment:
     # The node's hub is the test hub; nothing talks to hub.odac.run.
     ODAC_HUB_URL: http://hub:8080
-    # ACME has nowhere to go: refused locally, the proxy serves the
-    # self-signed fallback and the client runs with -k.
+    # ACME has nowhere to go: refused locally, the proxy serves the run's
+    # fallback certificate.
     ODAC_ACME_URL: http://127.0.0.1:9/directory
   healthcheck:
     test: ["CMD", "/app/bin/odac", "healthcheck"]
@@ -42,25 +52,67 @@ x-node: &node
     start_period: 10s
 
 services:
+  pki:
+    build: ./images/client
+    image: mtls-e2e/client:local
+    command: ["/usr/local/bin/mtls-e2e-pki"]
+    networks: [e2e]
+    volumes:
+      - pki:/e2e/pki
+
   hub:
     build: ./images/hub
     image: mtls-e2e/hub:local
-    networks: [e2e]
+    networks:
+      e2e:
+        # A dotted name for the apps inside the nodes: a nested engine's DNS
+        # does not forward single-label names, so "hub" resolves on a node
+        # but not in its containers.
+        aliases: [hub.mtls.test]
+    depends_on:
+      pki:
+        condition: service_completed_successfully
+    environment:
+      E2E_TUNNEL_SECRET: ${E2E_TUNNEL_SECRET:-}
+      E2E_TUNNEL_TOKEN: ${E2E_TUNNEL_TOKEN:-}
+    volumes:
+      - pki:/e2e/pki:ro
 
   edge-a:
     <<: *node
     hostname: edge-a
+    networks:
+      e2e:
+        # The agent's tunnel endpoint is a constant, wss://tunnel.odac.run; on
+        # this network the name belongs to edge-a and its certificate to the
+        # run's root.
+        aliases: [tunnel.odac.run]
     volumes:
       - edge-a-engine:/var/lib/docker
+      - pki:/e2e/pki:ro
 
-  # Second node for the multi-edge scenarios (K17/K18). Not started by default:
-  # run.sh enables the profile once those scenarios exist.
   edge-b:
     <<: *node
     hostname: edge-b
-    profiles: [multi-edge]
+    networks: [e2e]
     volumes:
       - edge-b-engine:/var/lib/docker
+      - pki:/e2e/pki:ro
+
+  # A server behind a tunnel: its agent dials the edge, nothing dials it.
+  home:
+    <<: *node
+    hostname: home
+    networks: [e2e]
+    environment:
+      ODAC_HUB_URL: http://hub:8080
+      ODAC_ACME_URL: http://127.0.0.1:9/directory
+      E2E_TUNNEL_DOMAIN: t1.tun.mtls.test
+      E2E_TUNNEL_CONTAINER: home
+      E2E_TUNNEL_TOKEN: ${E2E_TUNNEL_TOKEN:-}
+    volumes:
+      - home-engine:/var/lib/docker
+      - pki:/e2e/pki:ro
 
   client:
     build: ./images/client
@@ -68,6 +120,11 @@ services:
     networks: [e2e]
     # Reaps the background WebSocket client, so "process gone" means it exited.
     init: true
+    depends_on:
+      pki:
+        condition: service_completed_successfully
     tmpfs:
       - /work
     working_dir: /work
+    volumes:
+      - pki:/e2e/pki:ro

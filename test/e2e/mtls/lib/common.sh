@@ -56,12 +56,14 @@ summary() {
 node_sh() {
 	local node=$1
 	shift
-	dc exec -T "$node" sh -c "$*"
+	dc exec -T "$node" sh -c "$*" </dev/null
 }
 
 # client_sh SCRIPT: run a shell snippet in the client container.
+# stdin is closed on purpose: a dc exec that is not meant to read it would
+# otherwise swallow what a pipeline was feeding the next command.
 client_sh() {
-	dc exec -T client sh -c "$*"
+	dc exec -T client sh -c "$*" </dev/null
 }
 
 # odac NODE ARGS...: the agent CLI inside a node, colour codes stripped.
@@ -113,8 +115,9 @@ node_ip() {
 
 # probe NODE HOST PATH [CERT_BASENAME] [EXTRA_CURL_ARGS]
 # Sets: P_CODE (HTTP status, 000 on transport failure), P_EXIT (curl exit
-# code), P_BODY_OK (1 when the body is the origin's JSON), and the verdict
-# fields P_VERIFY, P_SIG, P_REASON, P_FP, P_KEY.
+# code), P_BODY_OK (1 when the body is the origin's JSON), the verdict fields
+# P_VERIFY, P_SIG, P_REASON, P_FP, P_KEY, and for any other answer P_LOC (the
+# redirect target) and P_TEXT (the body's first printable characters).
 probe() {
 	local node=$1 host=$2 path=$3 cert=${4:-} extra=${5:-} ip certargs="" out
 	ip=$(node_ip "$node")
@@ -122,21 +125,25 @@ probe() {
 	# shellcheck disable=SC2016
 	out=$(client_sh '
 		rm -f /work/body
-		code=$(curl -sk --max-time 10 --resolve '"$host:443:$ip"' '"$certargs"' '"$extra"' \
-			-o /work/body -w "%{http_code}" "https://'"$host$path"'") ; rc=$?
+		meta=$(curl -sk --max-time 10 --resolve '"$host:443:$ip"' '"$certargs"' '"$extra"' \
+			-o /work/body -w "%{http_code} %{redirect_url}" "https://'"$host$path"'") ; rc=$?
+		code=${meta%% *}; loc=${meta#* }
 		[ -n "$code" ] || code=000
 		if jq -e ".app == \"mtls-e2e-origin\"" /work/body >/dev/null 2>&1; then
 			jq -r --arg code "$code" --arg rc "$rc" \
-				"[\$code, \$rc, \"1\", .verify, (.sig_valid|tostring), .sig_reason, .fingerprint, (.key_present|tostring)] | join(\"|\")" /work/body
+				"[\$code, \$rc, \"1\", .verify, (.sig_valid|tostring), .sig_reason, .fingerprint, (.key_present|tostring), \"\", \"\"] | join(\"|\")" /work/body
 		else
-			printf "%s|%s|0|||||\n" "$code" "$rc"
+			text=$(head -c 120 /work/body 2>/dev/null | tr -c "[:print:]" " " | tr "|" "/" | sed "s/  */ /g")
+			printf "%s|%s|0||||||%s|%s\n" "$code" "$rc" "$(echo "$loc" | tr "|" "/")" "$text"
 		fi
 	')
 	# "|" rather than a tab: read collapses runs of whitespace separators, which
 	# would shift every field after an empty one.
-	IFS='|' read -r P_CODE P_EXIT P_BODY_OK P_VERIFY P_SIG P_REASON P_FP P_KEY <<<"$out"
+	IFS='|' read -r P_CODE P_EXIT P_BODY_OK P_VERIFY P_SIG P_REASON P_FP P_KEY P_LOC P_TEXT <<<"$out"
 	P_VERIFY=${P_VERIFY:-}
 	P_EXIT=${P_EXIT:-?}
+	P_LOC=${P_LOC:-}
+	P_TEXT=${P_TEXT:-}
 }
 
 # probe_line: one-line evidence for the last probe.
@@ -145,7 +152,10 @@ probe_line() {
 		printf 'http=%s verify=%s sig_valid=%s(%s)' "$P_CODE" "${P_VERIFY:-<absent>}" "$P_SIG" "$P_REASON"
 	else
 		printf 'http=%s curl_exit=%s app_reached=no' "$P_CODE" "$P_EXIT"
+		[ -n "$P_LOC" ] && printf ' location=%s' "$P_LOC"
+		[ -n "$P_TEXT" ] && printf ' body="%s"' "$(printf '%s' "$P_TEXT" | sed 's/ *$//' | cut -c1-70)"
 	fi
+	return 0
 }
 
 # wait_probe TIMEOUT_S CONDITION NODE HOST PATH [CERT] [EXTRA]: re-probe until
@@ -174,5 +184,42 @@ make_csr() {
 # cert_fp SERVICE PATH: SHA-256 of the first certificate's DER in a PEM file,
 # the same fingerprint the agent uses.
 cert_fp() {
-	dc exec -T "$1" sh -c "openssl x509 -in '$2' -outform der 2>/dev/null | sha256sum | cut -d' ' -f1"
+	dc exec -T "$1" sh -c "openssl x509 -in '$2' -outform der 2>/dev/null | sha256sum | cut -d' ' -f1" </dev/null
+}
+
+# jqc FILTER: jq in the client, reading stdin, so the host needs no jq.
+jqc() {
+	dc exec -T client jq -r "$1"
+}
+
+# app_container NODE APP: the running container of an app on a node's engine.
+app_container() {
+	dc exec -T "$1" sh -c "docker ps --filter 'name=^$2' --format '{{.Names}}' | head -n1" </dev/null
+}
+
+# app_api NODE APP ACTION: call the agent's local API from inside the app's
+# container with the app's own key (`origin api`, see images/origin). The data
+# array comes on stdin. Prints the call's summary JSON, never a certificate.
+app_api() {
+	local c
+	c=$(app_container "$1" "$2")
+	dc exec -T "$1" docker exec -i "$c" /usr/local/bin/origin api "$3" || true
+}
+
+# hub_ctl METHOD PATH: the test hub's control API, from the client. A body, when
+# there is one, comes on stdin.
+hub_ctl() {
+	dc exec -T client curl -s --max-time 40 -X "$1" -H 'Content-Type: application/json' \
+		--data-binary @- "http://hub:8080/ctl/$2"
+}
+
+# wait_until TIMEOUT_S CMD...: poll a shell condition once a second.
+wait_until() {
+	local timeout=$1 i=0
+	shift
+	until "$@"; do
+		i=$((i + 1))
+		[ "$i" -ge "$timeout" ] && return 1
+		sleep 1
+	done
 }

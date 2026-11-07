@@ -26,7 +26,7 @@ LEAK_SHAPES=(
 )
 
 running_nodes() {
-	dc ps --services --status running 2>/dev/null | grep -E '^edge-' || true
+	dc ps --services --status running 2>/dev/null | grep -E '^(edge-|home$)' || true
 }
 
 # collect_logs DIR: everything a human or a log shipper would see.
@@ -34,7 +34,7 @@ collect_logs() {
 	local dir=$1 node c
 	mkdir -p "$dir"
 	chmod 700 "$dir"
-	dc --profile multi-edge logs --no-color --timestamps >"$dir/compose.log" 2>&1 || true
+	dc logs --no-color --timestamps >"$dir/compose.log" 2>&1 || true
 	for node in $(running_nodes); do
 		mkdir -p "$dir/$node/odac-logs"
 		dc exec -T "$node" sh -c 'tar -C /app/.odac -cf - logs 2>/dev/null' | tar -x -C "$dir/$node/odac-logs" 2>/dev/null || true
@@ -55,7 +55,12 @@ leak_values() {
 				sed -nE 's/^(ODAC_CLIENT_CERT_KEY|ODAC_API_KEY)=(.+)$/\2/p' || true
 		done
 	done
-	declare -F leak_needles_custom >/dev/null && leak_needles_custom
+	# This run's own secrets, and the key material each suite made.
+	printf '%s\n' "${E2E_TUNNEL_SECRET:-}" "${E2E_TUNNEL_TOKEN:-}"
+	local fn
+	for fn in $(declare -F | awk '$3 ~ /^leak_needles_/ {print $3}'); do
+		"$fn"
+	done
 	# Short values would match by accident; real secrets here are >= 32 chars.
 	return 0
 }

@@ -6,6 +6,9 @@
 //
 //	GET /     JSON verdict (see report)
 //	GET /ws   WebSocket that sends its verdict, then "tick N" every second
+//
+// `origin api <action>` (run with docker exec) calls the agent's local API
+// with the app's own ODAC_API_KEY, the way an app with a grant would.
 package main
 
 import (
@@ -20,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -240,7 +244,93 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// apiSummary is what `origin api` prints: enough to judge a call, never the
+// certificate or chain an issue returns.
+type apiSummary struct {
+	Result       bool     `json:"result"`
+	Message      string   `json:"message"`
+	Code         string   `json:"code,omitempty"`
+	Fingerprint  string   `json:"fingerprint,omitempty"`
+	Hosts        []string `json:"hosts,omitempty"`
+	Fingerprints []string `json:"fingerprints,omitempty"`
+}
+
+// callAPI is `origin api <action>`: the app side of the agent's local API, as
+// an app with a grant sees it (ODAC_API_SOCKET, ODAC_API_KEY). The data array
+// arrives on stdin so a CSR never sits in argv. It always prints one summary
+// and exits 0, a transport failure included, so a caller can judge it.
+func callAPI(action string) int {
+	fail := func(code, message string) int {
+		_ = json.NewEncoder(os.Stdout).Encode(apiSummary{Code: code, Message: message})
+		return 0
+	}
+	socket, key := os.Getenv("ODAC_API_SOCKET"), os.Getenv("ODAC_API_KEY")
+	if socket == "" || key == "" {
+		return fail("no_grant", "no API grant in this container")
+	}
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if err != nil {
+		return fail("transport", "read stdin: "+err.Error())
+	}
+	data := json.RawMessage("[]")
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		data = raw
+	}
+	req, err := json.Marshal(map[string]any{"auth": key, "action": action, "data": data})
+	if err != nil {
+		return fail("transport", "encode: "+err.Error())
+	}
+	conn, err := net.DialTimeout("unix", socket, 5*time.Second)
+	if err != nil {
+		return fail("transport", "dial: "+err.Error())
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if _, err := conn.Write(req); err != nil {
+		return fail("transport", "write: "+err.Error())
+	}
+	// Progress frames first, then the final one, which carries "result". A
+	// refusal leaves the connection open, so read frames, not to EOF.
+	var resp struct {
+		Result  *bool           `json:"result"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	dec := json.NewDecoder(io.LimitReader(conn, 4<<20))
+	for resp.Result == nil {
+		resp.Data = nil
+		if err := dec.Decode(&resp); err != nil {
+			return fail("transport", "read: "+err.Error())
+		}
+	}
+	out := apiSummary{Result: *resp.Result, Message: resp.Message}
+	if len(out.Message) > 200 {
+		out.Message = out.Message[:200]
+	}
+	var obj struct {
+		Code        string   `json:"code"`
+		Fingerprint string   `json:"fingerprint"`
+		Hosts       []string `json:"hosts"`
+	}
+	var rows []struct {
+		Fingerprint string `json:"fingerprint"`
+	}
+	if json.Unmarshal(resp.Data, &obj) == nil {
+		out.Code, out.Fingerprint, out.Hosts = obj.Code, obj.Fingerprint, obj.Hosts
+	} else if json.Unmarshal(resp.Data, &rows) == nil {
+		out.Fingerprints = []string{}
+		for _, row := range rows {
+			out.Fingerprints = append(out.Fingerprints, row.Fingerprint)
+		}
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(out)
+	return 0
+}
+
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "api" {
+		os.Exit(callAPI(os.Args[2]))
+	}
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", handleWS)
