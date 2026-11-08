@@ -26,8 +26,8 @@ func mtlsCommand() *command {
 	return &command{
 		sub: []entry{
 			{"set", &command{
-				description: "Set a host's client certificate mode: --mode required, optional or off",
-				args:        []string{"-d", "--domain", "-m", "--mode", "--ca", "--ca-file"},
+				description: "Set a host's client certificate mode: --mode required, optional or off. --issuer per-host on a record signs each single-host certificate with that host's own issuer",
+				args:        []string{"-d", "--domain", "-m", "--mode", "--ca", "--ca-file", "--issuer"},
 				action:      (*app).mtlsSet,
 			}},
 			{"off", &command{
@@ -129,6 +129,9 @@ func (a *app) mtlsSet(args []string) int {
 			return 1
 		}
 		opts["caPem"] = string(raw)
+	}
+	if issuer := parseArg(args, "--issuer"); issuer != "" {
+		opts["issuer"] = issuer
 	}
 	return a.callMessage("domain.mtls.set", []any{domain, mode, opts})
 }
@@ -344,8 +347,14 @@ func encodeP12(key *ecdsa.PrivateKey, certPEM, chainPEM, password string) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	// Every certificate above the leaf: a per-host issuer, then the CA.
 	var chain []*x509.Certificate
-	if caBlock, _ := pem.Decode([]byte(chainPEM)); caBlock != nil {
+	for rest := []byte(chainPEM); ; {
+		var caBlock *pem.Block
+		caBlock, rest = pem.Decode(rest)
+		if caBlock == nil {
+			break
+		}
 		ca, err := x509.ParseCertificate(caBlock.Bytes)
 		if err != nil {
 			return nil, err

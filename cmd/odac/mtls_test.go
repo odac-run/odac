@@ -322,3 +322,43 @@ func TestCAImportFailsBeforeCallingWithoutItsFiles(t *testing.T) {
 		t.Fatalf("calls = %d, err = %q", len(calls), errOut.String())
 	}
 }
+
+// A per-host issuer sits between the leaf and the CA, and a p12 that dropped it
+// would leave the client with a certificate nothing can chain.
+func TestP12CarriesTheWholeChain(t *testing.T) {
+	mk := func(cn string, parent *x509.Certificate, parentKey *ecdsa.PrivateKey, isCA bool) (*x509.Certificate, *ecdsa.PrivateKey) {
+		key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: cn},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+			IsCA: isCA, BasicConstraintsValid: isCA, KeyUsage: x509.KeyUsageCertSign,
+		}
+		if parent == nil {
+			parent, parentKey = tmpl, key
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &key.PublicKey, parentKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, _ := x509.ParseCertificate(der)
+		return cert, key
+	}
+	encode := func(c *x509.Certificate) string {
+		return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}))
+	}
+	ca, caKey := mk("CA", nil, nil, true)
+	issuer, issuerKey := mk("a.x.com", ca, caKey, true)
+	leaf, leafKey := mk("ali", issuer, issuerKey, false)
+
+	raw, err := encodeP12(leafKey, encode(leaf), encode(issuer)+encode(ca), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, chain, err := pkcs12.DecodeChain(raw, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chain) != 2 || !chain[0].Equal(issuer) || !chain[1].Equal(ca) {
+		t.Fatalf("chain has %d certificates, want the issuer then the CA", len(chain))
+	}
+}

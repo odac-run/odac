@@ -48,6 +48,8 @@ func TestDispatchActionsAndData(t *testing.T) {
 		{"domain list filtered", []string{"domain", "list", "blog"}, "", "domain.list", []any{"blog"}},
 		{"mtls set", []string{"domain", "mtls", "set", "-d", "x.com", "--mode", "optional", "--ca", "c1,c2"}, "",
 			"domain.mtls.set", []any{"x.com", "optional", map[string]any{"ca": []any{"c1", "c2"}}}},
+		{"mtls set issuer", []string{"domain", "mtls", "set", "-d", "x.com", "--mode", "optional", "--issuer", "per-host"}, "",
+			"domain.mtls.set", []any{"x.com", "optional", map[string]any{"issuer": "per-host"}}},
 		{"mtls off", []string{"domain", "mtls", "off", "-d", "x.com"}, "", "domain.mtls.set", []any{"x.com", "off"}},
 		{"mtls scope", []string{"domain", "mtls", "scope", "--fingerprint", "aa", "--hosts", "a.x.com, b.x.com"}, "",
 			"domain.mtls.cert.scope", []any{"aa", []any{"a.x.com", "b.x.com"}}},
