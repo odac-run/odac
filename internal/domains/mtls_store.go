@@ -200,10 +200,26 @@ func (s *certStore) anyLive(ca string, now float64, match func(hosts []string) b
 	return false, rows.Err()
 }
 
+// certListSelect reads dashboard rows: the record shape minus PEMs and key hashes.
+const certListSelect = "SELECT fingerprint, ca, NULL, created, hosts, name, not_after, NULL, revoked, serial, NULL FROM certs"
+
+// row returns one record as list would, or nil when there is none.
+func (s *certStore) row(fingerprint string) (map[string]any, error) {
+	fp, rec, err := scanCert(s.db.QueryRow(certListSelect+" WHERE fingerprint = ?", fingerprint))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rec["fingerprint"] = fp
+	return rec, nil
+}
+
 // list returns dashboard rows in fingerprint order, without PEMs or key hashes.
 // A nil ids lists everything, including revocations with no CA.
 func (s *certStore) list(ids []string) ([]map[string]any, error) {
-	query := "SELECT fingerprint, ca, NULL, created, hosts, name, not_after, NULL, revoked, serial, NULL FROM certs"
+	query := certListSelect
 	args := make([]any, len(ids))
 	if ids != nil {
 		for i, id := range ids {

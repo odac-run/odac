@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -159,7 +160,7 @@ func mustFail(t *testing.T, r api.Result, want string) {
 
 func (fx *mtlsFixture) issue(t *testing.T, domain, name string, hosts ...string) map[string]any {
 	t.Helper()
-	r := mustOK(t, fx.m.Issue(domain, map[string]any{"name": name, "hosts": anyList(hosts), "csr": newCSR(t)}))
+	r := mustOK(t, fx.m.Issue(api.Operator, domain, map[string]any{"name": name, "hosts": anyList(hosts), "csr": newCSR(t)}))
 	return r.Data.(map[string]any)
 }
 
@@ -237,7 +238,7 @@ func TestCSRCannotAskForMoreThanAClientCertificate(t *testing.T) {
 	}
 	csr := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 
-	r := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}))
+	r := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}))
 	cert := parseIssued(t, r.Data.(map[string]any))
 	if cert.IsCA || cert.BasicConstraintsValid && cert.IsCA {
 		t.Fatal("a CSR obtained CA powers")
@@ -252,15 +253,15 @@ func TestCSRCannotAskForMoreThanAClientCertificate(t *testing.T) {
 
 func TestIssueRejectsBadRequests(t *testing.T) {
 	fx := newMTLSFixture(t)
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": "junk"}), "Invalid certificate request")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": "junk"}), "Invalid certificate request")
 
 	csr := newCSR(t)
-	mustFail(t, fx.m.Issue("nope.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": csr}), "not found")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "", "hosts": []any{"x.com"}, "csr": csr}), "name")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a\nb", "hosts": []any{"x.com"}, "csr": csr}), "name")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a", "csr": csr}), "host")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a", "hosts": []any{"nope.com"}, "csr": csr}), "not registered")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": csr, "days": float64(0)}), "Lifetime")
+	mustFail(t, fx.m.Issue(api.Operator, "nope.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": csr}), "not found")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "", "hosts": []any{"x.com"}, "csr": csr}), "name")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a\nb", "hosts": []any{"x.com"}, "csr": csr}), "name")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "csr": csr}), "host")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"nope.com"}, "csr": csr}), "not registered")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": csr, "days": float64(0)}), "Lifetime")
 }
 
 func TestParseCSRRejectsWeakRSA(t *testing.T) {
@@ -282,9 +283,9 @@ func TestIssueIsIdempotentOnThePublicKey(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
 	opts := map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}
-	first := mustOK(t, fx.m.Issue("x.com", opts)).Data.(map[string]any)
+	first := mustOK(t, fx.m.Issue(api.Operator, "x.com", opts)).Data.(map[string]any)
 	syncs := fx.proxy.syncCount()
-	second := mustOK(t, fx.m.Issue("x.com", opts)).Data.(map[string]any)
+	second := mustOK(t, fx.m.Issue(api.Operator, "x.com", opts)).Data.(map[string]any)
 
 	if first["fingerprint"] != second["fingerprint"] {
 		t.Fatal("a retry signed a second certificate")
@@ -308,7 +309,7 @@ func TestConcurrentRetriesProduceOneCertificate(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i] = fx.m.Issue("x.com", opts)
+			results[i] = fx.m.Issue(api.Operator, "x.com", opts)
 		}(i)
 	}
 	wg.Wait()
@@ -327,24 +328,24 @@ func TestRevokedKeyCannotBeReissued(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
 	opts := map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}
-	reply := mustOK(t, fx.m.Issue("x.com", opts)).Data.(map[string]any)
-	mustOK(t, fx.m.Revoke(reply["fingerprint"]))
-	mustFail(t, fx.m.Issue("x.com", opts), "revoked")
+	reply := mustOK(t, fx.m.Issue(api.Operator, "x.com", opts)).Data.(map[string]any)
+	mustOK(t, fx.m.Revoke(api.Operator, reply["fingerprint"]))
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", opts), "revoked")
 }
 
 func TestNameIsUniqueAmongLiveCertificates(t *testing.T) {
 	fx := newMTLSFixture(t)
 	first := fx.issue(t, "x.com", "ali", "x.com")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "already exists")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "already exists")
 
-	mustOK(t, fx.m.Revoke(first["fingerprint"]))
+	mustOK(t, fx.m.Revoke(api.Operator, first["fingerprint"]))
 	fx.issue(t, "x.com", "ali", "x.com")
 }
 
 func TestRenewKeepsTheIdentityAndOverlaps(t *testing.T) {
 	fx := newMTLSFixture(t)
 	old := fx.issue(t, "x.com", "ali", "auth.x.com")
-	renewed := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": old["fingerprint"], "csr": newCSR(t)})).Data.(map[string]any)
+	renewed := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": old["fingerprint"], "csr": newCSR(t)})).Data.(map[string]any)
 
 	if renewed["name"] != "ali" {
 		t.Fatalf("name = %v", renewed["name"])
@@ -360,11 +361,11 @@ func TestRenewKeepsTheIdentityAndOverlaps(t *testing.T) {
 func TestRenewWithTheSameKeySignsANewCertificate(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	old := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"auth.x.com"}, "csr": csr})).Data.(map[string]any)
+	old := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"auth.x.com"}, "csr": csr})).Data.(map[string]any)
 	syncs := fx.proxy.syncCount()
 	fx.m.now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	renewed := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": old["fingerprint"], "csr": csr})).Data.(map[string]any)
+	renewed := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": old["fingerprint"], "csr": csr})).Data.(map[string]any)
 
 	if renewed["fingerprint"] == old["fingerprint"] {
 		t.Fatal("renewing returned the old certificate")
@@ -385,10 +386,10 @@ func TestRenewingAnExpiredCertificateWithTheSameKey(t *testing.T) {
 	csr := newCSR(t)
 	real := fx.m.now
 	fx.m.now = func() time.Time { return time.Now().AddDate(0, 0, -10) }
-	old := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr, "days": float64(1)})).Data.(map[string]any)
+	old := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr, "days": float64(1)})).Data.(map[string]any)
 	fx.m.now = real
 
-	renewed := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": old["fingerprint"], "csr": csr})).Data.(map[string]any)
+	renewed := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": old["fingerprint"], "csr": csr})).Data.(map[string]any)
 	if !parseIssued(t, renewed).NotAfter.After(time.Now()) {
 		t.Fatal("a renewal returned an expired certificate")
 	}
@@ -400,10 +401,10 @@ func TestExpiredCertificateIsNeverReturnedAsASuccess(t *testing.T) {
 	opts := map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr, "days": float64(1)}
 	real := fx.m.now
 	fx.m.now = func() time.Time { return time.Now().AddDate(0, 0, -10) }
-	mustOK(t, fx.m.Issue("x.com", opts))
+	mustOK(t, fx.m.Issue(api.Operator, "x.com", opts))
 	fx.m.now = real
 
-	mustFail(t, fx.m.Issue("x.com", opts), "expired")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", opts), "expired")
 }
 
 // A lost reply leaves the caller repeating the renewal. Each round adds a record
@@ -419,12 +420,12 @@ func TestRenewRetryReturnsTheSameCertificate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := newMTLSFixture(t)
 			oldCSR := newCSR(t)
-			old := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": oldCSR})).Data.(map[string]any)
+			old := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": oldCSR})).Data.(map[string]any)
 			opts := map[string]any{"renews": old["fingerprint"], "csr": tc.csr(oldCSR)}
-			first := mustOK(t, fx.m.Issue("x.com", opts)).Data.(map[string]any)
+			first := mustOK(t, fx.m.Issue(api.Operator, "x.com", opts)).Data.(map[string]any)
 			syncs := fx.proxy.syncCount()
 			for range 50 {
-				second := mustOK(t, fx.m.Issue("x.com", opts)).Data.(map[string]any)
+				second := mustOK(t, fx.m.Issue(api.Operator, "x.com", opts)).Data.(map[string]any)
 
 				if second["fingerprint"] != first["fingerprint"] || second["cert"] != first["cert"] {
 					t.Fatal("a retried renewal signed another certificate")
@@ -442,21 +443,21 @@ func TestRenewChainFollowsTheNamedCertificate(t *testing.T) {
 	csr := newCSR(t)
 	base := time.Now()
 	fx.m.now = func() time.Time { return base }
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
 	fx.m.now = func() time.Time { return base.Add(time.Hour) }
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
 	fx.m.now = func() time.Time { return base.Add(2 * time.Hour) }
-	c := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": b["fingerprint"], "csr": csr})).Data.(map[string]any)
+	c := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": b["fingerprint"], "csr": csr})).Data.(map[string]any)
 
 	if c["fingerprint"] == a["fingerprint"] || c["fingerprint"] == b["fingerprint"] {
 		t.Fatal("renewing the newest certificate returned an older one")
 	}
 	for range 50 {
-		retry := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+		retry := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
 		if retry["fingerprint"] != c["fingerprint"] {
 			t.Fatal("a plain retry must return the newest certificate for the key")
 		}
-		retry = mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+		retry = mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
 		if retry["fingerprint"] != b["fingerprint"] {
 			t.Fatal("a retry must return what that renewal produced")
 		}
@@ -466,13 +467,13 @@ func TestRenewChainFollowsTheNamedCertificate(t *testing.T) {
 func TestRetriedRenewalSignsAgainOnceItsResultExpired(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	old := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	old := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
 	real := fx.m.now
 	fx.m.now = func() time.Time { return time.Now().AddDate(0, 0, -10) }
-	first := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": old["fingerprint"], "csr": csr, "days": float64(1)})).Data.(map[string]any)
+	first := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": old["fingerprint"], "csr": csr, "days": float64(1)})).Data.(map[string]any)
 	fx.m.now = real
 
-	again := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": old["fingerprint"], "csr": csr})).Data.(map[string]any)
+	again := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": old["fingerprint"], "csr": csr})).Data.(map[string]any)
 	if again["fingerprint"] == first["fingerprint"] {
 		t.Fatal("an expired renewal was returned as a retry")
 	}
@@ -481,45 +482,45 @@ func TestRetriedRenewalSignsAgainOnceItsResultExpired(t *testing.T) {
 func TestRenewsIsValidatedEvenForAKnownKey(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}))
+	mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}))
 	unknown := strings.Repeat("ab", 32)
 
-	if r := fx.m.Issue("x.com", map[string]any{"renews": "not-a-fingerprint", "csr": csr}); r.Status {
+	if r := fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": "not-a-fingerprint", "csr": csr}); r.Status {
 		t.Fatal("a malformed fingerprint was accepted")
 	}
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"renews": unknown, "csr": csr}), "not found")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": unknown, "csr": csr}), "not found")
 
 	revoked := fx.issue(t, "x.com", "veli", "x.com")
-	mustOK(t, fx.m.Revoke(revoked["fingerprint"]))
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"renews": revoked["fingerprint"], "csr": csr}), "not found")
+	mustOK(t, fx.m.Revoke(api.Operator, revoked["fingerprint"]))
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": revoked["fingerprint"], "csr": csr}), "not found")
 
 	foreign := fx.issue(t, "z.com", "ayse", "z.com")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"renews": foreign["fingerprint"], "csr": csr}), "not found")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": foreign["fingerprint"], "csr": csr}), "not found")
 }
 
 func TestAKeyCannotChangeIdentity(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}))
+	mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}))
 	veli := fx.issue(t, "x.com", "veli", "auth.x.com")
 
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"renews": veli["fingerprint"], "csr": csr}), "another certificate")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "ayse", "hosts": []any{"admin.x.com"}, "csr": csr}), "another certificate")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": veli["fingerprint"], "csr": csr}), "another certificate")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ayse", "hosts": []any{"admin.x.com"}, "csr": csr}), "another certificate")
 }
 
 func TestRevokingTheOldCertificateKeepsItsKeyRenewable(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
-	mustOK(t, fx.m.Revoke(a["fingerprint"]))
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	mustOK(t, fx.m.Revoke(api.Operator, a["fingerprint"]))
 
-	c := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": b["fingerprint"], "csr": csr})).Data.(map[string]any)
+	c := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": b["fingerprint"], "csr": csr})).Data.(map[string]any)
 	if c["fingerprint"] == b["fingerprint"] {
 		t.Fatal("the renewal did not sign a new certificate")
 	}
 	for range 50 {
-		retry := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": b["fingerprint"], "csr": csr})).Data.(map[string]any)
+		retry := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": b["fingerprint"], "csr": csr})).Data.(map[string]any)
 		if retry["fingerprint"] != c["fingerprint"] {
 			t.Fatal("a retry after revoking the old certificate must return the renewal")
 		}
@@ -529,24 +530,24 @@ func TestRevokingTheOldCertificateKeepsItsKeyRenewable(t *testing.T) {
 func TestAKeyWithNoLiveCertificateStaysDead(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
-	mustOK(t, fx.m.Revoke(a["fingerprint"]))
-	mustOK(t, fx.m.Revoke(b["fingerprint"]))
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	mustOK(t, fx.m.Revoke(api.Operator, a["fingerprint"]))
+	mustOK(t, fx.m.Revoke(api.Operator, b["fingerprint"]))
 
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}), "revoked")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr}), "revoked")
 
 	live := fx.issue(t, "x.com", "ali", "x.com")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"renews": live["fingerprint"], "csr": csr}), "revoked")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": live["fingerprint"], "csr": csr}), "revoked")
 }
 
 func TestRevokeNamesOtherCertificatesOnTheSameKey(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
 
-	r := mustOK(t, fx.m.Revoke(a["fingerprint"]))
+	r := mustOK(t, fx.m.Revoke(api.Operator, a["fingerprint"]))
 	if msg, _ := r.Message.(string); !strings.Contains(msg, b["fingerprint"].(string)) {
 		t.Fatalf("message = %q, want the certificate still holding the key", msg)
 	}
@@ -558,7 +559,7 @@ func TestRevokeNamesOtherCertificatesOnTheSameKey(t *testing.T) {
 		t.Fatal("revoking one certificate must not revoke its renewal")
 	}
 
-	r = mustOK(t, fx.m.Revoke(b["fingerprint"]))
+	r = mustOK(t, fx.m.Revoke(api.Operator, b["fingerprint"]))
 	if r.HasData {
 		t.Fatalf("no other live certificate, unexpected data: %v", r.Data)
 	}
@@ -569,11 +570,11 @@ func TestRevokeIgnoresExpiredCertificatesOnTheSameKey(t *testing.T) {
 	csr := newCSR(t)
 	real := fx.m.now
 	fx.m.now = func() time.Time { return time.Now().AddDate(0, 0, -10) }
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr, "days": float64(1)})).Data.(map[string]any)
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr, "days": float64(1)})).Data.(map[string]any)
 	fx.m.now = real
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
 
-	if r := mustOK(t, fx.m.Revoke(b["fingerprint"])); r.HasData {
+	if r := mustOK(t, fx.m.Revoke(api.Operator, b["fingerprint"])); r.HasData {
 		t.Fatalf("an expired certificate opens nothing, unexpected data: %v", r.Data)
 	}
 }
@@ -581,9 +582,9 @@ func TestRevokeIgnoresExpiredCertificatesOnTheSameKey(t *testing.T) {
 func TestSameKeyRenewalReachesTheProxyAsItsOwnCertificate(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"auth.x.com"}, "csr": csr})).Data.(map[string]any)
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
-	mustOK(t, fx.m.Revoke(a["fingerprint"]))
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"auth.x.com"}, "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	mustOK(t, fx.m.Revoke(api.Operator, a["fingerprint"]))
 
 	payload, _ := fx.proxyPayload(t)
 	if len(payload.Revoked) != 1 || payload.Revoked[0] != a["fingerprint"] {
@@ -597,7 +598,7 @@ func TestSameKeyRenewalReachesTheProxyAsItsOwnCertificate(t *testing.T) {
 func TestConcurrentRenewalsProduceOneCertificate(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	old := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	old := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
 	opts := map[string]any{"renews": old["fingerprint"], "csr": csr}
 
 	var wg sync.WaitGroup
@@ -606,7 +607,7 @@ func TestConcurrentRenewalsProduceOneCertificate(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i] = fx.m.Issue("x.com", opts)
+			results[i] = fx.m.Issue(api.Operator, "x.com", opts)
 		}(i)
 	}
 	wg.Wait()
@@ -624,13 +625,13 @@ func TestConcurrentRenewalsProduceOneCertificate(t *testing.T) {
 func TestRenewedFromStaysOutOfTheList(t *testing.T) {
 	fx := newMTLSFixture(t)
 	csr := newCSR(t)
-	a := mustOK(t, fx.m.Issue("x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
-	b := mustOK(t, fx.m.Issue("x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
+	a := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "ali", "hosts": []any{"x.com"}, "csr": csr})).Data.(map[string]any)
+	b := mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"renews": a["fingerprint"], "csr": csr})).Data.(map[string]any)
 
 	if fx.certRecord(t, b["fingerprint"].(string))["renewedFrom"] != a["fingerprint"] {
 		t.Fatal("the renewal must record what it replaced")
 	}
-	for _, row := range fx.m.List(nil).Data.([]any) {
+	for _, row := range fx.m.List(api.Operator, nil).Data.([]any) {
 		if _, ok := row.(map[string]any)["renewedFrom"]; ok {
 			t.Fatal("the dashboard diffs these rows, this field adds nothing to them")
 		}
@@ -665,7 +666,7 @@ func TestWildcardScopeNeedsAWildcardOnTheRecord(t *testing.T) {
 	if hosts := stringList(reply["hosts"]); hosts[0] != "*.x.com" {
 		t.Fatalf("hosts = %v", hosts)
 	}
-	mustFail(t, fx.m.Issue("y.com", map[string]any{"name": "b", "hosts": []any{"*.y.com"}, "csr": newCSR(t)}), "not registered")
+	mustFail(t, fx.m.Issue(api.Operator, "y.com", map[string]any{"name": "b", "hosts": []any{"*.y.com"}, "csr": newCSR(t)}), "not registered")
 	fx.issue(t, "*.w.com", "c", "foo.w.com")
 }
 
@@ -687,7 +688,7 @@ func TestRequiredIsRefusedUntilSomeoneCanEnter(t *testing.T) {
 func TestRevokedOrExpiredCertificatesDoNotCountAsAWayIn(t *testing.T) {
 	fx := newMTLSFixture(t)
 	reply := fx.issue(t, "x.com", "ali", "x.com")
-	mustOK(t, fx.m.Revoke(reply["fingerprint"]))
+	mustOK(t, fx.m.Revoke(api.Operator, reply["fingerprint"]))
 	mustFail(t, fx.m.Set("x.com", "required", nil), "lock everyone out")
 
 	fx.issue(t, "x.com", "veli", "x.com")
@@ -735,7 +736,7 @@ func TestTunnelBlocksAPolicyOnTheWholeApp(t *testing.T) {
 	fx.proxy.tunnels["myapp"] = []string{"t.example"}
 	mustFail(t, fx.m.Set("x.com", "optional", nil), "tunnel")
 	mustFail(t, fx.m.Set("y.com", "optional", nil), "tunnel")
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "tunnel")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "tunnel")
 	mustOK(t, fx.m.Set("z.com", "optional", nil))
 }
 
@@ -751,6 +752,41 @@ func TestWarnsAboutWhatStaysOpen(t *testing.T) {
 	}
 	if !strings.Contains(msg, "y.com") {
 		t.Fatalf("unprotected sibling not mentioned: %q", msg)
+	}
+}
+
+// The dashboard shows each warning as its own callout and offers the restart, so
+// they travel as data and not only inside the sentence.
+func TestSetReportsWhatStaysOpenAsData(t *testing.T) {
+	fx := newMTLSFixture(t)
+	fx.cfg.Mutate(func() {
+		apps := fx.cfg.Get("apps").([]any)
+		apps[0].(map[string]any)["ports"] = []any{
+			map[string]any{"host": "8080", "container": float64(3000)},
+			map[string]any{"host": float64(10022), "container": float64(22)},
+			map[string]any{"host": "proxy", "container": float64(3001)},
+		}
+	})
+	data := mustOK(t, fx.m.Set("x.com", "optional", nil)).Data.(map[string]any)
+	if got := data["published"].([]int); !reflect.DeepEqual(got, []int{8080, 10022}) {
+		t.Fatalf("published = %#v", data["published"])
+	}
+	if got := data["siblings"].([]string); !reflect.DeepEqual(got, []string{"y.com"}) {
+		t.Fatalf("siblings = %#v", data["siblings"])
+	}
+	if data["restart"] != true {
+		t.Fatal("the app's first mode needs a restart to deliver its signing key")
+	}
+
+	// The app already holds its key, and y.com is now protected too.
+	data = mustOK(t, fx.m.Set("y.com", "optional", nil)).Data.(map[string]any)
+	if data["restart"] != false || len(data["siblings"].([]string)) != 0 {
+		t.Fatalf("second mode = %#v", data)
+	}
+
+	raw, _ := json.Marshal(mustOK(t, fx.m.Set("x.com", "off", nil)).Data)
+	if string(raw) != `{"published":[],"restart":false,"siblings":[]}` {
+		t.Fatalf("off = %s, want empty lists rather than null", raw)
 	}
 }
 
@@ -829,14 +865,14 @@ func TestExternalCA(t *testing.T) {
 	if ca["managed"] != false || ca["name"] != "Corp CA" {
 		t.Fatalf("ca = %v", ca)
 	}
-	mustFail(t, fx.m.Issue("x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "external CA")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "external CA")
 }
 
 func TestRevokeIsPersistedAndSynced(t *testing.T) {
 	fx := newMTLSFixture(t)
 	reply := fx.issue(t, "x.com", "ali", "x.com")
 	syncs := fx.proxy.syncCount()
-	mustOK(t, fx.m.Revoke(reply["fingerprint"]))
+	mustOK(t, fx.m.Revoke(api.Operator, reply["fingerprint"]))
 	if fx.proxy.syncCount() != syncs+1 {
 		t.Fatal("a revocation must reach the proxy")
 	}
@@ -904,7 +940,7 @@ func TestListLeavesOutMaterialAndFilters(t *testing.T) {
 	fx.issue(t, "x.com", "ali", "x.com")
 	fx.issue(t, "z.com", "veli", "z.com")
 
-	all := mustOK(t, fx.m.List(nil)).Data.([]any)
+	all := mustOK(t, fx.m.List(api.Operator, nil)).Data.([]any)
 	if len(all) != 2 {
 		t.Fatalf("rows = %v", all)
 	}
@@ -916,11 +952,11 @@ func TestListLeavesOutMaterialAndFilters(t *testing.T) {
 		t.Fatal("spki is internal")
 	}
 
-	filtered := mustOK(t, fx.m.List("www.x.com")).Data.([]any)
+	filtered := mustOK(t, fx.m.List(api.Operator, "www.x.com")).Data.([]any)
 	if len(filtered) != 1 || filtered[0].(map[string]any)["name"] != "ali" {
 		t.Fatalf("filtered = %v", filtered)
 	}
-	mustFail(t, fx.m.List("nope.com"), "not found")
+	mustFail(t, fx.m.List(api.Operator, "nope.com"), "not found")
 }
 
 func TestPruneDropsWhatADeletedDomainLeftBehind(t *testing.T) {
@@ -979,7 +1015,7 @@ func TestDomainDeleteRunsPrune(t *testing.T) {
 	mustOK(t, base.d.Add("sec.example.com", "myapp"))
 	mustOK(t, base.d.Add("auth.sec.example.com", "myapp"))
 
-	reply := mustOK(t, mx.Issue("sec.example.com", map[string]any{"name": "ali", "hosts": []any{"auth.sec.example.com"}, "csr": newCSR(t)})).Data.(map[string]any)
+	reply := mustOK(t, mx.Issue(api.Operator, "sec.example.com", map[string]any{"name": "ali", "hosts": []any{"auth.sec.example.com"}, "csr": newCSR(t)})).Data.(map[string]any)
 
 	mustOK(t, base.d.Delete("auth.sec.example.com", false))
 	if hosts := stringList(storedCert(t, mx, reply["fingerprint"].(string))["hosts"]); len(hosts) != 0 {
@@ -1012,6 +1048,76 @@ func TestDomainListShowsPolicyOnlyWhenSet(t *testing.T) {
 	}
 }
 
+// A9: the dashboard cannot tell a managed CA from an external one by id, and
+// only an external one lets a host be required with no certificate record.
+func TestDomainListNamesExternalCAs(t *testing.T) {
+	base := newFixture(t)
+	mx := NewMTLS(base.cfg, &fakeMTLSProxy{})
+	t.Cleanup(mx.Stop)
+	mustOK(t, base.d.Add("sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add("auth.sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add("plain.example.com", "myapp"))
+	mustOK(t, mx.Set("plain.example.com", "optional", nil))
+	mustOK(t, mx.Set("sec.example.org", "optional", nil))
+	managed := stringList(mx.recordFor(t, "sec.example.org")["ca"])[0]
+
+	external := newExternalCA(t, true)
+	mustOK(t, mx.Set("auth.sec.example.org", "required", map[string]any{"caPem": external}))
+	block, _ := pem.Decode([]byte(external))
+	externalID := mtls.Fingerprint(block.Bytes)[:16]
+	// The record trusts both kinds at once.
+	mustOK(t, mx.Set("sec.example.org", "optional", map[string]any{"ca": []any{managed, externalID}}))
+
+	raw, _ := json.Marshal(base.d.List(nil).Data)
+	var rows []struct {
+		Domain string `json:"domain"`
+		MTLS   struct {
+			CA       []string `json:"ca"`
+			External []string `json:"external"`
+			Hosts    map[string]struct {
+				CA       []string `json:"ca"`
+				External []string `json:"external"`
+			} `json:"hosts"`
+		} `json:"mtls"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		switch row.Domain {
+		case "sec.example.org":
+			if !reflect.DeepEqual(row.MTLS.External, []string{externalID}) || len(row.MTLS.CA) != 2 {
+				t.Errorf("record = %+v", row.MTLS)
+			}
+			if host := row.MTLS.Hosts["auth.sec.example.org"]; !reflect.DeepEqual(host.External, []string{externalID}) {
+				t.Errorf("override = %+v", host)
+			}
+		case "plain.example.com":
+			if len(row.MTLS.CA) != 1 || row.MTLS.External != nil {
+				t.Errorf("a managed CA is reported external: %+v", row.MTLS)
+			}
+		}
+	}
+	if strings.Count(string(raw), `"external"`) != 2 {
+		t.Fatalf("external must appear only where an external CA is trusted: %s", raw)
+	}
+
+	// Computed for the reply, never written back: the proxy payload and the
+	// config file stay as they were.
+	var stored map[string]any
+	base.cfg.View(func() { stored = base.cfg.Map("domains")["sec.example.org"].(map[string]any)["mtls"].(map[string]any) })
+	if _, leaked := stored["external"]; leaked {
+		t.Fatal("external reached the stored record")
+	}
+}
+
+func (m *MTLS) recordFor(t *testing.T, name string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	m.cfg.View(func() { out = recordConfig(m.domainsLocked(), name) })
+	return out
+}
+
 func TestCleanHostNormalizes(t *testing.T) {
 	host, msg := cleanHost(" HTTPS://WWW.Auth.X.com ")
 	if msg != "" || host != "auth.x.com" {
@@ -1023,7 +1129,7 @@ func TestRevokeAcceptsAForeignFingerprint(t *testing.T) {
 	fx := newMTLSFixture(t)
 	fp := strings.Repeat("ab", 32)
 	colons := strings.ToUpper(strings.TrimSuffix(strings.Repeat("ab:", 32), ":"))
-	mustOK(t, fx.m.Revoke(colons))
+	mustOK(t, fx.m.Revoke(api.Operator, colons))
 	if fx.certRecord(t, fp)["revoked"] == nil {
 		t.Fatalf("no revocation stored under %s", fp)
 	}
@@ -1075,9 +1181,9 @@ func TestSnapshotCarriesWhatTheProxyNeeds(t *testing.T) {
 	fx := newMTLSFixture(t)
 	live := fx.issue(t, "auth.x.com", "live", "auth.x.com")["fingerprint"].(string)
 	gone := fx.issue(t, "auth.x.com", "gone", "auth.x.com")["fingerprint"].(string)
-	mustOK(t, fx.m.Revoke(gone))
+	mustOK(t, fx.m.Revoke(api.Operator, gone))
 	foreign := strings.Repeat("a", 64)
-	mustOK(t, fx.m.Revoke(foreign))
+	mustOK(t, fx.m.Revoke(api.Operator, foreign))
 
 	out, raw := fx.proxyPayload(t)
 	if hosts := out.Certs[live]; len(hosts) != 1 || hosts[0] != "auth.x.com" || len(out.Certs) != 1 {
@@ -1124,7 +1230,7 @@ func TestCertificateChangesUseTheNarrowPush(t *testing.T) {
 	}
 	fx.issue(t, "auth.x.com", "veli", "auth.x.com")
 	mustOK(t, fx.m.Scope(first["fingerprint"], []any{"x.com"}))
-	mustOK(t, fx.m.Revoke(first["fingerprint"]))
+	mustOK(t, fx.m.Revoke(api.Operator, first["fingerprint"]))
 	if fx.proxy.certSyncs != 3 {
 		t.Fatalf("narrow pushes = %d", fx.proxy.certSyncs)
 	}
@@ -1136,10 +1242,10 @@ func TestStoreFailureIsReportedNotSwallowed(t *testing.T) {
 	store, _ := fx.m.certs()
 	store.close()
 
-	mustFail(t, fx.m.Revoke(reply["fingerprint"]), "unavailable")
+	mustFail(t, fx.m.Revoke(api.Operator, reply["fingerprint"]), "unavailable")
 	mustFail(t, fx.m.Scope(reply["fingerprint"], []any{"x.com"}), "unavailable")
-	mustFail(t, fx.m.Issue("auth.x.com", map[string]any{"name": "new", "hosts": []any{"auth.x.com"}, "csr": newCSR(t)}), "unavailable")
-	mustFail(t, fx.m.List(nil), "unavailable")
+	mustFail(t, fx.m.Issue(api.Operator, "auth.x.com", map[string]any{"name": "new", "hosts": []any{"auth.x.com"}, "csr": newCSR(t)}), "unavailable")
+	mustFail(t, fx.m.List(api.Operator, nil), "unavailable")
 	if _, err := fx.m.CertSnapshot(time.Now()); err == nil {
 		t.Fatal("a failed read must reach the push")
 	}

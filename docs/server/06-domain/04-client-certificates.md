@@ -39,6 +39,8 @@ odac domain mtls off -d example.com
 | `odac domain mtls scope --fingerprint <fp> --hosts <hosts>` | Change which hosts a certificate opens |
 | `odac domain mtls revoke --fingerprint <fp>` | Revoke a certificate |
 | `odac domain mtls list [-d <host>]` | List certificates |
+| `odac domain mtls ca import --cert <pem> --key <pem>` | Import a CA with its key, to share it between servers |
+| `odac domain mtls import --cert <pem> --hosts <hosts>` | Record a certificate another server signed with a shared CA. `--name` must match its subject |
 
 Setting a mode on a main domain covers all of its hosts. Setting it on a subdomain overrides that one host, so `example.com` can stay `optional` while `auth.example.com` is `required`.
 
@@ -85,9 +87,53 @@ odac domain mtls set -d example.com --mode required --ca-file corp-ca.pem
 
 ODAC has no record of certificates another CA issues, so:
 
+- `required` is allowed right away, since ODAC cannot see who holds one. The domain list reports such CAs under `external` in the domain's `mtls` object (and in a host's override), next to the `ca` ids it trusts.
 - They have no scope. To limit one to a host, give that host its own CA or intermediate.
 - They are revoked by fingerprint.
 - Public CAs are refused, because anyone holding a certificate from one would be let in.
+
+### Sharing a CA Between Servers
+
+Several servers can sign and accept the same certificates when they share one CA. Create it once, on a machine you trust:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout ca.key -out ca.crt -days 3650 -subj "/CN=Edge Client CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+```
+
+Then, on every server:
+
+```bash
+odac domain mtls ca import --cert ca.crt --key ca.key
+odac domain mtls set -d example.com --mode optional --ca <id>
+```
+
+The import prints the CA's id. It is derived from the certificate, so it is the same on every server, and importing the same CA again changes nothing. With ODAC in Docker, run it with `docker exec` and pass paths the container can read.
+
+- The key goes only through the local API, never through ODAC Cloud or an app, and is stored like ODAC's own CA keys (`cert/mtls/`, readable by its owner only). Delete the copies you imported from, and keep the original somewhere safe.
+- Bind the CA to a domain right after importing it. Like any CA no domain trusts, it is deleted with its key the next time a domain is removed. Importing it again brings it back.
+- A CA already trusted here as your own (`--ca-file`) cannot be imported as managed, because its existing certificates have no records and would all be refused.
+
+Each server keeps its own records, so a certificate signed on one server works on another only once it has a record there too. Give it one with the certificate alone, never its key:
+
+```bash
+odac domain mtls import --cert alice.crt --hosts auth.example.com
+```
+
+The certificate must be signed by a managed CA that every listed host trusts, and the hosts follow the same rules as `issue`. Importing it again changes nothing, and a certificate revoked on this server cannot be imported, so revoke it on every server that has it. Scope and revocation are kept per server, too.
+
+### Issuing From an App
+
+An app can issue, list and revoke certificates for its own domains through the [local API](../03-app/08-api-access.md#client-certificates-for-the-apps-own-domains), once you grant it:
+
+```bash
+odac app api my-app --allow domain.mtls.cert.issue,domain.mtls.cert.revoke,domain.mtls.cert.list
+odac app restart my-app
+```
+
+Turn the mode on yourself first: an app cannot set a mode, create a CA or change a certificate's hosts, and it never reaches another app's domains.
 
 ### Verifying in Your App
 

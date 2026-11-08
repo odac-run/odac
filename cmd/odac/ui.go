@@ -55,6 +55,7 @@ type renderer struct {
 	out         io.Writer
 	errOut      io.Writer
 	detail      bool // per-row detail blocks instead of a table (Node: table: false)
+	messageOnly bool // a success prints its message only (see callMessage)
 	lastProcess string
 	sawProgress bool
 }
@@ -94,7 +95,9 @@ func (r *renderer) final(resp *apiproto.Response) {
 	if resp.Message != "" {
 		fmt.Fprintln(r.out, resp.Message)
 	}
-	renderData(r.out, resp.Data, r.detail)
+	if !r.messageOnly {
+		renderData(r.out, resp.Data, r.detail)
+	}
 }
 
 // renderData prints the final response payload: non-empty arrays of rows as a

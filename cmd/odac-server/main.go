@@ -313,16 +313,23 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 		return res(mtlsSvc.Set(a.At(0), a.At(1), a.At(2)))
 	})
 	apiSrv.Register("domain.mtls.cert.issue", func(a api.Args, _ api.Progress) (*api.Result, error) {
-		return res(mtlsSvc.Issue(a.At(0), a.At(1)))
+		return res(mtlsSvc.Issue(a.Caller(), a.At(0), a.At(1)))
 	})
 	apiSrv.Register("domain.mtls.cert.scope", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(mtlsSvc.Scope(a.At(0), a.At(1)))
 	})
 	apiSrv.Register("domain.mtls.cert.revoke", func(a api.Args, _ api.Progress) (*api.Result, error) {
-		return res(mtlsSvc.Revoke(a.At(0)))
+		return res(mtlsSvc.Revoke(a.Caller(), a.At(0)))
+	})
+	apiSrv.Register("domain.mtls.cert.import", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.Import(a.Caller(), a.At(0)))
 	})
 	apiSrv.Register("domain.mtls.cert.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
-		return res(mtlsSvc.List(a.At(0)))
+		return res(mtlsSvc.List(a.Caller(), a.At(0)))
+	})
+	// Local API only, never the hub: the request carries a CA's private key.
+	apiSrv.Register("domain.mtls.ca.import", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.ImportCA(a.Caller(), a.At(0), a.At(1)))
 	})
 	apiSrv.Register("ssl.renew", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(sslSvc.Renew(a.At(0)))

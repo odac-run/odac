@@ -61,7 +61,26 @@ type Progress func(process, status, message any)
 type Args struct {
 	values []any
 	raw    []json.RawMessage
+	caller Caller
 }
+
+// Caller is who sent a request. Most handlers never look: RBAC has already run.
+// It exists for actions an app may be granted that still have to be narrowed to
+// that app's own records, which only the handler can judge.
+type Caller struct {
+	// Root is set for the root token (config.api.auth), which the CLI uses.
+	Root bool
+	// App is the calling app's identity, from its token, for an app token.
+	App string
+}
+
+// Operator is the caller with the root token's reach, for the server's owner
+// reaching a handler without the local API: the hub acts for the Cloud account.
+var Operator = Caller{Root: true}
+
+// Caller returns who sent the request. A domain token yields the zero value,
+// which is neither root nor an app, so a handler that checks gets nothing.
+func (a Args) Caller() Caller { return a.caller }
 
 func (a Args) Len() int { return len(a.values) }
 
@@ -138,24 +157,30 @@ func (s *Server) HostSocketDir() string {
 // appDeniedActions are actions an app token may never call, whatever its
 // grant says. Two kinds live here: the server's own lifecycle and identity
 // (update restarts it, server.stop takes the platform down, auth re-points
-// its Cloud pairing), and the two that hand out privilege (app.privileged
+// its Cloud pairing), and the ones that hand out privilege (app.privileged
 // elevates a container to root or full Docker privileged; app.api rewrites
 // the grants this table protects, so an app holding it could simply widen
-// itself; the domain.mtls actions would let it mint its way past a client
-// certificate policy, or switch one off, on any domain). Nothing an app
-// legitimately automates needs them: an app certifying its own users brings
-// its own CA.
+// itself; domain.mtls.set switches a client certificate policy, and
+// domain.mtls.cert.scope widens a certificate, on any domain;
+// domain.mtls.ca.import plants a CA key, which signs for every record that
+// trusts that CA).
+//
+// domain.mtls.cert.issue, revoke, list and import are deliberately absent.
+// Their danger was reach, not the action: on any domain they mint a way past
+// a policy. domains.MTLS narrows them to the records routed to the calling
+// app (Args.Caller), on the request path, so a grant lets an edge app such as
+// odac-tunnel certify devices for its own hosts and nothing else. A new action
+// that is safe only when narrowed that way belongs here until its handler
+// does the narrowing.
 var appDeniedActions = map[string]bool{
-	"auth":                    true,
-	"update":                  true,
-	"server.stop":             true,
-	"app.privileged":          true,
-	"app.api":                 true,
-	"domain.mtls.set":         true,
-	"domain.mtls.cert.issue":  true,
-	"domain.mtls.cert.scope":  true,
-	"domain.mtls.cert.revoke": true,
-	"domain.mtls.cert.list":   true,
+	"auth":                   true,
+	"update":                 true,
+	"server.stop":            true,
+	"app.privileged":         true,
+	"app.api":                true,
+	"domain.mtls.set":        true,
+	"domain.mtls.cert.scope": true,
+	"domain.mtls.ca.import":  true,
 }
 
 // AppMayCall reports whether an app token is ever allowed to call an action.
@@ -540,7 +565,11 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 		}
 	}
 
-	args := Args{raw: payload.Data, values: make([]any, len(payload.Data))}
+	caller := Caller{Root: isRoot}
+	if isApp {
+		caller.App = clientDomain
+	}
+	args := Args{raw: payload.Data, values: make([]any, len(payload.Data)), caller: caller}
 	for i, rawArg := range payload.Data {
 		json.Unmarshal(rawArg, &args.values[i]) // failure leaves nil (undefined)
 	}

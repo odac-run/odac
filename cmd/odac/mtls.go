@@ -34,7 +34,7 @@ func mtlsCommand() *command {
 				description: "Stop asking for client certificates on a host",
 				args:        []string{"-d", "--domain"},
 				action: func(a *app, args []string) int {
-					return a.call("domain.mtls.set", []any{mtlsDomainArg(a, args), "off"}, false)
+					return a.callMessage("domain.mtls.set", []any{mtlsDomainArg(a, args), "off"})
 				},
 			}},
 			{"issue", &command{
@@ -63,6 +63,20 @@ func mtlsCommand() *command {
 						fingerprint = a.question(__("Enter the certificate fingerprint: "))
 					}
 					return a.call("domain.mtls.cert.revoke", []any{fingerprint}, false)
+				},
+			}},
+			{"import", &command{
+				description: "Record a certificate another server signed with a shared CA, so this server accepts it too",
+				args:        []string{"--cert", "--hosts", "--name"},
+				action:      (*app).mtlsImport,
+			}},
+			{"ca", &command{
+				sub: []entry{
+					{"import", &command{
+						description: "Import a CA with its key as a managed CA, so several servers sign and accept the same certificates",
+						args:        []string{"--cert", "--key"},
+						action:      (*app).mtlsCAImport,
+					}},
 				},
 			}},
 			{"list", &command{
@@ -116,7 +130,54 @@ func (a *app) mtlsSet(args []string) int {
 		}
 		opts["caPem"] = string(raw)
 	}
-	return a.call("domain.mtls.set", []any{domain, mode, opts}, false)
+	return a.callMessage("domain.mtls.set", []any{domain, mode, opts})
+}
+
+// mtlsImport sends a certificate, never a key: the record only adds a scope to
+// what the shared CA already signed.
+func (a *app) mtlsImport(args []string) int {
+	certFile := parseArg(args, "--cert")
+	if certFile == "" {
+		certFile = a.question(__("Enter the certificate file: "))
+	}
+	hosts := splitHosts(parseArg(args, "--hosts"))
+	if len(hosts) == 0 {
+		hosts = splitHosts(a.question(__("Enter the hosts it opens, comma separated: ")))
+	}
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		fmt.Fprintln(a.errOut, __("Failed to read %s: %s", certFile, err.Error()))
+		return 1
+	}
+	opts := map[string]any{"cert": string(certPEM), "hosts": hosts}
+	if name := parseArg(args, "--name"); name != "" {
+		opts["name"] = name
+	}
+	return a.callMessage("domain.mtls.cert.import", []any{opts})
+}
+
+// mtlsCAImport hands a CA and its key to the server. The key travels only over
+// the local API, which is why there is no dashboard or app equivalent.
+func (a *app) mtlsCAImport(args []string) int {
+	certFile := parseArg(args, "--cert")
+	if certFile == "" {
+		certFile = a.question(__("Enter the CA certificate file: "))
+	}
+	keyFile := parseArg(args, "--key")
+	if keyFile == "" {
+		keyFile = a.question(__("Enter the CA key file: "))
+	}
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		fmt.Fprintln(a.errOut, __("Failed to read %s: %s", certFile, err.Error()))
+		return 1
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		fmt.Fprintln(a.errOut, __("Failed to read %s: %s", keyFile, err.Error()))
+		return 1
+	}
+	return a.callMessage("domain.mtls.ca.import", []any{string(certPEM), string(keyPEM)})
 }
 
 // mtlsIssue signs a certificate. With --csr the private key was made elsewhere

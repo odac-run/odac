@@ -507,10 +507,98 @@ func TestResNormalization(t *testing.T) {
 
 func ptr(r Result) *Result { return &r }
 
-func TestAppsCannotManageClientCertificates(t *testing.T) {
-	for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.issue", "domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list"} {
+// set and scope change what a policy or a certificate opens on any domain, so no
+// grant reaches them. The certificate actions are grantable because domains.MTLS
+// narrows them to the caller's own records.
+func TestAppsCannotChangeClientCertificatePolicy(t *testing.T) {
+	for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"} {
 		if AppMayCall(action) {
 			t.Errorf("an app grant could reach %s", action)
 		}
+	}
+	for _, action := range []string{"domain.mtls.cert.issue", "domain.mtls.cert.revoke", "domain.mtls.cert.list", "domain.mtls.cert.import"} {
+		if !AppMayCall(action) {
+			t.Errorf("%s must be grantable: its handler narrows it to the app's records", action)
+		}
+	}
+}
+
+// A3: however the grant is spelled, and even hand-edited into config past
+// SetAPI, policy actions never reach their handler.
+func TestPolicyActionsIgnoreEveryGrantShape(t *testing.T) {
+	s := startTestServer(t)
+	reached := map[string]bool{}
+	for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"} {
+		action := action
+		s.Register(action, func(_ Args, _ Progress) (*Result, error) {
+			reached[action] = true
+			r := Res(true, "ok")
+			return &r, nil
+		})
+	}
+	grants := []any{
+		true,
+		[]any{"*"},
+		[]any{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"},
+	}
+	for _, grant := range grants {
+		s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": grant}})
+		for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"} {
+			if reply := firstReply(t, s, request(fixtureAppToken, action)); reply["message"] != "permission_denied" {
+				t.Errorf("%s with grant %v = %v", action, grant, reply)
+			}
+		}
+	}
+	if len(reached) != 0 {
+		t.Fatalf("handlers ran for %v", reached)
+	}
+}
+
+// firstReply decodes the first response document. A refusal leaves the
+// connection open (Node parity), so reading to EOF would wait out a deadline.
+func firstReply(t *testing.T, s *Server, raw string) map[string]any {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", tcpAddr(s), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(conn).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Handlers that narrow an action to the caller read it from Args, so it has to
+// say who holds the token, and nothing for a token that is neither.
+func TestHandlersSeeTheCaller(t *testing.T) {
+	s := startTestServer(t)
+	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": []any{"mail.send", "domain.mtls.cert.list"}}})
+	s.AddToken("example.com")
+	echo := func(a Args, _ Progress) (*Result, error) {
+		r := Res(true, "ok", map[string]any{"root": a.Caller().Root, "app": a.Caller().App})
+		return &r, nil
+	}
+	s.Register("mail.send", echo)
+	s.Register("domain.mtls.cert.list", echo)
+
+	cases := []struct{ token, action, want string }{
+		{fixtureKey, "domain.mtls.cert.list", `"data":{"app":"","root":true}`},
+		{fixtureAppToken, "domain.mtls.cert.list", `"data":{"app":"myapp","root":false}`},
+		{fixtureDomainToken, "mail.send", `"data":{"app":"","root":false}`},
+	}
+	for _, c := range cases {
+		lines := call(t, "tcp", tcpAddr(s), request(c.token, c.action))
+		if len(lines) == 0 || !strings.Contains(lines[0], c.want) {
+			t.Errorf("%s via %.8s = %v, want %s", c.action, c.token, lines, c.want)
+		}
+	}
+	if (Args{}).Caller() != (Caller{}) || (Caller{}).Root || Operator != (Caller{Root: true}) {
+		t.Fatal("an unset caller must be neither root nor an app")
 	}
 }

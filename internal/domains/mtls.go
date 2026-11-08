@@ -1,6 +1,8 @@
 package domains
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -18,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,6 +170,130 @@ func locateHost(domains map[string]any, host string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// reach decides which records a caller acts on. The operator reaches every
+// record, reported as app "". An app token reaches only the records routed to it,
+// matched by the name its token carries, which is also what its signing key is
+// derived from. Anything else (a domain token, a caller nobody filled in) is not
+// ok and reaches nothing.
+func reach(caller api.Caller) (app string, ok bool) {
+	if caller.App != "" {
+		return caller.App, true
+	}
+	return "", caller.Root
+}
+
+func permissionDenied() api.Result {
+	return api.Res(false, "permission_denied")
+}
+
+// notFoundForApp is what an app hears about a certificate it cannot act on,
+// whether it exists or belongs to another app, so a fingerprint cannot be probed.
+// The code lets a caller close a queued revocation without parsing the message.
+func notFoundForApp() api.Result {
+	return api.Res(false, __("Certificate not found."), map[string]any{"code": "not_found"})
+}
+
+// ownedLocked reports whether app may act on a record. The operator ("") may act
+// on any.
+func ownedLocked(domains map[string]any, record, app string) bool {
+	if app == "" {
+		return true
+	}
+	rec, _ := domains[record].(map[string]any)
+	return rec != nil && rec["appId"] == any(app)
+}
+
+// appCAsLocked returns the CAs bound to the records routed to app, record-wide
+// or on a host override.
+func appCAsLocked(domains map[string]any, app string) map[string]bool {
+	out := map[string]bool{}
+	for name := range domains {
+		if !ownedLocked(domains, name, app) {
+			continue
+		}
+		cfg := recordConfig(domains, name)
+		for _, id := range stringList(cfg["ca"]) {
+			out[id] = true
+		}
+		hosts, _ := cfg["hosts"].(map[string]any)
+		for _, h := range hosts {
+			override, _ := h.(map[string]any)
+			for _, id := range stringList(override["ca"]) {
+				out[id] = true
+			}
+		}
+	}
+	return out
+}
+
+// ownsCertLocked reports whether a certificate record is app's: its CA is bound
+// to one of app's records and every host it opens is one of app's. The second
+// half matters when a CA is shared with another app's record, which would
+// otherwise hand that app's certificates over too. cas is appCAsLocked's answer.
+func ownsCertLocked(domains map[string]any, app string, cas map[string]bool, cert map[string]any) bool {
+	if app == "" {
+		return true
+	}
+	ca, _ := cert["ca"].(string)
+	if ca == "" || !cas[ca] {
+		return false
+	}
+	for _, host := range stringList(cert["hosts"]) {
+		record, ok := locateHost(domains, host)
+		if !ok || !ownedLocked(domains, record, app) {
+			return false
+		}
+	}
+	return true
+}
+
+// mtlsListView is a record's mtls object as domain.list reports it: a copy made
+// under the config lock, since the rows are encoded after it is released, with
+// `external` naming the CAs of each `ca` list that ODAC holds no key for. A
+// dashboard needs that to know a host may be required with no certificate record
+// behind it, which canEnter allows for an external CA. The field is computed, never
+// stored, and left out when empty because the dashboard diffs these rows.
+func mtlsListView(raw any, cas map[string]any) any {
+	cfg, ok := raw.(map[string]any)
+	if !ok {
+		return raw
+	}
+	out := withExternal(cfg, cas)
+	if hosts, _ := cfg["hosts"].(map[string]any); hosts != nil {
+		copied := make(map[string]any, len(hosts))
+		for host, h := range hosts {
+			if override, ok := h.(map[string]any); ok {
+				copied[host] = withExternal(override, cas)
+			} else {
+				copied[host] = h
+			}
+		}
+		out["hosts"] = copied
+	}
+	return out
+}
+
+func withExternal(obj, cas map[string]any) map[string]any {
+	out := make(map[string]any, len(obj)+1)
+	for key, value := range obj {
+		out[key] = value
+	}
+	delete(out, "external")
+	if ca, ok := obj["ca"].([]any); ok {
+		out["ca"] = append([]any(nil), ca...)
+	}
+	var external []any
+	for _, id := range stringList(obj["ca"]) {
+		if ca, _ := cas[id].(map[string]any); ca != nil && ca["managed"] != true {
+			external = append(external, id)
+		}
+	}
+	if len(external) > 0 {
+		out["external"] = external
+	}
+	return out
 }
 
 func recordConfig(domains map[string]any, name string) map[string]any {
@@ -333,7 +460,7 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 		})
 		m.saveLocked()
 		m.log.Log("Client certificates turned off for %s", host)
-		return api.Res(true, __("Client certificates are off for %s.", host)), true
+		return api.Res(true, __("Client certificates are off for %s.", host), setReply(nil, nil, false)), true
 	}
 
 	if tunnels := m.tunnelsFor(appID); len(tunnels) > 0 {
@@ -397,7 +524,22 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 	if !hadPolicy {
 		notes = append(notes, __("Restart %s so it receives %s and can verify the signed identity headers.", str(appID), mtls.KeyEnv))
 	}
-	return api.Res(true, strings.Join(notes, " ")), true
+	return api.Res(true, strings.Join(notes, " "), setReply(published, siblings, !hadPolicy)), true
+}
+
+// setReply carries the warnings of a mode change as data, next to the message
+// that spells them out, so a dashboard can show each one on its own and offer the
+// restart instead of parsing a sentence. Empty lists mean nothing to warn about.
+func setReply(published, siblings []string, restart bool) map[string]any {
+	ports := []int{}
+	for _, raw := range published {
+		if port, err := strconv.Atoi(raw); err == nil && port > 0 {
+			ports = append(ports, port)
+		}
+	}
+	sort.Ints(ports)
+	hosts := append([]string{}, siblings...)
+	return map[string]any{"published": ports, "siblings": hosts, "restart": restart}
 }
 
 func contains(list []string, s string) bool {
@@ -639,6 +781,125 @@ func (m *MTLS) createCA(domain string) (string, error) {
 	return id, nil
 }
 
+// ImportCA adds a CA together with its signing key as a managed CA, so several
+// servers can sign certificates that each of them accepts. The id comes from the
+// certificate as it does for every CA, so the CA gets the same id on each server
+// it is imported to and a second import changes nothing. It is the operator's
+// alone and only the local API registers it: a CA key must never cross the hub
+// or reach an app. The key is stored like a created CA's, 0600 and before the
+// record, and is never logged or echoed.
+func (m *MTLS) ImportCA(caller api.Caller, certArg, keyArg any) api.Result {
+	if caller.App != "" || !caller.Root {
+		return permissionDenied()
+	}
+	certPEM, _ := certArg.(string)
+	keyPEM, _ := keyArg.(string)
+	cert, cleaned, errText := parseExternalCA(certPEM)
+	if errText != "" {
+		return api.Res(false, errText)
+	}
+	if cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return api.Res(false, __("That CA certificate is not allowed to sign certificates."))
+	}
+	key, errText := parseCAKey(keyPEM, cert)
+	if errText != "" {
+		return api.Res(false, errText)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return api.Res(false, __("Invalid CA key."))
+	}
+	id := mtls.Fingerprint(cert.Raw)[:16]
+	name := strings.TrimSpace(cert.Subject.CommonName)
+	if name == "" {
+		name = "Client CA " + id
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var existing map[string]any
+	m.cfg.View(func() { existing, _ = m.casLocked(false)[id].(map[string]any) })
+	if existing != nil && existing["managed"] != true {
+		// Managed means a certificate needs a record here, so switching would lock
+		// out every certificate that CA issued outside ODAC.
+		return api.Res(false, __("CA %s is already trusted here as an external CA, so its certificates need no record. Importing it as managed would refuse every one of them.", id))
+	}
+	if err := writeSecret(m.caKeyPath(id), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})); err != nil {
+		m.log.Error("Failed to store the key of client CA %s: %s", id, err.Error())
+		return api.Res(false, __("Failed to store the CA key."))
+	}
+	reply := map[string]any{"id": id, "name": name}
+	if existing != nil {
+		return api.Res(true, __("Client CA %s is already managed here.", id), reply)
+	}
+	m.cfg.Mutate(func() {
+		m.casLocked(true)[id] = map[string]any{
+			"cert":    cleaned,
+			"created": float64(m.now().UnixMilli()),
+			"managed": true,
+			"name":    name,
+		}
+		m.cfg.Touch("mtls")
+	})
+	m.saveLocked()
+	m.log.Log("Imported client CA %s (%s)", id, logSafeName(name))
+	return api.Res(true, __("Imported client CA %s. Trust it on a domain with: odac domain mtls set -d <domain> --mode optional --ca %s", id, id), reply)
+}
+
+// parseCAKey reads the signing key of a CA being imported and checks that it
+// belongs to that CA. It accepts the PEM forms openssl writes (PKCS#8, SEC 1 and
+// PKCS#1) and refuses an encrypted one rather than asking for its passphrase.
+func parseCAKey(raw string, cert *x509.Certificate) (crypto.Signer, string) {
+	rest := []byte(raw)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, __("Invalid CA key.")
+		}
+		if block.Type == "EC PARAMETERS" {
+			continue
+		}
+		if block.Type == "ENCRYPTED PRIVATE KEY" || strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED") {
+			return nil, __("The CA key is encrypted. Decrypt it first, for example: openssl pkey -in ca.key -out ca-plain.key")
+		}
+		var parsed any
+		var err error
+		switch block.Type {
+		case "PRIVATE KEY":
+			parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+		case "EC PRIVATE KEY":
+			parsed, err = x509.ParseECPrivateKey(block.Bytes)
+		case "RSA PRIVATE KEY":
+			parsed, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		default:
+			return nil, __("Invalid CA key.")
+		}
+		if err != nil {
+			return nil, __("Invalid CA key.")
+		}
+		switch key := parsed.(type) {
+		case *ecdsa.PrivateKey:
+			if key.Curve != elliptic.P256() && key.Curve != elliptic.P384() && key.Curve != elliptic.P521() {
+				return nil, __("Unsupported CA key type.")
+			}
+		case *rsa.PrivateKey:
+			if key.N.BitLen() < mtlsMinRSABits {
+				return nil, __("RSA keys must be at least 2048 bits.")
+			}
+		case ed25519.PrivateKey:
+		default:
+			return nil, __("Unsupported CA key type.")
+		}
+		signer := parsed.(crypto.Signer)
+		public, ok := signer.Public().(interface{ Equal(crypto.PublicKey) bool })
+		if !ok || !public.Equal(cert.PublicKey) {
+			return nil, __("That key does not belong to the CA certificate.")
+		}
+		return signer, ""
+	}
+}
+
 func (m *MTLS) caKeyPath(id string) string {
 	return filepath.Join(m.certDir, id+".key")
 }
@@ -742,7 +1003,9 @@ func validName(name string) bool {
 // must name a host that exists and trusts this CA, otherwise the certificate
 // would look broader in the dashboard than it is. No entries is an error: the
 // default must be nothing, and a certificate opening nothing should not be issued.
-func cleanScope(domains map[string]any, raw any, caID string) ([]string, string) {
+// For an app (app != "") every host must also be routed to it, and one that is
+// not reads as unregistered, so the answer does not reveal another app's hosts.
+func cleanScope(domains map[string]any, raw any, caID, app string) ([]string, string) {
 	entries := stringList(raw)
 	if len(entries) == 0 {
 		return nil, __("At least one host is required.")
@@ -759,7 +1022,7 @@ func cleanScope(domains map[string]any, raw any, caID string) ([]string, string)
 		}
 		seen[host] = true
 		record, ok := locateHost(domains, host)
-		if !ok {
+		if !ok || !ownedLocked(domains, record, app) {
 			return nil, __("Host %s is not registered.", host)
 		}
 		if !contains(effectiveCAs(domains, record, host), caID) {
@@ -778,8 +1041,14 @@ func cleanScope(domains map[string]any, raw any, caID string) ([]string, string)
 // the key it would retry with. opts carries name, hosts, csr, days and renews (the
 // fingerprint being replaced, which keeps the old certificate valid until it is
 // revoked). A renewal may keep its key, so it is repeated only if it names the
-// same certificate and its earlier result has not expired.
-func (m *MTLS) Issue(domainArg, optsArg any) api.Result {
+// same certificate and its earlier result has not expired. An app may issue
+// only on records routed to it, for hosts routed to it, and only where a CA is
+// already set up: creating one is the operator's decision.
+func (m *MTLS) Issue(caller api.Caller, domainArg, optsArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
 	host, errMsg := cleanHost(domainArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
@@ -792,7 +1061,7 @@ func (m *MTLS) Issue(domainArg, optsArg any) api.Result {
 	}
 
 	m.mu.Lock()
-	result, signed, newCA := m.issueLocked(host, csr, opts)
+	result, signed, newCA := m.issueLocked(app, host, csr, opts)
 	m.mu.Unlock()
 
 	if signed && m.proxy != nil {
@@ -807,7 +1076,7 @@ func (m *MTLS) Issue(domainArg, optsArg any) api.Result {
 
 // issueLocked reports whether it signed a certificate, and whether that took a new
 // CA, which changes a domain record and not only the certificates.
-func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[string]any) (result api.Result, signed, newCA bool) {
+func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts map[string]any) (result api.Result, signed, newCA bool) {
 	var record string
 	var found bool
 	var caID string
@@ -816,6 +1085,9 @@ func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[s
 	m.cfg.View(func() {
 		domains := m.domainsLocked()
 		record, found = locateHost(domains, host)
+		if found && !ownedLocked(domains, record, app) {
+			found = false
+		}
 		if !found {
 			return
 		}
@@ -842,6 +1114,9 @@ func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[s
 	}
 	if tunnels := m.tunnelsFor(appID); len(tunnels) > 0 {
 		return api.Res(false, __("App %s is exposed through a tunnel (%s), which reaches it directly and would bypass client certificates. Remove the tunnel first.", str(appID), strings.Join(tunnels, ", "))), false, false
+	}
+	if caID == "" && app != "" {
+		return api.Res(false, __("Client certificates are not set up on %s.", host)), false, false
 	}
 	if caID == "" {
 		id, err := m.createCA(record)
@@ -925,7 +1200,7 @@ func (m *MTLS) issueLocked(host string, csr *x509.CertificateRequest, opts map[s
 
 	var hosts []string
 	m.cfg.View(func() {
-		hosts, failure = cleanScope(m.domainsLocked(), rawHosts, caID)
+		hosts, failure = cleanScope(m.domainsLocked(), rawHosts, caID, app)
 	})
 	if failure != "" {
 		return api.Res(false, failure), false, false
@@ -1090,7 +1365,7 @@ func (m *MTLS) Scope(fingerprintArg, hostsArg any) api.Result {
 	var failure string
 	var hosts []string
 	m.cfg.View(func() {
-		hosts, failure = cleanScope(m.domainsLocked(), hostsArg, str(cert["ca"]))
+		hosts, failure = cleanScope(m.domainsLocked(), hostsArg, str(cert["ca"]), "")
 	})
 	if failure != "" {
 		m.mu.Unlock()
@@ -1111,8 +1386,16 @@ func (m *MTLS) Scope(fingerprintArg, hostsArg any) api.Result {
 
 // Revoke ends a certificate on the next request and cuts its open connections.
 // It accepts a fingerprint ODAC has no record of, which is the only way to
-// revoke something an external CA issued.
-func (m *MTLS) Revoke(fingerprintArg any) api.Result {
+// revoke something an external CA issued. Revoking twice succeeds both times,
+// so a caller retrying a lost reply cannot end up stuck. An app may revoke only
+// a recorded certificate it owns (ownsCertLocked): the unknown-fingerprint branch
+// would let it plant a revocation for a certificate it never saw, and anything
+// it may not touch answers not_found.
+func (m *MTLS) Revoke(caller api.Caller, fingerprintArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
 	fingerprint, errMsg := cleanFingerprint(fingerprintArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
@@ -1124,12 +1407,26 @@ func (m *MTLS) Revoke(fingerprintArg any) api.Result {
 		m.mu.Unlock()
 		return m.storeFailure(err)
 	}
+	if app != "" {
+		cert, err := store.get(fingerprint)
+		if err != nil {
+			m.mu.Unlock()
+			return m.storeFailure(err)
+		}
+		if !m.ownsCert(app, cert) {
+			m.mu.Unlock()
+			return notFoundForApp()
+		}
+	}
 	now := float64(m.now().UnixMilli())
 	if err := store.revoke(fingerprint, now); err != nil {
 		m.mu.Unlock()
 		return m.storeFailure(err)
 	}
 	sameKey, err := sameKeyAs(store, fingerprint, now)
+	if err == nil && app != "" {
+		sameKey, err = m.ownedOnly(store, app, sameKey)
+	}
 	m.mu.Unlock()
 	if err != nil {
 		// The revocation itself is stored, so it still has to reach the proxy.
@@ -1148,6 +1445,246 @@ func (m *MTLS) Revoke(fingerprintArg any) api.Result {
 		return api.Res(true, __("Certificate revoked. The same key still works with %s. Revoke those as well if the key was exposed.", strings.Join(list, ", ")), map[string]any{"sameKey": sameKey})
 	}
 	return api.Res(true, __("Certificate revoked."))
+}
+
+// mtlsMaxCertPEM bounds an imported certificate. ODAC's are well under 2 KiB.
+const mtlsMaxCertPEM = 64 << 10
+
+// Import records a certificate another server signed with a CA both share, so
+// this server's proxy accepts it too: a managed CA's certificate with no record
+// is refused. Nothing is signed here. The authority is the signature of a managed
+// CA that every target host trusts, and the record only adds the scope, under the
+// same rules as Issue (and, for an app, the same reach). opts carries cert (PEM),
+// hosts and name, which, when given, must be the certificate's subject CN.
+// Importing a recorded certificate again returns its row, but a revoked one
+// stays revoked: an import must never bring a certificate back.
+func (m *MTLS) Import(caller api.Caller, optsArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
+	opts := optionsOf(optsArg)
+	leaf, certPEM, errMsg := parseClientCert(opts["cert"])
+	if errMsg != "" {
+		return api.Res(false, errMsg)
+	}
+	name := leaf.Subject.CommonName
+	if raw := opts["name"]; raw != nil {
+		given, isString := raw.(string)
+		if !isString || (given != "" && given != name) {
+			return api.Res(false, __("The name does not match the certificate's subject, %s.", logSafeName(name)))
+		}
+	}
+	if !validName(name) {
+		return api.Res(false, __("The certificate's name must be 1 to 64 printable characters."))
+	}
+	now := m.now()
+	if !now.Before(leaf.NotAfter) {
+		return api.Res(false, __("The certificate has expired."))
+	}
+
+	m.mu.Lock()
+	result, imported := m.importLocked(app, leaf, certPEM, name, opts["hosts"], now)
+	m.mu.Unlock()
+
+	if imported && m.proxy != nil {
+		m.proxy.SyncClientCerts()
+	}
+	return result
+}
+
+func (m *MTLS) importLocked(app string, leaf *x509.Certificate, certPEM, name string, rawHosts any, now time.Time) (api.Result, bool) {
+	var candidates map[string]importCandidate
+	var failure string
+	m.cfg.View(func() {
+		candidates, failure = importCandidatesLocked(m.domainsLocked(), m.casLocked(false), rawHosts, app)
+	})
+	if failure != "" {
+		return api.Res(false, failure), false
+	}
+	caID, managed := signingCA(leaf, candidates, now)
+	switch {
+	case caID == "":
+		return api.Res(false, __("The certificate was not signed by a client CA its hosts trust.")), false
+	case !managed:
+		return api.Res(false, __("That certificate comes from an external CA, which needs no record: its hosts already trust it.")), false
+	}
+	var hosts []string
+	m.cfg.View(func() {
+		hosts, failure = cleanScope(m.domainsLocked(), rawHosts, caID, app)
+	})
+	if failure != "" {
+		return api.Res(false, failure), false
+	}
+
+	store, err := m.certs()
+	if err != nil {
+		return m.storeFailure(err), false
+	}
+	fingerprint := mtls.Fingerprint(leaf.Raw)
+	existing, err := store.get(fingerprint)
+	if err != nil {
+		return m.storeFailure(err), false
+	}
+	if existing != nil {
+		if existing["revoked"] != nil {
+			return api.Res(false, __("This certificate has been revoked, and a revoked certificate cannot be imported.")), false
+		}
+		if !m.ownsCert(app, existing) {
+			return api.Res(false, __("This certificate is already registered.")), false
+		}
+		return m.importReply(store, fingerprint, __("Certificate %s is already registered.", name)), false
+	}
+
+	record := map[string]any{
+		"ca":       caID,
+		"cert":     certPEM,
+		"created":  float64(now.UnixMilli()),
+		"hosts":    anyList(hosts),
+		"name":     name,
+		"notAfter": float64(leaf.NotAfter.UnixMilli()),
+		"serial":   hex.EncodeToString(leaf.SerialNumber.Bytes()),
+		"spki":     mtls.Fingerprint(leaf.RawSubjectPublicKeyInfo),
+	}
+	if err := store.insert(fingerprint, record); err != nil {
+		return m.storeFailure(err), false
+	}
+	m.log.Log("Imported client certificate %s (%s)", fingerprint[:16], logSafeName(name))
+	return m.importReply(store, fingerprint, __("Certificate %s imported.", name)), true
+}
+
+// importReply answers with the certificate's list row, the shape the caller
+// already mirrors from domain.mtls.cert.list.
+func (m *MTLS) importReply(store *certStore, fingerprint, message string) api.Result {
+	row, err := store.row(fingerprint)
+	if err != nil {
+		return m.storeFailure(err)
+	}
+	if row == nil {
+		return api.Res(false, __("Certificate not found."))
+	}
+	m.cfg.View(func() { row = m.withCANameLocked(row) })
+	return api.Res(true, message, row)
+}
+
+type importCandidate struct {
+	pem     string
+	managed bool
+}
+
+// importCandidatesLocked validates the target hosts the way cleanScope does,
+// before any CA is known, and returns the CAs they trust: the certificate's
+// issuer has to be one of them.
+func importCandidatesLocked(domains, cas map[string]any, rawHosts any, app string) (map[string]importCandidate, string) {
+	entries := stringList(rawHosts)
+	if len(entries) == 0 {
+		return nil, __("At least one host is required.")
+	}
+	out := map[string]importCandidate{}
+	for _, entry := range entries {
+		host, errMsg := cleanHost(entry)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		record, ok := locateHost(domains, host)
+		if !ok || !ownedLocked(domains, record, app) {
+			return nil, __("Host %s is not registered.", host)
+		}
+		for _, id := range effectiveCAs(domains, record, host) {
+			if ca, _ := cas[id].(map[string]any); ca != nil {
+				certPEM, _ := ca["cert"].(string)
+				out[id] = importCandidate{pem: certPEM, managed: ca["managed"] == true}
+			}
+		}
+	}
+	return out, ""
+}
+
+// signingCA finds which candidate CA signed leaf, checked the way the proxy will
+// check it (chain and client auth usage). It verifies at the certificate's start
+// when this clock is behind the signer's, since two servers' clocks differ and the
+// proxy enforces the start time on every request anyway.
+func signingCA(leaf *x509.Certificate, candidates map[string]importCandidate, now time.Time) (string, bool) {
+	at := now
+	if at.Before(leaf.NotBefore) {
+		at = leaf.NotBefore
+	}
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		block, _ := pem.Decode([]byte(candidates[id].pem))
+		if block == nil {
+			continue
+		}
+		ca, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !bytes.Equal(ca.RawSubject, leaf.RawIssuer) {
+			continue
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(ca)
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: at, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err == nil {
+			return id, candidates[id].managed
+		}
+	}
+	return "", false
+}
+
+// parseClientCert reads the certificate being imported. The PEM may carry the
+// chain after it, as an issue reply's cert and chain concatenated would; only the
+// first certificate is the client's.
+func parseClientCert(raw any) (*x509.Certificate, string, string) {
+	text, _ := raw.(string)
+	if len(text) > mtlsMaxCertPEM {
+		return nil, "", __("Invalid certificate.")
+	}
+	if strings.Contains(text, "PRIVATE KEY") {
+		return nil, "", __("That file contains a private key. Send only the certificate.")
+	}
+	block, _ := pem.Decode([]byte(text))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, "", __("Invalid certificate.")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, "", __("Invalid certificate.")
+	}
+	if cert.IsCA {
+		return nil, "", __("That is a CA certificate, not a client certificate.")
+	}
+	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes})), ""
+}
+
+// ownsCert is ownsCertLocked for a record read from the store. A missing record
+// is nobody's.
+func (m *MTLS) ownsCert(app string, cert map[string]any) bool {
+	if cert == nil {
+		return false
+	}
+	owned := false
+	m.cfg.View(func() {
+		domains := m.domainsLocked()
+		owned = ownsCertLocked(domains, app, appCAsLocked(domains, app), cert)
+	})
+	return owned
+}
+
+// ownedOnly keeps the fingerprints app owns, so a reply never names another
+// app's certificate that happens to share a key and a CA.
+func (m *MTLS) ownedOnly(store *certStore, app string, fingerprints []any) ([]any, error) {
+	var out []any
+	for _, fp := range fingerprints {
+		cert, err := store.get(str(fp))
+		if err != nil {
+			return nil, err
+		}
+		if m.ownsCert(app, cert) {
+			out = append(out, fp)
+		}
+	}
+	return out, nil
 }
 
 func sameKeyAs(store *certStore, fingerprint string, now float64) ([]any, error) {
@@ -1186,8 +1723,14 @@ func liveOnSameKey(certs map[string]any, fingerprint string, now float64) []any 
 }
 
 // List returns certificate records, optionally only those a domain's record
-// trusts. PEMs are left out: this runs on the hub's interval.
-func (m *MTLS) List(domainArg any) api.Result {
+// trusts. PEMs are left out: this runs on the hub's interval. An app sees only
+// the certificates it owns (ownsCertLocked), and its domain filter must name one
+// of its own records.
+func (m *MTLS) List(caller api.Caller, domainArg any) api.Result {
+	app, ok := reach(caller)
+	if !ok {
+		return permissionDenied()
+	}
 	filter := ""
 	if s, ok := domainArg.(string); ok {
 		norm := strings.ToLower(strings.TrimSpace(s))
@@ -1199,12 +1742,15 @@ func (m *MTLS) List(domainArg any) api.Result {
 	var failure string
 	var ids []string
 	m.cfg.View(func() {
+		domains := m.domainsLocked()
 		if filter == "" {
+			if app != "" {
+				ids = sortedSet(appCAsLocked(domains, app))
+			}
 			return
 		}
-		domains := m.domainsLocked()
 		record, ok := locateHost(domains, filter)
-		if !ok {
+		if !ok || !ownedLocked(domains, record, app) {
 			failure = __("Domain %s not found.", filter)
 			return
 		}
@@ -1228,6 +1774,9 @@ func (m *MTLS) List(domainArg any) api.Result {
 	if failure != "" {
 		return api.Res(false, failure)
 	}
+	if ids != nil && len(ids) == 0 {
+		return api.Res(true, []any{})
+	}
 
 	store, err := m.certs()
 	if err != nil {
@@ -1240,17 +1789,39 @@ func (m *MTLS) List(domainArg any) api.Result {
 
 	rows := make([]any, 0, len(certs))
 	m.cfg.View(func() {
-		cas := m.casLocked(false)
+		domains := m.domainsLocked()
+		var owned map[string]bool
+		if app != "" {
+			owned = appCAsLocked(domains, app)
+		}
 		for _, row := range certs {
-			if caID := str(row["ca"]); caID != "" {
-				if ca, _ := cas[caID].(map[string]any); ca != nil {
-					row["caName"] = ca["name"]
-				}
+			if !ownsCertLocked(domains, app, owned, row) {
+				continue
 			}
-			rows = append(rows, row)
+			rows = append(rows, m.withCANameLocked(row))
 		}
 	})
 	return api.Res(true, rows)
+}
+
+// withCANameLocked adds the name of a row's CA, which a dashboard shows next to
+// the certificate.
+func (m *MTLS) withCANameLocked(row map[string]any) map[string]any {
+	if caID, _ := row["ca"].(string); caID != "" {
+		if ca, _ := m.casLocked(false)[caID].(map[string]any); ca != nil {
+			row["caName"] = ca["name"]
+		}
+	}
+	return row
+}
+
+func sortedSet(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Prune drops what a deleted domain leaves behind. Without it, a domain added

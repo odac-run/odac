@@ -524,13 +524,19 @@ func (d *Domain) List(appIDArg any) api.Result {
 	d.cfg.View(func() {
 		domains := d.domainsLocked(false)
 		total = len(domains)
+		store, _ := d.cfg.Get("mtls").(map[string]any)
+		cas, _ := store["cas"].(map[string]any)
 		for _, name := range sortedKeys(domains) {
 			record, _ := domains[name].(map[string]any)
 			if record == nil {
 				record = map[string]any{}
 			}
 			if appID == "" || record["appId"] == appID {
-				rows = append(rows, row{domain: name, record: copyShallow(record)})
+				copied := copyShallow(record)
+				if raw, ok := record["mtls"]; ok {
+					copied["mtls"] = mtlsListView(raw, cas)
+				}
+				rows = append(rows, row{domain: name, record: copied})
 			}
 		}
 	})

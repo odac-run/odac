@@ -96,13 +96,22 @@ func (a *app) run(args []string) int {
 // call performs one request/response cycle: root auth from api.json,
 // progress lines rendered as they stream, final response rendered last.
 func (a *app) call(action string, data []any, detail bool) int {
+	return a.callWith(action, data, &renderer{out: a.out, errOut: a.errOut, detail: detail})
+}
+
+// callMessage is call for an action whose data restates its message for
+// programs, as domain.mtls.set does with its warnings: a person reads the sentence.
+func (a *app) callMessage(action string, data []any) int {
+	return a.callWith(action, data, &renderer{out: a.out, errOut: a.errOut, messageOnly: true})
+}
+
+func (a *app) callWith(action string, data []any, r *renderer) int {
 	if !a.check() {
 		fmt.Fprintln(a.errOut, "Odac server is not running.")
 		return 1
 	}
 
 	auth, _ := a.cfg.Map("api")["auth"].(string)
-	r := &renderer{out: a.out, errOut: a.errOut, detail: detail}
 	resp, err := a.client.Call(
 		apiproto.Request{Auth: auth, Action: action, Data: data},
 		r.progress,

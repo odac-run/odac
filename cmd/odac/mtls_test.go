@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -227,5 +228,97 @@ func TestCertFileName(t *testing.T) {
 		if got := certFileName(name); got != want {
 			t.Errorf("certFileName(%q) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// set answers its warnings twice, as a sentence and as data for the dashboard;
+// the CLI shows the sentence only.
+func TestSetPrintsTheMessageWithoutItsData(t *testing.T) {
+	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
+		conn.Write([]byte(`{"id":"e","result":true,"message":"Client certificates are optional for x.com.","data":{"published":[8080],"restart":true,"siblings":[]}}`))
+	})
+	for _, args := range [][]string{
+		{"domain", "mtls", "set", "-d", "x.com", "--mode", "optional"},
+		{"domain", "mtls", "off", "-d", "x.com"},
+	} {
+		a, out, errOut := testApp(t, addr)
+		if code := a.dispatch(args); code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, errOut.String())
+		}
+		if got := out.String(); got != "Client certificates are optional for x.com.\n" {
+			t.Fatalf("%v printed %q", args, got)
+		}
+	}
+}
+
+func TestCAImportSendsBothFilesToTheLocalAPI(t *testing.T) {
+	var got apiproto.Request
+	var mu sync.Mutex
+	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
+		mu.Lock()
+		got = req
+		mu.Unlock()
+		conn.Write([]byte(`{"id":"e","result":true,"message":"Imported client CA 0123456789abcdef.","data":{"id":"0123456789abcdef","name":"CA"}}`))
+	})
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key")
+	os.WriteFile(certFile, []byte("CERT PEM"), 0o600)
+	os.WriteFile(keyFile, []byte("KEY PEM"), 0o600)
+
+	a, out, errOut := testApp(t, addr)
+	if code := a.dispatch([]string{"domain", "mtls", "ca", "import", "--cert", certFile, "--key", keyFile}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got.Action != "domain.mtls.ca.import" || got.Auth != "roottoken" || len(got.Data) != 2 || got.Data[0] != "CERT PEM" || got.Data[1] != "KEY PEM" {
+		t.Fatalf("request = %+v", got)
+	}
+	if out.String() != "Imported client CA 0123456789abcdef.\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestImportSendsOneObjectWithTheCertificate(t *testing.T) {
+	var got apiproto.Request
+	var mu sync.Mutex
+	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
+		mu.Lock()
+		got = req
+		mu.Unlock()
+		conn.Write([]byte(`{"id":"e","result":true,"message":"Certificate ali imported.","data":{"fingerprint":"aa"}}`))
+	})
+	certFile := filepath.Join(t.TempDir(), "ali.crt")
+	os.WriteFile(certFile, []byte("CERT PEM"), 0o600)
+
+	a, out, errOut := testApp(t, addr)
+	if code := a.dispatch([]string{"domain", "mtls", "import", "--cert", certFile, "--hosts", "a.x.com, b.x.com", "--name", "ali"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []any{map[string]any{"cert": "CERT PEM", "hosts": []any{"a.x.com", "b.x.com"}, "name": "ali"}}
+	if got.Action != "domain.mtls.cert.import" || !reflect.DeepEqual(got.Data, want) {
+		t.Fatalf("request = %+v", got)
+	}
+	if out.String() != "Certificate ali imported.\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestCAImportFailsBeforeCallingWithoutItsFiles(t *testing.T) {
+	calls := make(chan struct{}, 1)
+	addr := fakeServer(t, func(req apiproto.Request, conn net.Conn) {
+		select {
+		case calls <- struct{}{}:
+		default:
+		}
+	})
+	a, _, errOut := testApp(t, addr)
+	if code := a.dispatch([]string{"domain", "mtls", "ca", "import", "--cert", filepath.Join(t.TempDir(), "missing"), "--key", "x"}); code == 0 {
+		t.Fatal("a missing file must fail")
+	}
+	if len(calls) != 0 || !strings.Contains(errOut.String(), "Failed to read") {
+		t.Fatalf("calls = %d, err = %q", len(calls), errOut.String())
 	}
 }
