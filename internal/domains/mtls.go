@@ -730,7 +730,8 @@ func (m *MTLS) writeIssuerLocked(record, issuer string) {
 // perHostRefusal checks that a per-host record trusts only CAs ODAC holds the key
 // for, on the record and on every host override as they will be after this write:
 // an issuer is something this server signs, and an external CA's certificates have
-// no record to tell a per-host chain from any other.
+// no record to tell a per-host chain from any other. Each CA must also allow one
+// intermediate, or every chain through an issuer under it is invalid.
 func (m *MTLS) perHostRefusal(record, host string, trusted []string, addsExternal bool) string {
 	if addsExternal {
 		return __("%s uses per-host issuers, which need a CA ODAC holds the key for. Switch it to --issuer record first to trust an external CA.", record)
@@ -753,8 +754,21 @@ func (m *MTLS) perHostRefusal(record, host string, trusted []string, addsExterna
 		}
 		cas := m.casLocked(false)
 		for _, id := range ids {
-			if ca, _ := cas[id].(map[string]any); ca != nil && ca["managed"] != true {
+			ca, _ := cas[id].(map[string]any)
+			if ca == nil {
+				continue
+			}
+			if ca["managed"] != true {
 				refusal = __("%s uses per-host issuers, which need a CA ODAC holds the key for, and CA %s is external.", record, id)
+				return
+			}
+			certPEM, _ := ca["cert"].(string)
+			block, _ := pem.Decode([]byte(certPEM))
+			if block == nil {
+				continue
+			}
+			if cert, err := x509.ParseCertificate(block.Bytes); err == nil && !mtls.AllowsHostIssuer(cert) {
+				refusal = __("CA %s has a path length of 0, so it cannot sign a per-host issuer. Import a CA that allows one intermediate (basicConstraints pathlen:1), or create a new one, and trust it on %s.", id, record)
 				return
 			}
 		}
@@ -869,8 +883,9 @@ func (m *MTLS) createCA(domain string) (string, error) {
 		NotAfter:              now.Add(mtlsCALifetime),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
-		MaxPathLenZero:        true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		// One intermediate: room for per-host issuers (mtls.AllowsHostIssuer).
+		MaxPathLen: 1,
+		KeyUsage:   x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {

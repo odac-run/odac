@@ -60,6 +60,10 @@ func (m *MTLS) issuerKeyPath(caID, host string) string {
 // certificates it signed still verify through the chain their clients send.
 // Caller holds m.mu.
 func (m *MTLS) ensureIssuerLocked(store *certStore, caID, host string, caCert *x509.Certificate, caKey any) (*x509.Certificate, crypto.Signer, string, error) {
+	if !mtls.AllowsHostIssuer(caCert) {
+		// Set refuses this; only a hand-edited config gets here.
+		return nil, nil, "", errors.New("the CA has a path length of 0 and cannot sign an issuer")
+	}
 	stored, err := store.issuer(caID, host)
 	if err != nil {
 		return nil, nil, "", err

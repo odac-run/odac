@@ -99,7 +99,7 @@ Several servers can sign and accept the same certificates when they share one CA
 ```bash
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -keyout ca.key -out ca.crt -days 3650 -subj "/CN=Edge Client CA" \
-  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:1" \
   -addext "keyUsage=critical,keyCertSign,cRLSign"
 ```
 
@@ -138,7 +138,7 @@ From then on, a certificate that opens a single host is signed by that host's ow
 - **Every server makes its own issuer.** The issuer is created on first use, and its key is made on that server and never leaves it. Servers sharing a CA all give their issuer the same name, which is all a browser filters on, and each accepts the others' issuers because the shared CA signed them. So [import](#sharing-a-ca-between-servers) a certificate together with its chain (the reply's `cert` followed by its `chain`): this server cannot check another server's issuer without it, and refuses the import.
 - **A single-host certificate stays on its host.** Its issuer's name is its host's, so `scope` cannot move it to another host. Issue a new one instead.
 - **Existing certificates keep working.** Ones signed by the CA before the switch are still accepted, and their hosts name the CA too. Going back with `--issuer record` is refused while any certificate signed by a per-host issuer is still valid, since nothing would accept it after the switch.
-- **It needs a CA ODAC holds the key for.** A domain or host override that trusts your own CA (`--ca-file`) cannot use per-host issuers.
+- **It needs a CA ODAC holds the key for, with room for one intermediate.** A domain or host override that trusts your own CA (`--ca-file`) cannot use per-host issuers, and neither can a CA whose `basicConstraints` say `pathlen:0`: it may only sign leaves, so every chain through an issuer under it would be invalid. CAs ODAC creates have `pathlen:1`; create a shared one the same way (see [Sharing a CA Between Servers](#sharing-a-ca-between-servers)), or leave the path length out.
 - Hosts longer than 64 characters, the limit of a certificate name, are signed by the CA.
 - An issuer is removed once no valid certificate was signed through it, or its domain is deleted.
 
@@ -196,6 +196,7 @@ To identify a user, match on issuer and subject together. These stay the same wh
 ### Browser Behavior
 
 - **Only hosts with certificates ask.** On an `optional` host, ODAC sends no certificate request while no valid certificate it knows of opens that host, so visitors are not prompted for nothing and HTTP/3 stays on. A `required` host, and a host that trusts your own CA (whose certificates ODAC cannot count), always ask.
+- **A new certificate needs a new connection.** A connection opened while a host was not asking, and a TLS session resumed from one, carry no certificate request. After the first certificate for a host is issued, a visitor may have to reconnect (close the tab or wait about two minutes) before the browser offers it.
 - **Browsers ask when connecting, not per page.** Your app can refuse `/admin` to a visitor without a certificate, but it cannot make the certificate prompt appear when they reach it.
 - **Canceling is remembered.** If someone dismisses the prompt, the browser usually keeps that choice for a while, so a "Sign in with certificate" button cannot bring it back on the same host.
 - **Log out cannot clear the choice.** The browser keeps sending the certificate, so your app has to remember that the user signed out.

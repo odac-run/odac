@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -373,4 +377,82 @@ func TestCertStoreGainsTheIssuerColumns(t *testing.T) {
 	if err != nil || string(snap.Scopes) != `{"fp":["a.x.com"]}` || snap.Issuers != nil {
 		t.Fatalf("snapshot = %s %+v %v", snap.Scopes, snap.Issuers, err)
 	}
+}
+
+// sharedCAWithPathLen is newSharedCA with a basicConstraints path length.
+func sharedCAWithPathLen(t *testing.T, pathLen int) *sharedCA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "Edge Client CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, MaxPathLen: pathLen, MaxPathLenZero: pathLen == 0,
+		KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, _ := x509.ParseCertificate(der)
+	keyDER, _ := x509.MarshalPKCS8PrivateKey(key)
+	return &sharedCA{
+		cert:    cert,
+		certPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		keyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
+	}
+}
+
+func TestPerHostNeedsACAThatAllowsAnIssuer(t *testing.T) {
+	zero := sharedCAWithPathLen(t, 0)
+	fx := edgeNode(t, zero)
+	// Record mode is untouched by the CA's path length.
+	direct := fx.issue(t, "x.com", "dev0", "auth.x.com")
+	if got := pemCerts(t, direct["chain"].(string)); len(got) != 1 || !got[0].Equal(zero.cert) {
+		t.Fatal("record mode under a pathlen-0 CA must sign straight from it")
+	}
+	mustFail(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{zero.id()}, "issuer": mtls.IssuerPerHost}), "path length of 0")
+	if _, has := fx.record("x.com")["issuer"]; has {
+		t.Fatal("a refused set stored the issuer")
+	}
+
+	// A per-host record cannot take a pathlen-0 CA later either.
+	one := sharedCAWithPathLen(t, 1)
+	px := edgeNode(t, one)
+	mustOK(t, px.m.ImportCA(api.Operator, zero.certPEM, zero.keyPEM))
+	mustOK(t, px.m.Set("x.com", "optional", map[string]any{"ca": []any{one.id()}, "issuer": mtls.IssuerPerHost}))
+	mustFail(t, px.m.Set("auth.x.com", "optional", map[string]any{"ca": []any{zero.id()}}), "path length of 0")
+	reply := px.issue(t, "x.com", "dev1", "auth.x.com")
+	if got := pemCerts(t, reply["chain"].(string)); len(got) != 2 {
+		t.Fatalf("pathlen 1: chain has %d certificates, want issuer and CA", len(got))
+	}
+
+	// A chain through an issuer under a pathlen-0 CA is refused, however it came to be.
+	issuerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	zeroKeyBlock, _ := pem.Decode([]byte(zero.keyPEM))
+	zeroKey, _ := x509.ParsePKCS8PrivateKey(zeroKeyBlock.Bytes)
+	issuerDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(7), RawSubject: mtls.IssuerSubject("auth.x.com", zero.cert),
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
+	}, zero.cert, &issuerKey.PublicKey, zeroKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer, _ := x509.ParseCertificate(issuerDER)
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	leafDER, _ := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(8), Subject: pkix.Name{CommonName: "forged"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, issuer, &leafKey.PublicKey, issuerKey)
+	full := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})) + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuerDER}))
+	// Hand-edited to per-host, past Set's refusal: the path length still refuses.
+	fx.cfg.Mutate(func() {
+		fx.cfg.Map("domains")["x.com"].(map[string]any)["mtls"].(map[string]any)["issuer"] = mtls.IssuerPerHost
+	})
+	mustFail(t, fx.m.Import(asApp, importOpts(full, "auth.x.com")), "not signed by a client CA")
+	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "dev2", "hosts": []any{"auth.x.com"}, "csr": newCSR(t)}), "Failed to sign")
 }

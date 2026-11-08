@@ -58,6 +58,14 @@ func IssuerSubject(host string, ca *x509.Certificate) []byte {
 	return der
 }
 
+// AllowsHostIssuer reports whether a CA may sign a per-host issuer: its path
+// length must leave room for one intermediate. ODAC creates managed CAs with
+// pathlen 1; a CA with pathlen 0 can only sign leaves, and a chain through an
+// issuer under it is invalid for every chain builder, keychains included.
+func AllowsHostIssuer(ca *x509.Certificate) bool {
+	return !ca.BasicConstraintsValid || ca.MaxPathLen != 0
+}
+
 // VerifyPerHost checks a presented chain the way a per-host record trusts it.
 // x509.Verify cannot do this: with the CA in its pool the handshake would name the
 // CA and every certificate would be offered again, and without it the issuer of
@@ -66,11 +74,10 @@ func IssuerSubject(host string, ca *x509.Certificate) []byte {
 // The leaf is accepted when one of cas signed it directly, or when an issuer
 // signed it that carries IssuerSubject(host) exactly, is a CA limited to signing
 // leaves (pathlen 0), may sign client certificates, and was itself signed by that
-// CA. An issuer of another host is refused however it chains. Issuers come from
-// the client's chain and then from extra, this server's own. The CA is the trust
-// anchor and its own path length is deliberately not applied: a managed CA is
-// often made with pathlen 0, and per RFC 5280 an anchor's constraints are
-// optional input. Every certificate on the path must be valid at now.
+// CA, whose own path length must allow it (AllowsHostIssuer). An issuer of
+// another host is refused however it chains. Issuers come from the client's chain
+// and then from extra, this server's own. Every certificate on the path must be
+// valid at now.
 //
 // It returns the CA that anchors the path and the end of the path's validity, or
 // a nil CA with VerifyExpired or VerifyUntrusted.
@@ -95,7 +102,7 @@ func VerifyPerHost(chain, extra, cas []*x509.Certificate, host string, now time.
 			return finishPath(now, leaf, ca)
 		}
 		want := IssuerSubject(host, ca)
-		if want == nil || !bytes.Equal(leaf.RawIssuer, want) {
+		if want == nil || !bytes.Equal(leaf.RawIssuer, want) || !AllowsHostIssuer(ca) {
 			continue
 		}
 		for _, issuer := range candidates {

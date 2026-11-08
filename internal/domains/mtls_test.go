@@ -209,8 +209,9 @@ func TestIssueCreatesACAAndAClientOnlyCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ca.IsCA || !ca.MaxPathLenZero {
-		t.Fatalf("CA: isCA=%v pathLenZero=%v", ca.IsCA, ca.MaxPathLenZero)
+	// pathlen 1: room for one per-host issuer, nothing deeper.
+	if !ca.IsCA || ca.MaxPathLen != 1 {
+		t.Fatalf("CA: isCA=%v pathLen=%d", ca.IsCA, ca.MaxPathLen)
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)

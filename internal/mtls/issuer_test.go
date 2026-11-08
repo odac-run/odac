@@ -40,11 +40,16 @@ func sign(t *testing.T, tmpl *x509.Certificate, parent *signer) *signer {
 	return &signer{cert: cert, key: key}
 }
 
+// newRootCA is a CA the way ODAC creates a managed one: pathlen 1.
 func newRootCA(t *testing.T, name string) *signer {
-	// pathlen 0, the way ODAC creates a managed CA: the anchor's own limit is not applied.
+	return newRootCAWithPathLen(t, name, 1)
+}
+
+// newRootCAWithPathLen takes -1 for no path length constraint.
+func newRootCAWithPathLen(t *testing.T, name string, pathLen int) *signer {
 	return sign(t, &x509.Certificate{
 		Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour),
-		IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
+		IsCA: true, BasicConstraintsValid: true, MaxPathLen: pathLen, MaxPathLenZero: pathLen == 0, KeyUsage: x509.KeyUsageCertSign,
 	}, nil)
 }
 
@@ -221,5 +226,29 @@ func TestVerifyPerHostAcceptsALeafStraightFromTheCA(t *testing.T) {
 	foreign := sign(t, leafTemplate("alice"), stranger)
 	if s := verifyStatus([]*x509.Certificate{foreign.cert}, nil, ca, "a.x.com"); s != VerifyUntrusted {
 		t.Fatalf("leaf of a same-named CA: %s", s)
+	}
+}
+
+// The CA's own path length is applied like any chain builder applies it: a
+// pathlen-0 CA can sign leaves only, so no chain through an issuer under it holds.
+func TestVerifyPerHostEnforcesTheCAsPathLength(t *testing.T) {
+	for _, tc := range []struct {
+		pathLen int
+		want    string
+	}{{0, VerifyUntrusted}, {1, VerifySuccess}, {-1, VerifySuccess}} {
+		ca := newRootCAWithPathLen(t, "ca", tc.pathLen)
+		if got := AllowsHostIssuer(ca.cert); got != (tc.want == VerifySuccess) {
+			t.Errorf("pathlen %d: AllowsHostIssuer = %v", tc.pathLen, got)
+		}
+		issuer := sign(t, issuerTemplate("a.x.com", ca.cert), ca)
+		leaf := sign(t, leafTemplate("alice"), issuer)
+		if s := verifyStatus([]*x509.Certificate{leaf.cert, issuer.cert}, nil, ca, "a.x.com"); s != tc.want {
+			t.Errorf("pathlen %d via issuer: %s, want %s", tc.pathLen, s, tc.want)
+		}
+		// A leaf straight from the CA is a path with no intermediate, valid under any pathlen.
+		direct := sign(t, leafTemplate("bob"), ca)
+		if s := verifyStatus([]*x509.Certificate{direct.cert}, nil, ca, "a.x.com"); s != VerifySuccess {
+			t.Errorf("pathlen %d direct: %s", tc.pathLen, s)
+		}
 	}
 }
