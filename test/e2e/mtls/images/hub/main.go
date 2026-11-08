@@ -176,7 +176,7 @@ func (h *hub) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	blocked := h.blocked[id]
 	h.mu.Unlock()
 	if blocked {
-		log.Printf("edge=%s refused: blocked by the harness", id)
+		log.Printf("edge=%s refused: blocked by the harness", logSafe(id))
 		http.Error(w, "edge blocked", http.StatusServiceUnavailable)
 		return
 	}
@@ -195,7 +195,7 @@ func (h *hub) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		tunnels = append(tunnels, t)
 	}
 	h.mu.Unlock()
-	log.Printf("edge=%s connected", id)
+	log.Printf("edge=%s connected", logSafe(id))
 
 	_ = e.send(map[string]any{"action": "sync", "tunnels": tunnels})
 	go h.flush(id)
@@ -207,7 +207,7 @@ func (h *hub) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 		h.mu.Unlock()
 		conn.Close()
-		log.Printf("edge=%s disconnected", id)
+		log.Printf("edge=%s disconnected", logSafe(id))
 	}()
 	conn.SetReadLimit(1 << 20)
 	for {
@@ -223,12 +223,12 @@ func (h *hub) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			Code   string `json:"code"`
 		}
 		if json.Unmarshal(raw, &head) != nil {
-			log.Printf("edge=%s sent an unreadable message size=%d", id, len(raw))
+			log.Printf("edge=%s sent an unreadable message size=%d", logSafe(id), len(raw))
 			continue
 		}
 		switch head.Action {
 		case "cert.result", "cert.revoked", "cert.imported":
-			log.Printf("edge=%s reply action=%s id=%s ok=%v code=%q reply_edge=%s", id, head.Action, head.ID, head.OK, head.Code, head.Edge)
+			log.Printf("edge=%s reply action=%s id=%s ok=%v code=%q reply_edge=%s", logSafe(id), logSafe(head.Action), logSafe(head.ID), head.OK, logSafe(head.Code), logSafe(head.Edge))
 			h.mu.Lock()
 			ch := h.pending[head.ID]
 			delete(h.pending, head.ID)
@@ -238,7 +238,7 @@ func (h *hub) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			}
 		case "bandwidth":
 		default:
-			log.Printf("edge=%s unknown action=%q", id, head.Action)
+			log.Printf("edge=%s unknown action=%q", logSafe(id), logSafe(head.Action))
 		}
 	}
 }
@@ -250,7 +250,7 @@ func (h *hub) exchange(e *edge, id string, msg map[string]any) (json.RawMessage,
 	h.pending[id] = ch
 	h.mu.Unlock()
 	msg["id"] = id
-	log.Printf("edge=%s request action=%v id=%s", e.id, msg["action"], id)
+	log.Printf("edge=%s request action=%s id=%s", logSafe(e.id), logSafe(msg["action"]), logSafe(id))
 	if err := e.send(msg); err != nil {
 		h.mu.Lock()
 		delete(h.pending, id)
@@ -282,14 +282,14 @@ func (h *hub) flush(id string) {
 		h.mu.Unlock()
 		raw, err := h.exchange(e, next.id, next.msg)
 		if err != nil {
-			log.Printf("edge=%s flush stopped at id=%s: %v", id, next.id, err)
+			log.Printf("edge=%s flush stopped at id=%s: %s", logSafe(id), logSafe(next.id), logSafe(err))
 			return
 		}
 		h.mu.Lock()
 		h.queue[id] = h.queue[id][1:]
 		h.flushed[id] = append(h.flushed[id], raw)
 		h.mu.Unlock()
-		log.Printf("edge=%s flushed id=%s", id, next.id)
+		log.Printf("edge=%s flushed id=%s", logSafe(id), logSafe(next.id))
 	}
 }
 
@@ -302,12 +302,20 @@ func (h *hub) broadcast(msg map[string]any) {
 	h.mu.Unlock()
 	for _, e := range edges {
 		if err := e.send(msg); err != nil {
-			log.Printf("edge=%s broadcast failed: %v", e.id, err)
+			log.Printf("edge=%s broadcast failed: %s", logSafe(e.id), logSafe(err))
 		}
 	}
 }
 
 // --- harness control (/ctl) ---
+
+// logSafe renders a value another party sent for a log line, without the line
+// breaks that would let it forge further lines: the scenarios read these logs.
+func logSafe(v any) string {
+	s := fmt.Sprint(v)
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.ReplaceAll(s, "\r", "")
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -342,7 +350,7 @@ func (h *hub) handleCtl(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		h.tunnels[t.Domain] = t
 		h.mu.Unlock()
-		log.Printf("tunnel upsert domain=%s user=%s", t.Domain, t.User)
+		log.Printf("tunnel upsert domain=%s user=%s", logSafe(t.Domain), logSafe(t.User))
 		h.broadcast(map[string]any{"action": "upsert", "tokenType": "agent", "domain": t.Domain, "token": t.Token, "user": t.User})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 
@@ -360,7 +368,7 @@ func (h *hub) handleCtl(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("queue") == "1" {
 				h.queue[edgeID] = append(h.queue[edgeID], queued{id: id, msg: msg})
 				h.mu.Unlock()
-				log.Printf("edge=%s offline, queued action=%v id=%s", edgeID, msg["action"], id)
+				log.Printf("edge=%s offline, queued action=%s id=%s", logSafe(edgeID), logSafe(msg["action"]), logSafe(id))
 				writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "id": id})
 				return
 			}
@@ -387,6 +395,10 @@ func (h *hub) handleCtl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 
 	case "block":
+		if !edgeIDPattern.MatchString(edgeID) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request"})
+			return
+		}
 		on := r.URL.Query().Get("on") == "1"
 		h.mu.Lock()
 		h.blocked[edgeID] = on
@@ -395,7 +407,7 @@ func (h *hub) handleCtl(w http.ResponseWriter, r *http.Request) {
 		if on && e != nil {
 			e.conn.Close()
 		}
-		log.Printf("edge=%s blocked=%v", edgeID, on)
+		log.Printf("edge=%s blocked=%v", logSafe(edgeID), on)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 
 	default:
