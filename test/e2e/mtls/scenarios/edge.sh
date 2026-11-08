@@ -309,6 +309,62 @@ edge_owner_change() {
 	fi
 }
 
+# K21 over the hub: the tunnel record goes per-host on both edges; a certificate
+# issued on edge-a through the hub carries its host's issuer, and the hub's
+# cert.import delivers it to edge-b with that chain (as the dashboard does). The
+# same import without the chain is refused with the agent's own message, since
+# edge-b cannot check edge-a's issuer.
+edge_perhost_import() {
+	local name=edge.perhost-import out n line nochain_msg before after names chain_n
+	[ "$E_READY" = 1 ] || { skip "$name" "edge setup failed"; return; }
+	for n in edge-a edge-b; do
+		out=$(odac "$n" domain mtls set -d tun.mtls.test --mode optional --issuer per-host) ||
+			{ fail "$name" "$n set --issuer per-host: $(cli_safe "$out")"; return; }
+	done
+	make_csr t1p
+	parse_reply "$(hub_request edge-a t1p <<EOF
+--rawfile csr /work/t1p.csr --arg name "$(digest "$E_U1")/t1p" '{action: "cert.issue", domain: "$E_TUNNEL", name: \$name, csr: \$csr, days: 30}'
+EOF
+)"
+	local fp=$R_FP issued
+	issued=$(reply_line)
+	client_sh "jq -r '.cert // empty' /work/t1p.reply > /work/t1p-leaf.pem; jq -r '.chain // empty' /work/t1p.reply > /work/t1p.chain; cat /work/t1p-leaf.pem /work/t1p.chain > /work/t1p.crt"
+	chain_n=$(client_sh "grep -c 'BEGIN CERTIFICATE' /work/t1p.chain")
+	if [ "$R_OK" != true ] || [ "$chain_n" != 2 ]; then
+		fail "$name" "issue on edge-a: $issued chain_blocks=$chain_n"
+		return
+	fi
+	wait_probe 15 '[ "$P_BODY_OK" = 1 ]' edge-a "$E_TUNNEL" /e2e/perhost t1p || true
+	local on_a on_a_ok
+	on_a=$(probe_line)
+	on_a_ok=$P_BODY_OK
+	probe edge-b "$E_TUNNEL" /e2e/perhost t1p
+	before=$(probe_line)
+	local before_code=$P_CODE
+
+	parse_reply "$(hub_request edge-b t1p-nochain <<EOF
+--rawfile cert /work/t1p-leaf.pem --arg name "$(digest "$E_U1")/t1p" '{action: "cert.import", domain: "$E_TUNNEL", name: \$name, cert: \$cert}'
+EOF
+)"
+	local nochain_ok=$R_OK
+	nochain_msg=$(client_sh "jq -r '.message // empty' /work/t1p-nochain.reply" | tr -d '\n')
+	parse_reply "$(hub_request edge-b t1p-import <<EOF
+--rawfile cert /work/t1p-leaf.pem --rawfile chain /work/t1p.chain --arg name "$(digest "$E_U1")/t1p" '{action: "cert.import", domain: "$E_TUNNEL", name: \$name, cert: \$cert, chain: \$chain}'
+EOF
+)"
+	line=$(reply_line)
+	wait_probe 15 '[ "$P_CODE" = 502 ]' edge-b "$E_TUNNEL" /e2e/perhost t1p || true
+	after=$(probe_line)
+	names=$(ca_names edge-b "$E_TUNNEL")
+	if [ -n "$fp" ] && [ "$on_a_ok" = 1 ] && [ "$before_code" = 403 ] &&
+		[ "$nochain_ok" = false ] && [[ "$nochain_msg" == *chain* ]] &&
+		[ "$R_OK" = true ] && [ "$R_FP" = "$fp" ] && [ "$P_CODE" = 502 ] && [[ "$(norm_dn "$names")" == *"CN=$E_TUNNEL"* ]]; then
+		pass "$name" "issued on edge-a via hub ($issued, chain=issuer+CA), opens edge-a: $on_a | edge-b before: $before | import without chain refused: \"$nochain_msg\" | with chain: $line, then $after (accepted; tunnel on edge-a) | edge-b names [$names]"
+	else
+		fail "$name" "issue: $issued | edge-a: $on_a | edge-b before: $before | no-chain ok=$nochain_ok \"$nochain_msg\" | with chain: $line fp=${R_FP:0:16}/${fp:0:16} | after: $after | names [$names]"
+	fi
+}
+
 suite_edge() {
 	log "--- suite: edge + multi-edge (test hub speaking §6; odac-tunnel on edge-a/edge-b) ---"
 	edge_fail_closed
@@ -318,15 +374,16 @@ suite_edge() {
 		edge_multi_import
 		edge_multi_revoke_offline
 		edge_revoke_not_found
+		edge_perhost_import
 		edge_owner_change
 	else
 		local s
-		for s in edge.issue edge.issue.refused multi.import multi.revoke-offline edge.revoke.not-found edge.owner-change; do
+		for s in edge.issue edge.issue.refused multi.import multi.revoke-offline edge.revoke.not-found edge.perhost-import edge.owner-change; do
 			skip "$s" "edge setup failed"
 		done
 	fi
 }
 
 leak_needles_edge() {
-	client_sh 'for f in /work/t1a.csr /work/t1a.key /work/t1a.crt /work/t1b.csr /work/t1b.key /work/t1b.crt /work/t1x.csr /work/t1x.key /work/keeper-t.csr /work/keeper-t.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
+	client_sh 'for f in /work/t1a.csr /work/t1a.key /work/t1a.crt /work/t1b.csr /work/t1b.key /work/t1b.crt /work/t1x.csr /work/t1x.key /work/keeper-t.csr /work/keeper-t.key /work/t1p.csr /work/t1p.key /work/t1p.crt; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
 }

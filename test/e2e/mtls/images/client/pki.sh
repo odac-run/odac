@@ -5,7 +5,8 @@
 #   root.pem/.key       test root: signs the TLS certificates below
 #   server.pem/.key     every TLS name in the run: the nodes' fallback
 #                       certificate (tunnel.odac.run included) and the hub
-#   mtls-ca.pem/.key    the client CA the edges share (A7/K18)
+#   mtls-ca.pem/.key    the client CA the edges share (A7/K18), pathlen 1 so it
+#                       can sign per-host issuers (K21)
 set -eu
 cd /e2e/pki
 [ -f done ] && exit 0
@@ -30,7 +31,7 @@ rm -f server.csr server.ext root.srl
 
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 	-keyout mtls-ca.key -out mtls-ca.pem -days 365 -subj "/CN=mtls-e2e edge client CA" \
-	-addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+	-addext "basicConstraints=critical,CA:TRUE,pathlen:1" \
 	-addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
 
 chmod 0644 root.pem server.pem mtls-ca.pem
