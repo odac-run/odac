@@ -331,6 +331,10 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 	apiSrv.Register("domain.mtls.ca.import", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(mtlsSvc.ImportCA(a.Caller(), a.At(0), a.At(1)))
 	})
+	// Local API only too: removing a CA destroys a key, the operator's decision.
+	apiSrv.Register("domain.mtls.ca.remove", func(a api.Args, _ api.Progress) (*api.Result, error) {
+		return res(mtlsSvc.RemoveCA(a.Caller(), a.At(0), a.At(1)))
+	})
 	apiSrv.Register("ssl.renew", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(sslSvc.Renew(a.At(0)))
 	})

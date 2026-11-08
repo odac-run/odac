@@ -259,6 +259,21 @@ func (s *certStore) anyLive(ca string, now float64, match func(hosts []string) b
 	return false, rows.Err()
 }
 
+// liveCount counts the certificates a CA signed that would still open something.
+func (s *certStore) liveCount(ca string, now float64) (int, error) {
+	var n int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM certs WHERE ca = ? AND revoked IS NULL AND not_after > ?", ca, int64(now)).Scan(&n)
+	return n, err
+}
+
+// retireCA drops the certificates of a removed CA but keeps its revocations: an
+// imported CA can be imported again, and a revoked row is what refuses the same
+// certificate on a later cert.import.
+func (s *certStore) retireCA(ca string) error {
+	_, err := s.db.Exec("DELETE FROM certs WHERE ca = ? AND revoked IS NULL", ca)
+	return err
+}
+
 // certListSelect reads dashboard rows: the record shape minus PEMs and key hashes.
 const certListSelect = "SELECT fingerprint, ca, NULL, created, hosts, name, not_after, NULL, revoked, serial, NULL, NULL, NULL FROM certs"
 

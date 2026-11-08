@@ -383,7 +383,8 @@ func (m *MTLS) saveLocked() {
 // from a lockout. On a subdomain it stores an override. opts may carry "ca" (CA
 // ids, replacing the trusted set), "caPem" (an external CA to add) and, on a
 // record's own name, "issuer" (mtls.IssuerRecord or mtls.IssuerPerHost; absent
-// keeps the current one).
+// keeps the current one). A CA the change leaves trusted nowhere is removed with
+// its key unless it still has valid certificates (retireDroppedLocked).
 func (m *MTLS) Set(domainArg, modeArg, optsArg any) api.Result {
 	host, errMsg := cleanHost(domainArg)
 	if errMsg != "" {
@@ -396,7 +397,11 @@ func (m *MTLS) Set(domainArg, modeArg, optsArg any) api.Result {
 	opts := optionsOf(optsArg)
 
 	m.mu.Lock()
+	before := m.referencedCAs()
 	result, changed := m.setLocked(host, mode, opts)
+	if changed {
+		result = appendNotes(result, m.retireDroppedLocked(before))
+	}
 	m.mu.Unlock()
 
 	if changed && m.proxy != nil {

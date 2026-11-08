@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -76,6 +77,11 @@ func mtlsCommand() *command {
 						description: "Import a CA with its key as a managed CA, so several servers sign and accept the same certificates",
 						args:        []string{"--cert", "--key"},
 						action:      (*app).mtlsCAImport,
+					}},
+					{"remove", &command{
+						description: "Remove a CA no domain trusts, with its key. --force also removes one that signed valid certificates",
+						args:        []string{"--ca", "--force"},
+						action:      (*app).mtlsCARemove,
 					}},
 				},
 			}},
@@ -181,6 +187,20 @@ func (a *app) mtlsCAImport(args []string) int {
 		return 1
 	}
 	return a.callMessage("domain.mtls.ca.import", []any{string(certPEM), string(keyPEM)})
+}
+
+// mtlsCARemove asks the server to delete a CA and its key. Like the import it is
+// local only: the hub has no equivalent.
+func (a *app) mtlsCARemove(args []string) int {
+	id := parseArg(args, "--ca")
+	if id == "" {
+		id = a.question(__("Enter the CA id: "))
+	}
+	opts := map[string]any{}
+	if slices.Contains(args, "--force") {
+		opts["force"] = true
+	}
+	return a.callMessage("domain.mtls.ca.remove", []any{id, opts})
 }
 
 // mtlsIssue signs a certificate. With --csr the private key was made elsewhere

@@ -210,6 +210,9 @@ func TestCertificateReplicatesBetweenNodesThroughTheAPI(t *testing.T) {
 		if r := s.call(t, s.root, "domain.mtls.set", "edge.test", "optional", map[string]any{"ca": []any{id}}); !r.Result {
 			t.Fatalf("set: %s", r.Message)
 		}
+		if r := s.call(t, s.app, "domain.mtls.ca.remove", id, map[string]any{"force": true}); r.Result || r.Message != "permission_denied" {
+			t.Fatalf("an app removed a CA: %+v", r)
+		}
 	}
 
 	name := strings.Repeat("ab", 16) + "/" + "V1StGXR8_Z5jdHi6B-myT"

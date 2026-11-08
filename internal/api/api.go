@@ -163,7 +163,8 @@ func (s *Server) HostSocketDir() string {
 // itself; domain.mtls.set switches a client certificate policy, and
 // domain.mtls.cert.scope widens a certificate, on any domain;
 // domain.mtls.ca.import plants a CA key, which signs for every record that
-// trusts that CA).
+// trusts that CA, and domain.mtls.ca.remove destroys one, cutting off every
+// certificate it signed on every record).
 //
 // domain.mtls.cert.issue, revoke, list and import are deliberately absent.
 // Their danger was reach, not the action: on any domain they mint a way past
@@ -181,6 +182,7 @@ var appDeniedActions = map[string]bool{
 	"domain.mtls.set":        true,
 	"domain.mtls.cert.scope": true,
 	"domain.mtls.ca.import":  true,
+	"domain.mtls.ca.remove":  true,
 }
 
 // AppMayCall reports whether an app token is ever allowed to call an action.

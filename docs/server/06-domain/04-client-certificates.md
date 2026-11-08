@@ -40,6 +40,7 @@ odac domain mtls off -d example.com
 | `odac domain mtls revoke --fingerprint <fp>` | Revoke a certificate |
 | `odac domain mtls list [-d <host>]` | List certificates |
 | `odac domain mtls ca import --cert <pem> --key <pem>` | Import a CA with its key, to share it between servers |
+| `odac domain mtls ca remove --ca <id>` | Delete a CA no domain trusts, with its key. `--force` if it still signed valid certificates |
 | `odac domain mtls import --cert <pem> --hosts <hosts>` | Record a certificate another server signed with a shared CA. `--name` must match its subject |
 
 Setting a mode on a main domain covers all of its hosts. Setting it on a subdomain overrides that one host, so `example.com` can stay `optional` while `auth.example.com` is `required`.
@@ -123,6 +124,23 @@ odac domain mtls import --cert alice.crt --hosts auth.example.com
 ```
 
 The certificate must be signed by a managed CA that every listed host trusts, and the hosts follow the same rules as `issue`. Importing it again changes nothing, and a certificate revoked on this server cannot be imported, so revoke it on every server that has it. Scope and revocation are kept per server, too.
+
+### Replacing a CA
+
+To move a domain to another CA, for example a shared one or one that allows [per-host issuers](#one-issuer-per-host), trust the new one with `--ca`:
+
+```bash
+odac domain mtls ca import --cert ca.crt --key ca.key
+odac domain mtls set -d example.com --mode optional --ca <new-id>
+```
+
+A CA that no domain or host trusts after a `set` is deleted with its key, its per-host issuers and its certificates, and the reply says so. If it still signed valid certificates, it is kept and the reply names it: trust it again to bring them back, or delete it on purpose:
+
+```bash
+odac domain mtls ca remove --ca <old-id> --force
+```
+
+`ca remove` refuses a CA a host with a mode still trusts. A domain turned `off` keeps its CA so that turning it on again reuses it; `ca remove` takes the CA off such a domain too, and the next `set` creates a new one. An imported CA nothing trusts yet is never removed by a `set`. Revocations outlive their CA, so a CA imported again does not bring a revoked certificate back. Removing a CA cannot be undone: every certificate it signed stops working for good.
 
 ### One Issuer per Host
 
@@ -217,4 +235,4 @@ For a login flow, use a separate host. Make `auth.example.com` `required`, verif
 - CA private keys, and the keys of per-host issuers (`cert/mtls/issuers/`), stay on the server and never reach the proxy or the Cloud.
 - Issued certificates and revocations are in `cert/mtls/certs.db`. Include all of `cert/mtls/` in backups: restoring an older copy brings revoked certificates back.
 - Revoking a certificate also closes its open connections, including WebSockets.
-- Deleting a domain removes its hosts from every certificate, and a CA that no domain uses any more is deleted with its key. Adding the domain again does not bring old certificates back.
+- Deleting a domain removes its hosts from every certificate, and a CA that no domain uses any more is deleted with its key, as is a CA a `set` stops trusting (see [Replacing a CA](#replacing-a-ca)). Adding the domain again does not bring old certificates back.

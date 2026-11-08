@@ -1259,11 +1259,12 @@ func TestMTLSCommandsReachTheService(t *testing.T) {
 	}
 }
 
-// A CA import carries the CA's private key, which must never cross the hub.
-func TestHubCannotImportACA(t *testing.T) {
+// A CA import carries the CA's private key, which must never cross the hub, and
+// removing one destroys it, which is the operator's call on the server itself.
+func TestHubCannotImportOrRemoveACA(t *testing.T) {
 	fx := newHubFixture(t)
 	for name := range fx.h.commands {
-		if strings.Contains(name, "ca.import") {
+		if strings.Contains(name, "ca.import") || strings.Contains(name, "ca.remove") {
 			t.Fatalf("the hub offers %s", name)
 		}
 	}

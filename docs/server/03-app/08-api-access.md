@@ -91,7 +91,7 @@ The `domain.mtls.cert.*` actions let an app hand out [client certificates](../06
 - Revoking a certificate that is already revoked succeeds, so a retry is safe.
 - Importing a certificate that is already recorded returns its row again. A revoked one is never imported.
 
-Setting a mode (`domain.mtls.set`) and changing a certificate's hosts (`domain.mtls.cert.scope`) are never available to apps, not even with `--all`. Those stay with the CLI and the dashboard.
+Setting a mode (`domain.mtls.set`), changing a certificate's hosts (`domain.mtls.cert.scope`), and importing or removing a CA (`domain.mtls.ca.import`, `domain.mtls.ca.remove`) are never available to apps, not even with `--all`. Those stay with the CLI and the dashboard.
 
 ### Usage
 
@@ -128,4 +128,4 @@ Action names are validated against the server's registered actions when you gran
 
 ### Choosing Permissions
 
-Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `domain.mtls.set` or `domain.mtls.cert.scope`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).
+Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `domain.mtls.set`, `domain.mtls.cert.scope`, `domain.mtls.ca.import` or `domain.mtls.ca.remove`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).
