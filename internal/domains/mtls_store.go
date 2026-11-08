@@ -266,6 +266,26 @@ func (s *certStore) liveCount(ca string, now float64) (int, error) {
 	return n, err
 }
 
+// liveNames names up to limit of the certificates liveCount counts, by name, or by
+// the start of the fingerprint for one recorded without a name.
+func (s *certStore) liveNames(ca string, now float64, limit int) ([]string, error) {
+	rows, err := s.db.Query(`SELECT COALESCE(NULLIF(name, ''), substr(fingerprint, 1, 16)) AS label FROM certs
+		WHERE ca = ? AND revoked IS NULL AND not_after > ? ORDER BY label LIMIT ?`, ca, int64(now), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
 // retireCA drops the certificates of a removed CA but keeps its revocations: an
 // imported CA can be imported again, and a revoked row is what refuses the same
 // certificate on a later cert.import.

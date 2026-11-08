@@ -1,6 +1,7 @@
 package domains
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,7 +67,7 @@ func TestReplacingACAWithValidCertificatesKeepsIt(t *testing.T) {
 	shared := fx.importCA(t)
 
 	r := mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{shared}}))
-	if !strings.Contains(str(r.Message), "Kept client CA "+old) || !strings.Contains(str(r.Message), "--force") {
+	if msg := str(r.Message); !strings.Contains(msg, "Kept client CA "+old) || !strings.Contains(msg, "--force") || !strings.HasSuffix(msg, "The certificates: ali.") {
 		t.Fatalf("message = %q", r.Message)
 	}
 	if !fx.caIDs()[old] || !fx.caKeyExists(old) {
@@ -151,10 +152,10 @@ func TestRemoveCANeedsForceForValidCertificates(t *testing.T) {
 	mustOK(t, fx.m.Revoke(api.Operator, revoked["fingerprint"]))
 	mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{fx.importCA(t)}}))
 
-	mustFail(t, fx.m.RemoveCA(api.Operator, old, nil), "1 valid certificate(s)")
+	mustFail(t, fx.m.RemoveCA(api.Operator, old, nil), "1 valid certificate(s): ali.")
 	before := fx.proxy.syncCount()
 	r := mustOK(t, fx.m.RemoveCA(api.Operator, strings.ToUpper(old), map[string]any{"force": true}))
-	if !strings.Contains(str(r.Message), "1 certificate(s) it signed no longer work") {
+	if !strings.Contains(str(r.Message), "1 certificate(s) it signed no longer work: ali.") {
 		t.Fatalf("message = %q", r.Message)
 	}
 	if fx.caIDs()[old] || fx.caKeyExists(old) {
@@ -209,5 +210,47 @@ func TestRemovingACATakesItsPerHostIssuers(t *testing.T) {
 	}
 	if _, raw := fx.proxyPayload(t); strings.Contains(raw, `"issuers"`) {
 		t.Fatalf("payload = %s", raw)
+	}
+}
+
+func TestRemoveCANamesAtMostTenCertificates(t *testing.T) {
+	fx := newMTLSFixture(t)
+	var id string
+	for i := 0; i < 12; i++ {
+		id = fx.issue(t, "x.com", fmt.Sprintf("user%02d", i), "auth.x.com")["ca"].(string)
+	}
+	mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{fx.importCA(t)}}))
+	r := fx.m.RemoveCA(api.Operator, id, nil)
+	msg := str(r.Message)
+	if r.Status || !strings.Contains(msg, "12 valid certificate(s): user00, user01,") || !strings.Contains(msg, "user09 and 2 more.") || strings.Contains(msg, "user10") {
+		t.Fatalf("message = %q", msg)
+	}
+}
+
+// A name is the caller's text, so it must not be able to steer the message.
+func TestCANamesCannotReachIntoTheMessage(t *testing.T) {
+	fx := newMTLSFixture(t)
+	id := fx.issue(t, "x.com", "50% off %s", "auth.x.com")["ca"].(string)
+	r := mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{fx.importCA(t)}}))
+	if msg := str(r.Message); !strings.Contains(msg, "--ca "+id+" --force") || !strings.HasSuffix(msg, "The certificates: 50% off %s.") {
+		t.Fatalf("message = %q", msg)
+	}
+}
+
+func TestPerHostSwitchPromisesNothingWithoutCertificates(t *testing.T) {
+	fx := newMTLSFixture(t)
+	shared := fx.importCA(t)
+	r := mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{shared}, "issuer": mtls.IssuerPerHost}))
+	if msg := str(r.Message); !strings.Contains(msg, "own issuer.") || strings.Contains(msg, "Existing certificates") {
+		t.Fatalf("message = %q", msg)
+	}
+
+	fx = newMTLSFixture(t)
+	shared = fx.importCA(t)
+	mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"ca": []any{shared}}))
+	fx.issue(t, "x.com", "ali", "auth.x.com")
+	r = mustOK(t, fx.m.Set("x.com", "optional", map[string]any{"issuer": mtls.IssuerPerHost}))
+	if !strings.Contains(str(r.Message), "Existing certificates keep working.") {
+		t.Fatalf("message = %q", r.Message)
 	}
 }

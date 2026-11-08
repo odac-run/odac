@@ -76,7 +76,7 @@ func (m *MTLS) retireDroppedLocked(before map[string]bool) []string {
 	now := float64(m.now().UnixMilli())
 	var notes []string
 	for _, id := range dropped {
-		live, err := store.liveCount(id, now)
+		live, named, err := liveSummary(store, id, now)
 		if err == nil && live == 0 {
 			err = m.retireCALocked(store, id, nil)
 			if err == nil {
@@ -89,7 +89,7 @@ func (m *MTLS) retireDroppedLocked(before map[string]bool) []string {
 			notes = append(notes, __("Kept client CA %s, which no domain trusts any more: the certificate store is unavailable.", id))
 			continue
 		}
-		notes = append(notes, __("Kept client CA %s, which no domain trusts any more, because %s valid certificate(s) were signed by it. Trust it again to bring them back, or remove it with: odac domain mtls ca remove --ca %s --force", id, live, id))
+		notes = append(notes, __("Kept client CA %s, which no domain trusts any more, because it signed %s valid certificate(s). Trust it again to bring them back, or remove it with: odac domain mtls ca remove --ca %s --force. The certificates: %s.", id, live, id, named))
 	}
 	return notes
 }
@@ -206,24 +206,51 @@ func (m *MTLS) removeCALocked(id string, force bool) (api.Result, bool, bool) {
 
 	store, err := m.certs()
 	var live int
+	var named string
 	if err == nil {
-		live, err = store.liveCount(id, float64(m.now().UnixMilli()))
+		live, named, err = liveSummary(store, id, float64(m.now().UnixMilli()))
 	}
 	if err != nil {
 		m.log.Error("Client certificate store failed: %s", err.Error())
 		return api.Res(false, __("The certificate store is unavailable.")), false, false
 	}
 	if live > 0 && !force {
-		return api.Res(false, __("CA %s signed %s valid certificate(s), which stop working for good once it is removed. Add --force to remove it anyway.", id, live)), false, false
+		return api.Res(false, __("CA %s signed %s valid certificate(s): %s. They stop working for good once it is removed. Add --force to remove it anyway.", id, live, named)), false, false
 	}
 	if err := m.retireCALocked(store, id, dormant); err != nil {
 		return m.storeFailure(err), false, false
 	}
 	message := __("Removed client CA %s.", id)
 	if live > 0 {
-		message += " " + __("%s certificate(s) it signed no longer work.", live)
+		message += " " + __("%s certificate(s) it signed no longer work: %s.", live, named)
 	}
 	return api.Res(true, message, map[string]any{"id": id, "certificates": live}), true, len(dormant) > 0
+}
+
+// liveNamesShown bounds the names a reply spells out; the count covers the rest.
+const liveNamesShown = 10
+
+// liveSummary counts a CA's valid certificates and names them for a reply, so an
+// operator about to destroy them sees which ones they are.
+func liveSummary(store *certStore, id string, now float64) (int, string, error) {
+	live, err := store.liveCount(id, now)
+	if err != nil || live == 0 {
+		return live, "", err
+	}
+	names, err := store.liveNames(id, now, liveNamesShown)
+	if err != nil {
+		return 0, "", err
+	}
+	for i, name := range names {
+		names[i] = logSafeName(name)
+	}
+	// Every message puts the names last: lang.T fills the first free %s with each
+	// argument in turn, so one after them could land inside a name.
+	named := strings.Join(names, ", ")
+	if rest := live - len(names); rest > 0 {
+		named += " " + __("and %s more", rest)
+	}
+	return live, named, nil
 }
 
 // appendNotes adds sentences to a reply's message.

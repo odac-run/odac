@@ -556,7 +556,10 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 	var notes []string
 	notes = append(notes, __("Client certificates are %s for %s.", mode, host))
 	if issuer == mtls.IssuerPerHost && !wasPerHost {
-		notes = append(notes, __("A new certificate for a single host of %s is signed by that host's own issuer. Existing certificates keep working.", record))
+		notes = append(notes, __("A new certificate for a single host of %s is signed by that host's own issuer.", record))
+		if m.anyLiveUnder(trusted) {
+			notes = append(notes, __("Existing certificates keep working."))
+		}
 	}
 	if len(published) > 0 {
 		notes = append(notes, __("Warning: %s publishes host port(s) %s, which reach it without passing the proxy and are not protected.", str(appID), strings.Join(published, ", ")))
@@ -716,6 +719,22 @@ func (m *MTLS) writeModeLocked(record, host, mode string, trusted []string, over
 		cfg["ca"] = anyList(trusted)
 	}
 	hosts[host] = override
+}
+
+// anyLiveUnder reports whether one of cas signed a valid certificate. A store
+// failure reads as no, which only drops a reassuring sentence from a reply.
+func (m *MTLS) anyLiveUnder(cas []string) bool {
+	store, err := m.certs()
+	if err != nil {
+		return false
+	}
+	now := float64(m.now().UnixMilli())
+	for _, id := range cas {
+		if live, err := store.liveCount(id, now); err == nil && live > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // writeIssuerLocked stores a record's issuer mode. The default is stored as its
