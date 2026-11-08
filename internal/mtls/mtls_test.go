@@ -120,3 +120,30 @@ func TestStorePayloadEmptyIsNil(t *testing.T) {
 		t.Fatalf("payload = %v", out)
 	}
 }
+
+// A record left at the default must serialize exactly as before the issuer
+// setting existed: the dashboard diffs these payloads.
+func TestPayloadsCarryIssuersOnlyWhenThereAreSome(t *testing.T) {
+	store := map[string]any{"cas": map[string]any{"id": map[string]any{"cert": "PEM", "managed": true}}}
+	plain, _ := json.Marshal(StorePayload(store, CertSnapshot{Scopes: json.RawMessage(`{"fp":["a.x.com"]}`)}))
+	if string(plain) != `{"cas":{"id":{"cert":"PEM","managed":true}},"certs":{"fp":["a.x.com"]},"revoked":[]}` {
+		t.Fatalf("payload = %s", plain)
+	}
+	withIssuer, _ := json.Marshal(StorePayload(store, CertSnapshot{Issuers: []HostIssuer{{CA: "id", Cert: "PEM", Host: "a.x.com"}}}))
+	if !strings.Contains(string(withIssuer), `"issuers":[{"ca":"id","cert":"PEM","host":"a.x.com"}]`) {
+		t.Fatalf("payload = %s", withIssuer)
+	}
+
+	record := map[string]any{"mtls": map[string]any{"mode": ModeOptional, "ca": []any{"id"}}}
+	if out := DomainPayload(record, "k"); len(out) != 3 || out["issuer"] != nil {
+		t.Fatalf("record mode payload = %v", out)
+	}
+	record["mtls"].(map[string]any)["issuer"] = IssuerPerHost
+	if out := DomainPayload(record, "k"); out["issuer"] != IssuerPerHost {
+		t.Fatalf("per-host payload = %v", out)
+	}
+	record["mtls"].(map[string]any)["issuer"] = "anything else"
+	if out := DomainPayload(record, "k"); out["issuer"] != nil {
+		t.Fatalf("an unknown issuer reached the proxy: %v", out)
+	}
+}

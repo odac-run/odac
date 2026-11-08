@@ -381,7 +381,9 @@ func (m *MTLS) saveLocked() {
 // Set changes a host's mode. On a record's own name it applies to the record and
 // "off" clears the record entirely, so one command is always enough to recover
 // from a lockout. On a subdomain it stores an override. opts may carry "ca" (CA
-// ids, replacing the trusted set) and "caPem" (an external CA to add).
+// ids, replacing the trusted set), "caPem" (an external CA to add) and, on a
+// record's own name, "issuer" (mtls.IssuerRecord or mtls.IssuerPerHost; absent
+// keeps the current one).
 func (m *MTLS) Set(domainArg, modeArg, optsArg any) api.Result {
 	host, errMsg := cleanHost(domainArg)
 	if errMsg != "" {
@@ -414,6 +416,13 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 		external, externalPEM = cert, cleaned
 	}
 	requested := stringList(opts["ca"])
+	issuer := ""
+	if raw := opts["issuer"]; raw != nil && raw != any("") {
+		issuer, _ = raw.(string)
+		if issuer != mtls.IssuerRecord && issuer != mtls.IssuerPerHost {
+			return api.Res(false, __("Issuer must be record or per-host.")), false
+		}
+	}
 
 	var record string
 	var found, unknownCA bool
@@ -422,6 +431,7 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 	var hadPolicy bool
 	var published []string
 	var siblings []string
+	var wasPerHost bool
 	m.cfg.View(func() {
 		domains := m.domainsLocked()
 		record, found = locateHost(domains, host)
@@ -432,6 +442,7 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 		appID = rec["appId"]
 		hadPolicy = mtls.AppIDs(domains)[fmt.Sprint(appID)]
 		trusted = effectiveCAs(domains, record, host)
+		wasPerHost = recordConfig(domains, record)["issuer"] == mtls.IssuerPerHost
 		cas := m.casLocked(false)
 		for _, id := range requested {
 			if _, ok := cas[id]; !ok {
@@ -452,6 +463,13 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 	if unknownCA {
 		return api.Res(false, __("Unknown CA.")), false
 	}
+	if issuer != "" && host != record {
+		return api.Res(false, __("The issuer is a setting of the whole record. Set it on %s.", strings.TrimPrefix(record, "*."))), false
+	}
+	if issuer != "" && mode == mtls.ModeOff {
+		return api.Res(false, __("Set the issuer together with --mode optional or required.")), false
+	}
+	perHost := issuer == mtls.IssuerPerHost || (issuer == "" && wasPerHost)
 
 	if mode == mtls.ModeOff {
 		m.cfg.Mutate(func() {
@@ -469,6 +487,16 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 
 	if len(requested) > 0 {
 		trusted = requested
+	}
+	if perHost {
+		if refusal := m.perHostRefusal(record, host, trusted, external != nil); refusal != "" {
+			return api.Res(false, refusal), false
+		}
+	}
+	if issuer == mtls.IssuerRecord && wasPerHost {
+		if refusal := m.leavePerHostRefusal(record); refusal != "" {
+			return api.Res(false, refusal), false
+		}
 	}
 	if external != nil {
 		id := mtls.Fingerprint(external.Raw)[:16]
@@ -508,13 +536,23 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 	overrideCA := len(requested) > 0 || external != nil
 	m.cfg.Mutate(func() {
 		m.writeModeLocked(record, host, mode, trusted, overrideCA)
+		m.writeIssuerLocked(record, issuer)
 		m.cfg.Touch("domains")
 	})
 	m.saveLocked()
 	m.log.Log("Client certificates set to %s for %s", mode, host)
+	if issuer != "" && (issuer == mtls.IssuerPerHost) != wasPerHost {
+		m.log.Log("Client certificate issuer of %s set to %s", record, issuer)
+		if store, err := m.certs(); err == nil {
+			m.sweepIssuersLocked(store)
+		}
+	}
 
 	var notes []string
 	notes = append(notes, __("Client certificates are %s for %s.", mode, host))
+	if issuer == mtls.IssuerPerHost && !wasPerHost {
+		notes = append(notes, __("A new certificate for a single host of %s is signed by that host's own issuer. Existing certificates keep working.", record))
+	}
 	if len(published) > 0 {
 		notes = append(notes, __("Warning: %s publishes host port(s) %s, which reach it without passing the proxy and are not protected.", str(appID), strings.Join(published, ", ")))
 	}
@@ -673,6 +711,85 @@ func (m *MTLS) writeModeLocked(record, host, mode string, trusted []string, over
 		cfg["ca"] = anyList(trusted)
 	}
 	hosts[host] = override
+}
+
+// writeIssuerLocked stores a record's issuer mode. The default is stored as its
+// absence, the same serialization rule as an unset mode.
+func (m *MTLS) writeIssuerLocked(record, issuer string) {
+	rec, _ := m.domainsLocked()[record].(map[string]any)
+	cfg, _ := rec["mtls"].(map[string]any)
+	switch {
+	case cfg == nil:
+	case issuer == mtls.IssuerPerHost:
+		cfg["issuer"] = mtls.IssuerPerHost
+	case issuer == mtls.IssuerRecord:
+		delete(cfg, "issuer")
+	}
+}
+
+// perHostRefusal checks that a per-host record trusts only CAs ODAC holds the key
+// for, on the record and on every host override as they will be after this write:
+// an issuer is something this server signs, and an external CA's certificates have
+// no record to tell a per-host chain from any other.
+func (m *MTLS) perHostRefusal(record, host string, trusted []string, addsExternal bool) string {
+	if addsExternal {
+		return __("%s uses per-host issuers, which need a CA ODAC holds the key for. Switch it to --issuer record first to trust an external CA.", record)
+	}
+	refusal := ""
+	m.cfg.View(func() {
+		domains := m.domainsLocked()
+		ids := append([]string(nil), trusted...)
+		cfg := recordConfig(domains, record)
+		if host != record {
+			ids = append(ids, stringList(cfg["ca"])...)
+		}
+		hosts, _ := cfg["hosts"].(map[string]any)
+		for name, h := range hosts {
+			if name == host {
+				continue
+			}
+			override, _ := h.(map[string]any)
+			ids = append(ids, stringList(override["ca"])...)
+		}
+		cas := m.casLocked(false)
+		for _, id := range ids {
+			if ca, _ := cas[id].(map[string]any); ca != nil && ca["managed"] != true {
+				refusal = __("%s uses per-host issuers, which need a CA ODAC holds the key for, and CA %s is external.", record, id)
+				return
+			}
+		}
+	})
+	return refusal
+}
+
+// leavePerHostRefusal keeps a record per-host while a live certificate was signed
+// by one of its hosts' issuers: in record mode nothing accepts that chain, so
+// switching would lock its holder out.
+func (m *MTLS) leavePerHostRefusal(record string) string {
+	store, err := m.certs()
+	if err != nil {
+		m.log.Error("Client certificate store failed: %s", err.Error())
+		return __("The certificate store is unavailable.")
+	}
+	hosts, err := store.liveIssuerHosts(float64(m.now().UnixMilli()))
+	if err != nil {
+		m.log.Error("Client certificate store failed: %s", err.Error())
+		return __("The certificate store is unavailable.")
+	}
+	var blocking []string
+	m.cfg.View(func() {
+		domains := m.domainsLocked()
+		for _, host := range hosts {
+			if owner, ok := locateHost(domains, host); ok && owner == record {
+				blocking = append(blocking, host)
+			}
+		}
+	})
+	if len(blocking) == 0 {
+		return ""
+	}
+	sort.Strings(blocking)
+	return __("Certificates for %s were signed by per-host issuers, which only --issuer per-host accepts. Revoke them first, or keep the record per-host.", strings.Join(blocking, ", "))
 }
 
 func (m *MTLS) writeOffLocked(record, host string) {
@@ -1184,7 +1301,7 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 	}
 	if existingFP != "" {
 		existing, _ := onKey[existingFP].(map[string]any)
-		return api.Res(true, __("Certificate %s already exists.", str(existing["name"])), issueReply(existingFP, existing, caID, m.caPEM(caID))), false, false
+		return api.Res(true, __("Certificate %s already exists.", str(existing["name"])), issueReply(existingFP, existing, caID, m.chainFor(existing, caID))), false, false
 	}
 
 	if renewedFrom == "" {
@@ -1219,14 +1336,29 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 		m.log.Error("Failed to load client CA %s: %s", caID, err.Error())
 		return api.Res(false, __("Failed to load the client CA.")), false, false
 	}
+	// A certificate for one host of a per-host record is signed by that host's
+	// issuer, so the handshake there names only the issuer; anything wider stays
+	// with the CA, which every host of the record names when such a one is live.
+	signer, signerKey, chain := caCert, caKey, caPEM
+	var issuerPEM string
+	issuerHost := m.issuerHostFor(hosts)
+	if issuerHost != "" {
+		issuer, issuerKey, certPEM, err := m.ensureIssuerLocked(store, caID, issuerHost, caCert, caKey)
+		if err != nil {
+			m.log.Error("Failed to set up the client certificate issuer of %s: %s", issuerHost, err.Error())
+			return api.Res(false, __("Failed to sign the certificate.")), false, false
+		}
+		signer, signerKey, issuerPEM = issuer, issuerKey, certPEM
+		chain = certPEM + caPEM
+	}
 	serial, err := randomSerial()
 	if err != nil {
 		return api.Res(false, __("Failed to sign the certificate.")), false, false
 	}
 	now := m.now()
 	notAfter := now.Add(time.Duration(days) * 24 * time.Hour)
-	if notAfter.After(caCert.NotAfter) {
-		notAfter = caCert.NotAfter
+	if notAfter.After(signer.NotAfter) {
+		notAfter = signer.NotAfter
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
@@ -1236,7 +1368,7 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, csr.PublicKey, caKey)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer, csr.PublicKey, signerKey)
 	if err != nil {
 		m.log.Error("Failed to sign a client certificate: %s", err.Error())
 		return api.Res(false, __("Failed to sign the certificate.")), false, false
@@ -1256,12 +1388,16 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 	if renewedFrom != "" {
 		record2["renewedFrom"] = renewedFrom
 	}
+	if issuerHost != "" {
+		record2["issuerHost"] = issuerHost
+		record2["issuerCert"] = issuerPEM
+	}
 	if err := store.insert(fingerprint, record2); err != nil {
 		return m.storeFailure(err), false, false
 	}
 	m.saveLocked()
 	m.log.Log("Issued client certificate %s (%s)", fingerprint[:16], logSafeName(name))
-	return api.Res(true, __("Certificate %s issued.", name), issueReply(fingerprint, record2, caID, caPEM)), true, newCA
+	return api.Res(true, __("Certificate %s issued.", name), issueReply(fingerprint, record2, caID, chain)), true, newCA
 }
 
 // matchKey decides what a CSR's key may get. A renewal can keep its key, so one
@@ -1325,11 +1461,13 @@ func (m *MTLS) caPEM(id string) string {
 	return out
 }
 
-func issueReply(fingerprint string, cert map[string]any, caID, caPEM string) map[string]any {
+// issueReply answers an issue. chain is every certificate above the leaf, the
+// issuer first when one signed it, which is what a p12 has to carry.
+func issueReply(fingerprint string, cert map[string]any, caID, chain string) map[string]any {
 	return map[string]any{
 		"ca":          caID,
 		"cert":        cert["cert"],
-		"chain":       caPEM,
+		"chain":       chain,
 		"fingerprint": fingerprint,
 		"hosts":       cert["hosts"],
 		"name":        cert["name"],
@@ -1370,6 +1508,11 @@ func (m *MTLS) Scope(fingerprintArg, hostsArg any) api.Result {
 	if failure != "" {
 		m.mu.Unlock()
 		return api.Res(false, failure)
+	}
+	// A per-host issuer's name is its host's, and only that host accepts it.
+	if issuerHost, _ := cert["issuerHost"].(string); issuerHost != "" && (len(hosts) != 1 || hosts[0] != issuerHost) {
+		m.mu.Unlock()
+		return api.Res(false, __("Certificate %s was signed for %s alone, so it cannot open other hosts. Issue a new one for them.", name, issuerHost))
 	}
 	if err := store.setHosts(fingerprint, hosts); err != nil {
 		m.mu.Unlock()
@@ -1427,6 +1570,7 @@ func (m *MTLS) Revoke(caller api.Caller, fingerprintArg any) api.Result {
 	if err == nil && app != "" {
 		sameKey, err = m.ownedOnly(store, app, sameKey)
 	}
+	m.sweepIssuersLocked(store)
 	m.mu.Unlock()
 	if err != nil {
 		// The revocation itself is stored, so it still has to reach the proxy.
@@ -1464,7 +1608,7 @@ func (m *MTLS) Import(caller api.Caller, optsArg any) api.Result {
 		return permissionDenied()
 	}
 	opts := optionsOf(optsArg)
-	leaf, certPEM, errMsg := parseClientCert(opts["cert"])
+	leaf, certPEM, presented, errMsg := parseClientCert(opts["cert"])
 	if errMsg != "" {
 		return api.Res(false, errMsg)
 	}
@@ -1484,7 +1628,7 @@ func (m *MTLS) Import(caller api.Caller, optsArg any) api.Result {
 	}
 
 	m.mu.Lock()
-	result, imported := m.importLocked(app, leaf, certPEM, name, opts["hosts"], now)
+	result, imported := m.importLocked(app, leaf, presented, certPEM, name, opts["hosts"], now)
 	m.mu.Unlock()
 
 	if imported && m.proxy != nil {
@@ -1493,7 +1637,7 @@ func (m *MTLS) Import(caller api.Caller, optsArg any) api.Result {
 	return result
 }
 
-func (m *MTLS) importLocked(app string, leaf *x509.Certificate, certPEM, name string, rawHosts any, now time.Time) (api.Result, bool) {
+func (m *MTLS) importLocked(app string, leaf *x509.Certificate, presented []*x509.Certificate, certPEM, name string, rawHosts any, now time.Time) (api.Result, bool) {
 	var candidates map[string]importCandidate
 	var failure string
 	m.cfg.View(func() {
@@ -1503,6 +1647,16 @@ func (m *MTLS) importLocked(app string, leaf *x509.Certificate, certPEM, name st
 		return api.Res(false, failure), false
 	}
 	caID, managed := signingCA(leaf, candidates, now)
+	var issuerHost string
+	var issuer *x509.Certificate
+	if caID == "" {
+		var refusal string
+		caID, issuerHost, issuer, refusal = m.perHostSigner(leaf, presented, candidates, rawHosts, now)
+		if refusal != "" {
+			return api.Res(false, refusal), false
+		}
+		managed = caID != ""
+	}
 	switch {
 	case caID == "":
 		return api.Res(false, __("The certificate was not signed by a client CA its hosts trust.")), false
@@ -1536,6 +1690,18 @@ func (m *MTLS) importLocked(app string, leaf *x509.Certificate, certPEM, name st
 		return m.importReply(store, fingerprint, __("Certificate %s is already registered.", name)), false
 	}
 
+	if issuerHost != "" {
+		// The handshake on the host can only name an issuer this server holds.
+		caCert, caKey, _, err := m.loadCA(caID)
+		if err == nil {
+			_, _, _, err = m.ensureIssuerLocked(store, caID, issuerHost, caCert, caKey)
+		}
+		if err != nil {
+			m.log.Error("Failed to set up the client certificate issuer of %s: %s", issuerHost, err.Error())
+			return api.Res(false, __("Failed to set up the issuer of %s.", issuerHost)), false
+		}
+	}
+
 	record := map[string]any{
 		"ca":       caID,
 		"cert":     certPEM,
@@ -1545,6 +1711,10 @@ func (m *MTLS) importLocked(app string, leaf *x509.Certificate, certPEM, name st
 		"notAfter": float64(leaf.NotAfter.UnixMilli()),
 		"serial":   hex.EncodeToString(leaf.SerialNumber.Bytes()),
 		"spki":     mtls.Fingerprint(leaf.RawSubjectPublicKeyInfo),
+	}
+	if issuerHost != "" {
+		record["issuerHost"] = issuerHost
+		record["issuerCert"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Raw}))
 	}
 	if err := store.insert(fingerprint, record); err != nil {
 		return m.storeFailure(err), false
@@ -1632,29 +1802,106 @@ func signingCA(leaf *x509.Certificate, candidates map[string]importCandidate, no
 	return "", false
 }
 
+// mtlsMaxImportChain bounds the certificates read after the client's: an issue
+// reply's chain is at most an issuer and a CA.
+const mtlsMaxImportChain = 4
+
 // parseClientCert reads the certificate being imported. The PEM may carry the
 // chain after it, as an issue reply's cert and chain concatenated would; only the
-// first certificate is the client's.
-func parseClientCert(raw any) (*x509.Certificate, string, string) {
+// first certificate is the client's, and the ones after it are returned as what
+// it presented, which a certificate from another server's per-host issuer needs.
+func parseClientCert(raw any) (*x509.Certificate, string, []*x509.Certificate, string) {
 	text, _ := raw.(string)
 	if len(text) > mtlsMaxCertPEM {
-		return nil, "", __("Invalid certificate.")
+		return nil, "", nil, __("Invalid certificate.")
 	}
 	if strings.Contains(text, "PRIVATE KEY") {
-		return nil, "", __("That file contains a private key. Send only the certificate.")
+		return nil, "", nil, __("That file contains a private key. Send only the certificate.")
 	}
-	block, _ := pem.Decode([]byte(text))
+	block, rest := pem.Decode([]byte(text))
 	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, "", __("Invalid certificate.")
+		return nil, "", nil, __("Invalid certificate.")
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, "", __("Invalid certificate.")
+		return nil, "", nil, __("Invalid certificate.")
 	}
 	if cert.IsCA {
-		return nil, "", __("That is a CA certificate, not a client certificate.")
+		return nil, "", nil, __("That is a CA certificate, not a client certificate.")
 	}
-	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes})), ""
+	var presented []*x509.Certificate
+	for len(presented) < mtlsMaxImportChain {
+		var next *pem.Block
+		next, rest = pem.Decode(rest)
+		if next == nil {
+			break
+		}
+		if next.Type != "CERTIFICATE" {
+			continue
+		}
+		if parsed, err := x509.ParseCertificate(next.Bytes); err == nil {
+			presented = append(presented, parsed)
+		}
+	}
+	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes})), presented, ""
+}
+
+// perHostSigner finds the per-host issuer that signed an imported leaf, checked
+// the way the proxy will check it (mtls.VerifyPerHost). Such a certificate opens
+// its issuer's host and nothing else, so the import must name exactly that host,
+// on a per-host record, under a managed CA. The issuer has to come with the leaf:
+// another server's has a key this one never sees, so without it nothing here can
+// check the signature, and a record nothing could verify is refused rather than
+// kept. It returns no CA and no refusal when the leaf is not of this kind.
+func (m *MTLS) perHostSigner(leaf *x509.Certificate, presented []*x509.Certificate, candidates map[string]importCandidate, rawHosts any, now time.Time) (string, string, *x509.Certificate, string) {
+	entries := stringList(rawHosts)
+	if len(entries) != 1 {
+		return "", "", nil, ""
+	}
+	host, errMsg := cleanHost(entries[0])
+	if errMsg != "" || !mtls.PerHostIssuable(host) {
+		return "", "", nil, ""
+	}
+	perHost := false
+	m.cfg.View(func() { perHost = perHostLocked(m.domainsLocked(), host) })
+	if !perHost {
+		return "", "", nil, ""
+	}
+	at := now
+	if at.Before(leaf.NotBefore) {
+		at = leaf.NotBefore
+	}
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if !candidates[id].managed {
+			continue
+		}
+		block, _ := pem.Decode([]byte(candidates[id].pem))
+		if block == nil {
+			continue
+		}
+		ca, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !bytes.Equal(leaf.RawIssuer, mtls.IssuerSubject(host, ca)) {
+			continue
+		}
+		if len(presented) == 0 {
+			return "", "", nil, __("This certificate was signed by the issuer of %s. Send it together with its chain.", host)
+		}
+		chain := append([]*x509.Certificate{leaf}, presented...)
+		if anchor, _, status := mtls.VerifyPerHost(chain, nil, []*x509.Certificate{ca}, host, at); status != mtls.VerifySuccess || anchor != ca {
+			continue
+		}
+		for _, issuer := range presented {
+			if bytes.Equal(issuer.RawSubject, leaf.RawIssuer) && leaf.CheckSignatureFrom(issuer) == nil {
+				return id, host, issuer, ""
+			}
+		}
+	}
+	return "", "", nil, ""
 }
 
 // ownsCert is ownsCertLocked for a record read from the store. A missing record
@@ -1924,5 +2171,6 @@ func (m *MTLS) Prune() {
 		}
 		m.log.Log("Removed client CA %s", id)
 	}
+	m.sweepIssuersLocked(store)
 	m.saveLocked()
 }

@@ -29,12 +29,32 @@ CREATE TABLE IF NOT EXISTS certs (
 	renewed_from TEXT,
 	revoked      INTEGER,
 	serial       TEXT,
-	spki         TEXT
+	spki         TEXT,
+	issuer_host  TEXT,
+	issuer_cert  TEXT
 );
 CREATE INDEX IF NOT EXISTS certs_key ON certs(ca, spki);
 CREATE INDEX IF NOT EXISTS certs_name ON certs(ca, name);`
 
-const certColumns = "fingerprint, ca, cert, created, hosts, name, not_after, renewed_from, revoked, serial, spki"
+// certStoreAdded are the columns a store made before them lacks. SQLite has no
+// ADD COLUMN IF NOT EXISTS, so openCertStore adds whichever is missing.
+var certStoreAdded = []string{"issuer_host TEXT", "issuer_cert TEXT"}
+
+// certStoreIssuers holds this server's per-host issuers (mtls.IssuerPerHost).
+// issuer_host on a certificate names the host whose issuer signed it, here or on
+// another server, and issuer_cert that issuer, which a retried issue hands back
+// as its chain.
+const certStoreIssuers = `
+CREATE INDEX IF NOT EXISTS certs_issuer ON certs(ca, issuer_host);
+CREATE TABLE IF NOT EXISTS issuers (
+	ca      TEXT NOT NULL,
+	host    TEXT NOT NULL,
+	cert    TEXT NOT NULL,
+	created INTEGER,
+	PRIMARY KEY (ca, host)
+);`
+
+const certColumns = "fingerprint, ca, cert, created, hosts, name, not_after, renewed_from, revoked, serial, spki, issuer_host, issuer_cert"
 
 // certStore holds issued client certificates outside the config store. A config
 // module is rewritten whole under the lock every config reader takes, which cost
@@ -58,7 +78,45 @@ func openCertStore(path string) (*certStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := addMissingColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(certStoreIssuers); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &certStore{db: db}, nil
+}
+
+func addMissingColumns(db *sql.DB) error {
+	rows, err := db.Query("SELECT name FROM pragma_table_info('certs')")
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, column := range certStoreAdded {
+		name, _, _ := strings.Cut(column, " ")
+		if have[name] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE certs ADD COLUMN " + column); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *certStore) close() error { return s.db.Close() }
@@ -72,13 +130,13 @@ type rowScanner interface {
 // issued has nothing but a fingerprint and a time.
 func scanCert(row rowScanner) (string, map[string]any, error) {
 	var fingerprint string
-	var ca, cert, hosts, name, renewedFrom, serial, spki sql.NullString
+	var ca, cert, hosts, name, renewedFrom, serial, spki, issuerHost, issuerCert sql.NullString
 	var created, notAfter, revoked sql.NullInt64
-	if err := row.Scan(&fingerprint, &ca, &cert, &created, &hosts, &name, &notAfter, &renewedFrom, &revoked, &serial, &spki); err != nil {
+	if err := row.Scan(&fingerprint, &ca, &cert, &created, &hosts, &name, &notAfter, &renewedFrom, &revoked, &serial, &spki, &issuerHost, &issuerCert); err != nil {
 		return "", nil, err
 	}
 	rec := map[string]any{}
-	for key, value := range map[string]sql.NullString{"ca": ca, "cert": cert, "name": name, "renewedFrom": renewedFrom, "serial": serial, "spki": spki} {
+	for key, value := range map[string]sql.NullString{"ca": ca, "cert": cert, "issuerCert": issuerCert, "issuerHost": issuerHost, "name": name, "renewedFrom": renewedFrom, "serial": serial, "spki": spki} {
 		if value.Valid {
 			rec[key] = value.String
 		}
@@ -123,9 +181,10 @@ func (s *certStore) insert(fingerprint string, rec map[string]any) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("INSERT INTO certs ("+certColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err = s.db.Exec("INSERT INTO certs ("+certColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		fingerprint, nullable(rec, "ca"), nullable(rec, "cert"), nullable(rec, "created"), string(hosts), nullable(rec, "name"),
-		nullable(rec, "notAfter"), nullable(rec, "renewedFrom"), nullable(rec, "revoked"), nullable(rec, "serial"), nullable(rec, "spki"))
+		nullable(rec, "notAfter"), nullable(rec, "renewedFrom"), nullable(rec, "revoked"), nullable(rec, "serial"), nullable(rec, "spki"),
+		nullable(rec, "issuerHost"), nullable(rec, "issuerCert"))
 	return err
 }
 
@@ -201,7 +260,7 @@ func (s *certStore) anyLive(ca string, now float64, match func(hosts []string) b
 }
 
 // certListSelect reads dashboard rows: the record shape minus PEMs and key hashes.
-const certListSelect = "SELECT fingerprint, ca, NULL, created, hosts, name, not_after, NULL, revoked, serial, NULL FROM certs"
+const certListSelect = "SELECT fingerprint, ca, NULL, created, hosts, name, not_after, NULL, revoked, serial, NULL, NULL, NULL FROM certs"
 
 // row returns one record as list would, or nil when there is none.
 func (s *certStore) row(fingerprint string) (map[string]any, error) {
@@ -246,8 +305,23 @@ func (s *certStore) list(ids []string) ([]map[string]any, error) {
 
 // snapshot builds the proxy's view. Scopes are spliced from the stored JSON
 // because decoding and re-encoding every row would be most of the cost of a push.
+// An expired certificate is left out like a revoked one: the chain check already
+// refuses it, and a scope the proxy holds makes its host ask for a certificate.
+// Issuers go only with a live certificate signed through them; Direct is decoded
+// only for the CAs that have issuers, so a store with none pays nothing for it.
 func (s *certStore) snapshot(now time.Time) (mtls.CertSnapshot, error) {
-	rows, err := s.db.Query("SELECT fingerprint, hosts, revoked IS NOT NULL, not_after FROM certs ORDER BY fingerprint")
+	issuers, err := s.issuers()
+	if err != nil {
+		return mtls.CertSnapshot{}, err
+	}
+	issuerCAs := map[string]bool{}
+	for _, issuer := range issuers {
+		issuerCAs[issuer.CA] = true
+	}
+	viaLive := map[string]bool{}
+	direct := map[string]bool{}
+
+	rows, err := s.db.Query("SELECT fingerprint, hosts, revoked IS NOT NULL, not_after, ca, issuer_host FROM certs ORDER BY fingerprint")
 	if err != nil {
 		return mtls.CertSnapshot{}, err
 	}
@@ -258,10 +332,10 @@ func (s *certStore) snapshot(now time.Time) (mtls.CertSnapshot, error) {
 	nowMillis := now.UnixMilli()
 	for rows.Next() {
 		var fingerprint string
-		var hosts sql.NullString
+		var hosts, ca, issuerHost sql.NullString
 		var gone bool
 		var notAfter sql.NullInt64
-		if err := rows.Scan(&fingerprint, &hosts, &gone, &notAfter); err != nil {
+		if err := rows.Scan(&fingerprint, &hosts, &gone, &notAfter, &ca, &issuerHost); err != nil {
 			return mtls.CertSnapshot{}, err
 		}
 		if gone {
@@ -270,6 +344,20 @@ func (s *certStore) snapshot(now time.Time) (mtls.CertSnapshot, error) {
 				revoked = append(revoked, fingerprint)
 			}
 			continue
+		}
+		if notAfter.Valid && notAfter.Int64 <= nowMillis {
+			continue
+		}
+		if issuerHost.Valid {
+			viaLive[ca.String+"\x00"+issuerHost.String] = true
+		} else if issuerCAs[ca.String] && hosts.Valid {
+			var list []string
+			if err := json.Unmarshal([]byte(hosts.String), &list); err != nil {
+				return mtls.CertSnapshot{}, err
+			}
+			for _, host := range list {
+				direct[ca.String+"\x00"+host] = true
+			}
 		}
 		if scopes.Len() > 1 {
 			scopes.WriteByte(',')
@@ -288,7 +376,94 @@ func (s *certStore) snapshot(now time.Time) (mtls.CertSnapshot, error) {
 		return mtls.CertSnapshot{}, err
 	}
 	scopes.WriteByte('}')
-	return mtls.CertSnapshot{Scopes: json.RawMessage(scopes.String()), Revoked: revoked}, nil
+	out := mtls.CertSnapshot{Scopes: json.RawMessage(scopes.String()), Revoked: revoked}
+	for _, issuer := range issuers {
+		key := issuer.CA + "\x00" + issuer.Host
+		if !viaLive[key] {
+			continue
+		}
+		issuer.Direct = direct[key] || direct[issuer.CA+"\x00"+mtls.WildcardOf(issuer.Host)]
+		out.Issuers = append(out.Issuers, issuer)
+	}
+	return out, nil
+}
+
+// issuers returns every per-host issuer, without its key, which lives in a file.
+func (s *certStore) issuers() ([]mtls.HostIssuer, error) {
+	rows, err := s.db.Query("SELECT ca, host, cert FROM issuers ORDER BY ca, host")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []mtls.HostIssuer
+	for rows.Next() {
+		var issuer mtls.HostIssuer
+		if err := rows.Scan(&issuer.CA, &issuer.Host, &issuer.Cert); err != nil {
+			return nil, err
+		}
+		out = append(out, issuer)
+	}
+	return out, rows.Err()
+}
+
+// issuer returns the certificate of this server's issuer for host under ca, or "".
+func (s *certStore) issuer(ca, host string) (string, error) {
+	var cert string
+	err := s.db.QueryRow("SELECT cert FROM issuers WHERE ca = ? AND host = ?", ca, host).Scan(&cert)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return cert, err
+}
+
+func (s *certStore) putIssuer(ca, host, cert string, created int64) error {
+	_, err := s.db.Exec(`INSERT INTO issuers (ca, host, cert, created) VALUES (?, ?, ?, ?)
+		ON CONFLICT(ca, host) DO UPDATE SET cert = excluded.cert, created = excluded.created`, ca, host, cert, created)
+	return err
+}
+
+func (s *certStore) deleteIssuer(ca, host string) error {
+	_, err := s.db.Exec("DELETE FROM issuers WHERE ca = ? AND host = ?", ca, host)
+	return err
+}
+
+// idleIssuers lists the issuers no live certificate was signed through, here or
+// on another server: nothing needs their name in a handshake any more.
+func (s *certStore) idleIssuers(now float64) ([]mtls.HostIssuer, error) {
+	rows, err := s.db.Query(`SELECT ca, host FROM issuers i WHERE NOT EXISTS (
+		SELECT 1 FROM certs c WHERE c.ca = i.ca AND c.issuer_host = i.host AND c.revoked IS NULL AND c.not_after > ?)`, int64(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []mtls.HostIssuer
+	for rows.Next() {
+		var issuer mtls.HostIssuer
+		if err := rows.Scan(&issuer.CA, &issuer.Host); err != nil {
+			return nil, err
+		}
+		out = append(out, issuer)
+	}
+	return out, rows.Err()
+}
+
+// liveIssuerHosts returns the hosts some live certificate was signed for by a
+// per-host issuer, the ones a record cannot leave per-host mode over.
+func (s *certStore) liveIssuerHosts(now float64) ([]string, error) {
+	rows, err := s.db.Query("SELECT DISTINCT issuer_host FROM certs WHERE issuer_host IS NOT NULL AND revoked IS NULL AND not_after > ?", int64(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var host string
+		if err := rows.Scan(&host); err != nil {
+			return nil, err
+		}
+		out = append(out, host)
+	}
+	return out, rows.Err()
 }
 
 // certScope is the part of a record Prune decides on.
