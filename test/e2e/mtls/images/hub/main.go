@@ -228,7 +228,11 @@ func (h *hub) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 		switch head.Action {
 		case "cert.result", "cert.revoked", "cert.imported":
-			log.Printf("edge=%s reply action=%s id=%s ok=%v code=%q reply_edge=%s", logSafe(id), logSafe(head.Action), logSafe(head.ID), head.OK, logSafe(head.Code), logSafe(head.Edge))
+			ok := "false"
+			if head.OK {
+				ok = "true"
+			}
+			log.Printf("edge=%s reply action=%s id=%s ok=%s code=%q reply_edge=%s", logSafe(id), logSafe(head.Action), logSafe(head.ID), ok, logSafe(head.Code), logSafe(head.Edge))
 			h.mu.Lock()
 			ch := h.pending[head.ID]
 			delete(h.pending, head.ID)
