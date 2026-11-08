@@ -173,6 +173,7 @@ func selfSignedServerCert(t *testing.T) tls.Certificate {
 
 type authClient struct {
 	cert     *tls.Certificate
+	force    bool // send cert even where the server names none of its issuers
 	h2       bool
 	sessions tls.ClientSessionCache
 	sni      string
@@ -182,6 +183,10 @@ func (fx *authFixture) transport(c authClient) *http.Transport {
 	conf := &tls.Config{InsecureSkipVerify: true, ServerName: c.sni, ClientSessionCache: c.sessions}
 	if c.cert != nil {
 		conf.Certificates = []tls.Certificate{*c.cert}
+	}
+	if c.force {
+		cert := c.cert
+		conf.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return cert, nil }
 	}
 	addr := fx.front.Listener.Addr().String()
 	return &http.Transport{
@@ -560,7 +565,8 @@ func TestHintsAreNotLearnedFromCertificateHolders(t *testing.T) {
 
 func TestAltSvcIsHiddenOnlyOnPolicyHosts(t *testing.T) {
 	ca := newTestCA(t, "ca")
-	fx := newAuthFixture(t, ca, nil, func(s *config.Website) { s.MTLS.Mode = mtls.ModeOptional })
+	// A certificate opening x.com makes it ask; see TestSilentHost* for one that does not.
+	fx := newAuthFixture(t, ca, map[string][]string{strings.Repeat("a", 64): {"x.com"}}, func(s *config.Website) { s.MTLS.Mode = mtls.ModeOptional })
 
 	resp, _, err := fx.get(t, authClient{sni: "x.com"}, "x.com", "/", nil)
 	wantStatus(t, "policy host", resp, err, http.StatusOK)
@@ -588,7 +594,7 @@ func TestHTTP3RefusesPolicyHosts(t *testing.T) {
 
 func TestEarlyDataIsRefusedForEveryMethod(t *testing.T) {
 	ca := newTestCA(t, "ca")
-	fx := newAuthFixture(t, ca, nil, func(s *config.Website) { s.MTLS.Mode = mtls.ModeOptional })
+	fx := newAuthFixture(t, ca, map[string][]string{strings.Repeat("a", 64): {"x.com"}}, func(s *config.Website) { s.MTLS.Mode = mtls.ModeOptional })
 	req := httptest.NewRequest(http.MethodGet, "https://x.com/", nil)
 	req.TLS = &tls.ConnectionState{ServerName: "x.com", HandshakeComplete: false}
 	rec := httptest.NewRecorder()

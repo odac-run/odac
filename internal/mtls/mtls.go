@@ -183,6 +183,9 @@ func DomainPayload(record map[string]any, appKey string) map[string]any {
 	if hosts, _ := cfg["hosts"].(map[string]any); len(hosts) > 0 {
 		out["hosts"] = hosts
 	}
+	if cfg["issuer"] == IssuerPerHost {
+		out["issuer"] = IssuerPerHost
+	}
 	return out
 }
 
@@ -190,8 +193,21 @@ func DomainPayload(record map[string]any, appKey string) map[string]any {
 // JSON, an object of fingerprint to host list, since a push can carry a very large
 // one and building it as a map only to marshal it would be most of the cost.
 type CertSnapshot struct {
+	Issuers []HostIssuer
 	Revoked []string
 	Scopes  json.RawMessage
+}
+
+// HostIssuer is this server's issuer for one host of a per-host record, as the
+// proxy needs it: the public certificate whose name the handshake on that host
+// names. Direct reports a live certificate straight from the CA that opens the
+// host, so the handshake names the CA as well. Only issuers some live certificate
+// was signed through are sent.
+type HostIssuer struct {
+	CA     string `json:"ca"`
+	Cert   string `json:"cert"`
+	Direct bool   `json:"direct,omitempty"`
+	Host   string `json:"host"`
 }
 
 // StorePayload builds the proxy's mtls member from config.mtls, which holds the
@@ -219,9 +235,13 @@ func StorePayload(store map[string]any, certs CertSnapshot) map[string]any {
 	if revoked == nil {
 		revoked = []string{}
 	}
-	return map[string]any{"cas": outCAs, "certs": scopes, "revoked": revoked}
+	out := map[string]any{"cas": outCAs, "certs": scopes, "revoked": revoked}
+	if len(certs.Issuers) > 0 {
+		out["issuers"] = certs.Issuers
+	}
+	return out
 }
 
 func (c CertSnapshot) hasEntries() bool {
-	return len(c.Revoked) > 0 || (len(c.Scopes) > 0 && string(c.Scopes) != "{}")
+	return len(c.Revoked) > 0 || len(c.Issuers) > 0 || (len(c.Scopes) > 0 && string(c.Scopes) != "{}")
 }

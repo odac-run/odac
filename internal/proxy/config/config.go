@@ -15,7 +15,18 @@ type Config struct {
 type MTLS struct {
 	CAs     map[string]MTLSCA   `json:"cas"`
 	Certs   map[string][]string `json:"certs"`
+	Issuers []MTLSIssuer        `json:"issuers,omitempty"`
 	Revoked []string            `json:"revoked"`
+}
+
+// MTLSIssuer is the server's issuer for one host of a per-host record. Its
+// certificate is public: the handshake on that host names it, and a client that
+// sends only its leaf is checked against it.
+type MTLSIssuer struct {
+	CA     string `json:"ca"`
+	Cert   string `json:"cert"`
+	Direct bool   `json:"direct,omitempty"`
+	Host   string `json:"host"`
 }
 
 // MTLSCA is one trust anchor. A managed CA issues only certificates ODAC has a
@@ -28,10 +39,11 @@ type MTLSCA struct {
 // WebsiteMTLS is present on every record of an app with a client certificate
 // policy, and its presence turns off the parent walk for that record.
 type WebsiteMTLS struct {
-	CA    []string            `json:"ca,omitempty"`
-	Hosts map[string]HostMTLS `json:"hosts,omitempty"`
-	Key   string              `json:"key"`
-	Mode  string              `json:"mode,omitempty"`
+	CA     []string            `json:"ca,omitempty"`
+	Hosts  map[string]HostMTLS `json:"hosts,omitempty"`
+	Issuer string              `json:"issuer,omitempty"`
+	Key    string              `json:"key"`
+	Mode   string              `json:"mode,omitempty"`
 }
 
 // HostMTLS overrides a record's policy for one host. An empty CA list inherits

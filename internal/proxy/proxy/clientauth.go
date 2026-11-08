@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"log"
@@ -30,8 +32,8 @@ const maxCertVerdicts = 1 << 16
 // thing that can change sooner is the trust store, and that changes the key.
 const failedVerdictTTL = time.Minute
 
-// errClientAuthOverTCP refuses QUIC for a host with a policy so the client falls
-// back to TCP, where a certificate request and 0-RTT cannot interact.
+// errClientAuthOverTCP refuses QUIC for a host that asks for a certificate so the
+// client falls back to TCP, where a certificate request and 0-RTT cannot interact.
 var errClientAuthOverTCP = errors.New("client certificate hosts are served over TCP")
 
 type clientAuthKey struct{}
@@ -47,6 +49,7 @@ type clientAuthState struct {
 	presented   bool // a certificate was shown, valid or not: never touch shared caches
 	serial      string
 	subject     string
+	tcpOnly     bool // the host asks for a certificate, so it is never offered over QUIC
 	until       time.Time
 	verify      string
 }
@@ -120,6 +123,10 @@ func (c *verdictCache) addLocked(key verdictKey, verdict certVerdict) {
 // site) and running x509 verification per request is too slow.
 type trustStore struct {
 	anchors  [sha256.Size]byte
+	byID     map[string][]*x509.Certificate
+	cas      []*x509.Certificate
+	external bool // some CA issues certificates ODAC has no record of
+	ids      map[string]bool
 	managed  map[string]bool // anchor fingerprint -> needs an ODAC scope record
 	pool     *x509.CertPool
 	verdicts *verdictCache
@@ -127,8 +134,9 @@ type trustStore struct {
 
 func newTrustStore(ids []string, cas map[string]config.MTLSCA, verdicts *verdictCache) *trustStore {
 	// Never a nil pool: crypto/tls reads nil ClientCAs as "trust the host's roots".
-	ts := &trustStore{managed: map[string]bool{}, pool: x509.NewCertPool(), verdicts: verdicts}
+	ts := &trustStore{byID: map[string][]*x509.Certificate{}, ids: map[string]bool{}, managed: map[string]bool{}, pool: x509.NewCertPool(), verdicts: verdicts}
 	for _, id := range ids {
+		ts.ids[id] = true
 		ca, ok := cas[id]
 		if !ok {
 			log.Printf("[mTLS] CA %s is referenced but not defined", id)
@@ -147,7 +155,10 @@ func newTrustStore(ids []string, cas map[string]config.MTLSCA, verdicts *verdict
 				continue
 			}
 			ts.pool.AddCert(cert)
+			ts.cas = append(ts.cas, cert)
+			ts.byID[id] = append(ts.byID[id], cert)
 			ts.managed[mtls.Fingerprint(cert.Raw)] = ca.Managed
+			ts.external = ts.external || !ca.Managed
 			found = true
 		}
 		if !found {
@@ -209,34 +220,128 @@ func (ts *trustStore) check(certs []*x509.Certificate, now time.Time) certVerdic
 	return certVerdict{root: mtls.Fingerprint(chain[len(chain)-1].Raw), status: mtls.VerifySuccess, until: until}
 }
 
-// authPolicy is one host's requirement. Two hosts with the same id negotiate
-// identically, so a connection opened for one is good enough for the other.
+// verifyFor is verify for a host of a per-host record, where the answer depends on
+// the host (only its issuer may sign) and on this server's own issuers, which a
+// client that sends only its leaf is checked against. Both are in the key, each
+// part length-prefixed so no two inputs can encode alike.
+func (ts *trustStore) verifyFor(host string, local, certs []*x509.Certificate, now time.Time) certVerdict {
+	hash := sha256.New()
+	hash.Write(ts.anchors[:])
+	part := func(b []byte) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+		hash.Write(n[:])
+		hash.Write(b)
+	}
+	part([]byte(mtls.IssuerPerHost))
+	part([]byte(host))
+	part(binary.BigEndian.AppendUint32(nil, uint32(len(local))))
+	for _, cert := range local {
+		part(cert.Raw)
+	}
+	for _, cert := range certs {
+		part(cert.Raw)
+	}
+	var key verdictKey
+	hash.Sum(key[:0])
+
+	if cached, ok := ts.verdicts.get(key); ok && now.Before(cached.until) {
+		return cached
+	}
+	verdict := certVerdict{status: mtls.VerifyUntrusted, until: now.Add(failedVerdictTTL)}
+	ca, until, status := mtls.VerifyPerHost(certs, local, ts.cas, host, now)
+	if status == mtls.VerifySuccess {
+		verdict = certVerdict{root: mtls.Fingerprint(ca.Raw), status: status, until: until}
+	} else {
+		verdict.status = status
+	}
+	ts.verdicts.put(key, verdict)
+	return verdict
+}
+
+// authPolicy is one host's requirement: what a request must show. How the
+// handshake asks for it can still differ per host, which is handshakeFor's part.
 type authPolicy struct {
+	ask      *handshake // shared by every host that asks and has no issuer of its own
 	id       string
+	perHost  bool // only the host's own issuer, or the CA itself, may sign
 	required bool
-	tlsOnce  sync.Once
-	tlsConf  *tls.Config
+	silent   *handshake // shared by every optional host no certificate opens
 	trust    *trustStore
 }
 
-// handshakeConfig is built on first use because the control API can deliver a
-// config before main has finished assembling the TLS base.
-func (pol *authPolicy) handshakeConfig(base *tls.Config) *tls.Config {
-	pol.tlsOnce.Do(func() {
+// handshake is how one group of hosts negotiates. Two hosts with the same key
+// negotiate identically, so a connection opened for one is good enough for the
+// other; any other pair answers 421 so the client reconnects with the right SNI.
+type handshake struct {
+	ask      bool
+	key      string
+	manual   bool // per-host: the chain is checked per request, never by crypto/tls
+	pool     *x509.CertPool
+	required bool
+	tlsConf  *tls.Config
+	tlsOnce  sync.Once
+}
+
+// config is built on first use because the control API can deliver a config
+// before main has finished assembling the TLS base. A per-host pool names issuers
+// that crypto/tls could not verify a chain against (another server's issuer has
+// the same name and another key), so a required per-host host only demands a
+// certificate here and gateClientAuth decides.
+func (hs *handshake) config(base *tls.Config) *tls.Config {
+	hs.tlsOnce.Do(func() {
 		if base == nil {
 			return
 		}
 		conf := base.Clone()
 		conf.GetConfigForClient = nil
-		conf.ClientCAs = pol.trust.pool
-		if pol.required {
+		conf.ClientCAs = hs.pool
+		switch {
+		case hs.required && hs.manual:
+			conf.ClientAuth = tls.RequireAnyClientCert
+		case hs.required:
 			conf.ClientAuth = tls.RequireAndVerifyClientCert
-		} else {
+		default:
 			conf.ClientAuth = tls.RequestClientCert
 		}
-		pol.tlsConf = conf
+		hs.tlsConf = conf
 	})
-	return pol.tlsConf
+	return hs.tlsConf
+}
+
+// hostIssuer is this server's issuer for one host, parsed on first use: a push can
+// carry thousands and most hosts are never visited between two pushes.
+type hostIssuer struct {
+	ca     string
+	cert   *x509.Certificate
+	direct bool
+	host   string
+	once   sync.Once
+	pem    string
+}
+
+// parsed returns the issuer, or nil when it is not its CA's issuer for its host: a
+// mismatch would name the wrong issuer in the handshake, so it is dropped. The CA
+// is looked up by the entry's own id, so every trust store reaches one answer.
+func (hi *hostIssuer) parsed(trust *trustStore) *x509.Certificate {
+	hi.once.Do(func() {
+		block, _ := pem.Decode([]byte(hi.pem))
+		if block == nil {
+			return
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !cert.IsCA {
+			return
+		}
+		for _, ca := range trust.byID[hi.ca] {
+			if bytes.Equal(cert.RawIssuer, ca.RawSubject) && bytes.Equal(cert.RawSubject, mtls.IssuerSubject(hi.host, ca)) {
+				hi.cert = cert
+				return
+			}
+		}
+		log.Printf("[mTLS] Issuer for %s does not match its CA, ignoring it", hi.host)
+	})
+	return hi.cert
 }
 
 // authRecord is one domain record of an app with a policy.
@@ -272,14 +377,19 @@ func (rec *authRecord) policyFor(host string) *authPolicy {
 // clientAuthTable is the compiled, immutable form of a config push. It is
 // swapped whole, so a request sees one consistent generation.
 type clientAuthTable struct {
-	certs   map[string]map[string]bool
-	records map[string]*authRecord
-	revoked map[string]bool
+	certs      map[string]map[string]bool
+	covered    map[string]bool // every scope entry of a certificate the proxy holds
+	handshakes sync.Map        // policy id + host -> *handshake, for hosts with an issuer
+	issuers    map[string][]*hostIssuer
+	records    map[string]*authRecord
+	revoked    map[string]bool
 }
 
 func compileClientAuth(domains map[string]config.Website, store *config.MTLS, verdicts *verdictCache) *clientAuthTable {
 	t := &clientAuthTable{
 		certs:   map[string]map[string]bool{},
+		covered: map[string]bool{},
+		issuers: map[string][]*hostIssuer{},
 		records: map[string]*authRecord{},
 		revoked: map[string]bool{},
 	}
@@ -290,17 +400,21 @@ func compileClientAuth(domains map[string]config.Website, store *config.MTLS, ve
 			scope := make(map[string]bool, len(hosts))
 			for _, host := range hosts {
 				scope[host] = true
+				t.covered[host] = true
 			}
 			t.certs[fingerprint] = scope
 		}
 		for _, fingerprint := range store.Revoked {
 			t.revoked[fingerprint] = true
 		}
+		for _, issuer := range store.Issuers {
+			t.issuers[issuer.Host] = append(t.issuers[issuer.Host], &hostIssuer{ca: issuer.CA, direct: issuer.Direct, host: issuer.Host, pem: issuer.Cert})
+		}
 	}
 
 	stores := map[string]*trustStore{}
 	policies := map[string]*authPolicy{}
-	policyFor := func(mode string, ids []string) *authPolicy {
+	policyFor := func(mode string, ids []string, perHost bool) *authPolicy {
 		if mode != mtls.ModeRequired && mode != mtls.ModeOptional {
 			return nil
 		}
@@ -308,6 +422,9 @@ func compileClientAuth(domains map[string]config.Website, store *config.MTLS, ve
 		sort.Strings(sorted)
 		trustID := strings.Join(sorted, ",")
 		id := mode + "|" + trustID
+		if perHost {
+			id += "|" + mtls.IssuerPerHost
+		}
 		if pol, ok := policies[id]; ok {
 			return pol
 		}
@@ -316,7 +433,15 @@ func compileClientAuth(domains map[string]config.Website, store *config.MTLS, ve
 			trust = newTrustStore(sorted, cas, verdicts)
 			stores[trustID] = trust
 		}
-		pol := &authPolicy{id: id, required: mode == mtls.ModeRequired, trust: trust}
+		required := mode == mtls.ModeRequired
+		pol := &authPolicy{
+			ask:      &handshake{ask: true, key: id, manual: perHost, pool: trust.pool, required: required},
+			id:       id,
+			perHost:  perHost,
+			required: required,
+			silent:   &handshake{key: id + "|silent"},
+			trust:    trust,
+		}
 		policies[id] = pol
 		return pol
 	}
@@ -330,8 +455,9 @@ func compileClientAuth(domains map[string]config.Website, store *config.MTLS, ve
 			exact:     map[string]bool{},
 			key:       site.MTLS.Key,
 			overrides: map[string]*authPolicy{},
-			policy:    policyFor(site.MTLS.Mode, site.MTLS.CA),
 		}
+		perHost := site.MTLS.Issuer == mtls.IssuerPerHost
+		rec.policy = policyFor(site.MTLS.Mode, site.MTLS.CA, perHost)
 		if strings.HasPrefix(name, "*.") {
 			rec.base = name[2:]
 		}
@@ -347,11 +473,87 @@ func compileClientAuth(domains map[string]config.Website, store *config.MTLS, ve
 			if len(ids) == 0 {
 				ids = site.MTLS.CA
 			}
-			rec.overrides[host] = policyFor(override.Mode, ids)
+			rec.overrides[host] = policyFor(override.Mode, ids, perHost)
 		}
 		t.records[name] = rec
 	}
 	return t
+}
+
+// covers reports whether any certificate the proxy holds may open host.
+func (t *clientAuthTable) covers(host string) bool {
+	return t.covered[host] || t.covered[mtls.WildcardOf(host)]
+}
+
+// handshakeFor decides how host negotiates under pol. A certificate request is
+// sent only where it can achieve something: on a required host, where an external
+// CA issues certificates ODAC cannot count, or where some certificate opens the
+// host. Elsewhere asking would only prompt visitors who have nothing to show, so
+// those hosts stay silent and may use HTTP/3. A host of a per-host record with an
+// issuer here names that issuer instead of the CA.
+func (t *clientAuthTable) handshakeFor(pol *authPolicy, host string) *handshake {
+	if pol.perHost {
+		if hs := t.perHostHandshake(pol, host); hs != nil {
+			return hs
+		}
+	}
+	if pol.required || pol.trust.external || t.covers(host) {
+		return pol.ask
+	}
+	return pol.silent
+}
+
+// perHostHandshake names this server's issuer for host, and the CA as well when a
+// certificate straight from it opens the host (a multi-host one, or one from before
+// the record went per-host). It is nil when the host has no issuer under pol's CAs.
+func (t *clientAuthTable) perHostHandshake(pol *authPolicy, host string) *handshake {
+	entries := t.issuers[host]
+	if len(entries) == 0 {
+		return nil
+	}
+	key := pol.id + "|host:" + host
+	if hs, ok := t.handshakes.Load(key); ok {
+		return hs.(*handshake)
+	}
+	pool := x509.NewCertPool()
+	found, direct := false, false
+	for _, entry := range entries {
+		if !pol.trust.ids[entry.ca] {
+			continue
+		}
+		cert := entry.parsed(pol.trust)
+		if cert == nil {
+			continue
+		}
+		pool.AddCert(cert)
+		found = true
+		direct = direct || entry.direct
+	}
+	if !found {
+		return nil
+	}
+	if direct {
+		for _, ca := range pol.trust.cas {
+			pool.AddCert(ca)
+		}
+	}
+	hs, _ := t.handshakes.LoadOrStore(key, &handshake{ask: true, key: key, manual: true, pool: pool, required: pol.required})
+	return hs.(*handshake)
+}
+
+// localIssuers returns this server's issuers for host under trust, which verifyFor
+// accepts in place of the ones a client leaves out of its chain.
+func (t *clientAuthTable) localIssuers(host string, trust *trustStore) []*x509.Certificate {
+	var out []*x509.Certificate
+	for _, entry := range t.issuers[host] {
+		if !trust.ids[entry.ca] {
+			continue
+		}
+		if cert := entry.parsed(trust); cert != nil {
+			out = append(out, cert)
+		}
+	}
+	return out
 }
 
 // UpdateClientAuth installs a config push's client certificate rules. The API
@@ -391,7 +593,8 @@ func normalizeHost(host string) string {
 	return strings.TrimPrefix(strings.ToLower(host), "www.")
 }
 
-func (p *Proxy) policyForHost(t *clientAuthTable, host string) *authPolicy {
+// handshakeForHost returns how a host negotiates, or nil when it has no policy.
+func (p *Proxy) handshakeForHost(t *clientAuthTable, host string) *handshake {
 	p.mu.RLock()
 	site, ok := p.resolveDomain(host)
 	p.mu.RUnlock()
@@ -402,35 +605,43 @@ func (p *Proxy) policyForHost(t *clientAuthTable, host string) *authPolicy {
 	if rec == nil {
 		return nil
 	}
-	return rec.policyFor(host)
+	pol := rec.policyFor(host)
+	if pol == nil {
+		return nil
+	}
+	return t.handshakeFor(pol, host)
 }
 
-// GetConfigForClient asks for a client certificate only on hosts with a policy.
-// It cannot be global: a certificate request on every site would prompt visitors
-// of unrelated public domains.
+// GetConfigForClient asks for a client certificate only on hosts with a policy,
+// and only where handshakeFor says asking can achieve something. It cannot be
+// global: a certificate request on every site would prompt visitors of unrelated
+// public domains.
 func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 	t := p.clientAuth.Load()
 	if t == nil {
 		return nil, nil
 	}
-	pol := p.policyForHost(t, normalizeHost(hello.ServerName))
-	if pol == nil {
+	hs := p.handshakeForHost(t, normalizeHost(hello.ServerName))
+	if hs == nil || !hs.ask {
 		return nil, nil
 	}
 	p.mu.RLock()
 	base := p.tlsBase
 	p.mu.RUnlock()
-	conf := pol.handshakeConfig(base)
+	conf := hs.config(base)
 	if conf == nil {
 		return nil, errors.New("client certificate policy has no TLS base")
 	}
 	return conf, nil
 }
 
-// GetHTTP3ConfigForClient keeps policy hosts off QUIC.
+// GetHTTP3ConfigForClient keeps hosts that ask for a certificate off QUIC.
 func (p *Proxy) GetHTTP3ConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 	t := p.clientAuth.Load()
-	if t != nil && p.policyForHost(t, normalizeHost(hello.ServerName)) != nil {
+	if t == nil {
+		return nil, nil
+	}
+	if hs := p.handshakeForHost(t, normalizeHost(hello.ServerName)); hs != nil && hs.ask {
 		return nil, errClientAuthOverTCP
 	}
 	return nil, nil
@@ -441,21 +652,27 @@ func (p *Proxy) GetHTTP3ConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config
 // handshake: the SNI can name another host, a resumed session skips the chain
 // check, and a connection outlives both its certificate and any revocation.
 func (p *Proxy) evaluate(t *clientAuthTable, conn *tls.ConnectionState, host string, rec *authRecord, pol *authPolicy, now time.Time) (*clientAuthState, int) {
-	state := &clientAuthState{key: rec.key, verify: mtls.VerifyNone}
+	hs := t.handshakeFor(pol, host)
+	state := &clientAuthState{key: rec.key, tcpOnly: hs.ask, verify: mtls.VerifyNone}
 	if conn == nil {
 		return state, 0
 	}
-	// 0-RTT arrives before the client has proven anything.
+	sni := normalizeHost(conn.ServerName)
+	// 0-RTT arrives before the client has proven anything. A silent host has
+	// nothing to prove, so only early data carrying a resumed identity, or meant
+	// for another host, has to wait for the handshake.
 	if !conn.HandshakeComplete {
-		return state, http.StatusTooEarly
+		if hs.ask || len(conn.PeerCertificates) > 0 || sni != host {
+			return state, http.StatusTooEarly
+		}
+		return state, 0
 	}
 
-	sni := normalizeHost(conn.ServerName)
 	if sni != host {
-		// The connection was negotiated for a host with other rules, so what it
-		// carries says nothing about this one. 421 makes a browser that coalesced
-		// the two open a connection with the right SNI.
-		if sniPol := p.policyForHost(t, sni); sniPol == nil || sniPol.id != pol.id {
+		// The connection was negotiated for a host with other rules, or asked for
+		// other issuers, so what it carries says nothing about this one. 421 makes a
+		// browser that coalesced the two open a connection with the right SNI.
+		if sniHS := p.handshakeForHost(t, sni); sniHS == nil || sniHS.key != hs.key {
 			return state, http.StatusMisdirectedRequest
 		}
 	}
@@ -472,7 +689,11 @@ func (p *Proxy) evaluate(t *clientAuthTable, conn *tls.ConnectionState, host str
 	fingerprint := mtls.Fingerprint(leaf.Raw)
 
 	verdict := certVerdict{status: mtls.VerifyRevoked}
-	if !t.revoked[fingerprint] {
+	switch {
+	case t.revoked[fingerprint]:
+	case pol.perHost:
+		verdict = pol.trust.verifyFor(host, t.localIssuers(host, pol.trust), conn.PeerCertificates, now)
+	default:
 		verdict = pol.trust.verify(conn.PeerCertificates, now)
 	}
 	state.verify = verdict.status

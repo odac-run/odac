@@ -407,9 +407,10 @@ func TestImportRefusesAnExpiredCertificateButToleratesClockSkew(t *testing.T) {
 	mustOK(t, b.m.Import(api.Operator, importOpts(reply["cert"].(string), "x.com")))
 }
 
-// The point of an import: the proxy on the second node refuses the certificate
-// before it, as a managed CA's certificate with no record, and accepts it after.
-// The proxy is fed through the same payload builders the dataplane uses.
+// The point of an import: the proxy on the second node does not take the
+// certificate before it (no certificate it knows opens x.com, so it does not even
+// ask), and accepts it after. The proxy is fed through the same payload builders
+// the dataplane uses.
 func TestProxyAcceptsAnImportedCertificate(t *testing.T) {
 	ca := newSharedCA(t, x509.KeyUsageCertSign)
 	a, b := edgeNode(t, ca), edgeNode(t, ca)
@@ -418,7 +419,7 @@ func TestProxyAcceptsAnImportedCertificate(t *testing.T) {
 	client := tls.Certificate{Certificate: [][]byte{parseIssued(t, reply).Raw}, PrivateKey: key}
 
 	edge := newProxyEdge(t, b)
-	if got := edge.verify(t, client); got != mtls.VerifyUntrusted {
+	if got := edge.verify(t, client); got != mtls.VerifyNone {
 		t.Fatalf("before the import the proxy says %q", got)
 	}
 	mustOK(t, b.m.Import(asApp, map[string]any{"cert": reply["cert"], "hosts": []any{"x.com"}, "name": "dev1"}))
@@ -429,7 +430,8 @@ func TestProxyAcceptsAnImportedCertificate(t *testing.T) {
 
 	mustOK(t, b.m.Revoke(asApp, reply["fingerprint"]))
 	edge.sync(t)
-	if got := edge.verify(t, client); got != mtls.VerifyRevoked {
+	// Its only certificate revoked, x.com stops asking, so the client is anonymous.
+	if got := edge.verify(t, client); got != mtls.VerifyNone {
 		t.Fatalf("after the revoke the proxy says %q", got)
 	}
 }

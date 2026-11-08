@@ -396,7 +396,7 @@ func (p *Proxy) setEdgeHeaders(h http.Header, r *http.Request) {
 	if net.ParseIP(host) == nil && host != "localhost" {
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 	}
-	if p.http3Available.Load() && clientAuthFrom(r) == nil {
+	if state := clientAuthFrom(r); p.http3Available.Load() && (state == nil || !state.tcpOnly) {
 		h.Set("Alt-Svc", altSvcHTTP3)
 	}
 }
