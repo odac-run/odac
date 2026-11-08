@@ -42,15 +42,13 @@ const (
 
 var fingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// MTLSProxy is the proxy surface MTLS needs: pushing a change, and spotting a
-// tunnel, which dials the backend directly and so would route around any policy.
+// MTLSProxy is the proxy surface MTLS needs: pushing a change.
 // SyncClientCerts carries what only certificates changed, which leaves every other
 // site's state alone. SyncConfig is for changes to a domain record.
 // *dataplane.Proxy implements it.
 type MTLSProxy interface {
 	SyncClientCerts()
 	SyncConfig()
-	TunnelDomains(app string) []string
 }
 
 // MTLS owns client certificate policy and issuance. CA private keys stay on this
@@ -486,10 +484,6 @@ func (m *MTLS) setLocked(host, mode string, opts map[string]any) (api.Result, bo
 		return api.Res(true, __("Client certificates are off for %s.", host), setReply(nil, nil, false)), true
 	}
 
-	if tunnels := m.tunnelsFor(appID); len(tunnels) > 0 {
-		return api.Res(false, __("App %s is exposed through a tunnel (%s), which reaches it directly and would bypass client certificates. Remove the tunnel first.", str(appID), strings.Join(tunnels, ", "))), false
-	}
-
 	if len(requested) > 0 {
 		trusted = requested
 	}
@@ -595,13 +589,6 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
-}
-
-func (m *MTLS) tunnelsFor(appID any) []string {
-	if m.proxy == nil {
-		return nil
-	}
-	return m.proxy.TunnelDomains(str(appID))
 }
 
 // bypassesLocked lists what stays reachable around a policy on this app, so the
@@ -1236,7 +1223,6 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 	var record string
 	var found bool
 	var caID string
-	var appID any
 	var hasExternal bool
 	m.cfg.View(func() {
 		domains := m.domainsLocked()
@@ -1247,8 +1233,6 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 		if !found {
 			return
 		}
-		rec, _ := domains[record].(map[string]any)
-		appID = rec["appId"]
 		cas := m.casLocked(false)
 		for _, id := range effectiveCAs(domains, record, host) {
 			ca, _ := cas[id].(map[string]any)
@@ -1267,9 +1251,6 @@ func (m *MTLS) issueLocked(app, host string, csr *x509.CertificateRequest, opts 
 	}
 	if caID == "" && hasExternal {
 		return api.Res(false, __("%s trusts an external CA. Issue certificates from that CA.", host)), false, false
-	}
-	if tunnels := m.tunnelsFor(appID); len(tunnels) > 0 {
-		return api.Res(false, __("App %s is exposed through a tunnel (%s), which reaches it directly and would bypass client certificates. Remove the tunnel first.", str(appID), strings.Join(tunnels, ", "))), false, false
 	}
 	if caID == "" && app != "" {
 		return api.Res(false, __("Client certificates are not set up on %s.", host)), false, false

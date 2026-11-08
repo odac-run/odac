@@ -732,13 +732,13 @@ func TestSetRejectsWhatCannotWork(t *testing.T) {
 	mustFail(t, fx.m.Set("10.0.0.1", "optional", nil), "no TLS")
 }
 
-func TestTunnelBlocksAPolicyOnTheWholeApp(t *testing.T) {
+// A tunnel is behind ODAC account sign-in on the edge, so it is not an open way
+// around a domain's client certificates and does not block a policy or an issue.
+func TestTunnelDoesNotBlockAPolicy(t *testing.T) {
 	fx := newMTLSFixture(t)
 	fx.proxy.tunnels["myapp"] = []string{"t.example"}
-	mustFail(t, fx.m.Set("x.com", "optional", nil), "tunnel")
-	mustFail(t, fx.m.Set("y.com", "optional", nil), "tunnel")
-	mustFail(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": newCSR(t)}), "tunnel")
-	mustOK(t, fx.m.Set("z.com", "optional", nil))
+	mustOK(t, fx.m.Set("x.com", "optional", nil))
+	mustOK(t, fx.m.Issue(api.Operator, "x.com", map[string]any{"name": "a", "hosts": []any{"x.com"}, "csr": newCSR(t)}))
 }
 
 func TestWarnsAboutWhatStaysOpen(t *testing.T) {
