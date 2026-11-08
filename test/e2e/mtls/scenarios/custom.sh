@@ -154,7 +154,13 @@ custom_required() {
 custom_scope() {
 	local name=custom.scope out before
 	[ "$C_ISSUED" = 1 ] || { skip "$name" "no certificate issued"; return; }
-	probe "$C_NODE" "$C_HOST_B" /e2e/scope alice
+	# An optional host asks only once some certificate opens it (H6), so a
+	# keeper certificate, never presented, makes b ask and alice show hers.
+	make_csr keeper-b
+	copy_file client /work/keeper-b.csr "$C_NODE" /tmp/e2e/keeper-b.csr
+	out=$(odac "$C_NODE" domain mtls issue -d "$C_RECORD" --name keeper-b --hosts "$C_HOST_B" \
+		--csr /tmp/e2e/keeper-b.csr --out /tmp/e2e/keeper-b.crt) || { fail "$name" "keeper issue: $(cli_safe "$out")"; return; }
+	wait_probe 15 '[ "$P_VERIFY" = out_of_scope ]' "$C_NODE" "$C_HOST_B" /e2e/scope alice || true
 	before=$(probe_line)
 	if ! { [ "$P_CODE" = 200 ] && [ "$P_VERIFY" = out_of_scope ] && [ "$P_SIG" = true ]; }; then
 		fail "$name" "before scope change on $C_HOST_B: $before (want verify=out_of_scope)"
@@ -238,5 +244,5 @@ suite_custom() {
 leak_needles_custom() {
 	# Every base64 body line, not just the first: a log that dumps part of a PEM
 	# must still be caught. Lines under 32 characters are dropped by the caller.
-	client_sh 'for f in /work/alice.csr /work/alice.crt /work/alice.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
+	client_sh 'for f in /work/alice.csr /work/alice.crt /work/alice.key /work/keeper-b.csr /work/keeper-b.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
 }

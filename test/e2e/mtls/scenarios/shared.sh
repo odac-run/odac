@@ -42,6 +42,13 @@ shared_ca_import() {
 		out_a=$(odac "$n" domain mtls set -d shared.test --mode optional --ca "$S_CA") ||
 			{ fail "$name" "$n set --ca: $(cli_safe "$out_a")"; return; }
 	done
+	# An optional host asks only once some certificate opens it (H6). A keeper
+	# certificate on edge-b, never presented, keeps shared.test asking there, so
+	# frank's verdict on edge-b is what this suite has always checked.
+	make_csr keeper-s
+	copy_file client /work/keeper-s.csr edge-b /tmp/e2e/keeper-s.csr
+	out_a=$(odac edge-b domain mtls issue -d shared.test --name keeper-s --hosts shared.test --csr /tmp/e2e/keeper-s.csr --out /tmp/e2e/keeper-s.crt) ||
+		{ fail "$name" "edge-b keeper issue: $(cli_safe "$out_a")"; return; }
 	S_READY=1
 	pass "$name" "CA id $S_CA on edge-a and edge-b; re-import: \"$(cli_safe "$again" | cut -c1-50)\"; shared.test optional --ca on both"
 }
@@ -105,5 +112,5 @@ suite_shared() {
 }
 
 leak_needles_shared() {
-	client_sh 'for f in /work/frank.csr /work/frank.key /work/frank.crt /e2e/pki/mtls-ca.key /e2e/pki/root.key /e2e/pki/server.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
+	client_sh 'for f in /work/keeper-s.csr /work/keeper-s.key /work/frank.csr /work/frank.key /work/frank.crt /e2e/pki/mtls-ca.key /e2e/pki/root.key /e2e/pki/server.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
 }

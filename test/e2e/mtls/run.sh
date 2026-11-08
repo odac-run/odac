@@ -17,7 +17,8 @@
 # edge suite reports SKIP.
 #
 # Suites run in order and build on each other: custom (edge-a), appapi (reuses
-# custom's record), shared (edge-a + edge-b), edge (edge-a, edge-b, home).
+# custom's record), shared (edge-a + edge-b), perhost (edge-a + edge-b), edge
+# (edge-a, edge-b, home).
 #
 # Isolation contract: everything is compose project "mtls-e2e" on an internal
 # network with no published ports, images are tagged mtls-e2e/*, and teardown
@@ -36,7 +37,7 @@ for f in "$HERE"/scenarios/*.sh; do
 	. "$f"
 done
 
-ALL_SUITES="custom appapi shared edge"
+ALL_SUITES="custom appapi shared perhost edge"
 IMAGES="mtls-e2e/node:local mtls-e2e/hub:local mtls-e2e/client:local mtls-e2e/origin:local mtls-e2e/odac-tunnel:local"
 
 # nodes_for SUITES: the ODAC nodes those suites need.
@@ -44,7 +45,7 @@ nodes_for() {
 	local s out=" edge-a"
 	for s in "$@"; do
 		case $s in
-		shared) out+=" edge-b" ;;
+		shared | perhost) out+=" edge-b" ;;
 		edge) out+=" edge-b home" ;;
 		esac
 	done

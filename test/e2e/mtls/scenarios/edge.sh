@@ -190,7 +190,18 @@ EOF
 edge_multi_import() {
 	local name=multi.import before after
 	[ -n "$E_FP1" ] || { skip "$name" "no tunnel certificate"; return; }
-	probe edge-b "$E_TUNNEL" /e2e/multi t1a
+	# An optional host asks only once some certificate opens it (H6). A keeper
+	# certificate, never presented, keeps the tunnel host asking on edge-b,
+	# so t1a is shown and refused rather than never requested.
+	# edge-a gets one too, for multi.revoke-offline, where t1a is revoked there.
+	local out n
+	make_csr keeper-t
+	for n in edge-a edge-b; do
+		copy_file client /work/keeper-t.csr "$n" /tmp/e2e/keeper-t.csr
+		out=$(odac "$n" domain mtls issue -d "$E_TUNNEL" --name keeper-t --hosts "$E_TUNNEL" --csr /tmp/e2e/keeper-t.csr --out /tmp/e2e/keeper-t.crt) ||
+			{ fail "$name" "$n keeper issue: $(cli_safe "$out")"; return; }
+	done
+	wait_probe 15 '[ "$P_CODE" = 403 ]' edge-b "$E_TUNNEL" /e2e/multi t1a || true
 	before=$(probe_line)
 	local before_ok=0
 	[ "$P_CODE" = 403 ] && [[ "$P_TEXT" == *untrusted* ]] && before_ok=1
@@ -317,5 +328,5 @@ suite_edge() {
 }
 
 leak_needles_edge() {
-	client_sh 'for f in /work/t1a.csr /work/t1a.key /work/t1a.crt /work/t1b.csr /work/t1b.key /work/t1b.crt /work/t1x.csr /work/t1x.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
+	client_sh 'for f in /work/t1a.csr /work/t1a.key /work/t1a.crt /work/t1b.csr /work/t1b.key /work/t1b.crt /work/t1x.csr /work/t1x.key /work/keeper-t.csr /work/keeper-t.key; do [ -f "$f" ] && grep -v -- "-----" "$f"; done' 2>/dev/null || true
 }

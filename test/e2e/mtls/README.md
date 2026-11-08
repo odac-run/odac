@@ -24,6 +24,7 @@ run fails unless all of them pass.
 | `custom` | edge-a | optional and required modes, the signed headers, scope, revocation closing a WebSocket, a repeated CSR |
 | `appapi` | edge-a | an app token reaching only its own records; `set`, `scope` and `ca.import` never, `--all` included |
 | `shared` | edge-a, edge-b | one CA imported on two nodes, `cert.import`, per-node revocation |
+| `perhost` | edge-a, edge-b | `--issuer per-host`: the CA names each handshake gives (`openssl s_client`), no certificate request and HTTP/3 kept on a host no certificate opens, one host's certificate refused on another, import with the chain, a renewal signed by the other node's issuer opening both |
 | `edge` | edge-a, edge-b, home | odac-tunnel fail-closed start, the hub's `cert.*` requests (MTLS_PLAN.md §6), owner checks, a tunnel opened by certificate, replication and a revocation queued for an offline edge |
 
 `appapi` builds on `custom`'s record, so run them together.
