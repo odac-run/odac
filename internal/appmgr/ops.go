@@ -20,7 +20,6 @@ import (
 var (
 	scpLikeURL  = regexp.MustCompile(`^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:`)
 	commitShaRE = regexp.MustCompile(`^[a-fA-F0-9]{6,40}$`)
-	networkName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 	// greenSuffix matches the green container name suffix produced by
 	// generateRuntimeID: `<appName>-green-<13+digit-ms>_<8-hex>`.
 	greenSuffix = regexp.MustCompile(`-green-\d+_[a-f0-9]{8}$`)
@@ -934,14 +933,21 @@ func (m *Manager) DeviceDelete(id any, hostPath string) *api.Result {
 	return result
 }
 
-// SetNetworks ports App.setNetworks.
+// SetNetworks replaces the app's network list. The list is persisted on the
+// record, so it survives restarts and Blue-Green deploys; a running container
+// is also reconciled live. A list naming only docker.DefaultNetwork is stored
+// as no list, since that is what every new app gets. An empty list is kept
+// as one: docker places the app on its private network, which no reply names.
 func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Result {
-	var name string
+	var name, target string
+	var idNum float64
 	found, hostNet, isolated := false, false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
 			found = true
 			name, _ = app["name"].(string)
+			idNum, _ = app["id"].(float64)
+			target, _ = app["activeContainerId"].(string)
 			hostNet = netmode.IsHost(app["networkMode"])
 			isolated = jsTruthy(app["isolated"])
 		}
@@ -949,8 +955,11 @@ func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 	if !found {
 		return res(false, __("App %s not found.", jsString(id)))
 	}
+	if target == "" {
+		target = name
+	}
 
-	// Docker cannot attach a host-namespace container to a bridge network, so
+	// Docker cannot attach a host-namespace container to a bridge, so
 	// answer up front instead of surfacing the daemon's opaque refusal.
 	if hostNet {
 		return res(false, __("App %s uses host networking and cannot join additional networks. Switch it to bridge mode first.", name))
@@ -968,30 +977,72 @@ func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 		return res(false, __("Invalid networks payload. Expected an array of network names."))
 	}
 
-	names := make([]string, 0, len(networks))
-	for _, raw := range networks {
-		netName, _ := raw.(string)
-		if netName == "" || !networkName.MatchString(netName) {
-			return res(false, __("Invalid network name: %s", jsString(raw)))
+	raw := make([]string, 0, len(networks))
+	for _, item := range networks {
+		netName, ok := item.(string)
+		if !ok {
+			return res(false, __("Invalid network name: %s", jsString(item)))
 		}
-		names = append(names, netName)
+		raw = append(raw, netName)
+	}
+	names, err := docker.NormalizeNetworks(raw)
+	if err != nil {
+		return res(false, err.Error())
 	}
 
-	status := m.deps.Docker.GetStatus(name)
-	if !status.Running {
-		return res(false, __("App %s is not running. Start the app first.", name))
+	// A deploy reads the list while it creates the green container; holding
+	// the lock keeps the record and the live container from diverging.
+	if !m.tryLockProcessing(idNum) {
+		return res(false, __("App %s is already being processed.", name))
 	}
+	defer m.unlockProcessing(idNum)
 
-	result := m.deps.Docker.SetNetworks(name, names)
-	if !result.Success {
-		msg := result.Message
-		if msg == "" {
-			msg = __("Failed to update networks for %s.", name)
+	running := m.deps.Docker.GetStatus(target).Running
+	if running {
+		result := m.deps.Docker.SetNetworks(target, names)
+		if !result.Success {
+			msg := result.Message
+			if msg == "" {
+				msg = __("Failed to update networks for %s.", name)
+			}
+			return res(false, msg)
 		}
-		return res(false, msg)
+	} else if err := m.deps.Docker.EnsureNetworks(names); err != nil {
+		return res(false, __("Failed to update networks for %s: %s", name, err.Error()))
 	}
 
-	return res(true, __("Networks updated for %s: %s", name, strings.Join(result.Networks, ", ")))
+	m.cfg.Mutate(func() {
+		app := m.getLocked(idNum)
+		if app == nil {
+			return
+		}
+		if docker.IsDefaultNetworks(names) {
+			delete(app, "networks")
+		} else {
+			list := make([]any, len(names))
+			for i, n := range names {
+				list[i] = n
+			}
+			app["networks"] = list
+		}
+		m.saveAppsLocked()
+	})
+
+	if running {
+		// The container's address moved with its networks; the proxy only
+		// resolves it on a sync, and a stale one may now belong to another app.
+		m.proxySync()
+	}
+	switch {
+	case len(names) == 0 && running:
+		return res(true, __("%s no longer shares a network with other apps. Its domains keep working.", name))
+	case len(names) == 0:
+		return res(true, __("%s will share no network with other apps from its next start. Its domains keep working.", name))
+	case running:
+		return res(true, __("Networks updated for %s: %s", name, strings.Join(names, ", ")))
+	default:
+		return res(true, __("Networks saved for %s: %s. They apply on the next start.", name, strings.Join(names, ", ")))
+	}
 }
 
 // SetPrivileged ports App.setPrivileged — CLI-only escalation path,

@@ -156,6 +156,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		privileged            string
 		networkMode           string
 		isolated              bool
+		networks              []string
 		kernel                *kernel.Spec
 		resources             *resources.Spec
 		port                  int
@@ -187,6 +188,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])
+		s.networks = toNetworks(app["networks"])
 		s.kernel = toKernel(app)
 		s.resources = toResources(app)
 		s.cmd = toCmd(app["cmd"])
@@ -254,6 +256,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		Cmd:         s.cmd,
 		NetworkMode: s.networkMode,
 		Isolated:    s.isolated,
+		Networks:    s.networks,
 		Kernel:      s.kernel,
 		Resources:   s.resources,
 	}
@@ -314,6 +317,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		privileged            string
 		networkMode           string
 		isolated              bool
+		networks              []string
 		kernel                *kernel.Spec
 		resources             *resources.Spec
 	}
@@ -338,6 +342,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])
+		s.networks = toNetworks(app["networks"])
 		s.kernel = toKernel(app)
 		s.resources = toResources(app)
 		s.cmd = toCmd(app["cmd"])
@@ -401,6 +406,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		Cmd:         s.cmd,
 		NetworkMode: s.networkMode,
 		Isolated:    s.isolated,
+		Networks:    s.networks,
 		Kernel:      s.kernel,
 		Resources:   s.resources,
 	}
@@ -556,6 +562,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		privileged           string
 		networkMode          string
 		isolated             bool
+		networks             []string
 		kernel               *kernel.Spec
 		resources            *resources.Spec
 	}
@@ -576,6 +583,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])
+		s.networks = toNetworks(app["networks"])
 		s.kernel = toKernel(app)
 		s.resources = toResources(app)
 		s.devices = toDevices(app["devices"])
@@ -622,6 +630,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		Env:         env,
 		NetworkMode: s.networkMode,
 		Isolated:    s.isolated,
+		Networks:    s.networks,
 		Kernel:      s.kernel,
 		Resources:   s.resources,
 	}

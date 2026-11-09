@@ -66,6 +66,9 @@ type fakeDocker struct {
 	containers []docker.ContainerInfo
 
 	networksResult docker.SetNetworksResult
+	networksCalls  [][]string // SetNetworks targets, name first
+	ensuredNets    [][]string
+	ensureNetsErr  error
 
 	registered   []string
 	unregistered []string
@@ -235,10 +238,18 @@ func (f *fakeDocker) GetImageExposedPorts(image string) []int {
 	return f.exposed[image]
 }
 
-func (f *fakeDocker) SetNetworks(string, []string) docker.SetNetworksResult {
+func (f *fakeDocker) SetNetworks(name string, networks []string) docker.SetNetworksResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.networksCalls = append(f.networksCalls, append([]string{name}, networks...))
 	return f.networksResult
+}
+
+func (f *fakeDocker) EnsureNetworks(names []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensuredNets = append(f.ensuredNets, names)
+	return f.ensureNetsErr
 }
 
 func (f *fakeDocker) EnsureImage(string, io.Writer) error { return nil }
