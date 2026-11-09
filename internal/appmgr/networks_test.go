@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"odac/internal/docker"
 )
@@ -105,11 +106,47 @@ func TestSetNetworksPersists(t *testing.T) {
 		}
 	})
 
-	t.Run("refused while a deploy holds the app", func(t *testing.T) {
-		fx := newNetworksFixture(t, nil)
+	// The Hub's Save & Restart sends the list and app.restart together; the
+	// restart winning the lock used to drop the list without a word.
+	t.Run("saved while a restart holds the app, applied after it", func(t *testing.T) {
+		fx := newNetworksFixture(t, map[string]any{"networks": []any{}})
+		fx.dock.running["net-app"] = true
 		fx.m.tryLockProcessing(1)
-		if r := fx.m.SetNetworks("net-app", []any{"db"}, true); r.Status {
-			t.Fatal("accepted during processing")
+		waits := 0
+		fx.m.sleep = func(time.Duration) {
+			if waits++; waits == 3 {
+				fx.m.unlockProcessing(1)
+			}
+		}
+		r := fx.m.SetNetworks("net-app", []any{docker.DefaultNetwork}, true)
+		if !r.Status {
+			t.Fatalf("refused: %v", r.Message)
+		}
+		if _, ok := fx.app(0)["networks"]; ok {
+			t.Errorf("record not back on the default: %v", fx.app(0)["networks"])
+		}
+		fx.waitIdle(t)
+		if !reflect.DeepEqual(fx.dock.networksCalls, [][]string{{"net-app", docker.DefaultNetwork}}) {
+			t.Errorf("live calls = %v", fx.dock.networksCalls)
+		}
+		if fx.syncCount() != 1 {
+			t.Errorf("proxy syncs = %d", fx.syncCount())
+		}
+	})
+
+	t.Run("one follower per app, reading the latest list", func(t *testing.T) {
+		fx := newNetworksFixture(t, nil)
+		fx.dock.running["net-app"] = true
+		fx.m.tryLockProcessing(1)
+		gate := make(chan struct{})
+		fx.m.sleep = func(time.Duration) { <-gate }
+		fx.m.SetNetworks("net-app", []any{"a"}, true)
+		fx.m.SetNetworks("net-app", []any{"b"}, true)
+		fx.m.unlockProcessing(1)
+		close(gate)
+		fx.waitIdle(t)
+		if !reflect.DeepEqual(fx.dock.networksCalls, [][]string{{"net-app", "b"}}) {
+			t.Errorf("live calls = %v", fx.dock.networksCalls)
 		}
 	})
 }

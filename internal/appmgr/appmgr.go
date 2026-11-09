@@ -149,6 +149,7 @@ type Manager struct {
 	mu         sync.Mutex
 	processing map[float64]bool          // app ids mid-operation
 	creating   map[string]bool           // app names mid-create
+	netFollow  map[float64]bool          // app ids with a network reconcile queued
 	logStreams map[string]*runtimeStream // app name -> live runtime log
 	loggers    map[string]*applog.Logger // app name -> logger instance
 
@@ -203,6 +204,7 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 
 		processing: map[float64]bool{},
 		creating:   map[string]bool{},
+		netFollow:  map[float64]bool{},
 		logStreams: map[string]*runtimeStream{},
 		loggers:    map[string]*applog.Logger{},
 
