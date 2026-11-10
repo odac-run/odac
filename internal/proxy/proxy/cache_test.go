@@ -380,14 +380,14 @@ func TestCacheManager_Purge(t *testing.T) {
 
 	// Add entries for two domains
 	for _, host := range []string{"a.com", "b.com"} {
-		for _, p := range []string{"/style.css", "/app.js"} {
+		for p, ct := range map[string]string{"/style.css": "text/css", "/app.js": "text/javascript"} {
 			key := cacheKey(host, p)
 			for i := 0; i < 10; i++ {
 				cm.recordFrequency(key)
 			}
 			resp := &http.Response{
 				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"text/css"}},
+				Header:     http.Header{"Content-Type": []string{ct}},
 			}
 			cm.Put(host, p, resp, []byte("data"))
 		}

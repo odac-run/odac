@@ -603,7 +603,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.reverseProxy.ServeHTTP(crw, r)
 
 		// Store in cache if response was cacheable (runs inline, body already buffered)
-		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 {
+		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 && storeAllowedFor(r, crw.headers) {
 			p.cache.storeUnlessPurged(gen, func() {
 				p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
 			})

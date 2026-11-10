@@ -294,7 +294,8 @@ func IsCacheable(r *http.Request) bool {
 		return false
 	}
 
-	// Don't cache requests with authorization or cookies that suggest dynamic content
+	// A cookied request may still read the cache; storeAllowedFor decides whether its
+	// response may be stored.
 	if r.Header.Get("Authorization") != "" {
 		return false
 	}
@@ -308,6 +309,51 @@ func IsCacheable(r *http.Request) bool {
 	// Check URL extension
 	ext := strings.ToLower(path.Ext(r.URL.Path))
 	return cacheableExtension(ext)
+}
+
+// storeAllowedFor reports whether a response produced for r may be shared. An app can
+// answer a cookied request with that visitor's data under a URL that looks static
+// (/api/me/x.js), so such a response is stored only when the app called it public.
+func storeAllowedFor(r *http.Request, h http.Header) bool {
+	if r.Header.Get("Cookie") == "" {
+		return true
+	}
+	for _, directive := range strings.Split(strings.Join(h.Values("Cache-Control"), ","), ",") {
+		if strings.EqualFold(strings.TrimSpace(directive), "public") {
+			return true
+		}
+	}
+	return false
+}
+
+// contentTypeMatchesExtension ties a stored type to the family its extension implies, so a
+// JSON or HTML answer under a .js or .png URL is never shared as that asset.
+func contentTypeMatchesExtension(urlPath, ct string) bool {
+	if idx := strings.Index(ct, ";"); idx != -1 {
+		ct = ct[:idx]
+	}
+	ct = strings.TrimSpace(strings.ToLower(ct))
+	switch strings.ToLower(path.Ext(urlPath)) {
+	case ".css":
+		return ct == "text/css"
+	case ".js", ".mjs":
+		switch ct {
+		case "text/javascript", "application/javascript", "application/x-javascript",
+			"application/ecmascript", "text/ecmascript":
+			return true
+		}
+	case ".map":
+		return ct == "application/json" || ct == "application/octet-stream"
+	case ".svg":
+		return ct == "image/svg+xml"
+	case ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".webp":
+		return (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") || ct == "application/octet-stream"
+	case ".eot", ".otf", ".ttf", ".woff", ".woff2":
+		return strings.HasPrefix(ct, "font/") || strings.HasPrefix(ct, "application/font") ||
+			strings.HasPrefix(ct, "application/x-font") || ct == "application/vnd.ms-fontobject" ||
+			ct == "application/octet-stream"
+	}
+	return false
 }
 
 // cacheableExtension returns true for static asset file extensions.
@@ -431,7 +477,7 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 
 	// Content-Type validation
 	ct := resp.Header.Get("Content-Type")
-	if !cacheableContentType(ct) {
+	if !cacheableContentType(ct) || !contentTypeMatchesExtension(urlPath, ct) {
 		return
 	}
 
