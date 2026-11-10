@@ -352,12 +352,13 @@ func TestMailSendNodeFixtures(t *testing.T) {
 			wantTo:   "user@dest.test",
 		},
 		{
-			// Existing From is kept; Reply-To's "to:" substring suppresses
-			// the To: injection (Node quirk, preserved).
+			// Existing From is kept. Node matched "to:" anywhere in the
+			// header block, so Reply-To suppressed To; presence is now
+			// decided by header name and To is added.
 			name: "textWithFrom",
 			data: `{"from":{"value":[{"address":"a@example.com"}]},"to":{"value":[{"address":"b@dest.test"}]},` +
 				`"header":{"From":"Custom <a@example.com>","Reply-To":"c@example.com"},"text":"plain body"}`,
-			wantBody: "From: Custom <a@example.com>\r\nReply-To: c@example.com\r\nSubject: \r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nplain body",
+			wantBody: "From: Custom <a@example.com>\r\nReply-To: c@example.com\r\nTo: b@dest.test\r\nSubject: \r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nplain body",
 			wantFrom: "a@example.com",
 			wantTo:   "b@dest.test",
 		},
@@ -414,6 +415,50 @@ func TestMailSendValidation(t *testing.T) {
 	}
 	if f.count() != 0 {
 		t.Errorf("validation failures hit the module API (%d requests)", f.count())
+	}
+}
+
+// Header names and values were joined with CRLF unchecked, so a caller could
+// end the header block and write headers or a body of its own; a subject that
+// merely contained "from:" suppressed the From header.
+func TestMailSendRefusesHeaderInjection(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{"example.com": map[string]any{}})
+
+	envelope := `"from":{"value":[{"address":"a@example.com"}]},"to":{"value":[{"address":"b@dest.test"}]}`
+	for name, data := range map[string]string{
+		"CRLF in value":     `{` + envelope + `,"header":{"X-Tag":"ok\r\nBcc: victim@x.test"},"text":"t"}`,
+		"LF in value":       `{` + envelope + `,"header":{"X-Tag":"ok\nBcc: victim@x.test"},"text":"t"}`,
+		"CRLF in name":      `{` + envelope + `,"header":{"X-Tag\r\nBcc":"victim@x.test"},"text":"t"}`,
+		"colon in name":     `{` + envelope + `,"header":{"Bcc: victim@x.test\r\nX":"y"},"text":"t"}`,
+		"space in name":     `{` + envelope + `,"header":{"X Tag":"y"},"text":"t"}`,
+		"CRLF in subject":   `{` + envelope + `,"header":{},"subject":"hi\r\nBcc: victim@x.test","text":"t"}`,
+		"CRLF in from":      `{"from":{"value":[{"address":"a@example.com\r\nBcc: v@x.test"}]},"to":{"value":[{"address":"b@dest.test"}]},"header":{},"text":"t"}`,
+		"CRLF in recipient": `{"from":{"value":[{"address":"a@example.com"}]},"to":{"value":[{"address":"b@dest.test\r\nX: y"}]},"header":{},"text":"t"}`,
+		"empty header name": `{` + envelope + `,"header":{"":"y"},"text":"t"}`,
+	} {
+		var v any
+		if err := json.Unmarshal([]byte(data), &v); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res := m.Send(v, json.RawMessage(data)); res.Status {
+			t.Errorf("%s: Send accepted it", name)
+		}
+	}
+	if f.count() != 0 {
+		t.Errorf("refused messages reached the module API (%d requests)", f.count())
+	}
+
+	// A subject that mentions a header name does not suppress that header.
+	data := `{` + envelope + `,"header":{"Subject":"re: from: to: here"},"text":"t"}`
+	var v any
+	json.Unmarshal([]byte(data), &v)
+	if res := m.Send(v, json.RawMessage(data)); !res.Status {
+		t.Fatalf("Send = %+v", res)
+	}
+	body, _ := f.last(t).body["body"].(string)
+	if !strings.Contains(body, "\r\nFrom: a@example.com\r\n") || !strings.Contains(body, "\r\nTo: b@dest.test\r\n") {
+		t.Errorf("From/To missing from %q", body)
 	}
 }
 
