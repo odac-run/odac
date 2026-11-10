@@ -1125,8 +1125,9 @@ func TestCertificateOnlyUpdateRevokesAndLeavesTLSCaches(t *testing.T) {
 	wantStatus(t, "before", resp, err, http.StatusOK)
 
 	fx.proxy.mu.Lock()
-	fx.proxy.sslCache["pub.com"] = &tls.Certificate{}
-	fx.proxy.ocspCache["pub.com"] = &ocspCacheEntry{}
+	pub := certID{cert: "pub.crt", key: "pub.key"}
+	fx.proxy.sslCache[pub] = &tls.Certificate{}
+	fx.proxy.ocspCache[pub] = &ocspCacheEntry{}
 	fx.proxy.mu.Unlock()
 
 	fx.proxy.UpdateClientCerts(&config.MTLS{CAs: fx.store.CAs, Certs: map[string][]string{}, Revoked: []string{fingerprint}})
@@ -1136,7 +1137,7 @@ func TestCertificateOnlyUpdateRevokesAndLeavesTLSCaches(t *testing.T) {
 
 	fx.proxy.mu.RLock()
 	defer fx.proxy.mu.RUnlock()
-	if fx.proxy.sslCache["pub.com"] == nil || fx.proxy.ocspCache["pub.com"] == nil {
+	if fx.proxy.sslCache[pub] == nil || fx.proxy.ocspCache[pub] == nil {
 		t.Fatal("a certificate change must not cost other sites their TLS caches")
 	}
 }

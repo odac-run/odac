@@ -118,8 +118,11 @@ type Proxy struct {
 	liveAuth       map[*liveClientAuth]struct{}
 	liveAuthMu     sync.Mutex
 	pages          *PageCache // App-controlled HTML page cache
-	sslCache       map[string]*tls.Certificate
-	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
+	sslCache       map[certID]*tls.Certificate
+	ocspCache      map[certID]*ocspCacheEntry // OCSP response cache
+	certGen        uint64                     // Moves on every config push, under mu
+	certCalls      map[certID]*certCall       // Loads in flight, under certMu
+	certMu         sync.Mutex
 	verdicts       *verdictCache
 	globalSSL      *config.SSL
 	mu             sync.RWMutex
@@ -131,8 +134,9 @@ type Proxy struct {
 
 // ocspCacheEntry stores OCSP response with expiration
 type ocspCacheEntry struct {
-	response  []byte
-	expiresAt time.Time
+	response   []byte
+	expiresAt  time.Time
+	refreshing atomic.Bool // One refresh at a time, not one per handshake near expiry
 }
 
 func NewProxy() *Proxy {
@@ -144,8 +148,9 @@ func NewProxy() *Proxy {
 		hints:          NewHintsStore(),
 		liveAuth:       make(map[*liveClientAuth]struct{}),
 		pages:          NewPageCache(cm),
-		sslCache:       make(map[string]*tls.Certificate),
-		ocspCache:      make(map[string]*ocspCacheEntry),
+		sslCache:       make(map[certID]*tls.Certificate),
+		ocspCache:      make(map[certID]*ocspCacheEntry),
+		certCalls:      make(map[certID]*certCall),
 		tunnel:         NewTunnelManager(),
 		verdicts:       newVerdictCache(),
 		httpClient: &http.Client{
@@ -261,8 +266,9 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 	p.mu.Lock()
 	p.domains = domains
 	p.globalSSL = globalSSL
-	p.sslCache = make(map[string]*tls.Certificate)
-	p.ocspCache = make(map[string]*ocspCacheEntry) // Clear OCSP cache on config update
+	p.sslCache = make(map[certID]*tls.Certificate)
+	p.ocspCache = make(map[certID]*ocspCacheEntry) // Clear OCSP cache on config update
+	p.certGen++
 	p.mu.Unlock()
 
 	// Update tunnel connections outside main lock (TunnelManager has its own mutex)
@@ -809,6 +815,20 @@ func isCompressible(contentType string) bool {
 	return false
 }
 
+// certID names a key pair by its files. The certificate cache is keyed by it rather than
+// by SNI: any number of names can resolve to one record, and a client picks the names.
+type certID struct {
+	cert, key string
+}
+
+// certCall is one load of a key pair that concurrent handshakes for it wait on.
+type certCall struct {
+	done chan struct{}
+	gen  uint64
+	cert *tls.Certificate
+	err  error
+}
+
 // GetCertificate implements tls.Config.GetCertificate with OCSP Stapling support.
 // OCSP Stapling eliminates the need for clients to contact the CA's OCSP responder,
 // reducing handshake latency by ~100ms and improving privacy.
@@ -816,6 +836,9 @@ func isCompressible(contentType string) bool {
 // Security: Strict SNI validation is enforced to prevent domain discovery attacks.
 // Requests without SNI or with unknown SNI are rejected to prevent IP-based scanning
 // (Shodan, Censys, etc.) from discovering which domains are hosted on this server.
+//
+// This runs before the client has done any work, so no disk or network I/O happens under
+// p.mu: files load outside it, once per key pair, and the staple is fetched in the background.
 func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := strings.ToLower(hello.ServerName)
 	debugLog("[DEBUG] TLS Handshake for SNI: %s", host)
@@ -838,91 +861,75 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 		return nil, nil // Returns TLS alert: unrecognized_name
 	}
 
-	// Check cache
-	if cert, ok := p.sslCache[host]; ok {
-		// Check if OCSP response needs refresh (background refresh)
-		if entry, hasOCSP := p.ocspCache[host]; hasOCSP {
-			if time.Now().After(entry.expiresAt.Add(-1 * time.Hour)) {
-				// Refresh in background if expiring within 1 hour
-				go p.refreshOCSPStaple(host, cert)
-			}
-		}
-		p.mu.RUnlock()
-		debugLog("[DEBUG] Found cached cert for %s", host)
-		return cert, nil
-	}
-	p.mu.RUnlock()
-
-	var certKey, certFile string
-	var source string
-
 	// Use site-specific cert or fallback to global for KNOWN websites only
+	var id certID
 	if website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "" {
-		debugLog("[DEBUG] Found specific cert for %s (Key: %s, Cert: %s)", host, website.Cert.SSL.Key, website.Cert.SSL.Cert)
-		certKey = website.Cert.SSL.Key
-		certFile = website.Cert.SSL.Cert
-		source = "site"
+		id = certID{cert: website.Cert.SSL.Cert, key: website.Cert.SSL.Key}
 	} else if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
-		// Global SSL fallback - only for known websites without specific certs
-		debugLog("[DEBUG] Using Global SSL for known website %s", host)
-		certKey = p.globalSSL.Key
-		certFile = p.globalSSL.Cert
-		source = "global"
+		id = certID{cert: p.globalSSL.Cert, key: p.globalSSL.Key}
 	} else {
+		p.mu.RUnlock()
 		debugLog("[DEBUG] No cert available for known website %s", host)
 		return nil, nil
 	}
 
-	// Load certificate
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Double check
-	if cert, ok := p.sslCache[host]; ok {
+	gen := p.certGen
+	if cert, ok := p.sslCache[id]; ok {
+		if entry, hasOCSP := p.ocspCache[id]; hasOCSP &&
+			time.Now().After(entry.expiresAt.Add(-1*time.Hour)) && entry.refreshing.CompareAndSwap(false, true) {
+			go p.refreshOCSPStaple(id, cert, gen)
+		}
+		p.mu.RUnlock()
 		return cert, nil
 	}
+	p.mu.RUnlock()
 
-	debugLog("[DEBUG] Loading cert files for %s from %s...", host, source)
-	cert, err := tls.LoadX509KeyPair(certFile, certKey)
-	if err != nil {
-		log.Printf("[ERROR] Failed to load SSL for %s (Key: %s, Cert: %s): %v", host, certKey, certFile, err)
-		return nil, err
-	}
-
-	// Fetch OCSP staple (non-blocking, best-effort)
-	p.fetchAndStapleOCSP(host, &cert)
-
-	p.sslCache[host] = &cert
-	debugLog("[DEBUG] Successfully loaded and cached cert for %s", host)
-	return &cert, nil
+	return p.loadCertificate(id, gen)
 }
 
-// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
-// This is a best-effort operation - if it fails, the certificate works without stapling.
-// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
-// It assumes p.mu is held by the caller.
-func (p *Proxy) fetchAndStapleOCSP(host string, cert *tls.Certificate) {
-	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
+// loadCertificate reads a key pair once for every handshake waiting on it. A load that a
+// config push overtook is returned to its callers but not cached, since the push may have
+// come with renewed files.
+func (p *Proxy) loadCertificate(id certID, gen uint64) (*tls.Certificate, error) {
+	p.certMu.Lock()
+	if c, ok := p.certCalls[id]; ok && c.gen == gen {
+		p.certMu.Unlock()
+		<-c.done
+		return c.cert, c.err
+	}
+	c := &certCall{done: make(chan struct{}), gen: gen}
+	p.certCalls[id] = c
+	p.certMu.Unlock()
+
+	cert, err := tls.LoadX509KeyPair(id.cert, id.key)
 	if err != nil {
-		debugLog("[DEBUG] OCSP: Fetch failed for %s: %v", host, err)
-		return
+		log.Printf("[ERROR] Failed to load SSL (Key: %s, Cert: %s): %v", id.key, id.cert, err)
+		c.err = err
+	} else {
+		c.cert = &cert
+		p.mu.Lock()
+		if p.certGen == gen {
+			p.sslCache[id] = c.cert
+		}
+		p.mu.Unlock()
 	}
 
-	// Staple the response
-	cert.OCSPStaple = ocspResp
-
-	// Cache with expiration
-	p.ocspCache[host] = &ocspCacheEntry{
-		response:  ocspResp,
-		expiresAt: *nextUpdate,
+	p.certMu.Lock()
+	if p.certCalls[id] == c {
+		delete(p.certCalls, id)
 	}
+	p.certMu.Unlock()
+	close(c.done)
 
-	debugLog("[DEBUG] OCSP: Successfully stapled for %s (valid until %s)", host, nextUpdate.Format(time.RFC3339))
+	if c.cert != nil {
+		go p.refreshOCSPStaple(id, c.cert, gen)
+	}
+	return c.cert, c.err
 }
 
 // fetchOCSP performs the network request and parsing for OCSP.
 // It is safe to call without holding p.mu.
-func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Time, error) {
+func (p *Proxy) fetchOCSP(cert *tls.Certificate) ([]byte, *time.Time, error) {
 	if len(cert.Certificate) < 2 {
 		return nil, nil, fmt.Errorf("certificate chain too short")
 	}
@@ -943,7 +950,6 @@ func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Tim
 	}
 
 	ocspURL := leaf.OCSPServer[0]
-	// debugLog("[DEBUG] OCSP: Fetching staple from %s for %s", ocspURL, host) // Optional: avoid spamming logs
 
 	// Create OCSP request
 	ocspReq, err := ocsp.CreateRequest(leaf, issuer, nil)
@@ -982,31 +988,32 @@ func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Tim
 	return ocspResp, &parsedResp.NextUpdate, nil
 }
 
-// refreshOCSPStaple refreshes OCSP staple in background when nearing expiration.
-func (p *Proxy) refreshOCSPStaple(host string, cert *tls.Certificate) {
-	// Performance: Do network I/O WITHOUT holding the lock
-	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Update failed for %s: %v", host, err)
-		return
-	}
-
-	// Safety: Clone the certificate struct to avoid Data Race.
-	// We only modify OCSPStaple (slice header), so shallow copy is safe.
-	// The active connections will continue to use the old pointer.
-	newCert := *cert
-	newCert.OCSPStaple = ocspResp
+// refreshOCSPStaple fetches a staple for a cached certificate and swaps in a copy that
+// carries it. Handshakes already holding the old pointer keep it, so nothing is mutated.
+func (p *Proxy) refreshOCSPStaple(id certID, cert *tls.Certificate, gen uint64) {
+	ocspResp, nextUpdate, err := p.fetchOCSP(cert)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if entry, ok := p.ocspCache[id]; ok {
+		entry.refreshing.Store(false)
+	}
+	if err != nil {
+		debugLog("[DEBUG] OCSP: Fetch failed for %s: %v", id.cert, err)
+		return
+	}
+	if p.certGen != gen || p.sslCache[id] != cert {
+		return
+	}
 
-	// Update caches with the new pointer
-	p.sslCache[host] = &newCert
-	p.ocspCache[host] = &ocspCacheEntry{
+	newCert := *cert
+	newCert.OCSPStaple = ocspResp
+	p.sslCache[id] = &newCert
+	p.ocspCache[id] = &ocspCacheEntry{
 		response:  ocspResp,
 		expiresAt: *nextUpdate,
 	}
-	debugLog("[DEBUG] OCSP: Refreshed staple for %s", host)
+	debugLog("[DEBUG] OCSP: Stapled %s (valid until %s)", id.cert, nextUpdate.Format(time.RFC3339))
 }
 
 // ============================================================================
