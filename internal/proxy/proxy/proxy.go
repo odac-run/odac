@@ -176,7 +176,10 @@ func NewProxy() *Proxy {
 	}
 
 	p.reverseProxy = &httputil.ReverseProxy{
-		Director:      p.director,
+		// Rewrite, not Director: ReverseProxy drops every header the client names in
+		// Connection after a Director returns, which let a client strip X-Real-IP or the
+		// signed client certificate headers. Rewrite runs after that removal.
+		Rewrite:       func(pr *httputil.ProxyRequest) { p.director(pr.Out) },
 		Transport:     transport,
 		BufferPool:    bufferPool{}, // Zero-allocation: reuse buffers from pool
 		FlushInterval: -1,           // Flush every chunk immediately — critical for streaming/large files
