@@ -2,7 +2,6 @@
 // ws.go/signer.go and Hub/Terminal.js in terminal.go): the cloud agent —
 // signed WebSocket link, inbound command dispatch, periodic task pushes,
 // log-stream forwarding, terminal sessions and the HTTP API (auth/app).
-// Protocol contract: docs/migration/contracts/hub-protocol.md.
 //
 // Deviations from Node (deliberate):
 //   - onConnect's four initial task pushes run sequentially on one tracked

@@ -40,16 +40,15 @@ func (m *Manager) containerAddr(id any, containerName string) string {
 // wellKnownHTTP is the multi-response preference order (#detectHttpPort).
 var wellKnownHTTP = []int{80, 443, 8080, 3000, 5000, 8000}
 
-// pollForPort ports #pollForPort (dev a9af39f semantics): after a start,
-// watch the container's listening ports and correct/write the proxy mapping
+// pollForPort watches the container's listening ports and correct/write the proxy mapping
 // ONLY once a port provably answers HTTP. containerName may be a Blue-Green
 // green container; id always resolves the real app, whose config receives
 // the adoption.
 //
-// Unlike Node, the adoption re-fetches the app from the current working set
-// under cfg.Mutate instead of mutating a map captured before the poll loop —
-// Node's captured object may belong to an array a #saveApps already
-// replaced, silently dropping the write (STATE.md 2026-07-12 trap).
+// The adoption re-fetches the app from the current working set under
+// cfg.Mutate instead of mutating a map captured before the poll loop: that
+// object may belong to an array SaveApps already replaced, which would
+// silently drop the write.
 func (m *Manager) pollForPort(id any, containerName string, expectedPort int) {
 	for attempts := 0; attempts < 60; attempts++ { // give up after ~60s (selfhosted apps may take long to bind)
 		if attempts > 0 {

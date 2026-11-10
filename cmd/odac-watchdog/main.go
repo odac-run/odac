@@ -1,11 +1,8 @@
-// odac-watchdog supervises the ODAC server process (Go port of
-// watchdog/index.js — see docs/migration/contracts/lifecycle.md).
+// odac-watchdog supervises the ODAC server process.
 //
 // The supervised server is chosen at startup: an `odac-server` binary next to
-// this one wins (the Go orchestrator — how a 3.8 staging image flips the
-// cutover: same image plus that single binary); otherwise the Node
-// orchestrator (`node <repo>/server/index.js`) runs as before.
-// ODAC_SERVER_SCRIPT forces a specific Node entrypoint and skips the probe.
+// this one wins; otherwise `node <repo>/server/index.js` runs.
+// ODAC_SERVER_SCRIPT forces a specific entrypoint and skips the probe.
 package main
 
 import (

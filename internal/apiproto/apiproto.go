@@ -1,5 +1,5 @@
 // Package apiproto implements the client side of ODAC's local API socket
-// protocol (docs/migration/contracts/api-protocol.md): one JSON request per
+// protocol: one JSON request per
 // TCP connection to 127.0.0.1:1453, answered by zero or more \r\n-terminated
 // progress lines followed by exactly one final response (no trailing newline),
 // after which the server destroys the connection.

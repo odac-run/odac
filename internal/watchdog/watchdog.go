@@ -1,7 +1,6 @@
 // Package watchdog supervises the ODAC server process: stale-PID cleanup at
 // startup, restart-on-crash with a rate budget, and buffered log capture with
-// size-based trimming. Behavioral contract: docs/migration/contracts/
-// lifecycle.md, "Watchdog contract" (port of watchdog/src/Watchdog.js).
+// size-based trimming.
 package watchdog
 
 import (

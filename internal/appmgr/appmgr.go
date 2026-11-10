@@ -1,28 +1,22 @@
-// Package appmgr is the Go port of server/src/App.js + App/Create.js +
-// App/Deploy.js (task 3.4e): the app list state machine and 1s check tick,
+// Package appmgr is the app list state machine and 1s check tick:
 // run/stop/restart/redeploy/delete, env manual/linked resolution, the
 // port/volume/device/network/privilege handlers, recipe/template/git
 // creation, Blue-Green deploys and runtime port auto-discovery.
 //
-// State model (Node parity, quirks included): the working set `apps` mirrors
-// Node's #apps — live maps shared with the config store between saves.
-// SaveApps rebuilds ephemeral-stripped copies into cfg (config-schema.md
-// lists the stripped fields), so the working set keeps in-memory fields
-// (status, pid, ip, started …) until the next Check() reload drops them,
-// exactly like Node. Every access to the working set runs under
-// cfg.View/Mutate — the same lock domain the dataplane payload builders use.
+// State model: the working set `apps` holds live maps shared with the config
+// store between saves. SaveApps rebuilds ephemeral-stripped copies into cfg,
+// so the working set keeps in-memory fields (status, pid, ip, started ...)
+// until the next Check() reload drops them. Every access to the working set
+// runs under cfg.View/Mutate, the same lock domain the dataplane payload
+// builders use.
 //
-// Deviations from Node (deliberate):
 //   - The auto-discovery adoption (pollForPort) re-fetches the app from the
 //     current working set at write time instead of mutating a pointer
-//     captured before the poll loop. Node mutates the captured object, whose
-//     array may have been rebuilt by any intervening #saveApps — the
-//     adoption is then silently lost (STATE.md 2026-07-12 trap).
+//     captured before the poll loop, whose array may have been rebuilt by an
+//     intervening SaveApps and would silently lose the adoption.
 //   - Container log streams are explicitly stopped when their runtime log
-//     control ends; Node abandons the docker socket and lets it die with
-//     the container.
-//   - Poll/retry cadences are fields so tests can shrink them; defaults
-//     match Node's literals.
+//     control ends.
+//   - Poll/retry cadences are fields so tests can shrink them.
 package appmgr
 
 import (

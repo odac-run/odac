@@ -1,15 +1,13 @@
-// Package system is the Go port of server/src/System.js: the orchestrator's
-// top-level lifecycle — service start ordering, the 1-second check tick, and
-// the stop semantics used by the zero-downtime update handshake
-// (docs/migration/contracts/lifecycle.md).
+// Package system is the orchestrator's top-level lifecycle: service start
+// ordering, the 1-second check tick, and the stop semantics used by the
+// zero-downtime update handshake.
 //
-// Service slots are nil until their migration task lands (3.2–3.6); nil slots
-// are skipped, so the skeleton runs standalone. All ordering and timing below
-// is load-bearing and mirrors System.js exactly:
+// Nil service slots are skipped, so the skeleton runs standalone. All
+// ordering and timing below is load-bearing:
 //
 //	Init: server.pid/started set → Updater.Init() → when ready:
 //	      Proxy.Start, DNS.Start, Hub.Start; +1s: Mail.Start, Api.Start.
-//	      +1s after Init (regardless of readiness — Node parity): 1s tick of
+//	      +1s after Init (regardless of readiness): 1s tick of
 //	      App.Check, SSL.Check, Proxy.Check, Mail.Check, Hub.Check.
 //	Stop(exceptWeb): tick stops; Mail, Api, Hub stop always; DNS and Proxy
 //	      only when exceptWeb is false (true = update-overlap mode, they keep
@@ -105,22 +103,16 @@ func New(cfg *config.Store, svc Services, updater Updater) *System {
 	}
 }
 
-// Init ports System.init(): records pid/started (and refreshes server.os/arch
-// with Node-compatible values — core/Config.js does this at every init), runs
-// the updater gate, and schedules service startup and the check tick.
+// Init records pid/started (and refreshes server.os/arch), runs the updater
+// gate, and schedules service startup and the check tick.
 //
-// Deviation from Node (deliberate, task 3.7 — see STATE.md): the ready
-// callback registers BEFORE the updater gate runs. In update mode the real
-// updater's Init blocks until the handover completes, but ready fires at
-// HANDSHAKE_ACK — the services must start THEN, spawning fresh Proxy/DNS
-// that overlap the old instance via SO_REUSEPORT (lifecycle.md's message
-// table). System.js registers onReady only after awaiting Updater.init(), so
-// its ACK-time triggerReady() fires with zero callbacks and services
-// actually start only after HANDOVER_COMPLETE — reintroducing ~12s of the
-// downtime the SO_REUSEPORT machinery was built to remove (its ACK-branch
-// waitForReady always times out against never-started services). On the
-// normal-startup path the flip is invisible: ready triggers inside Init and
-// the callback runs synchronously either way.
+// The ready callback registers BEFORE the updater gate runs. In update mode
+// the updater's Init blocks until the handover completes, but ready fires at
+// HANDSHAKE_ACK, and the services must start then: fresh Proxy/DNS overlap
+// the old instance via SO_REUSEPORT. Registering after the gate would start
+// them only after HANDOVER_COMPLETE, costing ~12s of the downtime the
+// overlap exists to remove. On the normal-startup path ready triggers inside
+// Init and the callback runs synchronously either way.
 func (s *System) Init() error {
 	s.recordServerInfo()
 
@@ -131,7 +123,7 @@ func (s *System) Init() error {
 		// before the updater gate, because in update mode that gate is the
 		// handshake — and the outgoing instance still runs its own swap manager
 		// until it stops its tick at HANDSHAKE_READY. Ready fires after that,
-		// so only one manager ever touches the host. Addition to System.js.
+		// so only one manager ever touches the host.
 		if s.svc.Swap != nil {
 			s.svc.Swap.Restore()
 		}
@@ -152,12 +144,10 @@ func (s *System) Init() error {
 	return nil
 }
 
-// Stop ports System.stop(exceptWeb): the tick stops first so checks cannot
-// restart services, then Mail, Api and Hub stop; DNS and Proxy only stop when
-// exceptWeb is false. Deviation from Node (documented in STATE.md): pending
-// startup/tick timers are cancelled here — Node leaves them armed, which
-// would restart Mail/Api/tick if stop() ran within the first 2s of init
-// (a latent race never hit in practice).
+// Stop stops the tick first so checks cannot restart services, then Mail, Api
+// and Hub; DNS and Proxy only stop when exceptWeb is false. Pending
+// startup/tick timers are cancelled too, or they would restart Mail/Api/tick
+// when Stop runs within the first 2s of Init.
 func (s *System) Stop(exceptWeb bool) {
 	s.mu.Lock()
 	tickDone := s.tickDone

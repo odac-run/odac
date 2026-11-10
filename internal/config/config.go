@@ -1,5 +1,5 @@
 // Package config implements ODAC's modular JSON config store as specified in
-// docs/migration/contracts/config-schema.md: one file per module under
+// one file per module under
 // <base>/config/, merged into a single view keyed by top-level config keys,
 // with per-module dirty tracking, atomic writes, .bak backups and corruption
 // recovery.

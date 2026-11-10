@@ -1,13 +1,10 @@
-// Package dataplane holds the orchestrator-side services for the Go
-// data-plane binaries — the ports of server/src/{Proxy,DNS,Mail}.js on top of
-// internal/supervise. Each service implements its system.Services slot
-// (Start/Stop/Check) and pushes full-replace config over the binary's unix
-// control socket per contracts/{proxy,dns,mail}-control.md.
+// Package dataplane holds the orchestrator-side services for the data-plane
+// binaries (proxy, dns, mail) on top of internal/supervise. Each service
+// implements its system.Services slot (Start/Stop/Check) and pushes
+// full-replace config over the binary's unix control socket.
 //
-// Task 3.2 decision (recorded in STATE.md): the TCP fallback mode of the
-// control APIs is NOT ported. It was dead code in Node — the binaries printed
-// their port to a stdout the orchestrator discards — so the socket env var is
-// simply always set, on every platform.
+// The control APIs have no TCP fallback: the socket env var is always set, on
+// every platform.
 package dataplane
 
 import (

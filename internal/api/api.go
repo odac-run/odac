@@ -1,28 +1,20 @@
-// Package api is the Go port of server/src/Api.js: the local command API on
-// TCP 127.0.0.1:1453 and the unix socket <base>/run/api.sock, speaking the
-// contract-0.1 protocol (one JSON request per connection, \r\n-separated
-// progress lines, one final JSON response, connection destroyed after).
+// Package api is the local command API on TCP 127.0.0.1:1453 and the unix
+// socket <base>/run/api.sock (one JSON request per connection,
+// \r\n-separated progress lines, one final JSON response, connection
+// destroyed after).
 //
-// Command handlers are registered by cmd/odac-server as their migration
-// tasks land (3.3: dns.list, mail.*, server.stop; 3.4–3.7 add the rest) —
-// an unregistered action answers unknown_action, exactly like an unknown
-// one. Two tokens authenticate: the root token (raw config.api.auth) and
-// signed app tokens (per-action permission list).
+// Command handlers are registered by cmd/odac-server; an unregistered action
+// answers unknown_action, exactly like an unknown one. Two tokens
+// authenticate: the root token (raw config.api.auth) and signed app tokens
+// (per-action permission list). There are no derived per-domain tokens.
 //
-// Deviations from Node (deliberate, recorded in STATE.md):
-//   - Node's derived domain tokens (HMAC(api.auth, domain), mail.send only)
-//     are gone. Nothing issued them, a domain added at runtime had none and
-//     a deleted one kept working until restart, and they shared the HMAC key
-//     with app tokens without domain separation.
 //   - Requests are read with a streaming JSON decoder, so a request
-//     fragmented across TCP segments still parses (Node fails it with
-//     invalid_json; the contract sanctions the tolerance). After a
-//     malformed document the connection closes — Node kept it open, but
-//     the byte stream is undecodable at that point anyway.
-//   - A unix-socket listen failure is logged and TCP continues. In Node
-//     the equivalent is an unhandled 'error' event: log + exit 1 + watchdog
-//     restart, i.e. a crash loop when the failure is persistent.
-//   - Signature/token comparisons are constant-time (contract-sanctioned).
+//     fragmented across TCP segments still parses. After a malformed
+//     document the connection closes, since the byte stream is undecodable
+//     at that point.
+//   - A unix-socket listen failure is logged and TCP continues, rather than
+//     exiting into a watchdog crash loop on a persistent failure.
+//   - Signature and token comparisons are constant-time.
 package api
 
 import (
