@@ -209,8 +209,8 @@ func TestSameKeyReplyStaysWithTheApp(t *testing.T) {
 	}
 }
 
-// A domain token reaches a handler only for mail.send, but a handler that
-// narrows by caller must still refuse a caller that is neither root nor an app.
+// A handler that narrows by caller must refuse a caller that is neither root
+// nor an app, which is what a call site that forgot to fill one passes.
 func TestUnclassifiedCallerReachesNothing(t *testing.T) {
 	fx := newMTLSFixture(t)
 	mustOK(t, fx.m.Set("x.com", "optional", nil))

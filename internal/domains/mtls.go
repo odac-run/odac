@@ -173,8 +173,8 @@ func locateHost(domains map[string]any, host string) (string, bool) {
 // reach decides which records a caller acts on. The operator reaches every
 // record, reported as app "". An app token reaches only the records routed to it,
 // matched by the name its token carries, which is also what its signing key is
-// derived from. Anything else (a domain token, a caller nobody filled in) is not
-// ok and reaches nothing.
+// derived from. Anything else (a caller nobody filled in) is not ok and reaches
+// nothing.
 func reach(caller api.Caller) (app string, ok bool) {
 	if caller.App != "" {
 		return caller.App, true

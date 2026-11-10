@@ -6,11 +6,14 @@
 // Command handlers are registered by cmd/odac-server as their migration
 // tasks land (3.3: dns.list, mail.*, server.stop; 3.4–3.7 add the rest) —
 // an unregistered action answers unknown_action, exactly like an unknown
-// one. Auth and RBAC are ported byte-for-byte: root token (raw
-// config.api.auth), derived domain tokens (mail.send only) and signed app
-// tokens (per-action permission list).
+// one. Two tokens authenticate: the root token (raw config.api.auth) and
+// signed app tokens (per-action permission list).
 //
 // Deviations from Node (deliberate, recorded in STATE.md):
+//   - Node's derived domain tokens (HMAC(api.auth, domain), mail.send only)
+//     are gone. Nothing issued them, a domain added at runtime had none and
+//     a deleted one kept working until restart, and they shared the HMAC key
+//     with app tokens without domain separation.
 //   - Requests are read with a streaming JSON decoder, so a request
 //     fragmented across TCP segments still parses (Node fails it with
 //     invalid_json; the contract sanctions the tolerance). After a
@@ -78,8 +81,8 @@ type Caller struct {
 // reaching a handler without the local API: the hub acts for the Cloud account.
 var Operator = Caller{Root: true}
 
-// Caller returns who sent the request. A domain token yields the zero value,
-// which is neither root nor an app, so a handler that checks gets nothing.
+// Caller returns who sent the request. The zero value is neither root nor an
+// app, so a handler that checks gives a call site that forgot to fill it nothing.
 func (a Args) Caller() Caller { return a.caller }
 
 func (a Args) Len() int { return len(a.values) }
@@ -115,8 +118,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	commands map[string]Handler
-	tokens   map[string]string // domain token -> domain
-	allowed  map[string]bool   // runtime IP allowlist (Allow/Disallow)
+	allowed  map[string]bool // runtime IP allowlist (Allow/Disallow)
 	tcp      net.Listener
 	unix     net.Listener
 	started  bool
@@ -129,7 +131,6 @@ func NewServer(cfg *config.Store) *Server {
 		cfg:      cfg,
 		log:      logx.New("Api"),
 		commands: map[string]Handler{},
-		tokens:   map[string]string{},
 		allowed:  map[string]bool{},
 	}
 }
@@ -214,7 +215,7 @@ func (s *Server) HasAction(action string) bool {
 }
 
 // Init ports Api.init(): ensure config.api exists, generate the root auth
-// token on first start (32 random bytes, hex), preload domain tokens.
+// token on first start (32 random bytes, hex).
 func (s *Server) Init() {
 	apiCfg := s.cfg.Map("api")
 	if apiCfg == nil {
@@ -227,7 +228,6 @@ func (s *Server) Init() {
 			s.cfg.Touch("api")
 		})
 	}
-	s.ReloadTokens()
 }
 
 // Allow adds an IP to the runtime TCP allowlist.
@@ -473,17 +473,16 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 	auth, _ := payload.Auth.(string)
 	action, _ := payload.Action.(string)
 
-	// Auth logic: root vs client (domain token vs app token).
+	// Auth logic: the root token, or an app token checked against the live
+	// app record.
 	isRoot := false
 	isApp := false
-	clientDomain := ""
+	appName := ""
 	var appPermissions any
 
 	rootKey := s.authKey()
 	if rootKey != "" && constantTimeEqual(auth, rootKey) {
 		isRoot = true
-	} else if domain, ok := s.lookupToken(auth); ok {
-		clientDomain = domain
 	} else if appAuth := s.verifyAppToken(auth); appAuth != nil {
 		name, _ := appAuth["n"].(string)
 		var app map[string]any
@@ -510,7 +509,7 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 			return false
 		}
 		isApp = true
-		clientDomain = name
+		appName = name
 		// Deviation from Node, which trusted the token's own "p" claim: the
 		// grant lives in config.apps[].api and is read per request, so
 		// revoking one lands on the next call instead of surviving in an
@@ -533,34 +532,29 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 		return false
 	}
 
-	// RBAC: domain tokens may only mail.send; app tokens carry an explicit
-	// permission list ('*' wildcard or the literal true for everything),
-	// minus the actions no grant can ever cover.
+	// RBAC: app tokens carry an explicit permission list ('*' wildcard or the
+	// literal true for everything), minus the actions no grant can ever cover.
 	if !isRoot {
 		allowed := false
-		if isApp && !AppMayCall(action) {
-			s.log.Warn(fmt.Sprintf("Blocked restricted action '%s' from app '%s'", action, clientDomain))
+		if !AppMayCall(action) {
+			s.log.Warn(fmt.Sprintf("Blocked restricted action '%s' from app '%s'", action, appName))
 			r := Res(false, "permission_denied")
 			c.write(encodeFinal(id, true, &r))
 			return false
 		}
-		if isApp {
-			switch p := appPermissions.(type) {
-			case bool:
-				allowed = p
-			case []any:
-				for _, v := range p {
-					if v == any("*") || v == any(action) {
-						allowed = true
-						break
-					}
+		switch p := appPermissions.(type) {
+		case bool:
+			allowed = p
+		case []any:
+			for _, v := range p {
+				if v == any("*") || v == any(action) {
+					allowed = true
+					break
 				}
 			}
-		} else if action == "mail.send" {
-			allowed = true
 		}
 		if !allowed {
-			s.log.Warn(fmt.Sprintf("Blocked unauthorized action '%s' from '%s'", action, clientDomain))
+			s.log.Warn(fmt.Sprintf("Blocked unauthorized action '%s' from app '%s'", action, appName))
 			r := Res(false, "permission_denied")
 			c.write(encodeFinal(id, true, &r))
 			return false
@@ -569,7 +563,7 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 
 	caller := Caller{Root: isRoot}
 	if isApp {
-		caller.App = clientDomain
+		caller.App = appName
 	}
 	args := Args{raw: payload.Data, values: make([]any, len(payload.Data)), caller: caller}
 	for i, rawArg := range payload.Data {
@@ -605,16 +599,6 @@ func runHandler(h Handler, args Args, progress Progress) (result *Result, err er
 		}
 	}()
 	return h(args, progress)
-}
-
-func (s *Server) lookupToken(auth string) (string, bool) {
-	if auth == "" {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	domain, ok := s.tokens[auth]
-	return domain, ok
 }
 
 // apiConn serializes writes and drops them once the connection is destroyed

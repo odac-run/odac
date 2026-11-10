@@ -20,7 +20,7 @@ import (
 // token helpers must reproduce them byte-for-byte.
 const (
 	fixtureKey         = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	fixtureDomainToken = "6c4653c8d7e85f889af168d2e86f3dd865a264e276d2a8bb47d8ba6c91454c3f" // HMAC(key, "example.com")
+	formerDomainToken  = "6c4653c8d7e85f889af168d2e86f3dd865a264e276d2a8bb47d8ba6c91454c3f" // HMAC(key, "example.com"), Node's domain token
 	fixtureAppToken    = "eyJuIjoibXlhcHAiLCJwIjpbIm1haWwuc2VuZCJdLCJ0IjoxNzAwMDAwMDAwMDAwfQ==.79ecc5e2b552a8b08b45dc702782d80e3553b0d0381e7edc8b7f2855bdfec1d0"
 	fixtureAppTokenAll = "eyJuIjoiYW55YXBwIiwicCI6dHJ1ZSwidCI6MTcwMDAwMDAwMDAwMH0=.d670dabe912cdd5340a7206a2023e58aa8a0509a98f9e3f70be01986e7d2eee2"
 	fixtureAppTokenAny = "eyJuIjoic3RhciIsInAiOlsiKiJdLCJ0IjoxNzAwMDAwMDAwMDAwfQ==.c3085bbb44ff720dea2237c1cb4ea9feab0e724c374538f54b5ee01efb51f438"
@@ -119,13 +119,6 @@ func request(auth, action string, args ...any) string {
 	}
 	raw, _ := json.Marshal(req)
 	return string(raw)
-}
-
-func TestGenerateTokenMatchesNode(t *testing.T) {
-	s := newTestServer(t)
-	if got := s.GenerateToken("example.com"); got != fixtureDomainToken {
-		t.Errorf("GenerateToken = %s, want Node fixture %s", got, fixtureDomainToken)
-	}
 }
 
 func TestGenerateAppTokenRoundTrip(t *testing.T) {
@@ -267,34 +260,23 @@ func TestUnauthorized(t *testing.T) {
 	}
 }
 
-func TestDomainTokenRBAC(t *testing.T) {
+// Node's domain tokens (HMAC(api.auth, domain), mail.send only) were removed:
+// nothing issued them, runtime domain changes left them stale, and they shared
+// the key with app tokens. The value Node derived for a configured domain must
+// not authenticate.
+func TestFormerDomainTokenIsUnauthorized(t *testing.T) {
 	s := startTestServer(t)
 	s.cfg.Set("domains", map[string]any{"example.com": map[string]any{}})
-	s.ReloadTokens()
 	sent := false
 	s.Register("mail.send", func(_ Args, _ Progress) (*Result, error) {
 		sent = true
 		r := Res(true, "ok")
 		return &r, nil
 	})
-	s.Register("app.list", func(_ Args, _ Progress) (*Result, error) {
-		r := Res(true, "nope")
-		return &r, nil
-	})
 
-	lines := call(t, "tcp", tcpAddr(s), request(fixtureDomainToken, "mail.send"))
-	if !sent || !strings.Contains(lines[0], `"result":true`) {
-		t.Errorf("domain token mail.send = %v (sent=%v)", lines, sent)
-	}
-	lines = call(t, "tcp", tcpAddr(s), request(fixtureDomainToken, "app.list"))
-	if !strings.Contains(lines[0], `"message":"permission_denied"`) {
-		t.Errorf("domain token app.list = %v", lines)
-	}
-
-	s.RemoveToken("example.com")
-	lines = call(t, "tcp", tcpAddr(s), request(fixtureDomainToken, "mail.send"))
-	if !strings.Contains(lines[0], `"message":"unauthorized"`) {
-		t.Errorf("removed token = %v", lines)
+	lines := call(t, "tcp", tcpAddr(s), request(formerDomainToken, "mail.send"))
+	if sent || len(lines) == 0 || !strings.Contains(lines[0], `"message":"unauthorized"`) {
+		t.Errorf("former domain token mail.send = %v (sent=%v)", lines, sent)
 	}
 }
 
@@ -579,7 +561,6 @@ func firstReply(t *testing.T, s *Server, raw string) map[string]any {
 func TestHandlersSeeTheCaller(t *testing.T) {
 	s := startTestServer(t)
 	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": []any{"mail.send", "domain.mtls.cert.list"}}})
-	s.AddToken("example.com")
 	echo := func(a Args, _ Progress) (*Result, error) {
 		r := Res(true, "ok", map[string]any{"root": a.Caller().Root, "app": a.Caller().App})
 		return &r, nil
@@ -590,7 +571,6 @@ func TestHandlersSeeTheCaller(t *testing.T) {
 	cases := []struct{ token, action, want string }{
 		{fixtureKey, "domain.mtls.cert.list", `"data":{"app":"","root":true}`},
 		{fixtureAppToken, "domain.mtls.cert.list", `"data":{"app":"myapp","root":false}`},
-		{fixtureDomainToken, "mail.send", `"data":{"app":"","root":false}`},
 	}
 	for _, c := range cases {
 		lines := call(t, "tcp", tcpAddr(s), request(c.token, c.action))
