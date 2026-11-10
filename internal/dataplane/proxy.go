@@ -443,9 +443,9 @@ func (p *Proxy) buildPayload() map[string]any {
 			p.log.Log("Proxy: App %s not found for domain %s", record["appId"], name)
 			continue
 		}
-		backend := p.resolveBackend(app)
+		backend, why := p.resolveBackend(app)
 		if backend == nil {
-			p.log.Log("Proxy: No port found for app %s (domain: %s)", app["name"], name)
+			p.log.Log("Proxy: Skipping domain %s, app %s: %s", name, app["name"], why)
 			continue
 		}
 
@@ -485,9 +485,9 @@ func (p *Proxy) buildPayload() map[string]any {
 			p.log.Log(fmt.Sprintf("Tunnel: Skipping %s, app %s uses client certificates", tn.Domain, tn.Container))
 			continue
 		}
-		backend := p.resolveBackend(app)
+		backend, why := p.resolveBackend(app)
 		if backend == nil {
-			p.log.Log(fmt.Sprintf("Tunnel: No port found for %s (domain: %s)", tn.Container, tn.Domain))
+			p.log.Log(fmt.Sprintf("Tunnel: Skipping %s, app %s: %s", tn.Domain, tn.Container, why))
 			continue
 		}
 		tunnels = append(tunnels, map[string]any{
@@ -541,8 +541,10 @@ type backendInfo struct {
 // 'proxy' sentinel), else ports[0]; a published primary routes to its host
 // port, a proxy-routed one to its container port over the container network;
 // then app.port → app.http; no port → nil, domain skipped. Container-network
-// backends resolve the container IP, falling back to the cached app.ip.
-func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
+// backends resolve the container IP, falling back to the cached app.ip; with
+// neither the domain is skipped too, since the loopback default would hand
+// public traffic to whatever the host runs on that port.
+func (p *Proxy) resolveBackend(app map[string]any) (*backendInfo, string) {
 	port, host, internal := 0, "127.0.0.1", false
 
 	portList, _ := app["ports"].([]any)
@@ -560,7 +562,7 @@ func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
 		internal = true
 	}
 	if port == 0 {
-		return nil
+		return nil, "no port found"
 	}
 
 	if internal && netmode.IsHost(app["networkMode"]) {
@@ -568,7 +570,7 @@ func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
 		// port on the host, and ODAC shares that namespace, so the container
 		// port is already reachable on loopback. The default host is exactly
 		// that, so only the inspect below needs skipping.
-		return &backendInfo{host: netmode.LoopbackAddr, port: port, internal: internal}
+		return &backendInfo{host: netmode.LoopbackAddr, port: port, internal: internal}, ""
 	}
 
 	if internal {
@@ -590,10 +592,12 @@ func (p *Proxy) resolveBackend(app map[string]any) *backendInfo {
 			host = resolved
 		} else if truthy(app["ip"]) {
 			host = str(app["ip"])
+		} else {
+			return nil, "no container address known"
 		}
 	}
 
-	return &backendInfo{host: host, port: port, internal: internal}
+	return &backendInfo{host: host, port: port, internal: internal}, ""
 }
 
 // findApp ports apps.find(a => a.name === record.appId || a.id === record.appId).

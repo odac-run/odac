@@ -723,3 +723,20 @@ func TestProxyDeleteACMEChallenge(t *testing.T) {
 	p.proc = &fakeProc{running: false}
 	p.DeleteACMEChallenge("tok-2")
 }
+
+func TestProxySkipsContainerAppWithNoAddress(t *testing.T) {
+	cs := newControlServer(t)
+	resolver := &fakeResolver{ips: map[string]string{}}
+	resolver.available.Store(true)
+	p, _ := newTestProxy(t, cs, resolver)
+	p.cfg.Set("apps", []any{
+		map[string]any{"name": "api", "id": "a1", "ports": []any{map[string]any{"container": float64(1453)}}},
+	})
+	p.cfg.Set("domains", map[string]any{"api.test": map[string]any{"appId": "api"}})
+
+	p.SyncConfig()
+	domains, _ := cs.nextConfig(t)["domains"].(map[string]any)
+	if entry, ok := domains["api.test"]; ok {
+		t.Fatalf("a container app with no address was routed: %v", entry)
+	}
+}
