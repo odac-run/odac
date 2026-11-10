@@ -351,7 +351,7 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 		return res(mailSvc.Password(a.At(0), a.At(1), a.At(2)))
 	})
 	apiSrv.Register("mail.send", func(a api.Args, _ api.Progress) (*api.Result, error) {
-		return res(mailSvc.Send(a.At(0), a.Raw(0)))
+		return res(mailSvc.Send(a.Caller(), a.At(0), a.Raw(0)))
 	})
 	// System.stop() returns nothing; the nil Result reproduces Node's
 	// {"id":"..."}-only final response for server.stop.

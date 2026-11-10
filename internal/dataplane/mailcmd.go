@@ -167,7 +167,13 @@ var boundaryRe = regexp.MustCompile(`boundary="?([^";\s]+)"?`)
 // the request argument's untouched JSON — header lines are emitted in
 // document order, matching Node's for..in over the parsed object (nil is
 // tolerated: internal callers without raw JSON get sorted header order).
-func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
+//
+// The caller narrows the sender: the operator may send as any configured
+// domain, an app only as a domain routed to it, and anyone else (the zero
+// Caller) as none. A domain of another app answers like an unknown one, the
+// rule the mTLS handlers follow, because the message goes out DKIM-signed for
+// that domain.
+func (m *Mail) Send(caller api.Caller, data any, rawData json.RawMessage) api.Result {
 	dm, _ := data.(map[string]any)
 	if !truthy(data) || dm == nil || !truthy(dm["from"]) || !truthy(dm["to"]) || !truthy(dm["header"]) {
 		return api.Res(false, __("All fields are required."))
@@ -197,7 +203,7 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 			labels = labels[1:]
 		}
 		domain = strings.Join(labels, ".")
-		if !truthy(domains[domain]) {
+		if !truthy(domains[domain]) || !callerOwnsDomain(caller, domains[domain]) {
 			domain = ""
 		}
 	})
@@ -299,6 +305,15 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		return api.Res(false, res["message"])
 	}
 	return api.Res(false, __("Mail sending failed."))
+}
+
+// callerOwnsDomain reports whether caller may send as the domain record.
+func callerOwnsDomain(caller api.Caller, record any) bool {
+	if caller.Root {
+		return true
+	}
+	rec, _ := record.(map[string]any)
+	return caller.App != "" && rec != nil && rec["appId"] == any(caller.App)
 }
 
 // validHeaderName reports whether name is an RFC 5322 field name: printable

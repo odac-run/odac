@@ -79,7 +79,7 @@ These are the actions available to applications. An app may call the ones you gr
 }
 ```
 
-`from` must belong to a domain configured on this server. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both.
+`from` must belong to a domain routed to the calling app, or to a subdomain of one. A domain of another app is answered as `Domain ... not found.`, exactly like a domain the server does not have, because the message would go out DKIM-signed as that domain. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both.
 
 A `true` result means the message is queued, not that it reached the recipient. ODAC keeps retrying a temporary refusal (greylisting, a busy server) for five days, or for `ODAC_MAIL_QUEUE_HOURS` when that is set on the server. When the recipient's server refuses the message for good, or the time runs out, the sender gets a bounce in its INBOX if it has a mailbox on this server. An address like `no-reply@` with no mailbox gets no bounce.
 

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"odac/internal/api"
 )
 
 // fakeMailModule fakes the Go mail binary's HTTP API (unix socket): the
@@ -376,7 +378,7 @@ func TestMailSendNodeFixtures(t *testing.T) {
 		if err := json.Unmarshal([]byte(tc.data), &data); err != nil {
 			t.Fatal(err)
 		}
-		res := m.Send(data, json.RawMessage(tc.data))
+		res := m.Send(api.Operator, data, json.RawMessage(tc.data))
 		if !res.Status || res.Message != "Mail sent successfully." {
 			t.Fatalf("%s: Send = %+v", tc.name, res)
 		}
@@ -408,7 +410,7 @@ func TestMailSendValidation(t *testing.T) {
 	} {
 		var data any
 		json.Unmarshal([]byte(tc.data), &data)
-		res := m.Send(data, json.RawMessage(tc.data))
+		res := m.Send(api.Operator, data, json.RawMessage(tc.data))
 		if res.Status || res.Message != tc.want {
 			t.Errorf("%s: %+v, want %q", name, res, tc.want)
 		}
@@ -441,7 +443,7 @@ func TestMailSendRefusesHeaderInjection(t *testing.T) {
 		if err := json.Unmarshal([]byte(data), &v); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if res := m.Send(v, json.RawMessage(data)); res.Status {
+		if res := m.Send(api.Operator, v, json.RawMessage(data)); res.Status {
 			t.Errorf("%s: Send accepted it", name)
 		}
 	}
@@ -453,12 +455,55 @@ func TestMailSendRefusesHeaderInjection(t *testing.T) {
 	data := `{` + envelope + `,"header":{"Subject":"re: from: to: here"},"text":"t"}`
 	var v any
 	json.Unmarshal([]byte(data), &v)
-	if res := m.Send(v, json.RawMessage(data)); !res.Status {
+	if res := m.Send(api.Operator, v, json.RawMessage(data)); !res.Status {
 		t.Fatalf("Send = %+v", res)
 	}
 	body, _ := f.last(t).body["body"].(string)
 	if !strings.Contains(body, "\r\nFrom: a@example.com\r\n") || !strings.Contains(body, "\r\nTo: b@dest.test\r\n") {
 		t.Errorf("From/To missing from %q", body)
+	}
+}
+
+// mail.send went out DKIM-signed as any configured domain whoever asked. An
+// app now sends only as a domain routed to it; the operator as any.
+func TestMailSendIsScopedToTheCallersDomains(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{
+		"shop.test": map[string]any{"appId": "shop"},
+		"bank.test": map[string]any{"appId": "bank"},
+	})
+	send := func(caller api.Caller, from string) api.Result {
+		data := `{"from":{"value":[{"address":"` + from + `"}]},"to":{"value":[{"address":"b@dest.test"}]},"header":{},"text":"t"}`
+		var v any
+		json.Unmarshal([]byte(data), &v)
+		return m.Send(caller, v, json.RawMessage(data))
+	}
+
+	shop := api.Caller{App: "shop"}
+	if res := send(shop, "noreply@shop.test"); !res.Status {
+		t.Errorf("app sending as its own domain: %+v", res)
+	}
+	if res := send(shop, "noreply@mail.shop.test"); !res.Status {
+		t.Errorf("app sending as a subdomain of its own domain: %+v", res)
+	}
+	before := f.count()
+	for _, from := range []string{"security@bank.test", "x@mail.bank.test"} {
+		res := send(shop, from)
+		if res.Status {
+			t.Errorf("app shop sent as %s", from)
+		}
+		if want := "Domain bank.test not found."; res.Message != want {
+			t.Errorf("refusal for %s = %q, want %q (no hint that the domain exists)", from, res.Message, want)
+		}
+	}
+	if res := send(api.Caller{}, "noreply@shop.test"); res.Status {
+		t.Error("a caller with no identity sent mail")
+	}
+	if f.count() != before {
+		t.Errorf("refused sends reached the module API (%d requests)", f.count()-before)
+	}
+	if res := send(api.Operator, "security@bank.test"); !res.Status {
+		t.Errorf("operator refused: %+v", res)
 	}
 }
 
