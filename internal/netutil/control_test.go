@@ -12,7 +12,7 @@ func TestControlServerTimeouts(t *testing.T) {
 	if srv.IdleTimeout <= 0 || srv.ReadHeaderTimeout <= 0 {
 		t.Fatalf("control server has no idle (%v) or header (%v) timeout", srv.IdleTimeout, srv.ReadHeaderTimeout)
 	}
-	if srv.WriteTimeout != 0 || srv.ReadTimeout != 0 {
-		t.Fatalf("a whole-request timeout would cut a long /send short (read %v, write %v)", srv.ReadTimeout, srv.WriteTimeout)
+	if srv.WriteTimeout <= 0 {
+		t.Fatal("control server has no write timeout")
 	}
 }

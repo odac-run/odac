@@ -53,6 +53,20 @@ var tables = []string{
 		date    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(email, title)
 	)`,
+
+	// mail_outbound: the delivery queue, one row per remote recipient. The
+	// message itself stays in the blob store under rawRef.
+	`CREATE TABLE IF NOT EXISTS mail_outbound (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		sender      TEXT NOT NULL,
+		recipient   TEXT NOT NULL,
+		rawRef      TEXT NOT NULL,
+		attempts    INTEGER NOT NULL DEFAULT 0,
+		created     INTEGER NOT NULL,
+		nextAttempt INTEGER NOT NULL,
+		lockedUntil INTEGER NOT NULL DEFAULT 0,
+		lastError   TEXT
+	)`,
 }
 
 // indexes are created after addedColumns, so they may reference any column
@@ -79,6 +93,10 @@ var indexes = []string{
 	// of case), and a binary-collated index cannot serve that comparison. Every
 	// SMTP RCPT and every login would fall back to a table scan without this.
 	`CREATE INDEX IF NOT EXISTS idx_account_email_nocase ON mail_account (email COLLATE NOCASE)`,
+
+	// The queue worker claims due rows; the sweeper probes rawRef per blob.
+	`CREATE INDEX IF NOT EXISTS idx_outbound_due    ON mail_outbound (nextAttempt)`,
+	`CREATE INDEX IF NOT EXISTS idx_outbound_rawref ON mail_outbound (rawRef)`,
 }
 
 // addedColumns lists columns introduced after the original Node.js schema.

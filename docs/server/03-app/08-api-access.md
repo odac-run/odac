@@ -81,6 +81,8 @@ These are the actions available to applications. An app may call the ones you gr
 
 `from` must belong to a domain configured on this server. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both.
 
+A `true` result means the message is queued, not that it reached the recipient. ODAC keeps retrying a temporary refusal (greylisting, a busy server) for five days, or for `ODAC_MAIL_QUEUE_HOURS` when that is set on the server. When the recipient's server refuses the message for good, or the time runs out, the sender gets a bounce in its INBOX if it has a mailbox on this server. An address like `no-reply@` with no mailbox gets no bounce.
+
 ### Client Certificates for the App's Own Domains
 
 The `domain.mtls.cert.*` actions let an app hand out [client certificates](../06-domain/04-client-certificates.md) for its own domains, for example to its users' devices. They are narrowed to the calling app on every request, whatever the grant says:

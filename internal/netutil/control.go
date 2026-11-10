@@ -9,6 +9,9 @@ import (
 const (
 	controlReadHeaderTimeout = 10 * time.Second
 	controlIdleTimeout       = 60 * time.Second
+	// controlWriteTimeout is a backstop well past odac-server's 30 second
+	// call timeout: an answer that takes longer has no reader left.
+	controlWriteTimeout = 2 * time.Minute
 )
 
 // ServeControl serves a data-plane binary's control API on l. Bare
@@ -18,12 +21,11 @@ func ServeControl(l net.Listener, h http.Handler) error {
 	return controlServer(h).Serve(l)
 }
 
-// controlServer has no write timeout on purpose: odac-mail's /send answers
-// only after SMTP delivery finishes.
 func controlServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: controlReadHeaderTimeout,
 		IdleTimeout:       controlIdleTimeout,
+		WriteTimeout:      controlWriteTimeout,
 	}
 }

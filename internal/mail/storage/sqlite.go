@@ -301,15 +301,16 @@ type AccountRow struct {
 // MessageStore inserts a new email message into the mail_received table.
 // Automatically assigns the next UID for the given email account.
 func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
-	return s.Deliver(ctx, []*MessageRow{msg})
+	return s.Deliver(ctx, []*MessageRow{msg}, nil)
 }
 
-// Deliver stores every row of one SMTP transaction in a single database
-// transaction. DATA has one reply for all recipients, so a partial store
-// cannot be reported honestly: answering 250 loses the rows that failed, and
-// answering 451 makes the sender retry and duplicates the rows that landed.
-func (s *Store) Deliver(ctx context.Context, messages []*MessageRow) error {
-	if len(messages) == 0 {
+// Deliver stores every row of one SMTP transaction, mailbox copies and queued
+// remote recipients alike, in a single database transaction. DATA has one
+// reply for all recipients, so a partial store cannot be reported honestly:
+// answering 250 loses the rows that failed, and answering 451 makes the
+// sender retry and duplicates the rows that landed.
+func (s *Store) Deliver(ctx context.Context, messages []*MessageRow, outbound []OutboundRow) error {
+	if len(messages) == 0 && len(outbound) == 0 {
 		return nil
 	}
 
@@ -324,6 +325,11 @@ func (s *Store) Deliver(ctx context.Context, messages []*MessageRow) error {
 
 	for _, msg := range messages {
 		if err := insertMessage(ctx, tx, msg); err != nil {
+			return err
+		}
+	}
+	for _, row := range outbound {
+		if err := insertOutbound(ctx, tx, row); err != nil {
 			return err
 		}
 	}
@@ -769,9 +775,12 @@ func (s *Store) RawRefExists(ctx context.Context, ref string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// A queued message is referenced too: the queue can hold one for days,
+	// far past the sweeper's grace period.
 	var one int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT 1 FROM mail_received WHERE rawRef = ? LIMIT 1", ref).Scan(&one)
+		`SELECT 1 FROM mail_received WHERE rawRef = ?
+		 UNION ALL SELECT 1 FROM mail_outbound WHERE rawRef = ? LIMIT 1`, ref, ref).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

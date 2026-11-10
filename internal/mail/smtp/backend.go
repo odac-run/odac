@@ -34,17 +34,25 @@ type Backend struct {
 	firewall  *auth.Firewall
 	getConfig func() config.Config
 	limiter   *limits.Limiter
+	outbox    Outbox
 	store     *storage.Store
 	tag       string // "inbound" or "submission" — included in log lines
 }
 
-// NewBackend creates a new SMTP backend with the given dependencies.
-func NewBackend(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, tag string) *Backend {
+// Outbox is told when a transaction has queued mail for remote recipients.
+type Outbox interface {
+	Wake()
+}
+
+// NewBackend creates a new SMTP backend with the given dependencies. outbox
+// may be nil, in which case queued rows wait for the queue's next poll.
+func NewBackend(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, outbox Outbox, tag string) *Backend {
 	return &Backend{
 		blobs:     blobs,
 		firewall:  fw,
 		getConfig: getConfig,
 		limiter:   limiter,
+		outbox:    outbox,
 		store:     store,
 		tag:       tag,
 	}
@@ -260,6 +268,13 @@ func (s *Session) Data(r io.Reader) error {
 	// BODYSTRUCTURE from it, so attachments survive exactly as sent. The
 	// parsed fields below are derived display data, not the record itself.
 	rawRef := s.storeRaw(body)
+	// Local copies survive a failed blob write through their parsed columns,
+	// a queued message does not: the queue reads the bytes it sends from the
+	// blob store.
+	if rawRef == "" && len(plan.outbound) > 0 {
+		log.Printf("[SMTP] DATA cannot queue without the raw message, answering 451: sender=%s ip=%s", s.from, s.ip)
+		return errTryLater
+	}
 
 	// Parse RFC 2822 message into headers and body parts
 	parsed := message.Parse(body)
@@ -289,23 +304,19 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	// One reply covers every recipient, so the rows commit together or not at
-	// all, and a failure answers 451: the sender keeps the message and retries
-	// instead of being told it was delivered.
-	if err := s.backend.store.Deliver(ctx, rows); err != nil {
+	// all, queue rows included, and a failure answers 451: the sender keeps
+	// the message and retries instead of being told it was delivered.
+	outbound := OutboundRows(s.from, plan.outbound, rawRef, time.Now())
+	if err := s.backend.store.Deliver(ctx, rows, outbound); err != nil {
 		log.Printf("[SMTP] DATA store failed, answering 451: sender=%s rcpts=%v ip=%s: %v",
 			s.from, s.recipients, s.ip, err)
 		return errTryLater
 	}
-
-	for _, recipient := range plan.outbound {
-		go func(recipient string, data []byte) {
-			if err := GetClient().Send(s.from, recipient, data); err != nil {
-				log.Printf("[SMTP] Outbound delivery failed: %s -> %s: %v", s.from, recipient, err)
-			}
-		}(recipient, body)
+	if len(outbound) > 0 && s.backend.outbox != nil {
+		s.backend.outbox.Wake()
 	}
 
-	log.Printf("[SMTP] DATA complete: stored=%d outbound=%d sender=%s rcpts=%d ip=%s",
+	log.Printf("[SMTP] DATA complete: stored=%d queued=%d sender=%s rcpts=%d ip=%s",
 		len(plan.inbox), len(plan.outbound), s.from, len(s.recipients), s.ip)
 	return nil
 }

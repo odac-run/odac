@@ -27,7 +27,7 @@ func newTestSession(t *testing.T, cfg config.Config) (*Session, *storage.Store) 
 	t.Cleanup(func() { store.Close() })
 
 	limiter := limits.New(limits.SMTPInboundProfile())
-	b := NewBackend(store, nil, auth.NewFirewall(), func() config.Config { return cfg }, limiter, "test")
+	b := NewBackend(store, nil, auth.NewFirewall(), func() config.Config { return cfg }, limiter, nil, "test")
 	return &Session{backend: b, ip: "203.0.113.7", from: "spam@evil.example"}, store
 }
 
@@ -189,7 +189,7 @@ func TestData_StoreFailureAnswers451AndStoresNothing(t *testing.T) {
 	failInserts(t, dbPath, "Sent")
 
 	b := NewBackend(store, nil, auth.NewFirewall(), func() config.Config { return config.Config{} },
-		limits.New(limits.SMTPSubmissionProfile()), "test")
+		limits.New(limits.SMTPSubmissionProfile()), nil, "test")
 	s := &Session{backend: b, ip: "203.0.113.7", user: "ali@emre.red", from: "ali@emre.red",
 		recipients: []string{"veli@emre.red"}}
 
