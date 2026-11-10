@@ -24,6 +24,7 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/crypto/ocsp"
+	"golang.org/x/net/http/httpguts"
 
 	"odac/internal/mtls"
 	"odac/internal/proxy/config"
@@ -356,14 +357,21 @@ func (p *Proxy) director(req *http.Request) {
 		req.Header.Set("X-Forwarded-Proto", "http")
 	}
 
-	if strings.ToLower(req.Header.Get("Connection")) == "upgrade" &&
-		strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
+	if isWebSocketUpgrade(req.Header) {
 		req.Header.Set("X-Odac-Websocket", "true")
 	}
 
 	if state := clientAuthFrom(req); state != nil {
 		applyClientAuthHeaders(req, state, time.Now())
 	}
+}
+
+// isWebSocketUpgrade reads Connection and Upgrade as token lists: Firefox sends
+// "Connection: keep-alive, Upgrade", and a whole-value match sent it through the cache
+// writers, which cannot switch protocols.
+func isWebSocketUpgrade(h http.Header) bool {
+	return httpguts.HeaderValuesContainsToken(h["Connection"], "upgrade") &&
+		httpguts.HeaderValuesContainsToken(h["Upgrade"], "websocket")
 }
 
 func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
@@ -558,8 +566,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Skip compression for WebSocket connections
-	isWebSocket := strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
-		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+	isWebSocket := isWebSocketUpgrade(r.Header)
 
 	// ── 103 Early Hints: send learned preload hints before proxying ──
 	if !identified && !isWebSocket && r.Method == http.MethodGet {
@@ -672,6 +679,12 @@ func newCompressionResponseWriter(w http.ResponseWriter, encoding string) *compr
 		w:        w,
 		encoding: encoding,
 	}
+}
+
+// Unwrap lets http.ResponseController reach the connection, which ReverseProxy needs to
+// switch protocols and to set deadlines.
+func (cw *compressionResponseWriter) Unwrap() http.ResponseWriter {
+	return cw.w
 }
 
 func (cw *compressionResponseWriter) Header() http.Header {
@@ -1049,6 +1062,11 @@ func newCacheRecordWriter(w http.ResponseWriter, encoding string, limit int) *ca
 		crw.compressor = newCompressionResponseWriter(w, encoding)
 	}
 	return crw
+}
+
+// Unwrap lets http.ResponseController reach the connection, as on compressionResponseWriter.
+func (crw *cacheRecordWriter) Unwrap() http.ResponseWriter {
+	return crw.w
 }
 
 func (crw *cacheRecordWriter) Header() http.Header {
