@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -240,7 +239,7 @@ func startControlAPI(apiServer *api.Server) net.Listener {
 	}
 
 	go func() {
-		if err := http.Serve(listener, apiServer); err != nil {
+		if err := netutil.ServeControl(listener, apiServer); err != nil {
 			log.Printf("[Mail] Control API error: %v", err)
 		}
 	}()

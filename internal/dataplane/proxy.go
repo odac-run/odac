@@ -143,7 +143,7 @@ func (p *Proxy) PurgeCache(domain string) int {
 		payload["domain"] = domain
 	}
 
-	envelope, err := requestJSON(sock, "POST", "/cache/purge", payload)
+	envelope, err := requestJSON(sock, "POST", "/cache/purge", payload, controlTimeout)
 	if err != nil {
 		p.log.Error("Failed to purge cache: %s", err.Error())
 		return 0

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -326,7 +325,7 @@ func startControlAPI(res *resolver.Resolver, readiness *api.Readiness) net.Liste
 	}
 
 	go func() {
-		if err := http.Serve(listener, apiServer); err != nil {
+		if err := netutil.ServeControl(listener, apiServer); err != nil {
 			log.Printf("[DNS] Control API error: %v", err)
 		}
 	}()

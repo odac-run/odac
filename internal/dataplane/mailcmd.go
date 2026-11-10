@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"odac/internal/api"
 )
@@ -268,9 +269,11 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		body = headers + "\r\n"
 	}
 
-	res, err := m.moduleRequest("POST", "/send", map[string]any{
+	// No timeout: /send answers only after the SMTP delivery and its retries,
+	// so cutting it short would report a failure for mail that still goes out.
+	res, err := m.moduleRequestTimeout("POST", "/send", map[string]any{
 		"body": body, "from": fromAddr, "to": toAddr,
-	})
+	}, 0)
 	if err != nil {
 		m.log.Error("mail.send failed: %s", err.Error())
 		return api.Res(false, __("Mail sending failed."))
@@ -334,10 +337,14 @@ func (m *Mail) resolveAccountDomain(email string) (string, bool) {
 // moduleRequest ports #apiRequest's guards: the binary must be running and
 // socket-addressable, otherwise the caller lands in its catch-path message.
 func (m *Mail) moduleRequest(method, path string, payload any) (map[string]any, error) {
+	return m.moduleRequestTimeout(method, path, payload, controlTimeout)
+}
+
+func (m *Mail) moduleRequestTimeout(method, path string, payload any, timeout time.Duration) (map[string]any, error) {
 	if !m.proc.Running() {
 		return nil, errors.New("Mail process not running")
 	}
-	return requestJSON(m.proc.SocketPath(), method, path, payload)
+	return requestJSON(m.proc.SocketPath(), method, path, payload, timeout)
 }
 
 // dkimCheck ports the DKIM half of Mail.check(): for every configured

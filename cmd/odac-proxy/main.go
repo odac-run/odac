@@ -116,7 +116,7 @@ func main() {
 	apiServer := api.NewServer(prx, fw, readiness)
 
 	go func() {
-		if err := http.Serve(apiListener, apiServer); err != nil {
+		if err := netutil.ServeControl(apiListener, apiServer); err != nil {
 			log.Fatalf("Control API failed: %v", err)
 		}
 	}()
