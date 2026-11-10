@@ -507,6 +507,31 @@ func TestMailSendIsScopedToTheCallersDomains(t *testing.T) {
 	}
 }
 
+// The request in docs/server/03-app/08-api-access.md, verbatim. The page once
+// showed from and to as bare strings, which this handler refuses.
+func TestMailSendDocExample(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{"example.com": map[string]any{"appId": "my-app"}})
+	data := `{
+    "from": { "value": [{ "address": "no-reply@example.com" }] },
+    "to": { "value": [{ "address": "someone@example.com" }] },
+    "subject": "Welcome",
+    "header": { "Content-Type": "text/html; charset=utf-8" },
+    "html": "<p>Hello</p>",
+    "text": "Hello"
+  }`
+	var v any
+	if err := json.Unmarshal([]byte(data), &v); err != nil {
+		t.Fatal(err)
+	}
+	if res := m.Send(api.Caller{App: "my-app"}, v, json.RawMessage(data)); !res.Status {
+		t.Fatalf("documented request refused: %+v", res)
+	}
+	if got := f.last(t).body["to"]; got != "someone@example.com" {
+		t.Errorf("to = %v", got)
+	}
+}
+
 func TestDKIMGeneration(t *testing.T) {
 	dns := &fakeIPSource{}
 	m, f := newTestMailCmd(t, dns)

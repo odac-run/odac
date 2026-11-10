@@ -62,15 +62,15 @@ These are the actions available to applications. An app may call the ones you gr
 
 `app` is an App ID or name, exactly like the CLI's `-i` argument.
 
-`mail.send` is the one action whose argument is a message object rather than plain strings:
+`mail.send` is the one action whose argument is a message object rather than plain strings. `from` and `to` use the parsed-mail address shape, a `value` list of `{ "address": ... }` objects, and only the first entry of each is used:
 
 ```json
 {
   "auth": "<ODAC_API_KEY>",
   "action": "mail.send",
   "data": [{
-    "from": "no-reply@example.com",
-    "to": "someone@example.com",
+    "from": { "value": [{ "address": "no-reply@example.com" }] },
+    "to": { "value": [{ "address": "someone@example.com" }] },
     "subject": "Welcome",
     "header": { "Content-Type": "text/html; charset=utf-8" },
     "html": "<p>Hello</p>",
@@ -79,7 +79,7 @@ These are the actions available to applications. An app may call the ones you gr
 }
 ```
 
-`from` must belong to a domain routed to the calling app, or to a subdomain of one. A domain of another app is answered as `Domain ... not found.`, exactly like a domain the server does not have, because the message would go out DKIM-signed as that domain. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both.
+`from` must belong to a domain routed to the calling app, or to a subdomain of one. A domain of another app is answered as `Domain ... not found.`, exactly like a domain the server does not have, because the message would go out DKIM-signed as that domain. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both. Header names must be plain field names and no value may contain a line break; such a message is refused. `From`, `To`, `Subject` and `MIME-Version` are added when `header` does not name them.
 
 A `true` result means the message is queued, not that it reached the recipient. ODAC keeps retrying a temporary refusal (greylisting, a busy server) for five days, or for `ODAC_MAIL_QUEUE_HOURS` when that is set on the server. When the recipient's server refuses the message for good, or the time runs out, the sender gets a bounce in its INBOX if it has a mailbox on this server. An address like `no-reply@` with no mailbox gets no bounce.
 
