@@ -2,10 +2,15 @@ package smtp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	gosmtp "github.com/emersion/go-smtp"
+	_ "modernc.org/sqlite"
 
 	"odac/internal/mail/auth"
 	"odac/internal/mail/config"
@@ -145,5 +150,88 @@ func TestRcpt_UnknownLocalAccountStillRefused(t *testing.T) {
 	s, _ := newTestSession(t, cfg)
 	if err := s.Rcpt("nobody@emre.red", nil); err == nil {
 		t.Error("a configured domain must not make every address deliverable")
+	}
+}
+
+// failInserts makes every insert into mailbox fail, the way a full disk or a
+// locked database does, through a second handle on the same database file.
+func failInserts(t *testing.T, dbPath, mailbox string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TRIGGER fail_insert BEFORE INSERT ON mail_received
+		WHEN NEW.mailbox = '` + mailbox + `' BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A failed store used to be logged while DATA still answered 250, so the
+// sending server dropped a message nobody had. The reply must be a 451, and
+// the rows that did succeed must roll back with it, or the retry duplicates
+// them.
+func TestData_StoreFailureAnswers451AndStoresNothing(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mail")
+	store, err := storage.NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	for _, email := range []string{"ali@emre.red", "veli@emre.red"} {
+		if err := store.AccountCreate(ctx, email, "x", "emre.red"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failInserts(t, dbPath, "Sent")
+
+	b := NewBackend(store, nil, auth.NewFirewall(), func() config.Config { return config.Config{} },
+		limits.New(limits.SMTPSubmissionProfile()), "test")
+	s := &Session{backend: b, ip: "203.0.113.7", user: "ali@emre.red", from: "ali@emre.red",
+		recipients: []string{"veli@emre.red"}}
+
+	err = s.Data(newBody("Subject: hi\r\n\r\nbody\r\n"))
+	var smtpErr *gosmtp.SMTPError
+	if !errors.As(err, &smtpErr) || smtpErr.Code != 451 {
+		t.Fatalf("Data = %v, want a 451", err)
+	}
+	if n := countRows(t, store, "veli@emre.red"); n != 0 {
+		t.Errorf("recipient holds %d rows after a failed transaction, want 0", n)
+	}
+}
+
+// A relay refusal for a later recipient used to arrive after the earlier ones
+// were stored, so the sender's retry duplicated them.
+func TestData_RelayRefusalStoresNothing(t *testing.T) {
+	s, store := newTestSession(t, config.Config{})
+	if err := store.AccountCreate(context.Background(), "ali@emre.red", "x", "emre.red"); err != nil {
+		t.Fatal(err)
+	}
+	s.recipients = []string{"ali@emre.red", "someone@elsewhere.example"}
+
+	if err := s.Data(newBody("Subject: hi\r\n\r\nbody\r\n")); err == nil {
+		t.Fatal("Data accepted a relay to a remote recipient from an unauthenticated session")
+	}
+	if n := countRows(t, store, "ali@emre.red"); n != 0 {
+		t.Errorf("local recipient holds %d rows after the transaction was refused, want 0", n)
+	}
+}
+
+// Naming one mailbox twice in an envelope delivers one copy.
+func TestData_DuplicateRecipientStoredOnce(t *testing.T) {
+	s, store := newTestSession(t, config.Config{})
+	if err := store.AccountCreate(context.Background(), "ali@emre.red", "x", "emre.red"); err != nil {
+		t.Fatal(err)
+	}
+	s.recipients = []string{"ali@emre.red", "ALI@emre.red"}
+
+	if err := s.Data(newBody("Subject: hi\r\n\r\nbody\r\n")); err != nil {
+		t.Fatalf("Data failed: %v", err)
+	}
+	if n := countRows(t, store, "ali@emre.red"); n != 1 {
+		t.Errorf("stored %d rows, want 1", n)
 	}
 }
