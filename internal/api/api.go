@@ -15,6 +15,11 @@
 //   - A unix-socket listen failure is logged and TCP continues, rather than
 //     exiting into a watchdog crash loop on a persistent failure.
 //   - Signature and token comparisons are constant-time.
+//   - Until a handler runs, a connection is bounded: MaxRequestBytes in all,
+//     ReadTimeout from accept, and at most MaxPending such connections per
+//     listener. The unix socket is mounted into every API-enabled container,
+//     so this is what an app, with or without a valid token, can cost the
+//     orchestrator.
 package api
 
 import (
@@ -32,6 +37,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +49,20 @@ import (
 
 // DefaultAddr is the fixed TCP address from the contract.
 const DefaultAddr = "127.0.0.1:1453"
+
+// Request limits applied before a handler runs. The largest real request is
+// a mail.send body, and 4 MiB of HTML is far past what any mail client shows.
+// Real clients write the whole request right after connecting, so the read
+// timeout only matters to a peer that trickles bytes or sends none.
+const (
+	defaultMaxRequestBytes int64 = 4 << 20
+	minMaxRequestBytes     int64 = 64 << 10
+	defaultReadTimeout           = 10 * time.Second
+	defaultMaxPending            = 16
+)
+
+// errRequestTooLarge ends a connection that sent more than MaxRequestBytes.
+var errRequestTooLarge = errors.New("request too large")
 
 // Progress streams one progress line to the requesting client; values are
 // JSON-encoded as-is (handlers pass strings), nil keys are omitted like JS
@@ -108,6 +128,15 @@ type Server struct {
 	// the zero-downtime handover and applies either way.
 	Addr string
 
+	// MaxRequestBytes caps what one connection may send before a handler
+	// runs, ReadTimeout how long it may take from accept, and MaxPending how
+	// many connections per listener may be in that phase at once (accepting
+	// waits for a slot). NewServer fills them; the environment can raise the
+	// size with ODAC_API_MAX_REQUEST_BYTES.
+	MaxRequestBytes int64
+	ReadTimeout     time.Duration
+	MaxPending      int
+
 	mu       sync.Mutex
 	commands map[string]Handler
 	allowed  map[string]bool // runtime IP allowlist (Allow/Disallow)
@@ -119,12 +148,29 @@ type Server struct {
 
 // NewServer wires the API server against the shared config store.
 func NewServer(cfg *config.Store) *Server {
-	return &Server{
-		cfg:      cfg,
-		log:      logx.New("Api"),
-		commands: map[string]Handler{},
-		allowed:  map[string]bool{},
+	s := &Server{
+		cfg:         cfg,
+		log:         logx.New("Api"),
+		commands:    map[string]Handler{},
+		allowed:     map[string]bool{},
+		ReadTimeout: defaultReadTimeout,
+		MaxPending:  defaultMaxPending,
 	}
+	s.MaxRequestBytes = s.maxRequestBytesFromEnv()
+	return s
+}
+
+func (s *Server) maxRequestBytesFromEnv() int64 {
+	raw := os.Getenv("ODAC_API_MAX_REQUEST_BYTES")
+	if raw == "" {
+		return defaultMaxRequestBytes
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < minMaxRequestBytes {
+		s.log.Warn(fmt.Sprintf("Ignoring invalid ODAC_API_MAX_REQUEST_BYTES=%q (minimum %d)", raw, minMaxRequestBytes))
+		return defaultMaxRequestBytes
+	}
+	return v
 }
 
 // Register adds (or replaces) an action handler. cmd/odac-server registers
@@ -329,13 +375,24 @@ func (s *Server) startUnix() {
 	go s.acceptLoop(l, true)
 }
 
+// acceptLoop takes a pending slot before each accept, so a listener never
+// holds more than MaxPending connections that have not reached a handler.
+// Each listener has its own slots: containers flooding the unix socket do not
+// lock the CLI out of TCP.
 func (s *Server) acceptLoop(l net.Listener, skipIPCheck bool) {
+	pending := make(chan struct{}, max(s.MaxPending, 1))
 	for {
+		pending <- struct{}{}
 		conn, err := l.Accept()
 		if err != nil {
 			return // listener closed by Stop
 		}
-		go s.handleConn(conn, skipIPCheck)
+		var once sync.Once
+		release := func() { once.Do(func() { <-pending }) }
+		go func() {
+			defer release()
+			s.handleConn(conn, skipIPCheck, release)
+		}()
 	}
 }
 
@@ -370,8 +427,9 @@ func (s *Server) isAllowed(ip string) bool {
 	return s.allowed[ip]
 }
 
-// handleConn ports the handleConnection closure in Api.init().
-func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
+// handleConn ports the handleConnection closure in Api.init(). release
+// frees the connection's pending slot; it runs once a handler starts.
+func (s *Server) handleConn(conn net.Conn, skipIPCheck bool, release func()) {
 	if !skipIPCheck {
 		host := conn.RemoteAddr().String()
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -390,13 +448,24 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
 		}
 	}
 
-	c := &apiConn{conn: conn}
+	c := &apiConn{conn: conn, admit: release}
 	defer c.close()
 
+	// One deadline and one byte budget for everything before a handler, not
+	// per document: a failed request leaves the connection open for another,
+	// and a fresh allowance per attempt would let a peer hold its slot forever.
+	if s.ReadTimeout > 0 {
+		conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+	}
 	id := connID()
-	br := bufio.NewReader(conn)
+	budget := s.MaxRequestBytes
+	if budget <= 0 {
+		budget = defaultMaxRequestBytes
+	}
+	br := bufio.NewReader(&cappedReader{r: conn, left: budget})
 	first, err := peekNonSpace(br)
 	if err != nil {
+		s.logReadLimit(err)
 		return // closed before sending anything
 	}
 
@@ -421,6 +490,16 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
 	for {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
+			if errors.Is(err, errRequestTooLarge) {
+				s.logReadLimit(err)
+				r := Res(false, "request_too_large") // like invalid_json, WITHOUT an id
+				c.write(encodeFinal(id, false, &r))
+				return
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				s.logReadLimit(err)
+				return
+			}
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
 				errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
 				return
@@ -438,6 +517,35 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
 			return
 		}
 	}
+}
+
+// logReadLimit records a connection cut off by a request limit; any other
+// read error is a peer that went away and is not worth a line.
+func (s *Server) logReadLimit(err error) {
+	switch {
+	case errors.Is(err, errRequestTooLarge):
+		s.log.Warn(fmt.Sprintf("Closed a connection that sent more than %d bytes before a handler ran", s.MaxRequestBytes))
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		s.log.Warn(fmt.Sprintf("Closed a connection that sent no complete request within %s", s.ReadTimeout))
+	}
+}
+
+// cappedReader fails with errRequestTooLarge once left bytes have been read.
+type cappedReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, errRequestTooLarge
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	return n, err
 }
 
 // peekNonSpace returns the first byte of the request past JSON whitespace,
@@ -575,6 +683,7 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 		c.write(encodeProgress(process, status, message))
 	}
 
+	c.admitted()
 	result, err := runHandler(handler, args, progress)
 	if err != nil {
 		msg := err.Error()
@@ -607,8 +716,18 @@ func runHandler(h Handler, args Args, progress Progress) (result *Result, err er
 // (Node: this.#connections[id] deleted on close, send() checks it).
 type apiConn struct {
 	conn   net.Conn
+	admit  func()
 	mu     sync.Mutex
 	closed bool
+}
+
+// admitted ends the pre-handler phase: the pending slot is freed, and the
+// read deadline is lifted, since a handler may stream progress for minutes.
+func (c *apiConn) admitted() {
+	c.conn.SetReadDeadline(time.Time{})
+	if c.admit != nil {
+		c.admit()
+	}
 }
 
 func (c *apiConn) write(b []byte) {

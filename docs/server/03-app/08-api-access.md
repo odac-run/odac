@@ -26,6 +26,8 @@ A request is one JSON object written to the socket:
 { "auth": "<ODAC_API_KEY>", "action": "app.list", "data": [] }
 ```
 
+Write the whole request as soon as the connection opens. A connection must deliver a complete request within 10 seconds and at most 4 MiB (`ODAC_API_MAX_REQUEST_BYTES` on the server raises the size); past either limit it is closed, and an oversized one is answered with `request_too_large` first. Both limits cover everything sent before an action starts, failed attempts included. Once the action runs, it has as long as it needs.
+
 Action names are the ones in the [CLI Reference](../02-get-started/03-cli-reference.md) with the space replaced by a dot: `odac app list` is `app.list`, `odac mail send` is `mail.send`.
 
 ### Available Actions
