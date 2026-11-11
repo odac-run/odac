@@ -4,10 +4,10 @@
 // the Node orchestrator keeps running production.
 //
 // Lifecycle notes (parity with Node, see contracts/lifecycle.md):
-//   - No signal handlers, like Node: SIGTERM/SIGINT kill the process; the
-//     watchdog treats any non-zero exit as a crash and restarts. Config loss
-//     is bounded by the 500ms autosave — Node has no exit-time save either
-//     (the update handover exits via process.exit(0) mid-interval too).
+//   - SIGTERM/SIGINT close the Hub connection (bounded by hubStopTimeout)
+//     and exit non-zero, so a stray signal still reads as a crash to the
+//     watchdog and is restarted. Config loss is bounded by the 500ms
+//     autosave; there is no exit-time save.
 //   - No panic recovery: Node's uncaughtException handler logs and exits 1.
 //     A Go panic prints its stack and exits 2 — same watchdog outcome.
 //     Node's global ECONNRESET/EPIPE swallowing needs no equivalent: those
@@ -17,7 +17,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"odac/internal/api"
@@ -203,7 +205,36 @@ func main() {
 	}
 	log.Log("Odac server started")
 
-	select {} // run until the watchdog (or a signal) kills us
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+	os.Exit(awaitShutdown(log, sig, hubSvc.Stop, hubStopTimeout))
+}
+
+// hubStopTimeout bounds the Hub's close handshake on shutdown; it must stay
+// under the watchdog's stop grace.
+const hubStopTimeout = 3 * time.Second
+
+// awaitShutdown blocks until a signal arrives, then closes the Hub so the
+// Cloud sees a close frame. Without one it keeps the old session and refuses
+// the restarted server with 1008 until that session times out. It returns
+// the shell's exit code for the signal.
+func awaitShutdown(log *logx.Logger, sig <-chan os.Signal, stopHub func(), timeout time.Duration) int {
+	s := <-sig
+	log.Log("Received %s, closing the Hub connection...", s.String())
+	done := make(chan struct{})
+	go func() {
+		stopHub()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Error("Hub did not close in time, exiting anyway")
+	}
+	if n, ok := s.(syscall.Signal); ok {
+		return 128 + int(n)
+	}
+	return 1
 }
 
 // hubContainers adapts *docker.Client to hub.ContainerService — Go cannot

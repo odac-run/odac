@@ -10,15 +10,17 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"odac/internal/api"
+	"odac/internal/logx"
 )
 
 // TestServerSmoke builds the binary and runs it with an isolated HOME: it
-// must write pid/started/os/arch into server.json via autosave and keep
-// running (the skeleton has no exit path besides being killed).
+// must write pid/started/os/arch into server.json via autosave, keep
+// running, and exit with 143 on SIGTERM.
 func TestServerSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("smoke test builds a binary")
@@ -80,6 +82,21 @@ func TestServerSmoke(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if cmd.ProcessState != nil {
 		t.Fatal("server exited prematurely")
+	}
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	cmd.Process.Signal(syscall.SIGTERM)
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	select {
+	case <-exited:
+		if code := cmd.ProcessState.ExitCode(); code != 143 {
+			t.Fatalf("exit code on SIGTERM = %d, want 143", code)
+		}
+	case <-time.After(hubStopTimeout + 2*time.Second):
+		t.Fatal("server did not exit on SIGTERM")
 	}
 }
 
@@ -360,5 +377,33 @@ func TestDocumentedActionsMatchRegistry(t *testing.T) {
 		if !registered[action] {
 			t.Errorf("action %q is documented but no longer registered", action)
 		}
+	}
+}
+
+func TestAwaitShutdownClosesTheHub(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+	sig <- syscall.SIGTERM
+	stopped := false
+	code := awaitShutdown(logx.New("Test"), sig, func() { stopped = true }, time.Second)
+	if !stopped {
+		t.Fatal("the Hub was not stopped")
+	}
+	if code != 143 {
+		t.Fatalf("exit code %d, want 143", code)
+	}
+}
+
+func TestAwaitShutdownDoesNotWaitPastTimeout(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+	sig <- os.Interrupt
+	block := make(chan struct{})
+	defer close(block)
+	start := time.Now()
+	code := awaitShutdown(logx.New("Test"), sig, func() { <-block }, 100*time.Millisecond)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("awaitShutdown took %v", took)
+	}
+	if code != 130 {
+		t.Fatalf("exit code %d, want 130", code)
 	}
 }

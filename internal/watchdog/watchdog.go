@@ -25,6 +25,11 @@ const (
 	restartWindow       = 5 * time.Minute
 	flushInterval       = time.Second
 
+	// stopGrace is how long a stopping watchdog waits for the server to
+	// exit on SIGTERM before killing it. It fits inside Docker's default
+	// 10s stop timeout with room for the server's own shutdown bound.
+	stopGrace = 5 * time.Second
+
 	// Logs are appended incrementally; once a buffer passes maxLines its file
 	// is rewritten down to the last trimLines, then appending resumes.
 	maxLines  = 2000
@@ -97,8 +102,11 @@ type Watchdog struct {
 	restartCount int
 	lastRestart  time.Time
 
-	childMu sync.Mutex
-	child   *os.Process
+	childMu   sync.Mutex // guards child, childDone, stopping
+	child     *os.Process
+	childDone chan struct{}
+	stopping  bool
+	stopGrace time.Duration
 
 	// Test seam; production value is stopSupervised.
 	reap func(pid int)
@@ -120,6 +128,7 @@ func New(cfg *config.Store, serverCmd []string) *Watchdog {
 		errS:      stream{flushed: -1},
 		logName:   logName,
 		reap:      stopSupervised,
+		stopGrace: stopGrace,
 	}
 }
 
@@ -137,12 +146,15 @@ func (w *Watchdog) Run() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		w.killChild()
+		w.stopChild()
 		w.shutdown(0)
 	}()
 
 	for {
 		code, err := w.runServerOnce()
+		if w.isStopping() {
+			select {} // the signal goroutine owns the exit
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to run server:", err)
 		}
@@ -192,12 +204,19 @@ func (w *Watchdog) runServerOnce() (int, error) {
 	if err != nil {
 		return -1, err
 	}
+	// Start under childMu so stopChild sees either no child or a registered
+	// one, never a process it cannot signal.
+	done := make(chan struct{})
+	w.childMu.Lock()
+	if w.stopping {
+		w.childMu.Unlock()
+		return -1, nil
+	}
 	if err := cmd.Start(); err != nil {
+		w.childMu.Unlock()
 		return -1, err
 	}
-
-	w.childMu.Lock()
-	w.child = cmd.Process
+	w.child, w.childDone = cmd.Process, done
 	w.childMu.Unlock()
 
 	if srv := w.cfg.Map("server"); srv != nil {
@@ -217,8 +236,9 @@ func (w *Watchdog) runServerOnce() (int, error) {
 
 	waitErr := cmd.Wait()
 	w.childMu.Lock()
-	w.child = nil
+	w.child, w.childDone = nil, nil
 	w.childMu.Unlock()
+	close(done)
 
 	if waitErr == nil {
 		return 0, nil
@@ -348,12 +368,29 @@ func (w *Watchdog) appendErrLine(msg string) {
 	w.mu.Unlock()
 }
 
-func (w *Watchdog) killChild() {
+// stopChild asks the server to exit with SIGTERM and kills it only after
+// stopGrace. A SIGKILL left the Hub's WebSocket without a close frame, and
+// the Cloud refused the next connection until it timed the old one out.
+func (w *Watchdog) stopChild() {
+	w.childMu.Lock()
+	w.stopping = true
+	child, done := w.child, w.childDone
+	w.childMu.Unlock()
+	if child == nil {
+		return
+	}
+	child.Signal(syscall.SIGTERM)
+	select {
+	case <-done:
+	case <-time.After(w.stopGrace):
+		child.Kill()
+	}
+}
+
+func (w *Watchdog) isStopping() bool {
 	w.childMu.Lock()
 	defer w.childMu.Unlock()
-	if w.child != nil {
-		w.child.Kill()
-	}
+	return w.stopping
 }
 
 // shutdown flushes pending logs best-effort and exits.
