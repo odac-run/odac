@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -574,7 +575,15 @@ func TestCloneRepoCommandAssembly(t *testing.T) {
 	if got := call.Config.Cmd[0]; got != `git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REMOTE_URL" .` {
 		t.Errorf("cmd = %q", got)
 	}
-	wantEnv := []string{"GIT_REMOTE_URL=https://oauth2:sekret@github.com/u/r.git", "GIT_BRANCH=main"}
+	wantEnv := []string{
+		"GIT_REMOTE_URL=https://github.com/u/r.git",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_TOKEN=sekret",
+		"GIT_BRANCH=main",
+		"GIT_TERMINAL_PROMPT=0",
+	}
 	if !reflect.DeepEqual(call.Config.Env, wantEnv) {
 		t.Errorf("env = %v", call.Config.Env)
 	}
@@ -602,7 +611,7 @@ func TestCloneRepoNoBranchNoToken(t *testing.T) {
 	if got := call.Config.Cmd[0]; got != `git clone --depth 1 "$GIT_REMOTE_URL" .` {
 		t.Errorf("cmd = %q", got)
 	}
-	if !reflect.DeepEqual(call.Config.Env, []string{"GIT_REMOTE_URL=https://github.com/u/r.git"}) {
+	if !reflect.DeepEqual(call.Config.Env, []string{"GIT_REMOTE_URL=https://github.com/u/r.git", "GIT_TERMINAL_PROMPT=0"}) {
 		t.Errorf("env = %v", call.Config.Env)
 	}
 }
@@ -628,20 +637,65 @@ func TestFetchRepoCommandAssembly(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := f.created[0]
-	want := `git remote set-url origin "$GIT_REMOTE_URL" && git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA" && git remote set-url origin "$GIT_ORIGINAL_URL"`
+	want := `git remote set-url origin "$GIT_REMOTE_URL" && git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"`
 	if got := call.Config.Cmd[0]; got != want {
 		t.Errorf("cmd = %q", got)
 	}
 	wantEnv := []string{
 		"GIT_BRANCH=dev",
 		"GIT_COMMIT_SHA=abc123",
-		"GIT_REMOTE_URL=https://oauth2:tok@github.com/u/r.git",
-		"GIT_ORIGINAL_URL=https://github.com/u/r.git",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_TOKEN=tok",
+		"GIT_REMOTE_URL=https://github.com/u/r.git",
+		"GIT_TERMINAL_PROMPT=0",
 	}
 	if !reflect.DeepEqual(call.Config.Env, wantEnv) {
 		t.Errorf("env = %v", call.Config.Env)
 	}
 	assertSandboxed(t, f, call.HostConfig)
+}
+
+// TestGitTokenNeverReachesTheRemoteURL pins the token to the credential
+// helper: the remote URL is what git writes to .git/config, which the compile
+// step and a custom Dockerfile's COPY can read. A fetch without a token still
+// resets the remote, which scrubs a URL an older clone left a token in.
+func TestGitTokenNeverReachesTheRemoteURL(t *testing.T) {
+	f := newFakeAPI()
+	f.images[gitImage] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	if err := c.CloneRepo("https://git.example.com:8443/u/r.git", "", "/apps/r", "sekret", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.FetchRepo("https://git.example.com:8443/u/r.git", "main", "/apps/r", "sekret", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.FetchRepo("https://github.com/u/r.git", "main", "/apps/r", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for i, call := range f.created {
+		if strings.Contains(call.Config.Cmd[0], "sekret") {
+			t.Errorf("call %d: token in command %q", i, call.Config.Cmd[0])
+		}
+		for _, kv := range call.Config.Env {
+			if strings.Contains(kv, "sekret") && kv != "GIT_TOKEN=sekret" {
+				t.Errorf("call %d: token outside GIT_TOKEN: %q", i, kv)
+			}
+		}
+	}
+	scoped := "GIT_CONFIG_KEY_0=credential.https://git.example.com:8443.helper"
+	if !slices.Contains(f.created[0].Config.Env, scoped) || !slices.Contains(f.created[1].Config.Env, scoped) {
+		t.Errorf("helper not scoped to the remote's origin: %v", f.created[0].Config.Env)
+	}
+	public := f.created[2]
+	if !strings.HasPrefix(public.Config.Cmd[0], `git remote set-url origin "$GIT_REMOTE_URL" && `) {
+		t.Errorf("fetch without a token does not reset the remote: %q", public.Config.Cmd[0])
+	}
+	if slices.Contains(public.Config.Env, "GIT_CONFIG_COUNT=1") {
+		t.Errorf("fetch without a token configures a helper: %v", public.Config.Env)
+	}
 }
 
 func TestMaskingWriter(t *testing.T) {

@@ -231,7 +231,9 @@ var buildStrategies = map[string]buildStrategy{
 }
 
 // packagerImage is the socket-mounted docker client used for image builds.
-const packagerImage = "docker:cli"
+// It holds the Docker socket, so it is pinned by digest (docker:29.9.3-cli)
+// rather than trusted by tag.
+const packagerImage = "docker@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5d7c945b5f3b28d"
 
 // buildPidsLimit bounds the processes and threads of one build container,
 // which is what stops a fork bomb in an install script from taking the host.
