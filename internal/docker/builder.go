@@ -3,7 +3,10 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -242,6 +245,10 @@ const buildPidsLimit int64 = 8192
 // NET_RAW and NET_BIND_SERVICE included.
 var buildCaps = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID"}
 
+// maxProjectFile bounds a version file read. The file comes from the
+// repository, which also decides its size.
+const maxProjectFile = 1 << 20
+
 // compileEnv silences interactive/progress output in runner containers.
 var compileEnv = []string{
 	"CI=true",
@@ -451,7 +458,7 @@ func resolveImage(internalPath string, s *buildStrategy) string {
 		files = append(files, resolver.fallbackFile)
 	}
 	for _, file := range files {
-		content, err := os.ReadFile(filepath.Join(internalPath, file))
+		content, err := readProjectFile(filepath.Join(internalPath, file))
 		if err != nil {
 			continue
 		}
@@ -460,6 +467,51 @@ func resolveImage(internalPath string, s *buildStrategy) string {
 		}
 	}
 	return fallback
+}
+
+// readProjectFile reads a file the repository committed, refusing anything
+// but a regular file. A committed symlink would otherwise point the server
+// at any path it can read, and /dev/zero or a FIFO would never return.
+func readProjectFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("%s changed while it was opened", path)
+	}
+	return io.ReadAll(io.LimitReader(f, maxProjectFile))
+}
+
+// writeBuildFile creates a generated file in the source tree afresh. The
+// tree is written by repository code (a committed symlink, or the compile
+// step), and a plain write follows a symlink and truncates its target, so the
+// entry is removed and the file created with O_EXCL, which never follows one.
+func writeBuildFile(path string, data []byte) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // sandboxHostConfig is the host config of every container that runs
@@ -535,10 +587,11 @@ func (c *Client) packageImage(strategy *buildStrategy, bctx BuildContext, imageN
 	if buildLog != nil {
 		buildLog.StartPhase("prepare_context")
 	}
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0o644); err != nil {
+	if err := writeBuildFile(dockerfilePath, []byte(dockerfile)); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dockerignorePath, []byte(".git\n.github\nDockerfile.odac\n"), 0o644); err != nil {
+	if err := writeBuildFile(dockerignorePath, []byte(".git\n.github\nDockerfile.odac\n")); err != nil {
+		os.Remove(dockerfilePath)
 		return err
 	}
 	if buildLog != nil {

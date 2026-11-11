@@ -305,3 +305,63 @@ func assertSandboxed(t *testing.T, f *fakeAPI, hc *container.HostConfig) {
 		t.Errorf("%s options = %+v, want egress with icc off", BuildNetwork, opts)
 	}
 }
+
+func TestBuildDoesNotWriteThroughPlantedSymlinks(t *testing.T) {
+	f := newFakeAPI()
+	f.images["golang:alpine"] = image.InspectResponse{}
+	f.images[packagerImage] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	outside := t.TempDir()
+	victims := map[string]string{
+		".dockerignore":   filepath.Join(outside, "certs.db"),
+		"Dockerfile.odac": filepath.Join(outside, "config.json"),
+	}
+	src := writeFiles(t, map[string]string{"go.mod": "module x\n"})
+	for name, target := range victims {
+		if err := os.WriteFile(target, []byte("precious"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(src, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := c.Build(src, "img", "x", nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range victims {
+		got, err := os.ReadFile(target)
+		if err != nil || string(got) != "precious" {
+			t.Errorf("%s was written through its symlink: %q, %v", name, got, err)
+		}
+	}
+}
+
+func TestResolveImageReadsOnlyRegularFiles(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "package.json")
+	if err := os.WriteFile(outside, []byte(`{"engines":{"node":"18"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := writeFiles(t, map[string]string{"package-lock.json": ""})
+	if err := os.Symlink(outside, filepath.Join(src, "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectStrategy(src); got == nil || got.image != "node:lts-alpine" {
+		t.Errorf("symlinked package.json was followed: %+v", got)
+	}
+
+	// /dev/zero never ends, so following this link would never return.
+	zero := writeFiles(t, map[string]string{"package-lock.json": ""})
+	if err := os.Symlink("/dev/zero", filepath.Join(zero, "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectStrategy(zero); got == nil || got.image != "node:lts-alpine" {
+		t.Errorf("image = %+v, want the default", got)
+	}
+
+	big := writeFiles(t, map[string]string{"go.mod": strings.Repeat("\n", maxProjectFile) + "go 1.22\n"})
+	if got := detectStrategy(big); got == nil || got.image != "golang:alpine" {
+		t.Errorf("read past maxProjectFile: %+v", got)
+	}
+}
