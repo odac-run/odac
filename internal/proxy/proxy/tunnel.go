@@ -3,9 +3,9 @@ package proxy
 import (
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -20,8 +20,16 @@ const (
 	// tunnelWSURL is the ODAC Cloud tunnel proxy WebSocket endpoint.
 	tunnelWSURL = "wss://tunnel.odac.run/_odac/ws"
 
-	// tunnelReconnectInterval is the delay between reconnection attempts.
-	tunnelReconnectInterval = 5 * time.Second
+	// tunnelReconnectMin and tunnelReconnectMax bound the reconnect wait, which doubles
+	// per short-lived attempt so two agents sharing a token do not evict each other
+	// every few seconds.
+	tunnelReconnectMin = 5 * time.Second
+	tunnelReconnectMax = 5 * time.Minute
+
+	// tunnelStableAfter is how long a session must last before the wait resets: the
+	// edge accepts a duplicate token and drops the older agent, so a successful dial
+	// alone says nothing.
+	tunnelStableAfter = time.Minute
 
 	// tunnelCopyBufSize is the buffer size for bidirectional stream copying.
 	// 64KB reduces syscall frequency vs the default 32KB, improving throughput.
@@ -140,6 +148,7 @@ func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 // runTunnel maintains a persistent tunnel connection for a single domain.
 // It reconnects automatically on failure until stopCh is closed.
 func (tm *TunnelManager) runTunnel(tc *tunnelConn) {
+	wait := tunnelReconnectMin
 	for {
 		select {
 		case <-tc.stopCh:
@@ -147,18 +156,29 @@ func (tm *TunnelManager) runTunnel(tc *tunnelConn) {
 		default:
 		}
 
+		started := time.Now()
 		err := tm.connect(tc)
 		if err != nil {
 			log.Printf("[Tunnel] Connection failed for %s: %v", tc.domain, err)
 		}
+		if time.Since(started) >= tunnelStableAfter {
+			wait = tunnelReconnectMin
+		}
 
-		// Wait before reconnecting (or exit if stopped)
+		timer := time.NewTimer(jitter(wait))
 		select {
 		case <-tc.stopCh:
+			timer.Stop()
 			return
-		case <-time.After(tunnelReconnectInterval):
+		case <-timer.C:
 		}
+		wait = min(wait*2, tunnelReconnectMax)
 	}
+}
+
+// jitter spreads a wait over [d/2, d) so agents dropped together do not return together.
+func jitter(d time.Duration) time.Duration {
+	return d/2 + rand.N(d/2)
 }
 
 // connect establishes a single WebSocket + yamux session to ODAC Cloud.
@@ -173,18 +193,12 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 
 	header := http.Header{}
 	header.Set("X-Agent-Domain", tc.domain)
-
-	target, err := url.Parse(tm.endpoint)
-	if err != nil {
-		return err
-	}
-	query := target.Query()
-	query.Set("odac_ws_token", tc.token)
-	target.RawQuery = query.Encode()
+	// In a header, not the query: a URL lands in access logs in front of the edge.
+	header.Set("Authorization", "Bearer "+tc.token)
 
 	log.Printf("[Tunnel] Connecting to cloud for domain: %s", tc.domain)
 
-	ws, _, err := dialer.Dial(target.String(), header)
+	ws, _, err := dialer.Dial(tm.endpoint, header)
 	if err != nil {
 		return err
 	}

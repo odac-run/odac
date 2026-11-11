@@ -18,7 +18,7 @@ func TestTunnelClosedDuringDialDoesNotStayConnected(t *testing.T) {
 	closed := make(chan error, 1)
 	upgrader := websocket.Upgrader{}
 	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("odac_ws_token") != "t&k" {
+		if r.Header.Get("Authorization") != "Bearer t&k" || r.URL.RawQuery != "" {
 			http.Error(w, "bad token", http.StatusUnauthorized)
 			return
 		}
@@ -67,4 +67,12 @@ func TestTunnelClosedDuringDialDoesNotStayConnected(t *testing.T) {
 		t.Fatal("runTunnel kept running after closeTunnel")
 	}
 	tm.closeTunnel(tc) // a second close must be harmless
+}
+
+func TestJitterStaysWithinHalfToFull(t *testing.T) {
+	for range 1000 {
+		if d := jitter(10 * time.Second); d < 5*time.Second || d >= 10*time.Second {
+			t.Fatalf("jitter(10s) = %v, want [5s, 10s)", d)
+		}
+	}
 }
