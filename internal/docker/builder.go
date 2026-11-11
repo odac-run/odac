@@ -119,6 +119,7 @@ var (
 type packageSpec struct {
 	baseImage string
 	user      string
+	group     string // when the base image names user's group differently
 	cmd       []string
 	setup     []string
 	env       [][2]string // ordered KEY,VALUE pairs
@@ -200,7 +201,7 @@ var buildStrategies = map[string]buildStrategy{
 		installCmd: "[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps",
 		buildCmd:   "rm -rf __pycache__",
 		pkg: &packageSpec{
-			baseImage: "python:3-slim", user: "nobody",
+			baseImage: "python:3-slim", user: "nobody", group: "nogroup", // Debian has no "nobody" group
 			cmd: []string{"sh", "-c", "if [ -f main.py ]; then python main.py; elif [ -f run.py ]; then python run.py; else python app.py; fi"},
 			env: [][2]string{{"PYTHONPATH", "/app/deps"}},
 		},
@@ -694,7 +695,11 @@ func (c *Client) runBuilderContainer(image string, cmd []string, hostCfg *contai
 // Node's template does.
 func generateDockerfile(pkg *packageSpec) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\nFROM %s\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R %s:%s /app\n", pkg.baseImage, pkg.user, pkg.user)
+	group := pkg.group
+	if group == "" {
+		group = pkg.user
+	}
+	fmt.Fprintf(&b, "\nFROM %s\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R %s:%s /app\n", pkg.baseImage, pkg.user, group)
 	for _, cmd := range pkg.setup {
 		fmt.Fprintf(&b, "RUN %s\n", cmd)
 	}

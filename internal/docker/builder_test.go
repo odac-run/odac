@@ -113,6 +113,10 @@ func TestGenerateDockerfile(t *testing.T) {
 	if !strings.Contains(py, "ENV PYTHONPATH=\"/app/deps\"") {
 		t.Errorf("python env missing: %q", py)
 	}
+	// python:3-slim is Debian, where nobody's group is nogroup.
+	if !strings.Contains(py, "RUN chown -R nobody:nogroup /app\n") {
+		t.Errorf("python chown: %q", py)
+	}
 }
 
 func TestBuildTwoStagePipeline(t *testing.T) {
