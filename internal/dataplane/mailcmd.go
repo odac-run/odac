@@ -479,7 +479,7 @@ func (m *Mail) dkim(domain string) error {
 			"value": "v=DKIM1; k=rsa; p=" + publicKeyBase64,
 		})
 	}
-	if err := m.cfg.ForceSave(); err != nil {
+	if err := m.cfg.SaveDirty(); err != nil {
 		return err
 	}
 	go m.SyncConfig() // Node fires syncConfig un-awaited after DKIM setup

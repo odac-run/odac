@@ -608,9 +608,17 @@ func TestDKIMGeneration(t *testing.T) {
 		t.Errorf("TXT value = %v", txt["value"])
 	}
 
-	// Persisted + synced.
-	raw, err := os.ReadFile(filepath.Join(m.cfg.BaseDir(), "config", "domain.json"))
-	if err != nil || !strings.Contains(string(raw), "_domainkey") && !strings.Contains(string(raw), "dkim") {
+	// Persisted + synced. The record is visible in memory before SaveDirty
+	// (which fsyncs every module) returns, so wait for the file too.
+	var raw []byte
+	for time.Now().Before(deadline) {
+		raw, err = os.ReadFile(filepath.Join(m.cfg.BaseDir(), "config", "domain.json"))
+		if err == nil && strings.Contains(string(raw), "dkim") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || !strings.Contains(string(raw), "dkim") {
 		t.Errorf("domain.json not persisted: %v", err)
 	}
 	waitConfigPush(t, f)

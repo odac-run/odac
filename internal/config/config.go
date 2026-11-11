@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -58,7 +57,17 @@ type Store struct {
 	dirty   map[string]bool
 	mu      sync.Mutex
 	valueMu sync.RWMutex
+	// saveMu serializes saves so an older snapshot never lands after a
+	// newer one; the disk writes run under it alone, off mu and valueMu.
+	saveMu sync.Mutex
 }
+
+// Module files hold the root API token, the Hub secret and tunnel tokens,
+// so the tree is private to the server's user.
+const (
+	dirMode  os.FileMode = 0o700
+	fileMode os.FileMode = 0o600
+)
 
 // DefaultBaseDir returns ~/.odac, the base directory shared with the Node
 // implementation and the data-plane binaries.
@@ -74,8 +83,13 @@ func DefaultBaseDir() string {
 // missing or unrecoverable modules.
 func Open(baseDir string) (*Store, error) {
 	s := &Store{baseDir: baseDir, data: map[string]any{}, dirty: map[string]bool{}}
-	if err := os.MkdirAll(s.configDir(), 0o755); err != nil {
+	if err := privateDir(s.configDir()); err != nil {
 		return nil, fmt.Errorf("config: create config dir: %w", err)
+	}
+	if _, err := os.Stat(s.bakDir()); err == nil {
+		if err := os.Chmod(s.bakDir(), dirMode); err != nil {
+			return nil, fmt.Errorf("config: restrict backup dir: %w", err)
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,23 +171,44 @@ func (s *Store) Mutate(fn func()) {
 }
 
 // SaveDirty writes every dirty module file atomically. Modules that fail to
-// write stay dirty so a later save retries them. Holds the value read-lock
-// for the duration: the marshal in writeModule walks live deep values.
+// write stay dirty so a later save retries them. The value read-lock is held
+// only while the modules are marshaled (that walks live deep values); the
+// writes and their fsyncs run after both locks are released, so a slow disk
+// never stalls config readers.
 func (s *Store) SaveDirty() error {
-	s.valueMu.RLock()
-	defer s.valueMu.RUnlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	type pending struct {
+		module  string
+		payload []byte
+	}
+	var writes []pending
 	var errs []error
+	s.valueMu.RLock()
+	s.mu.Lock()
 	for module, dirty := range s.dirty {
 		if !dirty {
 			continue
 		}
-		if err := s.writeModule(module); err != nil {
+		payload, err := s.marshalModule(module)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("config: save %s: %w", module, err))
 			continue
 		}
 		s.dirty[module] = false
+		writes = append(writes, pending{module, payload})
+	}
+	s.mu.Unlock()
+	s.valueMu.RUnlock()
+
+	for _, w := range writes {
+		if err := s.writeModule(w.module, w.payload); err != nil {
+			errs = append(errs, fmt.Errorf("config: save %s: %w", w.module, err))
+			s.mu.Lock()
+			s.dirty[w.module] = true
+			s.mu.Unlock()
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -182,11 +217,14 @@ func (s *Store) SaveDirty() error {
 // mirroring Node's 500ms server-side autosave (contract 0.6). Modules whose
 // write fails stay dirty and are retried on the next tick. Only the server
 // process may run autosave (single-writer invariant — the CLI never writes).
-// The returned stop function is idempotent.
+// The returned stop function is idempotent and returns once the loop has
+// exited, so no save from it is still in flight.
 func (s *Store) AutoSave(interval time.Duration, onError func(error)) (stop func()) {
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	var once sync.Once
 	go func() {
+		defer close(exited)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -200,7 +238,10 @@ func (s *Store) AutoSave(interval time.Duration, onError func(error)) (stop func
 			}
 		}
 	}()
-	return func() { once.Do(func() { close(done) }) }
+	return func() {
+		once.Do(func() { close(done) })
+		<-exited
+	}
 }
 
 // ForceSave marks every module dirty and saves, mirroring Config.force() in
@@ -278,7 +319,7 @@ func (s *Store) recoverFromBackup(module, mainFile string) map[string]any {
 	// Backup is valid: preserve the broken main, then restore from backup.
 	// A failed restore is non-fatal — the parsed backup data is still used.
 	copyFile(mainFile, corruptedFile)
-	os.WriteFile(mainFile, raw, 0o644)
+	writeDurable(mainFile, raw)
 	return parsed
 }
 
@@ -321,35 +362,39 @@ func applyDefaults(c map[string]any) {
 	}
 }
 
-// writeModule atomically persists one module file: tmp write, backup of the
-// previous version into .bak/, rename over the main file. Caller holds s.mu.
+// marshalModule encodes one module's keys. Caller holds s.mu and the value
+// read-lock.
 //
 // Note: encoding/json sorts map keys alphabetically, while Node writes keys
 // in insertion order. The files are semantically identical; only the key
 // order differs, and Node restores its own order on its next save.
-func (s *Store) writeModule(module string) error {
+func (s *Store) marshalModule(module string) ([]byte, error) {
 	content := map[string]any{}
 	for _, k := range moduleKeys[module] {
 		if v, ok := s.data[k]; ok {
 			content[k] = v
 		}
 	}
+	return json.MarshalIndent(content, "", "    ")
+}
 
-	payload, err := json.MarshalIndent(content, "", "    ")
-	if err != nil {
-		return err
-	}
-
+// writeModule atomically persists one module file: tmp write and fsync,
+// backup of the previous version into .bak/, rename over the main file,
+// fsync of the directory so the rename itself survives a power loss.
+// Without the fsyncs a crash could keep the rename and lose the data,
+// leaving a zero-length module next to an equally unsynced backup.
+func (s *Store) writeModule(module string, payload []byte) error {
 	file := filepath.Join(s.configDir(), module+".json")
 	tmp := file + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
+	if err := writeDurable(tmp, payload); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 
 	if _, err := os.Stat(file); err == nil {
 		// Backup failures are non-fatal: better to save without a backup
 		// than not save at all (same policy as Node's #atomicWrite).
-		if err := os.MkdirAll(s.bakDir(), 0o755); err == nil {
+		if err := privateDir(s.bakDir()); err == nil {
 			copyFile(file, filepath.Join(s.bakDir(), module+".json.bak"))
 		}
 	}
@@ -358,20 +403,56 @@ func (s *Store) writeModule(module string) error {
 		os.Remove(tmp)
 		return err
 	}
+	syncDir(s.configDir())
 	return nil
 }
 
+// privateDir creates dir with dirMode, and narrows an existing one: installs
+// from before this rule have 0755 directories holding 0644 secrets.
+func privateDir(dir string) error {
+	if err := os.MkdirAll(dir, dirMode); err != nil {
+		return err
+	}
+	return os.Chmod(dir, dirMode)
+}
+
+// writeDurable writes data to path with fileMode and fsyncs it before
+// returning. An existing file keeps its inode, so its mode is set again.
+func writeDurable(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileMode)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(fileMode); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir makes a rename in dir durable. Best effort: some filesystems
+// refuse fsync on a directory, and the rename has already happened.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	d.Sync()
+	d.Close()
+}
+
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	return writeDurable(dst, data)
 }
