@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"odac/internal/api"
 	"odac/internal/docker"
 	"odac/internal/gpu"
 	"odac/internal/kernel"
@@ -42,7 +43,7 @@ func (fx *fixture) findApp(name string) map[string]any {
 func TestCreateFromGitBuildsGitObject(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "git", "url": "https://github.com/user/my-repo.git",
 		"name": "my-git-app", "branch": "develop",
 	})
@@ -69,7 +70,7 @@ func TestCreateFromGitBuildsGitObject(t *testing.T) {
 func TestCreateFromGitValidation(t *testing.T) {
 	check := func(t *testing.T, cfg map[string]any, wantMsg string) {
 		fx := newFixture(t, []any{})
-		r := fx.m.Create(cfg)
+		r := fx.m.Create(api.Operator, cfg)
 		if r.Status {
 			t.Fatal("expected failure")
 		}
@@ -101,7 +102,7 @@ func TestCreateFromGitValidation(t *testing.T) {
 	})
 	t.Run("duplicate name", func(t *testing.T) {
 		fx := newFixture(t, []any{map[string]any{"id": float64(1), "name": "taken"}})
-		r := fx.m.Create(map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "taken"})
+		r := fx.m.Create(api.Operator, map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "taken"})
 		if r.Status || !strings.Contains(jsString(r.Message), "already exists") {
 			t.Fatalf("r = %+v", r)
 		}
@@ -114,7 +115,7 @@ func TestCreateFromGitCleansUpOnFailure(t *testing.T) {
 	fx.dock.buildErr = errTest
 	fx.dock.mu.Unlock()
 
-	r := fx.m.Create(map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "failing"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "git", "url": "https://github.com/a/b.git", "name": "failing"})
 	if r.Status {
 		t.Fatal("expected failure")
 	}
@@ -126,7 +127,7 @@ func TestCreateFromGitCleansUpOnFailure(t *testing.T) {
 func TestCreateStringDispatch(t *testing.T) {
 	t.Run("git url string", func(t *testing.T) {
 		fx := newFixture(t, []any{})
-		r := fx.m.Create("https://github.com/user/some-repo.git")
+		r := fx.m.Create(api.Operator, "https://github.com/user/some-repo.git")
 		if !r.Status {
 			t.Fatalf("create failed: %v", r.Message)
 		}
@@ -139,7 +140,7 @@ func TestCreateStringDispatch(t *testing.T) {
 	t.Run("recipe name string", func(t *testing.T) {
 		fx := newFixture(t, []any{})
 		fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
-		r := fx.m.Create("redis")
+		r := fx.m.Create(api.Operator, "redis")
 		if !r.Status {
 			t.Fatalf("create failed: %v", r.Message)
 		}
@@ -267,7 +268,7 @@ func TestTemplateDeploysMultiAppStack(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "wordpress", "name": "myblog"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "wordpress", "name": "myblog"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -332,7 +333,7 @@ func TestTemplateContainerDirective(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "container-ref", "name": "mystack"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "container-ref", "name": "mystack"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -357,7 +358,7 @@ func TestRecipeContainerDirectiveSingleApp(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "myredis"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "myredis"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -373,14 +374,14 @@ func TestCreateRejectsUnsafeNames(t *testing.T) {
 	t.Run("recipe malicious name", func(t *testing.T) {
 		fx := newFixture(t, []any{})
 		fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine", "env": map[string]any{}})
-		r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "x;touch /pwned"})
+		r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "x;touch /pwned"})
 		if r.Status || !strings.Contains(jsString(r.Message), "Invalid app name") {
 			t.Fatalf("expected rejection, got %+v", r)
 		}
 	})
 	t.Run("template malicious container name", func(t *testing.T) {
 		fx := newFixture(t, []any{})
-		r := fx.m.Create(map[string]any{
+		r := fx.m.Create(api.Operator, map[string]any{
 			"type": "template",
 			"name": "stack",
 			"apps": map[string]any{
@@ -418,7 +419,7 @@ func TestRecipeImageOverride(t *testing.T) {
 		"env": map[string]any{},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "myredis", "image": "redis:7-bookworm"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "myredis", "image": "redis:7-bookworm"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -446,7 +447,7 @@ func TestTemplateTypedDirectives(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "typed-stack", "name": "mytyped"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "typed-stack", "name": "mytyped"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -476,7 +477,7 @@ func TestTemplateDependencyOrder(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "three-tier", "name": "myapp"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "three-tier", "name": "myapp"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -514,7 +515,7 @@ func TestTemplateRollbackOnPartialFailure(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "fail-stack", "name": "mybad"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "fail-stack", "name": "mybad"})
 	if r.Status {
 		t.Fatal("expected failure")
 	}
@@ -535,7 +536,7 @@ func TestTemplateCircularDependency(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "circular", "name": "loop"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "circular", "name": "loop"})
 	if r.Status || !strings.Contains(jsString(r.Message), "Circular dependency") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -550,7 +551,7 @@ func TestTemplateUndefinedDependency(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "broken", "name": "nope"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "broken", "name": "nope"})
 	if r.Status || !strings.Contains(jsString(r.Message), "not defined") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -564,7 +565,7 @@ func TestSingleAppRecipeIsNotATemplate(t *testing.T) {
 		"env":   map[string]any{},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "myredis"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "myredis"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -595,7 +596,7 @@ func TestTemplateLeavesUnresolvableVarsAsIs(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{"type": "app", "app": "partial", "name": "mypartial"})
+	r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "partial", "name": "mypartial"})
 	if !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
@@ -616,7 +617,7 @@ func TestTemplateUserEnvOverrides(t *testing.T) {
 		},
 	})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "override-test", "name": "myoverride",
 		"env": map[string]any{"db": map[string]any{"DB_NAME": "custom_db"}},
 	})
@@ -641,7 +642,7 @@ func TestEchoedGenerateDirectiveDoesNotClobber(t *testing.T) {
 		fx := newFixture(t, []any{})
 		fx.setRecipe(map[string]any{"name": "mariadb", "image": "mariadb:latest", "env": recipeEnv})
 
-		r := fx.m.Create(map[string]any{"type": "app", "app": "mariadb", "name": "mymariadb", "env": recipeEnv})
+		r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "mariadb", "name": "mymariadb", "env": recipeEnv})
 		if !r.Status {
 			t.Fatalf("create failed: %v", r.Message)
 		}
@@ -668,7 +669,7 @@ func TestEchoedGenerateDirectiveDoesNotClobber(t *testing.T) {
 			},
 		})
 
-		r := fx.m.Create(map[string]any{
+		r := fx.m.Create(api.Operator, map[string]any{
 			"type": "app", "app": "stack", "name": "mystack",
 			"env": map[string]any{"db": map[string]any{"DB_PASSWORD": map[string]any{"generate": true, "length": float64(16)}}},
 		})
@@ -687,7 +688,7 @@ func TestEchoedGenerateDirectiveDoesNotClobber(t *testing.T) {
 func TestTemplatePayloadFromHub(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template",
 		"name": "wordpress",
 		"apps": map[string]any{
@@ -740,14 +741,14 @@ func TestTemplatePayloadFromHub(t *testing.T) {
 func TestTemplatePayloadValidation(t *testing.T) {
 	t.Run("missing apps", func(t *testing.T) {
 		fx := newFixture(t, []any{})
-		r := fx.m.Create(map[string]any{"type": "template", "name": "empty"})
+		r := fx.m.Create(api.Operator, map[string]any{"type": "template", "name": "empty"})
 		if r.Status || !strings.Contains(jsString(r.Message), "no apps defined") {
 			t.Fatalf("r = %+v", r)
 		}
 	})
 	t.Run("missing name", func(t *testing.T) {
 		fx := newFixture(t, []any{})
-		r := fx.m.Create(map[string]any{
+		r := fx.m.Create(api.Operator, map[string]any{
 			"type": "template",
 			"apps": map[string]any{"db": map[string]any{"image": "db:latest", "env": map[string]any{}}},
 		})
@@ -765,7 +766,7 @@ func TestCreateWithGPURequest(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "name": "comfyui-a1b2c3", "app": "comfyui",
 		"image": "x/comfyui:cuda", "ports": []any{}, "volumes": []any{}, "env": map[string]any{},
 		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
@@ -798,7 +799,7 @@ func TestCreateGPUPayloadOverridesRecipe(t *testing.T) {
 		"gpu": map[string]any{"runtime": "nvidia", "count": "all"},
 	})
 
-	if r := fx.m.Create(map[string]any{"type": "app", "app": "whisper", "name": "recipe-gpu"}); !r.Status {
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "whisper", "name": "recipe-gpu"}); !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
 	fx.waitIdle(t)
@@ -811,7 +812,7 @@ func TestCreateGPUPayloadOverridesRecipe(t *testing.T) {
 		"name": "whisper", "image": "x/whisper",
 		"gpu": map[string]any{"runtime": "nvidia", "count": "all"},
 	})
-	if r := fx2.m.Create(map[string]any{
+	if r := fx2.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "whisper", "name": "payload-gpu",
 		"gpu": map[string]any{"vendor": "amd", "runtime": "rocm", "count": float64(1)},
 	}); !r.Status {
@@ -830,7 +831,7 @@ func TestCreateWithoutGPU(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
 
-	if r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
 	fx.waitIdle(t)
@@ -851,7 +852,7 @@ func TestCreateRejectsInvalidGPU(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "comfyui", "name": "bad-gpu",
 		"gpu": map[string]any{"vendor": "nvidia", "runtime": "cuda", "count": "all"},
 	})
@@ -871,7 +872,7 @@ func TestCreateRejectsInvalidGPU(t *testing.T) {
 func TestTemplateGPUPerContainer(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "immich",
 		"apps": map[string]any{
 			"immich-server": map[string]any{
@@ -920,7 +921,7 @@ func TestTemplateGPUPerContainer(t *testing.T) {
 func TestTemplateRejectsInvalidGPUBeforeDeploying(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "immich",
 		"apps": map[string]any{
 			"immich-server": map[string]any{"container": "immich-server", "image": "immich/server"},
@@ -946,7 +947,7 @@ func TestCreateGPUPreflightFailsEarly(t *testing.T) {
 	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
 	fx.gpuHost.allow() // this host can pass nothing through
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "comfyui", "name": "comfyui-a1b2c3",
 		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
 	})
@@ -976,7 +977,7 @@ func TestTemplateGPUPreflightFailsEarly(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.gpuHost.allow(gpu.RuntimeROCm) // AMD host, NVIDIA app
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "immich",
 		"apps": map[string]any{
 			"immich-server": map[string]any{"container": "immich-server", "image": "immich/server"},
@@ -1001,7 +1002,7 @@ func TestCreateGPUPreflightPasses(t *testing.T) {
 	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
 	fx.gpuHost.allow(gpu.RuntimeNvidia)
 
-	if r := fx.m.Create(map[string]any{
+	if r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "comfyui", "name": "gpu-ok",
 		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
 	}); !r.Status {
@@ -1015,7 +1016,7 @@ func TestCreateGPUPreflightPasses(t *testing.T) {
 	fx2 := newFixture(t, []any{})
 	fx2.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
 	fx2.gpuHost.allow() // nothing allowed — a CPU app must not care
-	if r := fx2.m.Create(map[string]any{"type": "app", "app": "redis", "name": "cpu-app"}); !r.Status {
+	if r := fx2.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "cpu-app"}); !r.Status {
 		t.Fatalf("CPU app blocked by the GPU pre-flight: %v", r.Message)
 	}
 	fx2.waitIdle(t)
@@ -1035,7 +1036,7 @@ func TestCreateGPURefusedAtStartMessage(t *testing.T) {
 		return fmt.Errorf("%w (nvidia): could not select device driver", docker.ErrGPUUnavailable)
 	}
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "comfyui", "name": "late-fail",
 		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
 	})
@@ -1058,7 +1059,7 @@ func TestCreateNonGPUFailureMessage(t *testing.T) {
 	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
 	fx.dock.runErr = func(string) error { return errors.New("port already allocated") }
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "comfyui", "name": "other-fail",
 		"gpu": map[string]any{"vendor": "nvidia", "runtime": "nvidia", "count": "all"},
 	})
@@ -1083,7 +1084,7 @@ func TestCreateStaysVisibleWhileImagePulls(t *testing.T) {
 
 	done := make(chan bool, 1)
 	go func() {
-		done <- fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "slow-pull"}).Status
+		done <- fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "slow-pull"}).Status
 	}()
 
 	waitFor(t, "the pull to start", func() bool { return fx.dock.runCallCount() == 1 })
@@ -1135,7 +1136,7 @@ func TestCreateWritesRecipeConfigFiles(t *testing.T) {
 				}},
 			})
 
-			r := fx.m.Create(map[string]any{"type": "app", "app": "clickhouse", "name": "ch"})
+			r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "clickhouse", "name": "ch"})
 			if !r.Status {
 				t.Fatalf("create failed: %v", r.Message)
 			}
@@ -1266,7 +1267,7 @@ func TestCreateWithKernelRequest(t *testing.T) {
 		}},
 	})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "wireguard", "name": "wg-a1b2c3",
 		"caps":    []any{"NET_ADMIN"},
 		"sysctls": map[string]any{"net.ipv4.ip_forward": "1"},
@@ -1314,7 +1315,7 @@ func TestCreateKernelPayloadOverridesRecipe(t *testing.T) {
 		"name": "wireguard", "image": "linuxserver/wireguard",
 		"caps": []any{"NET_ADMIN"},
 	})
-	if r := fx.m.Create(map[string]any{"type": "app", "app": "wireguard", "name": "recipe-caps"}); !r.Status {
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "wireguard", "name": "recipe-caps"}); !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
 	fx.waitIdle(t)
@@ -1327,7 +1328,7 @@ func TestCreateKernelPayloadOverridesRecipe(t *testing.T) {
 		"name": "wireguard", "image": "linuxserver/wireguard",
 		"caps": []any{"NET_ADMIN"},
 	})
-	if r := fx2.m.Create(map[string]any{
+	if r := fx2.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "wireguard", "name": "payload-caps",
 		"caps": []any{"NET_RAW"},
 	}); !r.Status {
@@ -1346,7 +1347,7 @@ func TestCreateWithoutKernelRequest(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
 
-	if r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
 	fx.waitIdle(t)
@@ -1380,7 +1381,7 @@ func TestCreateRejectsDisallowedKernelRequest(t *testing.T) {
 		for k, v := range payload {
 			cfg[k] = v
 		}
-		r := fx.m.Create(cfg)
+		r := fx.m.Create(api.Operator, cfg)
 		if r.Status || !strings.Contains(jsString(r.Message), "Invalid kernel configuration") {
 			t.Fatalf("payload %v: r = %+v", payload, r)
 		}
@@ -1396,7 +1397,7 @@ func TestCreateWithShmSize(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{"name": "frigate", "image": "blakeblackshear/frigate"})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "frigate", "name": "frigate-a1b2c3",
 		"shmSize": "512m",
 	})
@@ -1425,7 +1426,7 @@ func TestCreateShmSizePayloadOverridesRecipe(t *testing.T) {
 		"name": "frigate", "image": "blakeblackshear/frigate",
 		"shmSize": "256m",
 	})
-	if r := fx.m.Create(map[string]any{"type": "app", "app": "frigate", "name": "recipe-shm"}); !r.Status {
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "frigate", "name": "recipe-shm"}); !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
 	fx.waitIdle(t)
@@ -1438,7 +1439,7 @@ func TestCreateShmSizePayloadOverridesRecipe(t *testing.T) {
 		"name": "frigate", "image": "blakeblackshear/frigate",
 		"shmSize": "256m",
 	})
-	if r := fx2.m.Create(map[string]any{
+	if r := fx2.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "frigate", "name": "payload-shm",
 		"shmSize": float64(1 << 30),
 	}); !r.Status {
@@ -1456,7 +1457,7 @@ func TestCreateWithoutShmSize(t *testing.T) {
 	fx := newFixture(t, []any{})
 	fx.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
 
-	if r := fx.m.Create(map[string]any{"type": "app", "app": "redis", "name": "plain-shm"}); !r.Status {
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "plain-shm"}); !r.Status {
 		t.Fatalf("create failed: %v", r.Message)
 	}
 	fx.waitIdle(t)
@@ -1479,7 +1480,7 @@ func TestCreateRejectsBadShmSize(t *testing.T) {
 		fx := newFixture(t, []any{})
 		fx.setRecipe(map[string]any{"name": "frigate", "image": "blakeblackshear/frigate"})
 
-		r := fx.m.Create(map[string]any{
+		r := fx.m.Create(api.Operator, map[string]any{
 			"type": "app", "app": "frigate", "name": "bad-shm",
 			"shmSize": value,
 		})
@@ -1497,7 +1498,7 @@ func TestCreateRejectsBadShmSize(t *testing.T) {
 func TestTemplateShmSizePerContainer(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "nvr",
 		"apps": map[string]any{
 			"ui": map[string]any{"container": "nvr-ui", "image": "nginx"},
@@ -1523,7 +1524,7 @@ func TestTemplateShmSizePerContainer(t *testing.T) {
 	}
 
 	bad := newFixture(t, []any{})
-	r = bad.m.Create(map[string]any{
+	r = bad.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "nvr",
 		"apps": map[string]any{
 			"ui": map[string]any{"container": "bad-ui", "image": "nginx"},
@@ -1547,7 +1548,7 @@ func TestTemplateShmSizePerContainer(t *testing.T) {
 func TestTemplateKernelPerContainer(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "vpn",
 		"apps": map[string]any{
 			"web": map[string]any{"container": "vpn-web", "image": "nginx"},
@@ -1597,7 +1598,7 @@ func TestTemplateKernelPerContainer(t *testing.T) {
 func TestTemplateRejectsDisallowedKernelBeforeDeploying(t *testing.T) {
 	fx := newFixture(t, []any{})
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "template", "name": "vpn",
 		"apps": map[string]any{
 			"web": map[string]any{"container": "vpn-web", "image": "nginx"},

@@ -1,4 +1,4 @@
-// Package swap is ODAC's elastic host-swap manager (see SWAP_PLAN.md). On a
+// Package swap is ODAC's elastic host-swap manager. On a
 // Linux host it watches memory pressure and grows swap by adding swapfile
 // increments (/swapfile.odac.N) when the system is genuinely tight, then shrinks
 // by removing idle increments when pressure clears — a one-way-safe, disk-capped
@@ -32,7 +32,7 @@ const (
 // path from it and nextPath appends the increment index. The swap directory is host-backed and
 // configurable because on a containerized host the container root is overlayfs,
 // which the kernel refuses to swapon; the files must live on a real filesystem
-// (see swap_linux.go / SWAP_PLAN.md "container hosts").
+// (see swap_linux.go).
 func swapPrefix(dir string) string {
 	return strings.TrimRight(dir, "/") + "/" + swapBasename
 }

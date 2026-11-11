@@ -1,9 +1,7 @@
 package updater
 
-// Ported from test/server/Updater.test.js (the 11a9b00 spec) plus NEW Go-only
-// spec tests for the v1.11.0 dynamic-container-identity delta (2189336 +
-// a4c6285), which shipped with NO jest coverage — these tests are the only
-// spec for it (see PLAN.md's 3.7 trap note).
+// Covers the handshake roles and the dynamic container identity (v1.11.0),
+// which has no other spec.
 
 import (
 	"errors"

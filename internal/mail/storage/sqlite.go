@@ -301,6 +301,19 @@ type AccountRow struct {
 // MessageStore inserts a new email message into the mail_received table.
 // Automatically assigns the next UID for the given email account.
 func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
+	return s.Deliver(ctx, []*MessageRow{msg}, nil)
+}
+
+// Deliver stores every row of one SMTP transaction, mailbox copies and queued
+// remote recipients alike, in a single database transaction. DATA has one
+// reply for all recipients, so a partial store cannot be reported honestly:
+// answering 250 loses the rows that failed, and answering 451 makes the
+// sender retry and duplicates the rows that landed.
+func (s *Store) Deliver(ctx context.Context, messages []*MessageRow, outbound []OutboundRow) error {
+	if len(messages) == 0 && len(outbound) == 0 {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -310,9 +323,24 @@ func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
 	}
 	defer tx.Rollback()
 
+	for _, msg := range messages {
+		if err := insertMessage(ctx, tx, msg); err != nil {
+			return err
+		}
+	}
+	for _, row := range outbound {
+		if err := insertOutbound(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// insertMessage writes one row inside tx, assigning the account's next UID.
+func insertMessage(ctx context.Context, tx *sql.Tx, msg *MessageRow) error {
 	// Auto-create mailbox if it doesn't exist (INBOX is implicit, skip it)
 	if msg.Mailbox != "INBOX" {
-		_, err = tx.ExecContext(ctx,
+		_, err := tx.ExecContext(ctx,
 			"INSERT OR IGNORE INTO mail_box (email, title) VALUES (?, ?)",
 			msg.Email, msg.Mailbox)
 		if err != nil {
@@ -320,9 +348,8 @@ func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
 		}
 	}
 
-	// Get next UID for this email account
 	var nextUID int64
-	err = tx.QueryRowContext(ctx,
+	err := tx.QueryRowContext(ctx,
 		"SELECT COALESCE(MAX(uid), 0) + 1 FROM mail_received WHERE email = ?",
 		msg.Email).Scan(&nextUID)
 	if err != nil {
@@ -340,8 +367,7 @@ func (s *Store) MessageStore(ctx context.Context, msg *MessageRow) error {
 	if err != nil {
 		return fmt.Errorf("message insert failed: %w", err)
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 // MessageFetch retrieves messages for a given email and mailbox with optional UID range.
@@ -749,9 +775,12 @@ func (s *Store) RawRefExists(ctx context.Context, ref string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// A queued message is referenced too: the queue can hold one for days,
+	// far past the sweeper's grace period.
 	var one int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT 1 FROM mail_received WHERE rawRef = ? LIMIT 1", ref).Scan(&one)
+		`SELECT 1 FROM mail_received WHERE rawRef = ?
+		 UNION ALL SELECT 1 FROM mail_outbound WHERE rawRef = ? LIMIT 1`, ref, ref).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

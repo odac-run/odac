@@ -22,7 +22,7 @@ type Server struct {
 	firewall   *auth.Firewall
 	store      *storage.Store
 	onConfig   func(config.Config)
-	onSend     func(from, to string, body []byte) error // Callback for outbound delivery
+	onSend     func(from, to string, body []byte) error // Queues a message for outbound delivery
 	onSSLClear func(string)
 }
 
@@ -40,7 +40,7 @@ func (s *Server) SetSSLClearCallback(cb func(string)) {
 	s.onSSLClear = cb
 }
 
-// SetSendCallback sets the callback for outbound email delivery.
+// SetSendCallback sets the callback that queues outbound mail.
 func (s *Server) SetSendCallback(cb func(from, to string, body []byte) error) {
 	s.onSend = cb
 }
@@ -278,7 +278,8 @@ func (s *Server) HandleAccountList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleSend triggers outbound email delivery via the SMTP client.
+// HandleSend queues a message for outbound delivery and answers once it is
+// stored; delivery, retries and any bounce happen in the queue.
 // Endpoint: POST /send
 func (s *Server) HandleSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -308,11 +309,11 @@ func (s *Server) HandleSend(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.onSend(req.From, req.To, []byte(req.Body)); err != nil {
 		log.Printf("[Mail-API] Send failed: %v", err)
-		jsonError(w, "Delivery failed: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, "Queueing failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	jsonSuccess(w, "Mail sent successfully")
+	jsonSuccess(w, "Mail queued for delivery")
 }
 
 // HandleSSLClear clears the TLS context cache for a domain or all domains.

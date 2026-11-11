@@ -28,8 +28,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # Must satisfy the root go.mod directive
+          # Must satisfy the root go.mod directive; check-latest skips the
+          # runner's cached patch, which can be older than go.mod asks for.
           go-version: '1.26'
+          check-latest: true
 
       - name: Verify Dependencies
         run: go mod verify

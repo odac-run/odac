@@ -74,15 +74,22 @@ type Renewer interface {
 	Renew(domain any) api.Result
 }
 
+// ClientAuthPruner drops client certificate state a deleted domain leaves
+// behind. *MTLS implements it.
+type ClientAuthPruner interface {
+	Prune()
+}
+
 // Domain is the Domain.js singleton. All collaborators are nil-tolerant,
 // like the Node registry which never resolves a missing module.
 type Domain struct {
-	cfg   *config.Store
-	log   *logx.Logger
-	dns   DNSService
-	ssl   Renewer
-	proxy ProxyService
-	mail  MailService
+	cfg        *config.Store
+	log        *logx.Logger
+	dns        DNSService
+	ssl        Renewer
+	proxy      ProxyService
+	mail       MailService
+	clientAuth ClientAuthPruner
 }
 
 // NewDomain wires the manager. baseDir-derived paths come from cfg.
@@ -94,7 +101,25 @@ var ipv4Re = regexp.MustCompile(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$`)
 
 // validate ports #validate: sanitize (protocol strip, lowercase) and check
 // the format. Returns the clean domain or a user-facing error message.
+//
+// The name reaches log lines, DNS record names and TXT content, certificate
+// requests and file names, so it must be a hostname (see hostnameValid), not
+// merely free of path separators as the Node check required.
 func validate(raw any) (string, string) {
+	domain, errMsg := sanitize(raw)
+	if errMsg != "" {
+		return "", errMsg
+	}
+	ascii, ok := hostnameValid(domain)
+	if !ok {
+		return "", __("Invalid domain format.")
+	}
+	return ascii, ""
+}
+
+// sanitize is the Node-era cleanup and the separator check every stored
+// name has always passed, without the hostname grammar.
+func sanitize(raw any) (string, string) {
 	domain, ok := raw.(string)
 	if !ok || domain == "" {
 		return "", __("Domain is required.")
@@ -115,6 +140,45 @@ func validate(raw any) (string, string) {
 		return "", __("Invalid domain format.")
 	}
 	return domain, ""
+}
+
+// validateStored accepts a name that is already a key of config.domains even
+// when it fails today's grammar, so a record added under the looser Node-era
+// check can still be removed. Anything else goes through validate.
+func (d *Domain) validateStored(raw any) (string, string) {
+	domain, errMsg := validate(raw)
+	if errMsg == "" {
+		return domain, ""
+	}
+	legacy, sanErr := sanitize(raw)
+	if sanErr != "" {
+		return "", errMsg
+	}
+	var stored bool
+	d.cfg.View(func() {
+		domains := d.domainsLocked(false)
+		if _, stored = domains[legacy]; stored {
+			return
+		}
+		for parent, rec := range domains {
+			record, _ := rec.(map[string]any)
+			if record != nil && strings.HasSuffix(legacy, "."+parent) &&
+				listContains(record["subdomain"], legacy[:len(legacy)-len(parent)-1]) {
+				stored = true
+				return
+			}
+		}
+	})
+	if !stored {
+		return "", errMsg
+	}
+	return legacy, ""
+}
+
+// SetClientAuth wires the pruner after construction: MTLS needs the proxy, not
+// Domain, so it is built separately at the composition root.
+func (d *Domain) SetClientAuth(pruner ClientAuthPruner) {
+	d.clientAuth = pruner
 }
 
 // keysByLengthDesc sorts domain names longest-first (the subdomain walk must
@@ -250,10 +314,39 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 
 	isLocalOrIP := domain == "localhost" || ipv4Re.MatchString(domain)
 	isWildcard := strings.HasPrefix(domain, "*.")
+	sslEnabled := !isLocalOrIP
+
+	// The existence check above ran under View; a concurrent Add of the same
+	// name may have passed it too. Re-check and insert in one Mutate, and let
+	// only the winner create DNS records: TXT and MX are multi-value, so a
+	// second fan-out would duplicate SPF, DMARC and MX.
+	var raced bool
+	d.cfg.Mutate(func() {
+		domains := d.domainsLocked(true)
+		if _, ok := domains[domain]; ok {
+			raced = true
+			return
+		}
+		record := map[string]any{
+			"appId":     targetName,
+			"created":   float64(time.Now().UnixMilli()),
+			"subdomain": []any{},
+		}
+		if !isLocalOrIP && !isWildcard {
+			record["subdomain"] = []any{"www", "mail"}
+		}
+		if sslEnabled {
+			record["cert"] = map[string]any{}
+		}
+		domains[domain] = record
+		d.cfg.Touch("domains")
+	})
+	if raced {
+		return api.Res(false, __("Domain %s is already registered.", domain))
+	}
 
 	// DNS records (skipped for localhost/IPs). A and AAAA carry no value —
 	// the DNS binary resolves them dynamically via PTR matching.
-	sslEnabled := false
 	if !isLocalOrIP {
 		var records []map[string]any
 		if isWildcard {
@@ -292,25 +385,7 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 
 		d.dns.Record(records...)
 		d.log.Log("Created DNS records for domain %s", domain)
-		sslEnabled = true
 	}
-
-	d.cfg.Mutate(func() {
-		domains := d.domainsLocked(true)
-		record := map[string]any{
-			"appId":     targetName,
-			"created":   float64(time.Now().UnixMilli()),
-			"subdomain": []any{},
-		}
-		if !isLocalOrIP && !isWildcard {
-			record["subdomain"] = []any{"www", "mail"}
-		}
-		if sslEnabled {
-			record["cert"] = map[string]any{}
-		}
-		domains[domain] = record
-		d.cfg.Touch("domains")
-	})
 
 	if sslEnabled && d.ssl != nil {
 		d.ssl.Renew(domain)
@@ -329,7 +404,7 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 // DKIM key files and mail TLS cache) or a subdomain (CNAME + parent renewal).
 // skipSync suppresses the proxy sync for batch deletes (DeleteByApp).
 func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
-	domain, errMsg := validate(domainArg)
+	domain, errMsg := d.validateStored(domainArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
 	}
@@ -409,6 +484,9 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 			delete(d.domainsLocked(false), domain)
 			d.cfg.Touch("domains")
 		})
+		if d.clientAuth != nil {
+			d.clientAuth.Prune()
+		}
 
 		d.log.Log("Domain %s deleted (was assigned to app %s)", domain, str(recordAppID))
 
@@ -434,6 +512,9 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 			record["subdomain"] = kept
 			d.cfg.Touch("domains")
 		})
+		if d.clientAuth != nil {
+			d.clientAuth.Prune()
+		}
 
 		d.dns.Delete(map[string]any{"name": domain, "type": "CNAME"})
 		d.log.Log("Deleted CNAME record for subdomain %s", domain)
@@ -505,13 +586,19 @@ func (d *Domain) List(appIDArg any) api.Result {
 	d.cfg.View(func() {
 		domains := d.domainsLocked(false)
 		total = len(domains)
+		store, _ := d.cfg.Get("mtls").(map[string]any)
+		cas, _ := store["cas"].(map[string]any)
 		for _, name := range sortedKeys(domains) {
 			record, _ := domains[name].(map[string]any)
 			if record == nil {
 				record = map[string]any{}
 			}
 			if appID == "" || record["appId"] == appID {
-				rows = append(rows, row{domain: name, record: copyShallow(record)})
+				copied := copyShallow(record)
+				if raw, ok := record["mtls"]; ok {
+					copied["mtls"] = mtlsListView(raw, cas)
+				}
+				rows = append(rows, row{domain: name, record: copied})
 			}
 		}
 	})
@@ -536,10 +623,12 @@ func (d *Domain) List(appIDArg any) api.Result {
 			{"subdomain", r.record["subdomain"]},
 			{"app", r.record["appId"]},
 			{"created", r.record["created"]},
+			{"mtls", r.record["mtls"]},
 		}, map[string]bool{
 			"subdomain": hasKey(r.record, "subdomain"),
 			"app":       hasKey(r.record, "appId"),
 			"created":   hasKey(r.record, "created"),
+			"mtls":      hasKey(r.record, "mtls"),
 		})
 	}
 	out = append(out, ']')

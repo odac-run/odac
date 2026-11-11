@@ -20,7 +20,7 @@ import (
 // token helpers must reproduce them byte-for-byte.
 const (
 	fixtureKey         = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	fixtureDomainToken = "6c4653c8d7e85f889af168d2e86f3dd865a264e276d2a8bb47d8ba6c91454c3f" // HMAC(key, "example.com")
+	formerDomainToken  = "6c4653c8d7e85f889af168d2e86f3dd865a264e276d2a8bb47d8ba6c91454c3f" // HMAC(key, "example.com"), Node's domain token
 	fixtureAppToken    = "eyJuIjoibXlhcHAiLCJwIjpbIm1haWwuc2VuZCJdLCJ0IjoxNzAwMDAwMDAwMDAwfQ==.79ecc5e2b552a8b08b45dc702782d80e3553b0d0381e7edc8b7f2855bdfec1d0"
 	fixtureAppTokenAll = "eyJuIjoiYW55YXBwIiwicCI6dHJ1ZSwidCI6MTcwMDAwMDAwMDAwMH0=.d670dabe912cdd5340a7206a2023e58aa8a0509a98f9e3f70be01986e7d2eee2"
 	fixtureAppTokenAny = "eyJuIjoic3RhciIsInAiOlsiKiJdLCJ0IjoxNzAwMDAwMDAwMDAwfQ==.c3085bbb44ff720dea2237c1cb4ea9feab0e724c374538f54b5ee01efb51f438"
@@ -119,13 +119,6 @@ func request(auth, action string, args ...any) string {
 	}
 	raw, _ := json.Marshal(req)
 	return string(raw)
-}
-
-func TestGenerateTokenMatchesNode(t *testing.T) {
-	s := newTestServer(t)
-	if got := s.GenerateToken("example.com"); got != fixtureDomainToken {
-		t.Errorf("GenerateToken = %s, want Node fixture %s", got, fixtureDomainToken)
-	}
 }
 
 func TestGenerateAppTokenRoundTrip(t *testing.T) {
@@ -267,34 +260,23 @@ func TestUnauthorized(t *testing.T) {
 	}
 }
 
-func TestDomainTokenRBAC(t *testing.T) {
+// Node's domain tokens (HMAC(api.auth, domain), mail.send only) were removed:
+// nothing issued them, runtime domain changes left them stale, and they shared
+// the key with app tokens. The value Node derived for a configured domain must
+// not authenticate.
+func TestFormerDomainTokenIsUnauthorized(t *testing.T) {
 	s := startTestServer(t)
 	s.cfg.Set("domains", map[string]any{"example.com": map[string]any{}})
-	s.ReloadTokens()
 	sent := false
 	s.Register("mail.send", func(_ Args, _ Progress) (*Result, error) {
 		sent = true
 		r := Res(true, "ok")
 		return &r, nil
 	})
-	s.Register("app.list", func(_ Args, _ Progress) (*Result, error) {
-		r := Res(true, "nope")
-		return &r, nil
-	})
 
-	lines := call(t, "tcp", tcpAddr(s), request(fixtureDomainToken, "mail.send"))
-	if !sent || !strings.Contains(lines[0], `"result":true`) {
-		t.Errorf("domain token mail.send = %v (sent=%v)", lines, sent)
-	}
-	lines = call(t, "tcp", tcpAddr(s), request(fixtureDomainToken, "app.list"))
-	if !strings.Contains(lines[0], `"message":"permission_denied"`) {
-		t.Errorf("domain token app.list = %v", lines)
-	}
-
-	s.RemoveToken("example.com")
-	lines = call(t, "tcp", tcpAddr(s), request(fixtureDomainToken, "mail.send"))
-	if !strings.Contains(lines[0], `"message":"unauthorized"`) {
-		t.Errorf("removed token = %v", lines)
+	lines := call(t, "tcp", tcpAddr(s), request(formerDomainToken, "mail.send"))
+	if sent || len(lines) == 0 || !strings.Contains(lines[0], `"message":"unauthorized"`) {
+		t.Errorf("former domain token mail.send = %v (sent=%v)", lines, sent)
 	}
 }
 
@@ -356,8 +338,10 @@ func TestAppTokenRBAC(t *testing.T) {
 	s.Register("auth", ok)
 	s.Register("app.privileged", ok)
 	s.Register("app.api", ok)
+	s.Register("app.device.add", ok)
+	s.Register("app.network", ok)
 	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": true}})
-	for _, action := range []string{"update", "server.stop", "auth", "app.privileged", "app.api"} {
+	for _, action := range []string{"update", "server.stop", "auth", "app.privileged", "app.api", "app.device.add", "app.network"} {
 		lines = call(t, "tcp", tcpAddr(s), request(fixtureAppToken, action))
 		if !strings.Contains(lines[0], `"message":"permission_denied"`) {
 			t.Errorf("%s with a full grant = %v", action, lines)
@@ -506,3 +490,97 @@ func TestResNormalization(t *testing.T) {
 }
 
 func ptr(r Result) *Result { return &r }
+
+// set and scope change what a policy or a certificate opens on any domain, so no
+// grant reaches them. The certificate actions are grantable because domains.MTLS
+// narrows them to the caller's own records.
+func TestAppsCannotChangeClientCertificatePolicy(t *testing.T) {
+	for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"} {
+		if AppMayCall(action) {
+			t.Errorf("an app grant could reach %s", action)
+		}
+	}
+	for _, action := range []string{"domain.mtls.cert.issue", "domain.mtls.cert.revoke", "domain.mtls.cert.list", "domain.mtls.cert.import"} {
+		if !AppMayCall(action) {
+			t.Errorf("%s must be grantable: its handler narrows it to the app's records", action)
+		}
+	}
+}
+
+// A3: however the grant is spelled, and even hand-edited into config past
+// SetAPI, policy actions never reach their handler.
+func TestPolicyActionsIgnoreEveryGrantShape(t *testing.T) {
+	s := startTestServer(t)
+	reached := map[string]bool{}
+	for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"} {
+		action := action
+		s.Register(action, func(_ Args, _ Progress) (*Result, error) {
+			reached[action] = true
+			r := Res(true, "ok")
+			return &r, nil
+		})
+	}
+	grants := []any{
+		true,
+		[]any{"*"},
+		[]any{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"},
+	}
+	for _, grant := range grants {
+		s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": grant}})
+		for _, action := range []string{"domain.mtls.set", "domain.mtls.cert.scope", "app.api"} {
+			if reply := firstReply(t, s, request(fixtureAppToken, action)); reply["message"] != "permission_denied" {
+				t.Errorf("%s with grant %v = %v", action, grant, reply)
+			}
+		}
+	}
+	if len(reached) != 0 {
+		t.Fatalf("handlers ran for %v", reached)
+	}
+}
+
+// firstReply decodes the first response document. A refusal leaves the
+// connection open (Node parity), so reading to EOF would wait out a deadline.
+func firstReply(t *testing.T, s *Server, raw string) map[string]any {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", tcpAddr(s), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(conn).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Handlers that narrow an action to the caller read it from Args, so it has to
+// say who holds the token, and nothing for a token that is neither.
+func TestHandlersSeeTheCaller(t *testing.T) {
+	s := startTestServer(t)
+	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": []any{"mail.send", "domain.mtls.cert.list"}}})
+	echo := func(a Args, _ Progress) (*Result, error) {
+		r := Res(true, "ok", map[string]any{"root": a.Caller().Root, "app": a.Caller().App})
+		return &r, nil
+	}
+	s.Register("mail.send", echo)
+	s.Register("domain.mtls.cert.list", echo)
+
+	cases := []struct{ token, action, want string }{
+		{fixtureKey, "domain.mtls.cert.list", `"data":{"app":"","root":true}`},
+		{fixtureAppToken, "domain.mtls.cert.list", `"data":{"app":"myapp","root":false}`},
+	}
+	for _, c := range cases {
+		lines := call(t, "tcp", tcpAddr(s), request(c.token, c.action))
+		if len(lines) == 0 || !strings.Contains(lines[0], c.want) {
+			t.Errorf("%s via %.8s = %v, want %s", c.action, c.token, lines, c.want)
+		}
+	}
+	if (Args{}).Caller() != (Caller{}) || (Caller{}).Root || Operator != (Caller{Root: true}) {
+		t.Fatal("an unset caller must be neither root nor an app")
+	}
+}

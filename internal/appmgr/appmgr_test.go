@@ -14,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"odac/internal/api"
 	"odac/internal/applog"
 	"odac/internal/config"
 	"odac/internal/docker"
 	"odac/internal/lang"
+	"odac/internal/mtls"
 )
 
 func init() { lang.SetLocale("en-US") }
@@ -38,6 +40,7 @@ type fakeDocker struct {
 	ips       map[string]string
 	exposed   map[string][]int // by image
 	running   map[string]bool
+	listErr   error // RunningNames fails with it (a stalled daemon)
 	status    map[string]docker.Status
 	statDirs  map[string]bool // key: name\x00containerPath → isDir; absent = unknown
 
@@ -65,6 +68,9 @@ type fakeDocker struct {
 	containers []docker.ContainerInfo
 
 	networksResult docker.SetNetworksResult
+	networksCalls  [][]string // SetNetworks targets, name first
+	ensuredNets    [][]string
+	ensureNetsErr  error
 
 	registered   []string
 	unregistered []string
@@ -176,6 +182,21 @@ func (f *fakeDocker) IsRunning(name string) bool {
 	return f.running[name]
 }
 
+func (f *fakeDocker) RunningNames() (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make(map[string]bool, len(f.running))
+	for name, up := range f.running {
+		if up && f.available {
+			out[name] = true
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeDocker) List() []docker.ContainerInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -234,10 +255,18 @@ func (f *fakeDocker) GetImageExposedPorts(image string) []int {
 	return f.exposed[image]
 }
 
-func (f *fakeDocker) SetNetworks(string, []string) docker.SetNetworksResult {
+func (f *fakeDocker) SetNetworks(name string, networks []string) docker.SetNetworksResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.networksCalls = append(f.networksCalls, append([]string{name}, networks...))
 	return f.networksResult
+}
+
+func (f *fakeDocker) EnsureNetworks(names []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensuredNets = append(f.ensuredNets, names)
+	return f.ensureNetsErr
 }
 
 func (f *fakeDocker) EnsureImage(string, io.Writer) error { return nil }
@@ -620,13 +649,13 @@ func TestCreateFromGitConcurrencyGuard(t *testing.T) {
 
 	done := make(chan *string, 1)
 	go func() {
-		r := fx.m.Create(cfgPayload)
+		r := fx.m.Create(api.Operator, cfgPayload)
 		msg := jsString(r.Message)
 		done <- &msg
 	}()
 	<-started
 
-	r2 := fx.m.Create(cfgPayload)
+	r2 := fx.m.Create(api.Operator, cfgPayload)
 	if r2.Status {
 		t.Fatalf("second create should fail, got success")
 	}
@@ -653,6 +682,34 @@ func (b *blockingCloneDocker) CloneRepo(url, branch, dir, token string, l docker
 }
 
 // ---- api permission handling ----
+
+func TestClientCertKeyReachesOnlyAppsWithAPolicy(t *testing.T) {
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(101), "name": "secured", "active": true, "type": "container", "image": "test:latest"},
+		map[string]any{"id": float64(102), "name": "plain", "active": true, "type": "container", "image": "test:latest"},
+	})
+	fx.cfg.Mutate(func() {
+		fx.cfg.Set("api", map[string]any{"auth": "root"})
+		fx.cfg.Set("domains", map[string]any{
+			"sec.test": map[string]any{"appId": "secured", "mtls": map[string]any{"mode": "optional", "ca": []any{"c"}}},
+			"pub.test": map[string]any{"appId": "plain"},
+		})
+	})
+
+	fx.checkAndSettle(t)
+
+	seen := map[string]string{}
+	for i := 0; i < fx.dock.runCallCount(); i++ {
+		call := fx.dock.runCallAt(i)
+		seen[call.name] = call.options.Env[mtls.KeyEnv]
+	}
+	if got, want := seen["secured"], mtls.AppKey("root", "secured"); got != want {
+		t.Fatalf("secured key = %q, want %q", got, want)
+	}
+	if got, ran := seen["plain"]; !ran || got != "" {
+		t.Fatalf("plain: ran=%v key=%q", ran, got)
+	}
+}
 
 func TestAPITokenAndSocketInjection(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{

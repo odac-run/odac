@@ -20,7 +20,6 @@ import (
 var (
 	scpLikeURL  = regexp.MustCompile(`^[a-zA-Z0-9_\-.]+@[a-zA-Z0-9.\-_]+:`)
 	commitShaRE = regexp.MustCompile(`^[a-fA-F0-9]{6,40}$`)
-	networkName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 	// greenSuffix matches the green container name suffix produced by
 	// generateRuntimeID: `<appName>-green-<13+digit-ms>_<8-hex>`.
 	greenSuffix = regexp.MustCompile(`-green-\d+_[a-f0-9]{8}$`)
@@ -934,14 +933,21 @@ func (m *Manager) DeviceDelete(id any, hostPath string) *api.Result {
 	return result
 }
 
-// SetNetworks ports App.setNetworks.
+// SetNetworks replaces the app's network list. The list is persisted on the
+// record, so it survives restarts and Blue-Green deploys; a running container
+// is also reconciled live. A list naming only docker.DefaultNetwork is stored
+// as no list, since that is what every new app gets. An empty list is kept
+// as one: docker places the app on its private network, which no reply names.
 func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Result {
-	var name string
+	var name, target string
+	var idNum float64
 	found, hostNet, isolated := false, false, false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
 			found = true
 			name, _ = app["name"].(string)
+			idNum, _ = app["id"].(float64)
+			target, _ = app["activeContainerId"].(string)
 			hostNet = netmode.IsHost(app["networkMode"])
 			isolated = jsTruthy(app["isolated"])
 		}
@@ -949,8 +955,11 @@ func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 	if !found {
 		return res(false, __("App %s not found.", jsString(id)))
 	}
+	if target == "" {
+		target = name
+	}
 
-	// Docker cannot attach a host-namespace container to a bridge network, so
+	// Docker cannot attach a host-namespace container to a bridge, so
 	// answer up front instead of surfacing the daemon's opaque refusal.
 	if hostNet {
 		return res(false, __("App %s uses host networking and cannot join additional networks. Switch it to bridge mode first.", name))
@@ -968,30 +977,149 @@ func (m *Manager) SetNetworks(id any, networks []any, payloadOK bool) *api.Resul
 		return res(false, __("Invalid networks payload. Expected an array of network names."))
 	}
 
-	names := make([]string, 0, len(networks))
-	for _, raw := range networks {
-		netName, _ := raw.(string)
-		if netName == "" || !networkName.MatchString(netName) {
-			return res(false, __("Invalid network name: %s", jsString(raw)))
+	raw := make([]string, 0, len(networks))
+	for _, item := range networks {
+		netName, ok := item.(string)
+		if !ok {
+			return res(false, __("Invalid network name: %s", jsString(item)))
 		}
-		names = append(names, netName)
+		raw = append(raw, netName)
+	}
+	names, err := docker.NormalizeNetworks(raw)
+	if err != nil {
+		return res(false, err.Error())
 	}
 
-	status := m.deps.Docker.GetStatus(name)
-	if !status.Running {
-		return res(false, __("App %s is not running. Start the app first.", name))
+	// The Hub's Save & Restart sends this and app.restart together, so the
+	// restart often holds the app first. Refusing here dropped the list
+	// silently; it is saved instead, and the container is left to the
+	// operation, which may already have read the old list.
+	busy := !m.tryLockProcessing(idNum)
+	if !busy {
+		defer m.unlockProcessing(idNum)
 	}
 
-	result := m.deps.Docker.SetNetworks(name, names)
-	if !result.Success {
-		msg := result.Message
-		if msg == "" {
-			msg = __("Failed to update networks for %s.", name)
+	running := !busy && m.deps.Docker.GetStatus(target).Running
+	if running {
+		result := m.deps.Docker.SetNetworks(target, names)
+		if !result.Success {
+			msg := result.Message
+			if msg == "" {
+				msg = __("Failed to update networks for %s.", name)
+			}
+			return res(false, msg)
 		}
-		return res(false, msg)
+	} else if err := m.deps.Docker.EnsureNetworks(names); err != nil {
+		return res(false, __("Failed to update networks for %s: %s", name, err.Error()))
 	}
 
-	return res(true, __("Networks updated for %s: %s", name, strings.Join(result.Networks, ", ")))
+	m.cfg.Mutate(func() {
+		app := m.getLocked(idNum)
+		if app == nil {
+			return
+		}
+		if docker.IsDefaultNetworks(names) {
+			delete(app, "networks")
+		} else {
+			list := make([]any, len(names))
+			for i, n := range names {
+				list[i] = n
+			}
+			app["networks"] = list
+		}
+		m.saveAppsLocked()
+	})
+
+	if running {
+		// The container's address moved with its networks; the proxy only
+		// resolves it on a sync, and a stale one may now belong to another app.
+		m.proxySync()
+	}
+	if busy {
+		m.followNetworks(idNum, name)
+		return res(true, __("Networks saved for %s. They apply when its current operation finishes.", name))
+	}
+	switch {
+	case len(names) == 0 && running:
+		return res(true, __("%s no longer shares a network with other apps. Its domains keep working.", name))
+	case len(names) == 0:
+		return res(true, __("%s will share no network with other apps from its next start. Its domains keep working.", name))
+	case running:
+		return res(true, __("Networks updated for %s: %s", name, strings.Join(names, ", ")))
+	default:
+		return res(true, __("Networks saved for %s: %s. They apply on the next start.", name, strings.Join(names, ", ")))
+	}
+}
+
+// followNetworks reconciles the running container with the saved list once
+// the operation holding the app ends. It never takes the processing lock: a
+// standard restart releases it for a moment before run() takes it again, and
+// grabbing it there would fail the restart. One follower per app is enough,
+// since it reads the record when it runs.
+func (m *Manager) followNetworks(id float64, name string) {
+	m.mu.Lock()
+	if m.netFollow[id] {
+		m.mu.Unlock()
+		return
+	}
+	m.netFollow[id] = true
+	m.mu.Unlock()
+
+	m.spawn(func() {
+		defer func() {
+			m.mu.Lock()
+			delete(m.netFollow, id)
+			m.mu.Unlock()
+		}()
+		// A deploy can build for a long time; past an hour the next start
+		// applies the list anyway.
+		for i := 0; m.inFlight(id, name); i++ {
+			if i >= int(time.Hour/m.pollInterval) {
+				m.log.Log("Networks for %s were not applied live: the app stayed busy. They apply on its next start.", name)
+				return
+			}
+			m.sleep(m.pollInterval)
+		}
+		m.applySavedNetworks(id)
+	})
+}
+
+// applySavedNetworks brings the running container onto the record's list.
+// Docker's reconcile is a no-op when the operation already used it.
+func (m *Manager) applySavedNetworks(id float64) {
+	var name, target string
+	var raw any
+	skip := true
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			name, _ = app["name"].(string)
+			target, _ = app["activeContainerId"].(string)
+			raw = app["networks"]
+			skip = netmode.IsHost(app["networkMode"]) || jsTruthy(app["isolated"])
+		}
+	})
+	if skip {
+		return
+	}
+	if target == "" {
+		target = name
+	}
+	if !m.deps.Docker.GetStatus(target).Running {
+		return
+	}
+	names := []string{docker.DefaultNetwork}
+	if list := toNetworks(raw); list != nil {
+		var err error
+		if names, err = docker.NormalizeNetworks(list); err != nil {
+			m.log.Error("Networks for %s were not applied live: %s", name, err.Error())
+			return
+		}
+	}
+	if result := m.deps.Docker.SetNetworks(target, names); !result.Success {
+		m.log.Error("Networks for %s were not applied live: %s", name, result.Message)
+		return
+	}
+	m.proxySync()
 }
 
 // SetPrivileged ports App.setPrivileged — CLI-only escalation path,

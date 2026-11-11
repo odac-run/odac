@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -11,19 +12,37 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
-// gitImage is the sandbox image for clone/fetch operations.
-const gitImage = "alpine/git"
+// gitImage is the sandbox image for clone/fetch operations. It is a
+// community image that receives the repository token, so it is pinned by
+// digest (alpine/git:2.54.0) rather than trusted by tag.
+const gitImage = "alpine/git@sha256:6a1fdb962814ca11508ca8d1bab94375b5b7ac4e4a9a40981c29fc32c02f095d"
 
-// secureURL injects an oauth2 basic-auth token into an https remote URL.
-func secureURL(url, token string) string {
-	if token != "" && strings.HasPrefix(url, "https://") {
-		return "https://oauth2:" + token + "@" + url[len("https://"):]
+// credentialHelper answers git's credential "get" with the token from the
+// environment. Store and erase requests are ignored, so nothing is saved.
+const credentialHelper = `!f() { test "$1" = get && echo username=oauth2 && echo "password=$GIT_TOKEN"; }; f`
+
+// credentialEnv hands the token to git through a credential helper set in
+// the environment (GIT_CONFIG_*) and scoped to the remote's origin. A token
+// inside the remote URL is written to .git/config, where the compile step and
+// a custom Dockerfile's `COPY . .` both pick it up.
+func credentialEnv(remote, token string) []string {
+	if token == "" || !strings.HasPrefix(remote, "https://") {
+		return nil
 	}
-	return url
+	u, err := url.Parse(remote)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential." + u.Scheme + "://" + u.Host + ".helper",
+		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_TOKEN=" + token,
+	}
 }
 
 // CloneRepo ports Container.cloneRepo: shallow-clones the repository into
-// targetDir using an isolated, unprivileged alpine/git container. All
+// targetDir using an ephemeral alpine/git sandbox container. All
 // dynamic values reach the shell only via "$VAR" env expansion, never
 // string interpolation, so quote/metachars in them are not re-parsed.
 func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildLog) error {
@@ -47,7 +66,7 @@ func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildL
 	}
 	c.log.Log("[Git] Cloning %s (branch: %s) into isolated sandbox...", url, branchLabel)
 
-	env := []string{"GIT_REMOTE_URL=" + secureURL(url, token)}
+	env := append([]string{"GIT_REMOTE_URL=" + url}, credentialEnv(url, token)...)
 	gitCmd := `git clone --depth 1 "$GIT_REMOTE_URL" .`
 	if branch != "" {
 		env = append(env, "GIT_BRANCH="+branch)
@@ -63,8 +82,9 @@ func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildL
 }
 
 // FetchRepo ports Container.fetchRepo: fetches the branch head (or a
-// pinned commit) into an existing clone and hard-resets to it. For private
-// repos the authenticated URL is set only for the fetch and restored after.
+// pinned commit) into an existing clone and hard-resets to it. The remote is
+// reset to the plain URL first, which also scrubs a token that a clone made
+// before credentialEnv left in .git/config.
 func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buildLog BuildLog) error {
 	if !c.available {
 		return fmt.Errorf("Docker is not available")
@@ -94,16 +114,15 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 	if commitSha != "" {
 		env = append(env, "GIT_COMMIT_SHA="+commitSha)
 	}
-	if token != "" {
-		env = append(env, "GIT_REMOTE_URL="+secureURL(url, token), "GIT_ORIGINAL_URL="+url)
-	}
+	env = append(env, credentialEnv(url, token)...)
 
 	gitCmd := `git fetch --depth 1 origin "$GIT_BRANCH" && git reset --hard "origin/$GIT_BRANCH"`
 	if commitSha != "" {
 		gitCmd = `git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"`
 	}
-	if token != "" {
-		gitCmd = `git remote set-url origin "$GIT_REMOTE_URL" && ` + gitCmd + ` && git remote set-url origin "$GIT_ORIGINAL_URL"`
+	if url != "" {
+		env = append(env, "GIT_REMOTE_URL="+url)
+		gitCmd = `git remote set-url origin "$GIT_REMOTE_URL" && ` + gitCmd
 	}
 
 	if err := c.runGitSandbox(gitCmd, env, targetDir, token, buildLog, "fetch"); err != nil {
@@ -116,21 +135,22 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 
 // runGitSandbox creates and runs one ephemeral alpine/git container with
 // targetDir bind-mounted at /git, streaming (token-sanitized) output into
-// buildLog, and force-removing the container afterwards.
+// buildLog, and force-removing the container afterwards. Git never prompts:
+// a missing or wrong credential fails the step instead of waiting for input.
 func (c *Client) runGitSandbox(gitCmd string, env []string, targetDir, token string, buildLog BuildLog, op string) error {
 	ctx := context.Background()
 	hostPath := c.ResolveHostPath(targetDir)
+	if err := c.ensureNetwork(ctx, BuildNetwork); err != nil {
+		return err
+	}
 
 	created, err := c.api.ContainerCreate(ctx, &container.Config{
 		Image:      gitImage,
 		Entrypoint: []string{"sh", "-c"},
 		Cmd:        []string{gitCmd},
-		Env:        env,
+		Env:        append(env, "GIT_TERMINAL_PROMPT=0"),
 		WorkingDir: "/git",
-	}, &container.HostConfig{
-		Binds:      []string{hostPath + ":/git"},
-		Privileged: false, // SECURITY: rootless git
-	}, nil, nil, "")
+	}, sandboxHostConfig([]string{hostPath + ":/git"}), nil, nil, "")
 	if err != nil {
 		return err
 	}

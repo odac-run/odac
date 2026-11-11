@@ -47,13 +47,7 @@ The app keeps an ordinary container IP. ODAC runs in the host network namespace,
 
 ### Letting Another App Reach an Isolated One
 
-Do not attach the isolated app to a second network — that would hand it a route to the internet again and quietly void the guarantee, so ODAC refuses it. Attach the **other** app instead; a container may sit on several networks at once:
-
-```bash
-# The database keeps its internet access on the shared bridge and also joins
-# the isolated network, where the isolated app can reach it.
-odac app network set my-db odac-network odac-network-isolated
-```
+Do not attach the isolated app to a second network — that would hand it a route to the internet again and quietly void the guarantee, so ODAC refuses it. Attach the **other** app instead; a container may sit on several networks at once. In the Hub, set the database's **Networks** list to `odac-network` and `odac-network-isolated`: it keeps its internet access on the shared bridge and also joins the isolated network, where the isolated app can reach it. See [Bridge Networks](06-network-mode.md#bridge-networks).
 
 ### Isolation and Host Mode
 
@@ -71,8 +65,8 @@ odac domain add -d app.example.com -a my-app   # works: the proxy still reaches 
 **A worker that must reach the database but not the internet:**
 ```bash
 odac app isolate my-worker
-odac app network set my-db odac-network odac-network-isolated
 odac app restart my-worker
+# then, in the Hub: my-db's Networks = odac-network, odac-network-isolated
 ```
 
 > 📝 **Note:** Check first that the app does not need outbound access to start — many images fetch something on first boot. If it hangs or crashes after isolation, that is usually why.

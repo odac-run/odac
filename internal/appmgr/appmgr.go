@@ -1,28 +1,22 @@
-// Package appmgr is the Go port of server/src/App.js + App/Create.js +
-// App/Deploy.js (task 3.4e): the app list state machine and 1s check tick,
+// Package appmgr is the app list state machine and 1s check tick:
 // run/stop/restart/redeploy/delete, env manual/linked resolution, the
 // port/volume/device/network/privilege handlers, recipe/template/git
 // creation, Blue-Green deploys and runtime port auto-discovery.
 //
-// State model (Node parity, quirks included): the working set `apps` mirrors
-// Node's #apps — live maps shared with the config store between saves.
-// SaveApps rebuilds ephemeral-stripped copies into cfg (config-schema.md
-// lists the stripped fields), so the working set keeps in-memory fields
-// (status, pid, ip, started …) until the next Check() reload drops them,
-// exactly like Node. Every access to the working set runs under
-// cfg.View/Mutate — the same lock domain the dataplane payload builders use.
+// State model: the working set `apps` holds live maps shared with the config
+// store between saves. SaveApps rebuilds ephemeral-stripped copies into cfg,
+// so the working set keeps in-memory fields (status, pid, ip, started ...)
+// until the next Check() reload drops them. Every access to the working set
+// runs under cfg.View/Mutate, the same lock domain the dataplane payload
+// builders use.
 //
-// Deviations from Node (deliberate):
 //   - The auto-discovery adoption (pollForPort) re-fetches the app from the
 //     current working set at write time instead of mutating a pointer
-//     captured before the poll loop. Node mutates the captured object, whose
-//     array may have been rebuilt by any intervening #saveApps — the
-//     adoption is then silently lost (STATE.md 2026-07-12 trap).
+//     captured before the poll loop, whose array may have been rebuilt by an
+//     intervening SaveApps and would silently lose the adoption.
 //   - Container log streams are explicitly stopped when their runtime log
-//     control ends; Node abandons the docker socket and lets it die with
-//     the container.
-//   - Poll/retry cadences are fields so tests can shrink them; defaults
-//     match Node's literals.
+//     control ends.
+//   - Poll/retry cadences are fields so tests can shrink them.
 package appmgr
 
 import (
@@ -62,12 +56,14 @@ type Docker interface {
 	Rename(oldName, newName string) error
 	StreamLogs(name string, stdout, stderr io.Writer) (stop func(), err error)
 	IsRunning(name string) bool
+	RunningNames() (map[string]bool, error)
 	List() []docker.ContainerInfo
 	GetIP(nameOrID string) (string, error)
 	GetStatus(name string) docker.Status
 	GetListeningPorts(name string) []int
 	GetImageExposedPorts(imageName string) []int
 	SetNetworks(name string, networks []string) docker.SetNetworksResult
+	EnsureNetworks(names []string) error
 	EnsureImage(imageName string, logw io.Writer) error
 	StatPathIsDir(name, containerPath string) (isDir bool, ok bool)
 	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) error
@@ -148,8 +144,10 @@ type Manager struct {
 	mu         sync.Mutex
 	processing map[float64]bool          // app ids mid-operation
 	creating   map[string]bool           // app names mid-create
+	netFollow  map[float64]bool          // app ids with a network reconcile queued
 	logStreams map[string]*runtimeStream // app name -> live runtime log
 	loggers    map[string]*applog.Logger // app name -> logger instance
+	probeDown  bool                      // last pulse could not list containers
 
 	// Test hooks: cadences default to Node's literals; sleep defaults to
 	// time.Sleep. deploySwitchDelay is Deploy.js's NODE_ENV!=='test' 5s.
@@ -202,6 +200,7 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 
 		processing: map[float64]bool{},
 		creating:   map[string]bool{},
+		netFollow:  map[float64]bool{},
 		logStreams: map[string]*runtimeStream{},
 		loggers:    map[string]*applog.Logger{},
 
@@ -264,11 +263,20 @@ func (m *Manager) Init() {
 
 // Check ports App.check — the 1s watchdog pulse: reload the working set from
 // config and (re)start active apps that are not running.
+//
+// Liveness comes from one bounded container list per pulse rather than an
+// inspect per app (Node's #isAppRunning): the pulse rides the system tick
+// that also drives the data-plane supervisors, so its cost must not grow
+// with the app count or wait on a stalled daemon. When the list fails the
+// state is unknown, and the pulse does nothing rather than read every app
+// as stopped and recreate it.
 func (m *Manager) Check() {
 	type pulse struct {
 		id     float64
 		name   string
 		status string
+		typ    string
+		pid    int
 	}
 	var pulses []pulse
 
@@ -281,9 +289,38 @@ func (m *Manager) Check() {
 			id, _ := app["id"].(float64)
 			name, _ := app["name"].(string)
 			status, _ := app["status"].(string)
-			pulses = append(pulses, pulse{id: id, name: name, status: status})
+			typ, _ := app["type"].(string)
+			pid, _ := app["pid"].(float64)
+			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid)})
 		}
 	})
+	if len(pulses) == 0 {
+		return
+	}
+
+	var running map[string]bool
+	useDocker := m.deps.Docker.Available()
+	needDocker := useDocker
+	for _, p := range pulses {
+		needDocker = needDocker || p.typ == "container"
+	}
+	if needDocker {
+		var err error
+		running, err = m.deps.Docker.RunningNames()
+		m.mu.Lock()
+		wasDown := m.probeDown
+		m.probeDown = err != nil
+		m.mu.Unlock()
+		if err != nil {
+			if !wasDown {
+				m.log.Error("[Watchdog] Cannot list containers, skipping app checks until Docker answers: %s", err.Error())
+			}
+			return
+		}
+		if wasDown {
+			m.log.Log("[Watchdog] Docker answers again, app checks resumed")
+		}
+	}
 
 	for _, p := range pulses {
 		m.mu.Lock()
@@ -294,7 +331,14 @@ func (m *Manager) Check() {
 			continue
 		}
 
-		isRunning := m.isAppRunning(p.id)
+		// Same decision as isAppRunning, from the pulse's snapshot.
+		var isRunning bool
+		switch {
+		case p.typ == "container" || useDocker:
+			isRunning = running[p.name]
+		case p.pid > 0:
+			isRunning = pidAlive(p.pid)
+		}
 
 		// Re-attach logger for running apps (if missing). Fire-and-forget
 		// like Node's un-awaited #attachLogger(app).catch(...).

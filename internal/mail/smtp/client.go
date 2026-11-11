@@ -4,43 +4,59 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/textproto"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"odac/internal/mail/address"
 	"odac/internal/mail/config"
 )
 
-// clientTimeout is the default timeout for SMTP operations.
-const clientTimeout = 30 * time.Second
+const (
+	dialTimeout = 30 * time.Second
+	// commandTimeout and dataTimeout follow RFC 5321 section 4.5.3.2. They are
+	// long because a delivery runs on a queue worker, never on a request path.
+	commandTimeout = 5 * time.Minute
+	dataTimeout    = 10 * time.Minute
+	// maxReplyBytes caps everything one remote server may send in a session.
+	// textproto reads a line of any length, and a session's replies (greeting,
+	// EHLO list, a few status lines) come nowhere near this.
+	maxReplyBytes = 1 << 20
+	mxCacheTTL    = time.Hour
+	// rateLimitPerHour bounds deliveries to one destination domain.
+	rateLimitPerHour = 1000
+)
 
-// Client handles outbound SMTP delivery with PTR-based source IP selection,
-// IPv6-first fallback, MX resolution with caching, connection pooling,
-// and DKIM signing. Mirrors the Node.js smtp.js architecture exactly.
-type Client struct {
-	connPool   sync.Map // map[string]*pooledConn
-	dkimSigner interface {
-		Sign(string, []byte) ([]byte, error)
-	}
-	getConfig  func() config.Config
-	maxRetries int
-	mxCache    sync.Map // map[string]*mxCacheEntry
-	mu         sync.Mutex
-	ports      []int
-	rateLimit  sync.Map // map[string]*rateLimitEntry
+// Signer DKIM-signs an outgoing message for its sender's domain.
+type Signer interface {
+	Sign(from string, body []byte) ([]byte, error)
 }
 
-type pooledConn struct {
-	conn     net.Conn
-	lastUsed time.Time
+// Client delivers one message to one remote recipient per call, with
+// PTR-based source IP selection, an IPv4 fallback, MX resolution with caching
+// and DKIM signing. It holds no connections between calls: each delivery dials
+// its own session and closes it, so two deliveries never share a socket.
+type Client struct {
+	dial       func(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error)
+	getConfig  func() config.Config
+	lookupHost func(ctx context.Context, host string) ([]string, error)
+	lookupIP   func(ctx context.Context, host string) ([]net.IPAddr, error)
+	lookupMX   func(ctx context.Context, domain string) ([]*net.MX, error)
+	mxCache    sync.Map // domain -> *mxCacheEntry
+	port       int
+	rateLimit  sync.Map // domain -> *rateLimitEntry
+	signer     Signer
 }
 
 type mxCacheEntry struct {
-	host      string
+	hosts     []string
 	timestamp time.Time
 }
 
@@ -55,121 +71,357 @@ type LocalAddress struct {
 	EHLO    string // EHLO hostname (from PTR or domain)
 }
 
-var (
-	clientInstance *Client
-	clientOnce     sync.Once
+// NewClient creates an outbound client. signer may be nil.
+func NewClient(getConfig func() config.Config, signer Signer) *Client {
+	return &Client{
+		dial: func(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error) {
+			return d.DialContext(ctx, network, addr)
+		},
+		getConfig:  getConfig,
+		lookupHost: net.DefaultResolver.LookupHost,
+		lookupIP:   net.DefaultResolver.LookupIPAddr,
+		lookupMX:   net.DefaultResolver.LookupMX,
+		port:       25,
+		signer:     signer,
+	}
+}
+
+// permanentError is a failure no retry can fix, such as a domain that does not
+// exist. Status is the RFC 3463 code reported in the bounce.
+type permanentError struct {
+	status string
+	msg    string
+}
+
+func (e *permanentError) Error() string { return e.msg }
+
+// Delivery stages, named in errors and used to classify refusals.
+const (
+	stageGreeting = "greeting"
+	stageHello    = "EHLO"
+	stageTLS      = "STARTTLS"
+	stageMail     = "MAIL FROM"
+	stageRcpt     = "RCPT TO"
+	stageData     = "DATA"
 )
 
-// InitClient initializes the singleton SMTP client with the config provider.
-func InitClient(getConfig func() config.Config, dkimSigner interface {
-	Sign(string, []byte) ([]byte, error)
-}) {
-	clientOnce.Do(func() {
-		clientInstance = &Client{
-			dkimSigner: dkimSigner,
-			getConfig:  getConfig,
-			maxRetries: 3,
-			ports:      []int{25, 587, 465, 2525},
+// replyError is a refusal the remote server answered with.
+type replyError struct {
+	code  int
+	host  string
+	msg   string
+	stage string
+}
+
+func (e *replyError) Error() string {
+	return fmt.Sprintf("%s refused %s: %d %s", e.host, e.stage, e.code, strings.ReplaceAll(e.msg, "\n", " "))
+}
+
+// permanent reports whether the refusal is the destination's final answer.
+// A 5xx before MAIL FROM is about this host (a greeting that bans our IP, a
+// broken TLS stack), so another MX may still take the message. RFC 5321
+// section 4.5.3.1.10 asks clients to treat 552 at RCPT as temporary.
+func (e *replyError) permanent() bool {
+	if e.code < 500 {
+		return false
+	}
+	switch e.stage {
+	case stageGreeting, stageHello, stageTLS:
+		return false
+	case stageRcpt:
+		return e.code != 552
+	}
+	return true
+}
+
+// status is the reply's RFC 3463 enhanced code, or a generic one.
+func (e *replyError) status() string {
+	if code, _, ok := strings.Cut(e.msg, " "); ok && isEnhancedCode(code) {
+		return code
+	}
+	if e.code >= 500 {
+		return "5.0.0"
+	}
+	return "4.0.0"
+}
+
+func isEnhancedCode(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 || (parts[0] != "2" && parts[0] != "4" && parts[0] != "5") {
+		return false
+	}
+	for _, p := range parts[1:] {
+		if _, err := strconv.Atoi(p); err != nil || len(p) > 3 {
+			return false
 		}
-		// Periodic cleanup of stale connections and caches
-		go clientInstance.cleanupLoop()
-	})
+	}
+	return true
 }
 
-// GetClient returns the singleton SMTP client instance.
-func GetClient() *Client {
-	return clientInstance
+// IsPermanent reports whether a delivery error means the message can never be
+// delivered, so the queue bounces it instead of trying again.
+func IsPermanent(err error) bool {
+	var pe *permanentError
+	if errors.As(err, &pe) {
+		return true
+	}
+	var re *replyError
+	return errors.As(err, &re) && re.permanent()
 }
 
-// Send delivers an email to a single recipient using MX resolution,
-// PTR-based source IP selection, and multi-port fallback.
-func (c *Client) Send(from, to string, body []byte) error {
-	domain := to[strings.LastIndex(to, "@")+1:]
+// failureStatus is the RFC 3463 status a bounce reports for err.
+func failureStatus(err error) string {
+	var pe *permanentError
+	if errors.As(err, &pe) {
+		return pe.status
+	}
+	var re *replyError
+	if errors.As(err, &re) {
+		return re.status()
+	}
+	return "4.4.1"
+}
 
-	// Rate limiting per domain
+// Send delivers body from one sender to one remote recipient: every MX host in
+// preference order, on port 25. It makes one attempt; retrying is the queue's
+// job. The error tells IsPermanent whether another attempt can succeed.
+func (c *Client) Send(ctx context.Context, from, to string, body []byte) error {
+	domain := strings.ToLower(address.Domain(to))
+	if domain == "" {
+		return &permanentError{status: "5.1.3", msg: fmt.Sprintf("invalid recipient address %q", to)}
+	}
+
 	if err := c.checkRateLimit(domain); err != nil {
 		return err
 	}
 
-	// DKIM sign the message before delivery
-	if c.dkimSigner != nil {
-		signed, err := c.dkimSigner.Sign(from, body)
-		if err == nil && len(signed) > 0 {
+	if c.signer != nil {
+		if signed, err := c.signer.Sign(from, body); err == nil && len(signed) > 0 {
 			body = signed
 		}
 	}
 
-	// Resolve MX host
-	host, err := c.resolveMX(domain)
+	hosts, err := c.resolveMX(ctx, domain)
 	if err != nil {
-		return fmt.Errorf("MX resolution failed for %s: %w", domain, err)
+		return err
 	}
 
-	senderDomain := from[strings.LastIndex(from, "@")+1:]
-	// Use mail subdomain as EHLO hostname to match PTR record (RFC 5321)
-	ehloBase := "mail." + senderDomain
+	// Use the mail subdomain as EHLO hostname to match the PTR record (RFC 5321).
+	ehloBase := "mail." + address.Domain(from)
 
 	var lastErr error
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		if attempt > 0 {
-			delay := time.Duration(attempt) * time.Second
-			log.Printf("[SMTP-Client] Retry %d/%d for %s (waiting %v)", attempt, c.maxRetries, to, delay)
-			time.Sleep(delay)
+	for _, host := range hosts {
+		err := c.sendToHost(ctx, from, to, body, host, ehloBase, false)
+		if err != nil && isIPv6NetworkError(err) {
+			log.Printf("[SMTP-Client] IPv6 failed, falling back to IPv4 for %s", host)
+			err = c.sendToHost(ctx, from, to, body, host, ehloBase, true)
 		}
-
-		lastErr = c.sendToHost(from, to, body, host, ehloBase, false)
-		if lastErr == nil {
+		if err == nil {
+			log.Printf("[SMTP-Client] Delivered: %s -> %s via %s", from, to, host)
 			return nil
 		}
-
-		// If IPv6 network error, retry with IPv4 forced
-		if isIPv6NetworkError(lastErr) {
-			log.Printf("[SMTP-Client] IPv6 failed, falling back to IPv4 for %s", host)
-			lastErr = c.sendToHost(from, to, body, host, ehloBase, true)
-			if lastErr == nil {
-				return nil
-			}
+		// A permanent refusal from one MX is the domain's answer: the other
+		// hosts serve the same mailboxes.
+		if IsPermanent(err) || ctx.Err() != nil {
+			return err
 		}
+		lastErr = err
 	}
-
-	return fmt.Errorf("delivery to %s failed after %d attempts: %w", to, c.maxRetries, lastErr)
+	return lastErr
 }
 
-// sendToHost attempts delivery to a specific MX host, trying all configured ports.
-func (c *Client) sendToHost(from, to string, body []byte, host, ehloBase string, forceIPv4 bool) error {
-	cfg := c.getConfig()
+// sendToHost runs one SMTP session against host.
+func (c *Client) sendToHost(ctx context.Context, from, to string, body []byte, host, ehloBase string, forceIPv4 bool) error {
+	targetIPv6 := !forceIPv4 && c.hostSupportsIPv6(ctx, host)
+	local := c.getLocalAddress(ehloBase, targetIPv6, c.getConfig().IPs)
 
-	// Check if target supports IPv6
-	targetIPv6 := false
-	if !forceIPv4 {
-		targetIPv6 = hostSupportsIPv6(host)
+	dialer := &net.Dialer{Timeout: dialTimeout}
+	if local.Address != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(local.Address)}
+	}
+	network := "tcp"
+	if !targetIPv6 {
+		network = "tcp4"
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(c.port))
+	conn, err := c.dial(ctx, dialer, network, addr)
+	if err != nil {
+		return fmt.Errorf("connect to %s failed: %w", addr, err)
+	}
+	// Closing the socket is the only way to interrupt a blocked read, which
+	// is what lets Stop end a delivery stuck on a slow server.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+
+	s := newSession(conn, host)
+	defer s.close()
+	return s.deliver(sanitize(local.EHLO), from, to, body)
+}
+
+// session is one SMTP conversation with a remote server.
+type session struct {
+	conn net.Conn
+	ext  map[string]bool
+	host string
+	text *textproto.Conn
+}
+
+func newSession(conn net.Conn, host string) *session {
+	s := &session{host: host}
+	s.setConn(conn)
+	return s
+}
+
+func (s *session) setConn(conn net.Conn) {
+	s.conn = conn
+	s.text = textproto.NewConn(struct {
+		io.Reader
+		io.Writer
+		io.Closer
+	}{io.LimitReader(conn, maxReplyBytes), conn, conn})
+}
+
+func (s *session) close() { s.text.Close() }
+
+// reply reads one, possibly multi-line, response and checks its code against
+// expect, which may be a prefix ("25" accepts 250 and 251).
+func (s *session) reply(stage string, expect int, timeout time.Duration) (string, error) {
+	s.conn.SetDeadline(time.Now().Add(timeout))
+	_, msg, err := s.text.ReadResponse(expect)
+	var te *textproto.Error
+	if errors.As(err, &te) {
+		return "", &replyError{code: te.Code, host: s.host, msg: te.Msg, stage: stage}
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w", s.host, stage, err)
+	}
+	return msg, nil
+}
+
+func (s *session) cmd(stage string, expect int, format string, args ...any) (string, error) {
+	s.conn.SetDeadline(time.Now().Add(commandTimeout))
+	id, err := s.text.Cmd(format, args...)
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w", s.host, stage, err)
+	}
+	s.text.StartResponse(id)
+	defer s.text.EndResponse(id)
+	return s.reply(stage, expect, commandTimeout)
+}
+
+// hello sends EHLO and records the extensions, falling back to HELO for a
+// server that does not know EHLO.
+func (s *session) hello(name string) error {
+	msg, err := s.cmd(stageHello, 250, "EHLO %s", name)
+	var re *replyError
+	if errors.As(err, &re) && (re.code == 500 || re.code == 502) {
+		s.ext = map[string]bool{}
+		_, err = s.cmd(stageHello, 250, "HELO %s", name)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	s.ext = map[string]bool{}
+	lines := strings.Split(msg, "\n")
+	for _, line := range lines[1:] {
+		keyword, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		s.ext[strings.ToUpper(keyword)] = true
+	}
+	return nil
+}
+
+func (s *session) deliver(ehlo, from, to string, body []byte) error {
+	if _, err := s.reply(stageGreeting, 220, commandTimeout); err != nil {
+		return err
+	}
+	if err := s.hello(ehlo); err != nil {
+		return err
 	}
 
-	// Resolve best local IP via PTR matching (IPv6 priority)
-	local := c.getLocalAddress(ehloBase, targetIPv6, cfg.IPs)
-
-	var lastErr error
-	for _, port := range c.ports {
-		conn, reused, err := c.connect(local, host, port)
-		if err != nil {
-			lastErr = err
-			continue
+	if s.ext["STARTTLS"] {
+		if _, err := s.cmd(stageTLS, 220, "STARTTLS"); err != nil {
+			return err
 		}
-
-		err = c.deliverMessage(conn, local.EHLO, from, to, body, host, reused)
-		if err != nil {
-			conn.Close()
-			lastErr = err
-			continue
+		tlsConn := tls.Client(s.conn, opportunisticTLS(s.host))
+		s.conn.SetDeadline(time.Now().Add(commandTimeout))
+		if err := tlsConn.Handshake(); err != nil {
+			log.Printf("[SMTP-Client] STARTTLS handshake failed for %s: %v", s.host, err)
+			return fmt.Errorf("%s STARTTLS handshake failed: %w", s.host, err)
 		}
-
-		// Return connection to pool
-		c.returnToPool(host, port, conn)
-		log.Printf("[SMTP-Client] Delivered: %s -> %s via %s:%d", from, to, host, port)
-		return nil
+		// Everything from here on, the reader included, runs over TLS.
+		s.setConn(tlsConn)
+		if err := s.hello(ehlo); err != nil {
+			return err
+		}
 	}
 
-	return fmt.Errorf("all ports failed for %s: %w", host, lastErr)
+	param := ""
+	if s.ext["8BITMIME"] {
+		param = " BODY=8BITMIME"
+	}
+	if _, err := s.cmd(stageMail, 250, "MAIL FROM:<%s>%s", sanitize(from), param); err != nil {
+		return err
+	}
+	if _, err := s.cmd(stageRcpt, 25, "RCPT TO:<%s>", sanitize(to)); err != nil {
+		return err
+	}
+	if _, err := s.cmd(stageData, 354, "DATA"); err != nil {
+		return err
+	}
+
+	// The dot writer applies RFC 5321 section 4.5.2: CRLF line endings,
+	// dot-stuffing of lines starting with ".", and the final "." line.
+	s.conn.SetDeadline(time.Now().Add(dataTimeout))
+	w := s.text.DotWriter()
+	if _, err := w.Write(body); err != nil {
+		return fmt.Errorf("%s body write failed: %w", s.host, err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("%s body write failed: %w", s.host, err)
+	}
+	if _, err := s.reply(stageData, 250, dataTimeout); err != nil {
+		return err
+	}
+
+	// The message is accepted; a failed QUIT changes nothing about that.
+	s.cmd("QUIT", 221, "QUIT")
+	return nil
+}
+
+// opportunisticTLS is the STARTTLS configuration for MX delivery (RFC 7435),
+// matching the universal MTA-to-MTA relay default (e.g. Postfix
+// smtp_tls_security_level=may): always encrypt, but never let an unverifiable
+// peer certificate block delivery. The destination MX comes from
+// unauthenticated DNS and the only alternatives are plaintext (worse) or
+// non-delivery (worst).
+//
+// Verification still runs against the system roots, for observability (a
+// stale CA bundle or a peer chain change shows in the logs) and as the hook a
+// future MTA-STS/DANE policy would turn into enforcement.
+func opportunisticTLS(mxHost string) *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         mxHost,
+		InsecureSkipVerify: true, // opportunistic; verification handled below, non-fatal
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return nil
+			}
+			inter := x509.NewCertPool()
+			for _, peer := range cs.PeerCertificates[1:] {
+				inter.AddCert(peer)
+			}
+			// Nil Roots makes Verify use the cached system pool directly.
+			if _, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
+				DNSName:       mxHost,
+				Intermediates: inter,
+			}); err != nil {
+				log.Printf("[SMTP-Client] TLS to %s unverified, delivering opportunistically: %v", mxHost, err)
+			}
+			return nil
+		},
+	}
 }
 
 // getLocalAddress resolves the best local IP for outbound delivery using PTR matching.
@@ -182,8 +434,6 @@ func (c *Client) sendToHost(from, to string, body []byte, host, ehloBase string,
 // Priority (when target is IPv4 only):
 //  1. PTR-matched IPv4
 //  2. First public IPv4
-//
-// This is a direct port of the Node.js smtp.js #getLocalAddressForDomain method.
 func (c *Client) getLocalAddress(domain string, targetIPv6 bool, ips config.IPConfig) LocalAddress {
 	// Extract root domain for broader PTR matching (mail.example.com → example.com)
 	rootDomain := domain
@@ -260,253 +510,60 @@ func ptrMatchesDomain(ptr, domain, rootDomain string) bool {
 		strings.HasSuffix(domain, "."+ptr)
 }
 
-// connect establishes a TCP or TLS connection to the target SMTP server.
-// Uses the resolved local address for source IP binding.
-func (c *Client) connect(local LocalAddress, host string, port int) (net.Conn, bool, error) {
-	// Check pool first
-	key := fmt.Sprintf("%s:%d", host, port)
-	if val, ok := c.connPool.Load(key); ok {
-		pc := val.(*pooledConn)
-		if time.Since(pc.lastUsed) < 5*time.Minute {
-			// Test if connection is still alive
-			pc.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-			buf := make([]byte, 1)
-			_, err := pc.conn.Read(buf)
-			pc.conn.SetReadDeadline(time.Time{})
-			if err == nil || isTimeoutError(err) {
-				log.Printf("[SMTP-Client] Reusing pooled connection to %s", key)
-				return pc.conn, true, nil
-			}
-			pc.conn.Close()
-		} else {
-			pc.conn.Close()
-		}
-		c.connPool.Delete(key)
-	}
-
-	addr := fmt.Sprintf("%s:%d", host, port)
-	dialer := &net.Dialer{Timeout: clientTimeout}
-
-	if local.Address != "" {
-		// Bind to specific local IP for PTR matching
-		if strings.Contains(local.Address, ":") {
-			dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(local.Address)}
-		} else {
-			dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(local.Address)}
-		}
-	}
-
-	if port == 465 {
-		// Implicit TLS
-		tlsConn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ServerName: host,
-		})
-		if err != nil {
-			return nil, false, fmt.Errorf("TLS connect to %s failed: %w", addr, err)
-		}
-		return tlsConn, false, nil
-	}
-
-	// Plaintext connection (STARTTLS will be attempted during delivery)
-	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
-	if err != nil {
-		return nil, false, fmt.Errorf("connect to %s failed: %w", addr, err)
-	}
-	return conn, false, nil
-}
-
-// deliverMessage performs the SMTP transaction: EHLO, STARTTLS, MAIL FROM, RCPT TO, DATA.
-// mxHost is the MX hostname used as TLS ServerName for certificate validation.
-func (c *Client) deliverMessage(conn net.Conn, ehlo, from, to string, body []byte, mxHost string, reused bool) error {
-	if !reused {
-		// Read greeting
-		if _, err := c.readResponse(conn); err != nil {
-			return fmt.Errorf("greeting failed: %w", err)
-		}
-	}
-
-	// EHLO
-	resp, err := c.command(conn, fmt.Sprintf("EHLO %s\r\n", sanitize(ehlo)))
-	if err != nil {
-		return fmt.Errorf("EHLO failed: %w", err)
-	}
-
-	// Attempt STARTTLS if available and not already TLS
-	if _, isTLS := conn.(*tls.Conn); !isTLS && strings.Contains(resp, "STARTTLS") {
-		_, err := c.command(conn, "STARTTLS\r\n")
-		if err == nil {
-			// Opportunistic TLS (RFC 7435), matching the universal MTA-to-MTA
-			// relay default (e.g. Postfix smtp_tls_security_level=may): always
-			// encrypt, but never let an unverifiable peer cert block delivery —
-			// the destination MX comes from unauthenticated DNS and the only
-			// alternatives are plaintext (worse) or non-delivery (worst).
-			//
-			// We still attempt real verification against the system roots for
-			// observability (so a stale CA bundle or a peer chain change is
-			// visible in logs) and as the hook a future MTA-STS/DANE policy would
-			// turn into hard enforcement. The handshake itself is not failed.
-			tlsConn := tls.Client(conn, &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				ServerName:         mxHost,
-				InsecureSkipVerify: true, // opportunistic; verification handled below, non-fatal
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					// Defensive: Go rejects an empty server Certificate message
-					// during the handshake (for the default non-anonymous suites)
-					// before this runs, so PeerCertificates is normally non-empty.
-					if len(cs.PeerCertificates) == 0 {
-						return nil
-					}
-					inter := x509.NewCertPool()
-					for _, peer := range cs.PeerCertificates[1:] {
-						inter.AddCert(peer)
-					}
-					// Roots left nil → Verify uses the runtime's cached system root
-					// pool directly, avoiding a per-handshake pool clone.
-					if _, vErr := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-						DNSName:       mxHost,
-						Intermediates: inter,
-					}); vErr != nil {
-						log.Printf("[SMTP-Client] TLS to %s unverified, delivering opportunistically: %v", mxHost, vErr)
-					}
-					return nil
-				},
-			})
-			if err := tlsConn.Handshake(); err != nil {
-				log.Printf("[SMTP-Client] STARTTLS handshake failed for %s: %v", mxHost, err)
-				return fmt.Errorf("STARTTLS handshake failed: %w", err)
-			}
-			conn = tlsConn
-			// Re-EHLO after STARTTLS
-			if _, err := c.command(conn, fmt.Sprintf("EHLO %s\r\n", sanitize(ehlo))); err != nil {
-				return fmt.Errorf("post-STARTTLS EHLO failed: %w", err)
-			}
-		}
-	}
-
-	// MAIL FROM
-	resp, err = c.command(conn, fmt.Sprintf("MAIL FROM:<%s>\r\n", sanitize(from)))
-	if err != nil || !strings.HasPrefix(resp, "2") {
-		return fmt.Errorf("MAIL FROM rejected: %s", resp)
-	}
-
-	// RCPT TO
-	resp, err = c.command(conn, fmt.Sprintf("RCPT TO:<%s>\r\n", sanitize(to)))
-	if err != nil || !strings.HasPrefix(resp, "2") {
-		return fmt.Errorf("RCPT TO rejected: %s", resp)
-	}
-
-	// DATA
-	resp, err = c.command(conn, "DATA\r\n")
-	if err != nil || (!strings.HasPrefix(resp, "2") && !strings.HasPrefix(resp, "3")) {
-		return fmt.Errorf("DATA rejected: %s", resp)
-	}
-
-	// Send body + terminator. RFC 5321 §4.5.2 requires:
-	//  1. Lines must use CRLF terminators on the wire
-	//  2. Any line starting with "." must be dot-stuffed ("." → "..")
-	//     otherwise such a line is interpreted as end-of-DATA by the receiver
-	//     (HTML/CSS bodies frequently contain ".classname { ... }" lines)
-	//  3. The end of message marker is exactly <CRLF>.<CRLF>
-	wireBody := encodeDataBody(body)
-	conn.SetWriteDeadline(time.Now().Add(clientTimeout))
-	if _, err := conn.Write(wireBody); err != nil {
-		return fmt.Errorf("body write failed: %w", err)
-	}
-	resp, err = c.command(conn, ".\r\n")
-	if err != nil || !strings.HasPrefix(resp, "2") {
-		return fmt.Errorf("message rejected: %s", resp)
-	}
-
-	return nil
-}
-
-// encodeDataBody prepares a message body for SMTP DATA transmission per RFC 5321.
-// It normalizes bare LF to CRLF, dot-stuffs any line starting with ".", and
-// guarantees the body ends with CRLF so the caller can append the "." terminator.
-func encodeDataBody(body []byte) []byte {
-	out := make([]byte, 0, len(body)+64)
-	atLineStart := true
-	for i := 0; i < len(body); i++ {
-		b := body[i]
-		if b == '\r' && i+1 < len(body) && body[i+1] == '\n' {
-			out = append(out, '\r', '\n')
-			i++
-			atLineStart = true
-			continue
-		}
-		if b == '\n' {
-			out = append(out, '\r', '\n')
-			atLineStart = true
-			continue
-		}
-		if atLineStart && b == '.' {
-			out = append(out, '.')
-		}
-		out = append(out, b)
-		atLineStart = false
-	}
-	if len(out) < 2 || out[len(out)-2] != '\r' || out[len(out)-1] != '\n' {
-		out = append(out, '\r', '\n')
-	}
-	return out
-}
-
-// command sends an SMTP command and reads the response.
-func (c *Client) command(conn net.Conn, cmd string) (string, error) {
-	conn.SetWriteDeadline(time.Now().Add(clientTimeout))
-	if _, err := io.WriteString(conn, cmd); err != nil {
-		return "", err
-	}
-	return c.readResponse(conn)
-}
-
-// readResponse reads a multi-line SMTP response.
-func (c *Client) readResponse(conn net.Conn) (string, error) {
-	conn.SetReadDeadline(time.Now().Add(clientTimeout))
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return "", err
-	}
-	return string(buf[:n]), nil
-}
-
-// returnToPool stores a connection for reuse.
-func (c *Client) returnToPool(host string, port int, conn net.Conn) {
-	key := fmt.Sprintf("%s:%d", host, port)
-	c.connPool.Store(key, &pooledConn{conn: conn, lastUsed: time.Now()})
-}
-
-// resolveMX resolves the MX host for a domain with 1-hour caching.
-func (c *Client) resolveMX(domain string) (string, error) {
-	// Check cache
+// resolveMX returns the domain's mail hosts in preference order, cached for
+// an hour. A domain with no MX record falls back to its own address (RFC 5321
+// section 5.1); a domain that does not exist, or publishes a null MX (RFC
+// 7505), is a permanent failure. Any other lookup error is temporary.
+func (c *Client) resolveMX(ctx context.Context, domain string) ([]string, error) {
 	if val, ok := c.mxCache.Load(domain); ok {
 		entry := val.(*mxCacheEntry)
-		if time.Since(entry.timestamp) < time.Hour {
-			return entry.host, nil
+		if time.Since(entry.timestamp) < mxCacheTTL {
+			return entry.hosts, nil
 		}
 		c.mxCache.Delete(domain)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	resolver := &net.Resolver{}
-	records, err := resolver.LookupMX(ctx, domain)
-	if err != nil || len(records) == 0 {
-		return "", fmt.Errorf("no MX records for %s", domain)
+	records, err := c.lookupMX(lookupCtx, domain)
+	if err != nil && !isNotFound(err) {
+		return nil, fmt.Errorf("MX lookup for %s failed: %w", domain, err)
 	}
 
-	// MX records are already sorted by preference by Go's resolver
-	host := strings.TrimSuffix(records[0].Host, ".")
+	var hosts []string
+	switch {
+	case len(records) == 0:
+		if _, herr := c.lookupHost(lookupCtx, domain); herr != nil {
+			if isNotFound(herr) {
+				return nil, &permanentError{status: "5.1.2", msg: fmt.Sprintf("domain %s has no MX or address records", domain)}
+			}
+			return nil, fmt.Errorf("address lookup for %s failed: %w", domain, herr)
+		}
+		hosts = []string{domain}
+	case len(records) == 1 && strings.TrimSuffix(records[0].Host, ".") == "":
+		return nil, &permanentError{status: "5.1.10", msg: fmt.Sprintf("domain %s accepts no mail (null MX)", domain)}
+	default:
+		// Go's resolver sorts by preference and shuffles equal preferences.
+		for _, r := range records {
+			if h := strings.TrimSuffix(r.Host, "."); h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+	}
 
-	c.mxCache.Store(domain, &mxCacheEntry{host: host, timestamp: time.Now()})
-	log.Printf("[SMTP-Client] MX for %s: %s", domain, host)
-	return host, nil
+	c.mxCache.Store(domain, &mxCacheEntry{hosts: hosts, timestamp: time.Now()})
+	log.Printf("[SMTP-Client] MX for %s: %s", domain, strings.Join(hosts, ", "))
+	return hosts, nil
 }
 
-// checkRateLimit enforces per-domain hourly rate limiting (1000/hour).
+func isNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
+// checkRateLimit enforces the per-domain hourly delivery limit. Hitting it is
+// a temporary failure: the queue holds the message and tries again later.
 func (c *Client) checkRateLimit(domain string) error {
 	val, _ := c.rateLimit.LoadOrStore(domain, &rateLimitEntry{})
 	entry := val.(*rateLimitEntry)
@@ -515,18 +572,9 @@ func (c *Client) checkRateLimit(domain string) error {
 	defer entry.mu.Unlock()
 
 	now := time.Now()
-	hourAgo := now.Add(-time.Hour)
+	entry.timestamps = pruneBefore(entry.timestamps, now.Add(-time.Hour))
 
-	// Remove old timestamps
-	filtered := entry.timestamps[:0]
-	for _, ts := range entry.timestamps {
-		if ts.After(hourAgo) {
-			filtered = append(filtered, ts)
-		}
-	}
-	entry.timestamps = filtered
-
-	if len(entry.timestamps) >= 1000 {
+	if len(entry.timestamps) >= rateLimitPerHour {
 		return fmt.Errorf("rate limit exceeded for domain %s", domain)
 	}
 
@@ -534,55 +582,48 @@ func (c *Client) checkRateLimit(domain string) error {
 	return nil
 }
 
-// cleanupLoop periodically cleans stale connections and caches.
-func (c *Client) cleanupLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// Clean connection pool
-		c.connPool.Range(func(key, val any) bool {
-			pc := val.(*pooledConn)
-			if time.Since(pc.lastUsed) > 5*time.Minute {
-				pc.conn.Close()
-				c.connPool.Delete(key)
-			}
-			return true
-		})
-
-		// Clean MX cache (entries older than 1 hour)
-		c.mxCache.Range(func(key, val any) bool {
-			entry := val.(*mxCacheEntry)
-			if time.Since(entry.timestamp) > time.Hour {
-				c.mxCache.Delete(key)
-			}
-			return true
-		})
+func pruneBefore(ts []time.Time, cutoff time.Time) []time.Time {
+	kept := ts[:0]
+	for _, t := range ts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
 	}
+	return kept
 }
 
-// Stop cleans up all connections and caches.
-func (c *Client) Stop() {
-	c.connPool.Range(func(key, val any) bool {
-		pc := val.(*pooledConn)
-		pc.conn.Close()
-		c.connPool.Delete(key)
+// Prune drops expired MX entries and idle rate-limit windows, so both maps
+// stay bounded by the domains mailed within the last hour. The queue calls it
+// from its own loop, which is why the client runs no goroutine of its own.
+func (c *Client) Prune() {
+	now := time.Now()
+	c.mxCache.Range(func(key, val any) bool {
+		if now.Sub(val.(*mxCacheEntry).timestamp) > mxCacheTTL {
+			c.mxCache.Delete(key)
+		}
 		return true
 	})
-	c.mxCache = sync.Map{}
-	c.rateLimit = sync.Map{}
-	log.Println("[SMTP-Client] Stopped, all connections and caches cleared")
+	c.rateLimit.Range(func(key, val any) bool {
+		entry := val.(*rateLimitEntry)
+		entry.mu.Lock()
+		entry.timestamps = pruneBefore(entry.timestamps, now.Add(-time.Hour))
+		idle := len(entry.timestamps) == 0
+		entry.mu.Unlock()
+		if idle {
+			c.rateLimit.Delete(key)
+		}
+		return true
+	})
 }
 
 // --- Network Helpers ---
 
 // hostSupportsIPv6 checks if the target host has AAAA records.
-func hostSupportsIPv6(host string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func (c *Client) hostSupportsIPv6(ctx context.Context, host string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	resolver := &net.Resolver{}
-	addrs, err := resolver.LookupIPAddr(ctx, host)
+	addrs, err := c.lookupIP(ctx, host)
 	if err != nil {
 		return false
 	}
@@ -605,14 +646,6 @@ func isIPv6NetworkError(err error) bool {
 		strings.Contains(msg, "address not available")
 }
 
-func isTimeoutError(err error) bool {
-	if err == nil {
-		return false
-	}
-	netErr, ok := err.(net.Error)
-	return ok && netErr.Timeout()
-}
-
 // sanitize prevents SMTP injection by removing CR/LF characters.
 func sanitize(s string) string {
 	s = strings.ReplaceAll(s, "\r", "")
@@ -621,13 +654,4 @@ func sanitize(s string) string {
 		s = s[:1000]
 	}
 	return s
-}
-
-func extractHostFromConn(conn net.Conn) string {
-	addr := conn.RemoteAddr().String()
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return host
 }

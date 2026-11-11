@@ -65,40 +65,6 @@ jobs:
             echo "version=$(cat .release-version)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Checkout Actions
-        if: steps.version.outputs.version != ''
-        uses: actions/checkout@v5
-        with:
-          repository: odac-run/actions
-          token: ${{ secrets.GH_PAT }}
-          path: .github/odac-actions
-          ref: main
-          persist-credentials: false
-
-      - name: Generate Release Notes
-        id: ai_notes
-        if: steps.version.outputs.version != ''
-        uses: ./.github/odac-actions/actions/release-notes
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          michelangelo: ${{ secrets.MICHELANGELO }}
-          version: ${{ steps.version.outputs.version }}
-        timeout-minutes: 15
-        continue-on-error: true
-
-      - name: Cleanup Actions
-        if: always()
-        run: rm -rf .github/odac-actions
-
-      - name: Update Release
-        uses: softprops/action-gh-release@v2
-        if: steps.ai_notes.outcome == 'success' && steps.version.outputs.version != ''
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          body_path: RELEASE_NOTE.md
-          draft: false
-          prerelease: false
-
       - name: Set up QEMU
         if: steps.version.outputs.version != ''
         uses: docker/setup-qemu-action@v3

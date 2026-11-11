@@ -3,7 +3,7 @@
 package swap
 
 // Non-Linux builds never manage swap: the snapshot is always !ok, so decide()
-// holds and no actuator runs. Swap is a Linux host feature (see SWAP_PLAN.md).
+// holds and no actuator runs. Swap is a Linux host feature.
 
 func readSnapshot(dir string) snapshot { return snapshot{} }
 

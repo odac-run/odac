@@ -26,6 +26,8 @@ A request is one JSON object written to the socket:
 { "auth": "<ODAC_API_KEY>", "action": "app.list", "data": [] }
 ```
 
+Write the whole request as soon as the connection opens. A connection must deliver a complete request within 10 seconds and at most 4 MiB (`ODAC_API_MAX_REQUEST_BYTES` on the server raises the size); past either limit it is closed, and an oversized one is answered with `request_too_large` first. Both limits cover everything sent before an action starts, failed attempts included. Once the action runs, it has as long as it needs.
+
 Action names are the ones in the [CLI Reference](../02-get-started/03-cli-reference.md) with the space replaced by a dot: `odac app list` is `app.list`, `odac mail send` is `mail.send`.
 
 ### Available Actions
@@ -35,15 +37,13 @@ These are the actions available to applications. An app may call the ones you gr
 | Action | `data` | What it does |
 |--------|--------|--------------|
 | `app.list` | `[]` or `[true]` for detail | List apps |
-| `app.create` | `[config]` | Create an app (same object the CLI builds) |
+| `app.create` | `[config]` | Create an app (same object the CLI builds). Volumes are limited, see below |
 | `app.delete` | `[app]`, or `[app, {"purge": false}]` to keep its data | Delete an app |
 | `app.start` | `[app]` | Start a stopped app |
 | `app.stop` | `[app]` | Stop a running app |
 | `app.restart` | `[app]` | Restart an app |
-| `app.network` | `[app, "bridge"\|"host"]` | Set the network mode |
 | `app.isolate` | `[app, true\|false]` | Cut off or restore outbound access |
 | `app.gpu` | `[app, {"runtime": "nvidia"}]`, or `[app, false]` to release | Reserve host GPUs for an app |
-| `app.device.add` | `[app, hostPath, containerPath]` | Connect a host device |
 | `app.device.delete` | `[app, hostPath]` | Disconnect a host device |
 | `domain.list` | `[]`, or `[app]` to filter | List domains |
 | `domain.add` | `[domain, app]` | Route a domain to an app |
@@ -55,18 +55,22 @@ These are the actions available to applications. An app may call the ones you gr
 | `mail.create` | `[email, password, passwordAgain]` | Create a mailbox |
 | `mail.password` | `[email, password, passwordAgain]` | Change a mailbox password |
 | `mail.delete` | `[email]` | Delete a mailbox |
+| `domain.mtls.cert.issue` | `[domain, {"csr", "name", "hosts", "days"?, "renews"?}]` | Sign a client certificate for the app's own hosts. See below |
+| `domain.mtls.cert.revoke` | `[fingerprint]` | Revoke one of the app's client certificates |
+| `domain.mtls.cert.list` | `[]`, or `[domain]` to filter | List the app's client certificates |
+| `domain.mtls.cert.import` | `[{"cert", "hosts", "name"?}]` | Record a certificate another server signed with a shared CA |
 
 `app` is an App ID or name, exactly like the CLI's `-i` argument.
 
-`mail.send` is the one action whose argument is a message object rather than plain strings:
+`mail.send` is the one action whose argument is a message object rather than plain strings. `from` and `to` use the parsed-mail address shape, a `value` list of `{ "address": ... }` objects, and only the first entry of each is used:
 
 ```json
 {
   "auth": "<ODAC_API_KEY>",
   "action": "mail.send",
   "data": [{
-    "from": "no-reply@example.com",
-    "to": "someone@example.com",
+    "from": { "value": [{ "address": "no-reply@example.com" }] },
+    "to": { "value": [{ "address": "someone@example.com" }] },
     "subject": "Welcome",
     "header": { "Content-Type": "text/html; charset=utf-8" },
     "html": "<p>Hello</p>",
@@ -75,7 +79,33 @@ These are the actions available to applications. An app may call the ones you gr
 }
 ```
 
-`from` must belong to a domain configured on this server. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both.
+`from` must belong to a domain routed to the calling app, or to a subdomain of one. A domain of another app is answered as `Domain ... not found.`, exactly like a domain the server does not have, because the message would go out DKIM-signed as that domain. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both. Header names must be plain field names and no value may contain a line break; such a message is refused. `From`, `To`, `Subject` and `MIME-Version` are added when `header` does not name them.
+
+A `true` result means the message is queued, not that it reached the recipient. ODAC keeps retrying a temporary refusal (greylisting, a busy server) for five days, or for `ODAC_MAIL_QUEUE_HOURS` when that is set on the server. When the recipient's server refuses the message for good, or the time runs out, the sender gets a bounce in its INBOX if it has a mailbox on this server. An address like `no-reply@` with no mailbox gets no bounce.
+
+### Creating Apps From an App
+
+An app that creates another app gets a container confined to that new app's own directory. Every volume must be a named volume, a relative path such as `data` or `db/files` that ODAC places under the new app's directory. The create is refused when a volume:
+
+- is an absolute host path (`/`, `/var/run/docker.sock`), or climbs out with `..`,
+- sits inside another of the same app's volumes, or contains the directory that holds its config files,
+- passes through a symbolic link that is already on disk.
+
+The first is the host itself. The other two would let the new container put a symbolic link where one of its own mounts resolves, which Docker follows on the next start. A recipe from the catalog is checked the same way when an app creates it. The CLI and the dashboard are not limited this way.
+
+Connecting a host device (`app.device.add`) and switching an app to host networking (`app.network`) are never available to apps. A mapped block device is raw access to the host's disk, and the host network namespace reaches every service on the host's loopback. Both are the operator's decision, like [privileged access](05-privileged-access.md).
+
+### Client Certificates for the App's Own Domains
+
+The `domain.mtls.cert.*` actions let an app hand out [client certificates](../06-domain/04-client-certificates.md) for its own domains, for example to its users' devices. They are narrowed to the calling app on every request, whatever the grant says:
+
+- Every host must belong to a domain routed to this app. A host of another app is reported as not registered.
+- The domain must already have a client CA, which `odac domain mtls set` creates. An app cannot create one.
+- An app sees and revokes only certificates whose CA belongs to one of its domains and whose hosts are all its own. Anything else, including a fingerprint ODAC has no record of, answers `"result": false` with `"data": {"code": "not_found"}`.
+- Revoking a certificate that is already revoked succeeds, so a retry is safe.
+- Importing a certificate that is already recorded returns its row again. A revoked one is never imported.
+
+Setting a mode (`domain.mtls.set`), changing a certificate's hosts (`domain.mtls.cert.scope`), and importing or removing a CA (`domain.mtls.ca.import`, `domain.mtls.ca.remove`) are never available to apps, not even with `--all`. Those stay with the CLI and the dashboard.
 
 ### Usage
 
@@ -112,4 +142,4 @@ Action names are validated against the server's registered actions when you gran
 
 ### Choosing Permissions
 
-Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).
+Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `app.device.add`, `app.network`, `domain.mtls.set`, `domain.mtls.cert.scope`, `domain.mtls.ca.import` or `domain.mtls.ca.remove`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).

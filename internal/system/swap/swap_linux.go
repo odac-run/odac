@@ -18,7 +18,7 @@ func newController() controller { return linuxController{} }
 // swapoff/rm, and atomic fstab edits. Requires root (ODAC runs as root on the
 // host). Not unit tested off-host — the fstab block logic it delegates to
 // (updateFstabBlock) is tested purely; swapon/mkswap are covered by the manual
-// Linux integration pass (SWAP_PLAN.md step 7).
+// Linux integration pass.
 type linuxController struct{}
 
 func (linuxController) open(path string, size int64) error {

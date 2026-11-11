@@ -16,8 +16,8 @@ import (
 // and #updateSOASerial, per contracts/dns-control.md "Zone/record management
 // semantics". The Go binary only serves the last pushed snapshot; all CRUD
 // stays here in the orchestrator. Every config.dns mutation runs inside
-// cfg.Mutate (see config.Store) and is followed by ForceSave + an async
-// SyncConfig, matching Node's force() + un-awaited syncConfig().
+// cfg.Mutate (see config.Store) and is followed by SaveDirty + an async
+// SyncConfig, the shape of Node's force() + un-awaited syncConfig().
 
 var __ = lang.T
 
@@ -372,10 +372,11 @@ func (d *DNS) updateSOASerial(dnsCfg map[string]any, domain string) {
 	}
 }
 
-// persistAndSync is the change epilogue: Config.force() then the un-awaited
-// syncConfig() — persistence is synchronous, the push runs in the background.
+// persistAndSync is the change epilogue: the touched modules are saved
+// synchronously (SaveDirty, not ForceSave: every save fsyncs, and only the
+// dns module changed), then the push runs in the background.
 func (d *DNS) persistAndSync() {
-	if err := d.cfg.ForceSave(); err != nil {
+	if err := d.cfg.SaveDirty(); err != nil {
 		d.log.Error(fmt.Sprintf("Failed to persist config: %s", err))
 	}
 	go d.SyncConfig()

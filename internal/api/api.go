@@ -1,25 +1,25 @@
-// Package api is the Go port of server/src/Api.js: the local command API on
-// TCP 127.0.0.1:1453 and the unix socket <base>/run/api.sock, speaking the
-// contract-0.1 protocol (one JSON request per connection, \r\n-separated
-// progress lines, one final JSON response, connection destroyed after).
+// Package api is the local command API on TCP 127.0.0.1:1453 and the unix
+// socket <base>/run/api.sock (one JSON request per connection,
+// \r\n-separated progress lines, one final JSON response, connection
+// destroyed after).
 //
-// Command handlers are registered by cmd/odac-server as their migration
-// tasks land (3.3: dns.list, mail.*, server.stop; 3.4–3.7 add the rest) —
-// an unregistered action answers unknown_action, exactly like an unknown
-// one. Auth and RBAC are ported byte-for-byte: root token (raw
-// config.api.auth), derived domain tokens (mail.send only) and signed app
-// tokens (per-action permission list).
+// Command handlers are registered by cmd/odac-server; an unregistered action
+// answers unknown_action, exactly like an unknown one. Two tokens
+// authenticate: the root token (raw config.api.auth) and signed app tokens
+// (per-action permission list). There are no derived per-domain tokens.
 //
-// Deviations from Node (deliberate, recorded in STATE.md):
 //   - Requests are read with a streaming JSON decoder, so a request
-//     fragmented across TCP segments still parses (Node fails it with
-//     invalid_json; the contract sanctions the tolerance). After a
-//     malformed document the connection closes — Node kept it open, but
-//     the byte stream is undecodable at that point anyway.
-//   - A unix-socket listen failure is logged and TCP continues. In Node
-//     the equivalent is an unhandled 'error' event: log + exit 1 + watchdog
-//     restart, i.e. a crash loop when the failure is persistent.
-//   - Signature/token comparisons are constant-time (contract-sanctioned).
+//     fragmented across TCP segments still parses. After a malformed
+//     document the connection closes, since the byte stream is undecodable
+//     at that point.
+//   - A unix-socket listen failure is logged and TCP continues, rather than
+//     exiting into a watchdog crash loop on a persistent failure.
+//   - Signature and token comparisons are constant-time.
+//   - Until a handler runs, a connection is bounded: MaxRequestBytes in all,
+//     ReadTimeout from accept, and at most MaxPending such connections per
+//     listener. The unix socket is mounted into every API-enabled container,
+//     so this is what an app, with or without a valid token, can cost the
+//     orchestrator.
 package api
 
 import (
@@ -37,6 +37,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,6 +49,25 @@ import (
 
 // DefaultAddr is the fixed TCP address from the contract.
 const DefaultAddr = "127.0.0.1:1453"
+
+// Request limits applied before a handler runs. The largest real request is
+// a mail.send body, and 4 MiB of HTML is far past what any mail client shows.
+// Real clients write the whole request right after connecting, so the read
+// timeout only matters to a peer that trickles bytes or sends none.
+const (
+	defaultMaxRequestBytes int64 = 4 << 20
+	minMaxRequestBytes     int64 = 64 << 10
+	defaultReadTimeout           = 10 * time.Second
+	defaultMaxPending            = 16
+
+	// A refused peer may still be sending; its input is read away within
+	// these bounds so the refusal is not lost to a reset (see lingerClose).
+	lingerTimeout       = 500 * time.Millisecond
+	lingerBytes   int64 = 1 << 20
+)
+
+// errRequestTooLarge ends a connection that sent more than MaxRequestBytes.
+var errRequestTooLarge = errors.New("request too large")
 
 // Progress streams one progress line to the requesting client; values are
 // JSON-encoded as-is (handlers pass strings), nil keys are omitted like JS
@@ -61,7 +81,26 @@ type Progress func(process, status, message any)
 type Args struct {
 	values []any
 	raw    []json.RawMessage
+	caller Caller
 }
+
+// Caller is who sent a request. Most handlers never look: RBAC has already run.
+// It exists for actions an app may be granted that still have to be narrowed to
+// that app's own records, which only the handler can judge.
+type Caller struct {
+	// Root is set for the root token (config.api.auth), which the CLI uses.
+	Root bool
+	// App is the calling app's identity, from its token, for an app token.
+	App string
+}
+
+// Operator is the caller with the root token's reach, for the server's owner
+// reaching a handler without the local API: the hub acts for the Cloud account.
+var Operator = Caller{Root: true}
+
+// Caller returns who sent the request. The zero value is neither root nor an
+// app, so a handler that checks gives a call site that forgot to fill it nothing.
+func (a Args) Caller() Caller { return a.caller }
 
 func (a Args) Len() int { return len(a.values) }
 
@@ -94,10 +133,18 @@ type Server struct {
 	// the zero-downtime handover and applies either way.
 	Addr string
 
+	// MaxRequestBytes caps what one connection may send before a handler
+	// runs, ReadTimeout how long it may take from accept, and MaxPending how
+	// many connections per listener may be in that phase at once (accepting
+	// waits for a slot). NewServer fills them; the environment can raise the
+	// size with ODAC_API_MAX_REQUEST_BYTES.
+	MaxRequestBytes int64
+	ReadTimeout     time.Duration
+	MaxPending      int
+
 	mu       sync.Mutex
 	commands map[string]Handler
-	tokens   map[string]string // domain token -> domain
-	allowed  map[string]bool   // runtime IP allowlist (Allow/Disallow)
+	allowed  map[string]bool // runtime IP allowlist (Allow/Disallow)
 	tcp      net.Listener
 	unix     net.Listener
 	started  bool
@@ -106,13 +153,29 @@ type Server struct {
 
 // NewServer wires the API server against the shared config store.
 func NewServer(cfg *config.Store) *Server {
-	return &Server{
-		cfg:      cfg,
-		log:      logx.New("Api"),
-		commands: map[string]Handler{},
-		tokens:   map[string]string{},
-		allowed:  map[string]bool{},
+	s := &Server{
+		cfg:         cfg,
+		log:         logx.New("Api"),
+		commands:    map[string]Handler{},
+		allowed:     map[string]bool{},
+		ReadTimeout: defaultReadTimeout,
+		MaxPending:  defaultMaxPending,
 	}
+	s.MaxRequestBytes = s.maxRequestBytesFromEnv()
+	return s
+}
+
+func (s *Server) maxRequestBytesFromEnv() int64 {
+	raw := os.Getenv("ODAC_API_MAX_REQUEST_BYTES")
+	if raw == "" {
+		return defaultMaxRequestBytes
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < minMaxRequestBytes {
+		s.log.Warn(fmt.Sprintf("Ignoring invalid ODAC_API_MAX_REQUEST_BYTES=%q (minimum %d)", raw, minMaxRequestBytes))
+		return defaultMaxRequestBytes
+	}
+	return v
 }
 
 // Register adds (or replaces) an action handler. cmd/odac-server registers
@@ -138,16 +201,42 @@ func (s *Server) HostSocketDir() string {
 // appDeniedActions are actions an app token may never call, whatever its
 // grant says. Two kinds live here: the server's own lifecycle and identity
 // (update restarts it, server.stop takes the platform down, auth re-points
-// its Cloud pairing), and the two that hand out privilege (app.privileged
+// its Cloud pairing), and the ones that hand out privilege (app.privileged
 // elevates a container to root or full Docker privileged; app.api rewrites
 // the grants this table protects, so an app holding it could simply widen
-// itself). Nothing an app legitimately automates needs them.
+// itself; domain.mtls.set switches a client certificate policy, and
+// domain.mtls.cert.scope widens a certificate, on any domain;
+// domain.mtls.ca.import plants a CA key, which signs for every record that
+// trusts that CA, and domain.mtls.ca.remove destroys one, cutting off every
+// certificate it signed on every record). app.device.add and app.network are
+// here for the same reason as app.privileged: a host block device mapped into
+// a container is raw access to the host's disk, and a container moved into
+// the host's network namespace reaches every loopback service and, as root,
+// can join the proxy's SO_REUSEPORT groups on :80 and :443.
+//
+// app.create is grantable because Manager.Create narrows it by Caller: a
+// container an app creates may bind only named volumes inside its own app
+// directory (appBindRefusal).
+//
+// domain.mtls.cert.issue, revoke, list and import are deliberately absent.
+// Their danger was reach, not the action: on any domain they mint a way past
+// a policy. domains.MTLS narrows them to the records routed to the calling
+// app (Args.Caller), on the request path, so a grant lets an edge app such as
+// odac-tunnel certify devices for its own hosts and nothing else. A new action
+// that is safe only when narrowed that way belongs here until its handler
+// does the narrowing.
 var appDeniedActions = map[string]bool{
-	"auth":           true,
-	"update":         true,
-	"server.stop":    true,
-	"app.privileged": true,
-	"app.api":        true,
+	"auth":                   true,
+	"update":                 true,
+	"server.stop":            true,
+	"app.privileged":         true,
+	"app.api":                true,
+	"app.device.add":         true,
+	"app.network":            true,
+	"domain.mtls.set":        true,
+	"domain.mtls.cert.scope": true,
+	"domain.mtls.ca.import":  true,
+	"domain.mtls.ca.remove":  true,
 }
 
 // AppMayCall reports whether an app token is ever allowed to call an action.
@@ -179,7 +268,7 @@ func (s *Server) HasAction(action string) bool {
 }
 
 // Init ports Api.init(): ensure config.api exists, generate the root auth
-// token on first start (32 random bytes, hex), preload domain tokens.
+// token on first start (32 random bytes, hex).
 func (s *Server) Init() {
 	apiCfg := s.cfg.Map("api")
 	if apiCfg == nil {
@@ -192,7 +281,6 @@ func (s *Server) Init() {
 			s.cfg.Touch("api")
 		})
 	}
-	s.ReloadTokens()
 }
 
 // Allow adds an IP to the runtime TCP allowlist.
@@ -292,13 +380,24 @@ func (s *Server) startUnix() {
 	go s.acceptLoop(l, true)
 }
 
+// acceptLoop takes a pending slot before each accept, so a listener never
+// holds more than MaxPending connections that have not reached a handler.
+// Each listener has its own slots: containers flooding the unix socket do not
+// lock the CLI out of TCP.
 func (s *Server) acceptLoop(l net.Listener, skipIPCheck bool) {
+	pending := make(chan struct{}, max(s.MaxPending, 1))
 	for {
+		pending <- struct{}{}
 		conn, err := l.Accept()
 		if err != nil {
 			return // listener closed by Stop
 		}
-		go s.handleConn(conn, skipIPCheck)
+		var once sync.Once
+		release := func() { once.Do(func() { <-pending }) }
+		go func() {
+			defer release()
+			s.handleConn(conn, skipIPCheck, release)
+		}()
 	}
 }
 
@@ -333,8 +432,9 @@ func (s *Server) isAllowed(ip string) bool {
 	return s.allowed[ip]
 }
 
-// handleConn ports the handleConnection closure in Api.init().
-func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
+// handleConn ports the handleConnection closure in Api.init(). release
+// frees the connection's pending slot; it runs once a handler starts.
+func (s *Server) handleConn(conn net.Conn, skipIPCheck bool, release func()) {
 	if !skipIPCheck {
 		host := conn.RemoteAddr().String()
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -353,13 +453,24 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
 		}
 	}
 
-	c := &apiConn{conn: conn}
+	c := &apiConn{conn: conn, admit: release}
 	defer c.close()
 
+	// One deadline and one byte budget for everything before a handler, not
+	// per document: a failed request leaves the connection open for another,
+	// and a fresh allowance per attempt would let a peer hold its slot forever.
+	if s.ReadTimeout > 0 {
+		conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+	}
 	id := connID()
-	br := bufio.NewReader(conn)
+	budget := s.MaxRequestBytes
+	if budget <= 0 {
+		budget = defaultMaxRequestBytes
+	}
+	br := bufio.NewReader(&cappedReader{r: conn, left: budget})
 	first, err := peekNonSpace(br)
 	if err != nil {
+		s.logReadLimit(err)
 		return // closed before sending anything
 	}
 
@@ -384,6 +495,17 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
 	for {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
+			if errors.Is(err, errRequestTooLarge) {
+				s.logReadLimit(err)
+				r := Res(false, "request_too_large") // like invalid_json, WITHOUT an id
+				c.write(encodeFinal(id, false, &r))
+				c.lingerClose()
+				return
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				s.logReadLimit(err)
+				return
+			}
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
 				errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
 				return
@@ -401,6 +523,35 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool) {
 			return
 		}
 	}
+}
+
+// logReadLimit records a connection cut off by a request limit; any other
+// read error is a peer that went away and is not worth a line.
+func (s *Server) logReadLimit(err error) {
+	switch {
+	case errors.Is(err, errRequestTooLarge):
+		s.log.Warn(fmt.Sprintf("Closed a connection that sent more than %d bytes before a handler ran", s.MaxRequestBytes))
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		s.log.Warn(fmt.Sprintf("Closed a connection that sent no complete request within %s", s.ReadTimeout))
+	}
+}
+
+// cappedReader fails with errRequestTooLarge once left bytes have been read.
+type cappedReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, errRequestTooLarge
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	return n, err
 }
 
 // peekNonSpace returns the first byte of the request past JSON whitespace,
@@ -438,17 +589,16 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 	auth, _ := payload.Auth.(string)
 	action, _ := payload.Action.(string)
 
-	// Auth logic: root vs client (domain token vs app token).
+	// Auth logic: the root token, or an app token checked against the live
+	// app record.
 	isRoot := false
 	isApp := false
-	clientDomain := ""
+	appName := ""
 	var appPermissions any
 
 	rootKey := s.authKey()
 	if rootKey != "" && constantTimeEqual(auth, rootKey) {
 		isRoot = true
-	} else if domain, ok := s.lookupToken(auth); ok {
-		clientDomain = domain
 	} else if appAuth := s.verifyAppToken(auth); appAuth != nil {
 		name, _ := appAuth["n"].(string)
 		var app map[string]any
@@ -475,7 +625,7 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 			return false
 		}
 		isApp = true
-		clientDomain = name
+		appName = name
 		// Deviation from Node, which trusted the token's own "p" claim: the
 		// grant lives in config.apps[].api and is read per request, so
 		// revoking one lands on the next call instead of surviving in an
@@ -498,41 +648,40 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 		return false
 	}
 
-	// RBAC: domain tokens may only mail.send; app tokens carry an explicit
-	// permission list ('*' wildcard or the literal true for everything),
-	// minus the actions no grant can ever cover.
+	// RBAC: app tokens carry an explicit permission list ('*' wildcard or the
+	// literal true for everything), minus the actions no grant can ever cover.
 	if !isRoot {
 		allowed := false
-		if isApp && !AppMayCall(action) {
-			s.log.Warn(fmt.Sprintf("Blocked restricted action '%s' from app '%s'", action, clientDomain))
+		if !AppMayCall(action) {
+			s.log.Warn(fmt.Sprintf("Blocked restricted action '%s' from app '%s'", action, appName))
 			r := Res(false, "permission_denied")
 			c.write(encodeFinal(id, true, &r))
 			return false
 		}
-		if isApp {
-			switch p := appPermissions.(type) {
-			case bool:
-				allowed = p
-			case []any:
-				for _, v := range p {
-					if v == any("*") || v == any(action) {
-						allowed = true
-						break
-					}
+		switch p := appPermissions.(type) {
+		case bool:
+			allowed = p
+		case []any:
+			for _, v := range p {
+				if v == any("*") || v == any(action) {
+					allowed = true
+					break
 				}
 			}
-		} else if action == "mail.send" {
-			allowed = true
 		}
 		if !allowed {
-			s.log.Warn(fmt.Sprintf("Blocked unauthorized action '%s' from '%s'", action, clientDomain))
+			s.log.Warn(fmt.Sprintf("Blocked unauthorized action '%s' from app '%s'", action, appName))
 			r := Res(false, "permission_denied")
 			c.write(encodeFinal(id, true, &r))
 			return false
 		}
 	}
 
-	args := Args{raw: payload.Data, values: make([]any, len(payload.Data))}
+	caller := Caller{Root: isRoot}
+	if isApp {
+		caller.App = appName
+	}
+	args := Args{raw: payload.Data, values: make([]any, len(payload.Data)), caller: caller}
 	for i, rawArg := range payload.Data {
 		json.Unmarshal(rawArg, &args.values[i]) // failure leaves nil (undefined)
 	}
@@ -540,6 +689,7 @@ func (s *Server) handleRequest(c *apiConn, id string, raw json.RawMessage) bool 
 		c.write(encodeProgress(process, status, message))
 	}
 
+	c.admitted()
 	result, err := runHandler(handler, args, progress)
 	if err != nil {
 		msg := err.Error()
@@ -568,22 +718,22 @@ func runHandler(h Handler, args Args, progress Progress) (result *Result, err er
 	return h(args, progress)
 }
 
-func (s *Server) lookupToken(auth string) (string, bool) {
-	if auth == "" {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	domain, ok := s.tokens[auth]
-	return domain, ok
-}
-
 // apiConn serializes writes and drops them once the connection is destroyed
 // (Node: this.#connections[id] deleted on close, send() checks it).
 type apiConn struct {
 	conn   net.Conn
+	admit  func()
 	mu     sync.Mutex
 	closed bool
+}
+
+// admitted ends the pre-handler phase: the pending slot is freed, and the
+// read deadline is lifted, since a handler may stream progress for minutes.
+func (c *apiConn) admitted() {
+	c.conn.SetReadDeadline(time.Time{})
+	if c.admit != nil {
+		c.admit()
+	}
 }
 
 func (c *apiConn) write(b []byte) {
@@ -593,6 +743,19 @@ func (c *apiConn) write(b []byte) {
 		return
 	}
 	c.conn.Write(b)
+}
+
+// lingerClose ends a connection whose peer is still sending. Closing with
+// unread input makes Linux answer with a reset, which can discard the reply
+// before the peer reads it, so the write side is shut first and the rest is
+// read away, bounded in time and bytes, before close.
+func (c *apiConn) lingerClose() {
+	if cw, ok := c.conn.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+	}
+	c.conn.SetReadDeadline(time.Now().Add(lingerTimeout))
+	io.Copy(io.Discard, io.LimitReader(c.conn, lingerBytes))
+	c.close()
 }
 
 func (c *apiConn) close() {

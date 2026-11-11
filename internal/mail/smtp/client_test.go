@@ -1,6 +1,10 @@
 package smtp
 
 import (
+	"bufio"
+	"bytes"
+	"net/textproto"
+	"strings"
 	"testing"
 
 	"odac/internal/mail/config"
@@ -227,39 +231,37 @@ func TestExtractIP(t *testing.T) {
 	}
 }
 
-func TestEncodeDataBody_DotStuffing(t *testing.T) {
-	in := []byte("Subject: x\r\n\r\n<style>\r\n.foo { color: red; }\r\n.\r\nbar\r\n</style>\r\n")
-	got := string(encodeDataBody(in))
-	want := "Subject: x\r\n\r\n<style>\r\n..foo { color: red; }\r\n..\r\nbar\r\n</style>\r\n"
-	if got != want {
-		t.Errorf("dot-stuffing failed\n got: %q\nwant: %q", got, want)
+// dotEncode runs body through the writer a session sends DATA with.
+func dotEncode(t *testing.T, body string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	w := textproto.NewWriter(bw).DotWriter()
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatal(err)
 	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSuffix(buf.String(), ".\r\n")
 }
 
-func TestEncodeDataBody_BareLFNormalized(t *testing.T) {
-	in := []byte("Subject: x\n\nhello\n.world\n")
-	got := string(encodeDataBody(in))
-	want := "Subject: x\r\n\r\nhello\r\n..world\r\n"
-	if got != want {
-		t.Errorf("LF→CRLF + dot-stuffing failed\n got: %q\nwant: %q", got, want)
+// RFC 5321 section 4.5.2: CRLF on the wire, a line starting with "." is
+// doubled (HTML/CSS bodies carry ".classname" lines), and the body ends with
+// CRLF before the terminator.
+func TestDataEncoding(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"dot-stuffing",
+			"Subject: x\r\n\r\n<style>\r\n.foo { color: red; }\r\n.\r\nbar\r\n</style>\r\n",
+			"Subject: x\r\n\r\n<style>\r\n..foo { color: red; }\r\n..\r\nbar\r\n</style>\r\n"},
+		{"bare LF", "Subject: x\n\nhello\n.world\n", "Subject: x\r\n\r\nhello\r\n..world\r\n"},
+		{"no trailing newline", "no-trailing-newline", "no-trailing-newline\r\n"},
+		{"trailing CRLF kept once", "ends-with-crlf\r\n", "ends-with-crlf\r\n"},
+		{"mid-line dots", "A sentence. With a period.\r\n", "A sentence. With a period.\r\n"},
 	}
-}
-
-func TestEncodeDataBody_TrailingCRLFGuaranteed(t *testing.T) {
-	got := string(encodeDataBody([]byte("no-trailing-newline")))
-	if got != "no-trailing-newline\r\n" {
-		t.Errorf("trailing CRLF not added, got %q", got)
-	}
-	got = string(encodeDataBody([]byte("ends-with-crlf\r\n")))
-	if got != "ends-with-crlf\r\n" {
-		t.Errorf("should not duplicate trailing CRLF, got %q", got)
-	}
-}
-
-func TestEncodeDataBody_DotMidLineUnchanged(t *testing.T) {
-	in := []byte("This is a sentence. With a period.\r\nAnother line.\r\n")
-	got := string(encodeDataBody(in))
-	if got != string(in) {
-		t.Errorf("mid-line dots should not be stuffed\n got: %q\nwant: %q", got, string(in))
+	for _, tc := range cases {
+		if got := dotEncode(t, tc.in); got != tc.want {
+			t.Errorf("%s:\n got: %q\nwant: %q", tc.name, got, tc.want)
+		}
 	}
 }

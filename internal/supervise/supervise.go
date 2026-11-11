@@ -1,7 +1,5 @@
-// Package supervise is the Go port of the data-plane process supervision
-// blocks of server/src/{Proxy,DNS,Mail}.js — three byte-identical copies in
-// Node, one generic Supervisor here (contracts/proxy-control.md "Process
-// contract", shared by dns/mail per their contracts).
+// Package supervise is the generic process supervisor shared by the
+// data-plane binaries (proxy, dns, mail).
 //
 // Per supervised binary:
 //
@@ -17,17 +15,15 @@
 //   - Config sync scheduled 1s after spawn/adopt (OnSync callback).
 //   - ODAC_PREVIOUS_INSTANCE_ID run files GC'd 60s after spawn.
 //
-// Deviations from Node (deliberate, documented in STATE.md):
+// Further guarantees:
 //
-//   - TCP fallback mode is not ported (task 3.2 decision): the socket env var
-//     is always set, on every platform. In Node the binaries' TCP port line on
-//     stdout was discarded, so TCP mode never worked anywhere.
-//   - Node never notices an adopted orphan dying (its fake process handle has
-//     no exit event, so check() sees the slot occupied forever). Ensure probes
-//     adopted PIDs so the 1s check tick can respawn them.
+//   - There is no TCP fallback: the socket env var is always set, on every
+//     platform.
+//   - Ensure probes adopted PIDs, so the 1s check tick can respawn an adopted
+//     orphan that died (an adopted process has no exit event).
 //   - The exit watcher only unlinks the PID file when it still holds our PID,
-//     so a stop→restart cannot lose the successor's PID file to a late
-//     exit handler (latent race in Node, never hit there).
+//     so a stop then restart cannot lose the successor's PID file to a late
+//     exit handler.
 package supervise
 
 import (

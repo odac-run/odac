@@ -27,6 +27,12 @@ import (
 // maxMessageAge mirrors MessageSigner.verify's 300s window.
 const maxMessageAge = 300
 
+// maxNestingDepth bounds the splice scanner's recursion. It runs before the
+// signature is checked, on up to 16 MiB of input, and a Go stack overflow is
+// fatal rather than a recoverable panic. encoding/json refuses deeper input
+// too, so no message the handler could decode is lost.
+const maxNestingDepth = 10000
+
 // sign computes the hex HMAC-SHA256 signature over the canonical payload.
 // Mirrors MessageSigner.sign: a missing secret yields no signature (the
 // caller emits null), and id is included only when truthy.
@@ -78,6 +84,12 @@ func jsTruthy(v any) bool {
 // verifyWire ports MessageSigner.verify over raw wire bytes. It returns
 // false with a log-worthy reason when the message must be dropped.
 func verifyWire(raw []byte, secret string, now time.Time) (ok bool, reason string) {
+	// An empty key is a valid HMAC key, so without this anyone could sign.
+	// sign() emits no signature without a secret, so nothing legitimate is
+	// signed this way.
+	if secret == "" {
+		return false, "no hub secret configured"
+	}
 	fields, err := spliceTopLevel(raw)
 	if err != nil {
 		return false, "unparseable message: " + err.Error()
@@ -201,8 +213,9 @@ func spliceTopLevel(raw []byte) (map[string][]byte, error) {
 // copies token bytes verbatim and drops only inter-token whitespace, per
 // the contract's splice rule.
 type scanner struct {
-	buf []byte
-	pos int
+	buf   []byte
+	pos   int
+	depth int
 }
 
 func (s *scanner) peek() byte {
@@ -267,6 +280,11 @@ func (s *scanner) scanValue() ([]byte, error) {
 	case '"':
 		return s.scanString()
 	case '{', '[':
+		s.depth++
+		if s.depth > maxNestingDepth {
+			return nil, errors.New("nesting too deep")
+		}
+		defer func() { s.depth-- }()
 		open, close := byte('{'), byte('}')
 		if c == '[' {
 			open, close = '[', ']'

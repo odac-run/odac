@@ -93,6 +93,24 @@ func toNetworkMode(v any) string {
 	return mode
 }
 
+// toNetworks converts a persisted `networks` list to RunOptions.Networks,
+// dropping entries that are not strings. docker.RunApp validates the rest.
+// No list stays nil (the default network) while an empty one stays empty
+// and non-nil (no shared network), so the two must not be collapsed.
+func toNetworks(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // toDevices converts persisted `devices` entries to docker.Device.
 func toDevices(v any) []docker.Device {
 	list, _ := v.([]any)

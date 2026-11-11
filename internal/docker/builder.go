@@ -3,7 +3,10 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,10 +19,10 @@ import (
 )
 
 // This file ports server/src/Container/Builder.js: the ODAC native builder.
-// Secure two-stage build (compile → package) that avoids DinD and
-// privileged mode entirely — compile runs in an unprivileged runner with
-// the source bind-mounted, packaging talks to the host daemon through a
-// socket-mounted docker:cli container.
+// Two-stage build (compile, then package) without DinD or privileged mode:
+// compile runs in a sandbox (sandboxHostConfig) with the source
+// bind-mounted, packaging talks to the host daemon through a socket-mounted
+// docker:cli container.
 
 // safeImageRef guards the `docker build -t <imageName>` shell interpolation
 // in packageImage/packageCustom. It permits the full image-reference set
@@ -116,6 +119,7 @@ var (
 type packageSpec struct {
 	baseImage string
 	user      string
+	group     string // when the base image names user's group differently
 	cmd       []string
 	setup     []string
 	env       [][2]string // ordered KEY,VALUE pairs
@@ -197,7 +201,7 @@ var buildStrategies = map[string]buildStrategy{
 		installCmd: "[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps",
 		buildCmd:   "rm -rf __pycache__",
 		pkg: &packageSpec{
-			baseImage: "python:3-slim", user: "nobody",
+			baseImage: "python:3-slim", user: "nobody", group: "nogroup", // Debian has no "nobody" group
 			cmd: []string{"sh", "-c", "if [ -f main.py ]; then python main.py; elif [ -f run.py ]; then python run.py; else python app.py; fi"},
 			env: [][2]string{{"PYTHONPATH", "/app/deps"}},
 		},
@@ -228,7 +232,25 @@ var buildStrategies = map[string]buildStrategy{
 }
 
 // packagerImage is the socket-mounted docker client used for image builds.
-const packagerImage = "docker:cli"
+// It holds the Docker socket, so it is pinned by digest (docker:29.9.3-cli)
+// rather than trusted by tag.
+const packagerImage = "docker@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5d7c945b5f3b28d"
+
+// buildPidsLimit bounds the processes and threads of one build container,
+// which is what stops a fork bomb in an install script from taking the host.
+// It sits well above what a parallel cargo or webpack build uses.
+const buildPidsLimit int64 = 8192
+
+// buildCaps is what package managers running as root still need once every
+// capability is dropped: file ownership and permission bits (apk, npm),
+// and switching uid (npm runs scripts as the directory owner, apt as _apt).
+// Everything that reaches past the container's own files stays dropped,
+// NET_RAW and NET_BIND_SERVICE included.
+var buildCaps = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID"}
+
+// maxProjectFile bounds a version file read. The file comes from the
+// repository, which also decides its size.
+const maxProjectFile = 1 << 20
 
 // compileEnv silences interactive/progress output in runner containers.
 var compileEnv = []string{
@@ -439,7 +461,7 @@ func resolveImage(internalPath string, s *buildStrategy) string {
 		files = append(files, resolver.fallbackFile)
 	}
 	for _, file := range files {
-		content, err := os.ReadFile(filepath.Join(internalPath, file))
+		content, err := readProjectFile(filepath.Join(internalPath, file))
 		if err != nil {
 			continue
 		}
@@ -450,9 +472,70 @@ func resolveImage(internalPath string, s *buildStrategy) string {
 	return fallback
 }
 
-// compile ports Builder.#compile: run install/build/cleanup in an
-// unprivileged runner with the source bind-mounted and host networking
-// (speed + registry caching).
+// readProjectFile reads a file the repository committed, refusing anything
+// but a regular file. A committed symlink would otherwise point the server
+// at any path it can read, and /dev/zero or a FIFO would never return.
+func readProjectFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("%s changed while it was opened", path)
+	}
+	return io.ReadAll(io.LimitReader(f, maxProjectFile))
+}
+
+// writeBuildFile creates a generated file in the source tree afresh. The
+// tree is written by repository code (a committed symlink, or the compile
+// step), and a plain write follows a symlink and truncates its target, so the
+// entry is removed and the file created with O_EXCL, which never follows one.
+func writeBuildFile(path string, data []byte) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// sandboxHostConfig is the host config of every container that runs
+// repository code or receives its credentials: BuildNetwork instead of the
+// host's stack, the capabilities in buildCaps, no setuid escalation and a
+// process limit. It stays root because the toolchains install into
+// root-owned images and source trees.
+func sandboxHostConfig(binds []string) *container.HostConfig {
+	pids := buildPidsLimit
+	return &container.HostConfig{
+		Binds:       binds,
+		NetworkMode: container.NetworkMode(BuildNetwork),
+		CapDrop:     []string{"ALL"},
+		CapAdd:      buildCaps,
+		SecurityOpt: []string{"no-new-privileges"},
+		Resources:   container.Resources{PidsLimit: &pids},
+	}
+}
+
+// compile ports Builder.#compile: run install/build/cleanup in the build
+// sandbox with the source bind-mounted.
 func (c *Client) compile(strategy *buildStrategy, bctx BuildContext, buildLog BuildLog) error {
 	c.log.Log("[Phase 1] Compiling artifacts using %s...", strategy.image)
 
@@ -470,17 +553,17 @@ func (c *Client) compile(strategy *buildStrategy, bctx BuildContext, buildLog Bu
 	if err := c.EnsureImage(strategy.image, nil); err != nil {
 		return err
 	}
+	if err := c.ensureNetwork(context.Background(), BuildNetwork); err != nil {
+		return err
+	}
 	if buildLog != nil {
 		buildLog.EndPhase("pull_compiler", true)
 		buildLog.StartPhase("run_compile")
 	}
 
-	status, err := c.runBuilderContainer(strategy.image, []string{"sh", "-c", commands}, &container.HostConfig{
-		Binds:       []string{bctx.HostPath + ":/app"},
-		AutoRemove:  true,
-		Privileged:  false, // SECURITY: strict no to privileged
-		NetworkMode: "host",
-	}, "/app", compileEnv, buildLog)
+	hostCfg := sandboxHostConfig([]string{bctx.HostPath + ":/app"})
+	hostCfg.AutoRemove = true
+	status, err := c.runBuilderContainer(strategy.image, []string{"sh", "-c", commands}, hostCfg, "/app", compileEnv, buildLog)
 	if err != nil {
 		return err
 	}
@@ -507,10 +590,11 @@ func (c *Client) packageImage(strategy *buildStrategy, bctx BuildContext, imageN
 	if buildLog != nil {
 		buildLog.StartPhase("prepare_context")
 	}
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0o644); err != nil {
+	if err := writeBuildFile(dockerfilePath, []byte(dockerfile)); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dockerignorePath, []byte(".git\n.github\nDockerfile.odac\n"), 0o644); err != nil {
+	if err := writeBuildFile(dockerignorePath, []byte(".git\n.github\nDockerfile.odac\n")); err != nil {
+		os.Remove(dockerfilePath)
 		return err
 	}
 	if buildLog != nil {
@@ -611,7 +695,11 @@ func (c *Client) runBuilderContainer(image string, cmd []string, hostCfg *contai
 // Node's template does.
 func generateDockerfile(pkg *packageSpec) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\nFROM %s\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R %s:%s /app\n", pkg.baseImage, pkg.user, pkg.user)
+	group := pkg.group
+	if group == "" {
+		group = pkg.user
+	}
+	fmt.Fprintf(&b, "\nFROM %s\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R %s:%s /app\n", pkg.baseImage, pkg.user, group)
 	for _, cmd := range pkg.setup {
 		fmt.Fprintf(&b, "RUN %s\n", cmd)
 	}

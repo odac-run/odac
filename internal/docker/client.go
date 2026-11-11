@@ -50,11 +50,13 @@ import (
 	"odac/internal/resources"
 )
 
-// networkName is the shared bridge network every ODAC app joins.
-const networkName = "odac-network"
+// DefaultNetwork is the shared bridge an app joins when its record names no
+// networks of its own. Exported because appmgr leaves a list that names only
+// this one unpersisted, so the record of an untouched app does not change.
+const DefaultNetwork = "odac-network"
 
 // IsolatedNetwork is the shared `internal` bridge for isolated apps: same
-// driver, no route off the host. Kept separate from networkName because
+// driver, no route off the host. Kept separate from DefaultNetwork because
 // `internal` is a network-level property — it cannot be toggled per container,
 // so no-egress apps need a bridge of their own. Exported because appmgr names
 // it when telling an operator where to attach a peer app.
@@ -63,6 +65,12 @@ const IsolatedNetwork = "odac-network-isolated"
 // infoTimeout caps the daemon-info call behind Runtimes(); the caller is on
 // the Hub's payload path and must not wait on a wedged daemon.
 const infoTimeout = 2 * time.Second
+
+// probeTimeout caps the state probes (IsRunning, RunningNames, GetIP). They
+// run on the 1-second tick and on the proxy sync, and the SDK sets no
+// deadline of its own, so a daemon stalled under I/O pressure would hold
+// those paths forever.
+const probeTimeout = 3 * time.Second
 
 // API is the narrow slice of the Docker SDK client the orchestrator uses.
 // *client.Client satisfies it; tests inject fakes.
@@ -128,6 +136,11 @@ type RunOptions struct {
 	// alongside the bridge: a host-namespace container has no bridge to
 	// isolate, so the two never combine (appmgr refuses it).
 	Isolated bool
+	// Networks is the app's persisted network list: nil means DefaultNetwork
+	// alone, a non-nil empty list means PrivateNetwork. Bridge apps only:
+	// host networking has no bridge to join and isolation would lose its
+	// guarantee, so both ignore it.
+	Networks []string
 	// Kernel is the validated capability / sysctl request, nil for an app
 	// that asked for neither — which must produce byte-identical container
 	// config to what it produced before the field existed. SECURITY: every
@@ -310,37 +323,6 @@ func (c *Client) GetLastBuildLog(appName string) string {
 		return ""
 	}
 	return logger.ReadLastBuildLog()
-}
-
-// ensureNetwork makes sure the named bridge network exists. Best-effort
-// like Node: failures are logged, not returned.
-//
-// internal creates the network with Docker's `internal` flag, which installs
-// FORWARD rules dropping every packet routed between the bridge's subnet and
-// any other interface. That is the enforcement behind RunOptions.Isolated. Note
-// the flag is a property of the network, not the container, so an existing
-// network is never reconfigured — a name that already exists is taken as-is.
-func (c *Client) ensureNetwork(ctx context.Context, name string, internal bool) {
-	networks, err := c.api.NetworkList(ctx, network.ListOptions{})
-	if err != nil {
-		c.log.Error("Failed to ensure network %s: %s", name, err.Error())
-		return
-	}
-	for _, n := range networks {
-		if n.Name == name {
-			if internal && !n.Internal {
-				// Someone created this name by hand without the flag. Egress
-				// would be wide open while the app reports itself isolated, so
-				// say it out loud rather than pretend.
-				c.log.Error("Network %s exists but is NOT internal: apps on it can still reach the internet. Remove it and let ODAC recreate it.", name)
-			}
-			return
-		}
-	}
-	c.log.Log("Creating network %s (internal=%v)...", name, internal)
-	if _, err := c.api.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge", Internal: internal}); err != nil {
-		c.log.Error("Failed to ensure network %s: %s", name, err.Error())
-	}
 }
 
 // EnsureImage pulls the image when it is missing locally, streaming pull
@@ -658,18 +640,26 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 	}
 	devices = append(devices, gpuCfg.devices...)
 
-	netMode := networkName
+	netMode := DefaultNetwork
+	var extraNetworks []string
 	switch {
 	case hostNetwork:
 		// No shared bridge to ensure: the container joins the host namespace.
 		netMode = netmode.Host
 		c.log.Log("App %s runs with HOST networking: no network isolation from the host.", name)
+		c.ignoreNetworks(name, options.Networks, "host networking")
 	case options.Isolated:
 		netMode = IsolatedNetwork
-		c.ensureNetwork(ctx, IsolatedNetwork, true)
+		c.ensureNetwork(ctx, IsolatedNetwork)
 		c.log.Log("App %s runs ISOLATED on %s: no outbound network access.", name, IsolatedNetwork)
+		// Any ordinary bridge would hand the app its egress back.
+		c.ignoreNetworks(name, options.Networks, "isolation")
 	default:
-		c.ensureNetwork(ctx, networkName, false)
+		nets := c.appNetworks(name, options.Networks)
+		for _, n := range nets {
+			c.ensureNetwork(ctx, n)
+		}
+		netMode, extraNetworks = nets[0], nets[1:]
 	}
 
 	kernelSpec := c.kernelHostConfig(name, options.Kernel, hostNetwork)
@@ -734,6 +724,19 @@ func (c *Client) RunApp(name string, options RunOptions, buildLog BuildLog, isCa
 			buildLog.EndPhase("start_new_container", false)
 		}
 		return false, err
+	}
+
+	// Joined before start, so the app never runs without a network it was given.
+	for _, n := range extraNetworks {
+		if err := c.api.NetworkConnect(ctx, n, created.ID, nil); err != nil {
+			c.log.Error("Failed to connect app container %s to network %s: %s", name, n, err.Error())
+			c.api.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+			if buildLog != nil {
+				fmt.Fprintf(buildLog, "%s\n", err.Error())
+				buildLog.EndPhase("start_new_container", false)
+			}
+			return false, err
+		}
 	}
 
 	if isCancelled != nil && isCancelled() {
@@ -875,7 +878,9 @@ func (c *Client) IsRunning(name string) bool {
 	if !c.available {
 		return false
 	}
-	data, err := c.api.ContainerInspect(context.Background(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	data, err := c.api.ContainerInspect(ctx, name)
 	if err != nil {
 		if !client.IsErrNotFound(err) {
 			c.log.Error("Failed to check if running %s: %s", name, err.Error())
@@ -883,6 +888,31 @@ func (c *Client) IsRunning(name string) bool {
 		return false
 	}
 	return data.State != nil && data.State.Running
+}
+
+// RunningNames returns the names of every running container in one daemon
+// call. It exists for the app pulse, which used to inspect each app in turn:
+// one bounded list costs the same for any number of apps, and an error means
+// "unknown", which the caller must not read as "stopped".
+func (c *Client) RunningNames() (map[string]bool, error) {
+	if !c.available {
+		return map[string]bool{}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	list, err := c.api.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	// Without All the daemon lists what inspect reports as State.Running
+	// (paused and restarting included), the same answer IsRunning gives.
+	out := make(map[string]bool, len(list))
+	for _, ct := range list {
+		for _, name := range ct.Names {
+			out[strings.TrimPrefix(name, "/")] = true
+		}
+	}
+	return out, nil
 }
 
 // ContainerInfo is one row of List.
@@ -920,13 +950,15 @@ func (c *Client) List() []ContainerInfo {
 	return out
 }
 
-// GetIP resolves the container's IP: odac-network first, then the first
+// GetIP resolves the container's IP: DefaultNetwork first, then the first
 // network with an address. ("", error) mirrors Node's null.
 func (c *Client) GetIP(nameOrID string) (string, error) {
 	if !c.available {
 		return "", fmt.Errorf("docker not available")
 	}
-	data, err := c.api.ContainerInspect(context.Background(), nameOrID)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	data, err := c.api.ContainerInspect(ctx, nameOrID)
 	if err != nil {
 		if !client.IsErrNotFound(err) {
 			c.log.Error("Failed to get IP for %s: %s", nameOrID, err.Error())
@@ -936,7 +968,7 @@ func (c *Client) GetIP(nameOrID string) (string, error) {
 	if data.NetworkSettings == nil {
 		return "", fmt.Errorf("no network settings")
 	}
-	if n := data.NetworkSettings.Networks[networkName]; n != nil && n.IPAddress != "" {
+	if n := data.NetworkSettings.Networks[DefaultNetwork]; n != nil && n.IPAddress != "" {
 		return n.IPAddress, nil
 	}
 	// Fallback: first network, in sorted name order for determinism (Node
@@ -1108,13 +1140,18 @@ func (c *Client) GetStatus(name string) Status {
 	}
 
 	var networks []string
+	joined := 0
 	if data.NetworkSettings != nil {
+		joined = len(data.NetworkSettings.Networks)
 		for n := range data.NetworkSettings.Networks {
-			networks = append(networks, n)
+			// ODAC's own placement, never reported: the app's list is empty.
+			if n != PrivateNetwork {
+				networks = append(networks, n)
+			}
 		}
 		sort.Strings(networks)
 	}
-	if len(networks) == 0 && data.HostConfig != nil && data.HostConfig.NetworkMode != "" {
+	if joined == 0 && data.HostConfig != nil && data.HostConfig.NetworkMode != "" && string(data.HostConfig.NetworkMode) != PrivateNetwork {
 		networks = []string{string(data.HostConfig.NetworkMode)}
 	}
 
@@ -1134,13 +1171,16 @@ type SetNetworksResult struct {
 }
 
 // SetNetworks reconciles the container's networks with the desired list:
-// missing target networks are created, extra ones disconnected, new ones
-// connected; returns the final list.
+// missing target networks are created, new ones connected, extra ones
+// disconnected; returns the final list. Connecting comes first so a failure
+// part way never leaves the container on fewer networks than either list.
+// An empty list means PrivateNetwork, which the returned list never names.
 func (c *Client) SetNetworks(name string, networks []string) SetNetworksResult {
 	if !c.available {
 		return SetNetworksResult{Success: false, Message: "Docker is not available"}
 	}
 	ctx := context.Background()
+	networks = withPrivateFallback(networks)
 
 	fail := func(err error) SetNetworksResult {
 		c.log.Error("Failed to set networks for %s: %s", name, err.Error())
@@ -1160,11 +1200,19 @@ func (c *Client) SetNetworks(name string, networks []string) SetNetworksResult {
 	desired := map[string]bool{}
 	for _, n := range networks {
 		desired[n] = true
-		// User-named networks are ordinary bridges; only ODAC's own isolated
-		// network carries the internal flag.
-		c.ensureNetwork(ctx, n, n == IsolatedNetwork)
+		if err := c.ensureNetwork(ctx, n); err != nil {
+			return fail(err)
+		}
 	}
 
+	for _, n := range networks {
+		if !current[n] {
+			c.log.Log("Connecting %s to network %s", name, n)
+			if err := c.api.NetworkConnect(ctx, n, name, nil); err != nil {
+				return fail(err)
+			}
+		}
+	}
 	currentSorted := make([]string, 0, len(current))
 	for n := range current {
 		currentSorted = append(currentSorted, n)
@@ -1178,23 +1226,17 @@ func (c *Client) SetNetworks(name string, networks []string) SetNetworksResult {
 			}
 		}
 	}
-	for _, n := range networks {
-		if !current[n] {
-			c.log.Log("Connecting %s to network %s", name, n)
-			if err := c.api.NetworkConnect(ctx, n, name, nil); err != nil {
-				return fail(err)
-			}
-		}
-	}
 
 	updated, err := c.api.ContainerInspect(ctx, name)
 	if err != nil {
 		return fail(err)
 	}
-	var final []string
+	final := []string{}
 	if updated.NetworkSettings != nil {
 		for n := range updated.NetworkSettings.Networks {
-			final = append(final, n)
+			if n != PrivateNetwork {
+				final = append(final, n)
+			}
 		}
 		sort.Strings(final)
 	}

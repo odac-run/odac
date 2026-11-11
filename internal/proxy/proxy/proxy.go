@@ -24,7 +24,9 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/crypto/ocsp"
+	"golang.org/x/net/http/httpguts"
 
+	"odac/internal/mtls"
 	"odac/internal/proxy/config"
 )
 
@@ -110,23 +112,32 @@ type Proxy struct {
 	acmeChallenges map[string]string // ACME HTTP-01 challenge tokens: token -> keyAuthorization
 	acmeMu         sync.RWMutex      // Separate mutex for ACME challenges to avoid contention
 	cache          *CacheManager     // Smart adaptive asset cache
+	clientAuth     atomic.Pointer[clientAuthTable]
 	domains        map[string]config.Website
 	hints          *HintsStore // 103 Early Hints engine
 	http3Available atomic.Bool
+	liveAuth       map[*liveClientAuth]struct{}
+	liveAuthMu     sync.Mutex
 	pages          *PageCache // App-controlled HTML page cache
-	sslCache       map[string]*tls.Certificate
-	ocspCache      map[string]*ocspCacheEntry // OCSP response cache
+	sslCache       map[certID]*tls.Certificate
+	ocspCache      map[certID]*ocspCacheEntry // OCSP response cache
+	certGen        uint64                     // Moves on every config push, under mu
+	certCalls      map[certID]*certCall       // Loads in flight, under certMu
+	certMu         sync.Mutex
+	verdicts       *verdictCache
 	globalSSL      *config.SSL
 	mu             sync.RWMutex
 	reverseProxy   *httputil.ReverseProxy
+	tlsBase        *tls.Config
 	tunnel         *TunnelManager
 	httpClient     *http.Client // For OCSP requests
 }
 
 // ocspCacheEntry stores OCSP response with expiration
 type ocspCacheEntry struct {
-	response  []byte
-	expiresAt time.Time
+	response   []byte
+	expiresAt  time.Time
+	refreshing atomic.Bool // One refresh at a time, not one per handshake near expiry
 }
 
 func NewProxy() *Proxy {
@@ -136,10 +147,13 @@ func NewProxy() *Proxy {
 		cache:          cm,
 		domains:        make(map[string]config.Website),
 		hints:          NewHintsStore(),
+		liveAuth:       make(map[*liveClientAuth]struct{}),
 		pages:          NewPageCache(cm),
-		sslCache:       make(map[string]*tls.Certificate),
-		ocspCache:      make(map[string]*ocspCacheEntry),
+		sslCache:       make(map[certID]*tls.Certificate),
+		ocspCache:      make(map[certID]*ocspCacheEntry),
+		certCalls:      make(map[certID]*certCall),
 		tunnel:         NewTunnelManager(),
+		verdicts:       newVerdictCache(),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // OCSP requests should be fast
 		},
@@ -162,7 +176,10 @@ func NewProxy() *Proxy {
 	}
 
 	p.reverseProxy = &httputil.ReverseProxy{
-		Director:      p.director,
+		// Rewrite, not Director: ReverseProxy drops every header the client names in
+		// Connection after a Director returns, which let a client strip X-Real-IP or the
+		// signed client certificate headers. Rewrite runs after that removal.
+		Rewrite:       func(pr *httputil.ProxyRequest) { p.director(pr.Out) },
 		Transport:     transport,
 		BufferPool:    bufferPool{}, // Zero-allocation: reuse buffers from pool
 		FlushInterval: -1,           // Flush every chunk immediately — critical for streaming/large files
@@ -183,7 +200,7 @@ func NewProxy() *Proxy {
 			r.Header.Del("X-Runtime")
 
 			// Learn Link:rel=preload headers for 103 Early Hints
-			if r.Request != nil {
+			if r.Request != nil && !presentsClientCert(r.Request) {
 				host := r.Request.Host
 				if idx := strings.Index(host, ":"); idx != -1 {
 					host = host[:idx]
@@ -253,8 +270,9 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 	p.mu.Lock()
 	p.domains = domains
 	p.globalSSL = globalSSL
-	p.sslCache = make(map[string]*tls.Certificate)
-	p.ocspCache = make(map[string]*ocspCacheEntry) // Clear OCSP cache on config update
+	p.sslCache = make(map[certID]*tls.Certificate)
+	p.ocspCache = make(map[certID]*ocspCacheEntry) // Clear OCSP cache on config update
+	p.certGen++
 	p.mu.Unlock()
 
 	// Update tunnel connections outside main lock (TunnelManager has its own mutex)
@@ -266,9 +284,17 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 	if memory != nil && memory.Total > 0 {
 		p.cache.UpdateMemory(memory.Total, memory.Used)
 	}
+
+	p.reauthorizeLive()
 }
 
 func (p *Proxy) director(req *http.Request) {
+	for _, header := range mtls.Headers {
+		req.Header.Del(header)
+	}
+	req.Header.Del("X-Odac-Connection-RemoteAddress")
+	req.Header.Del("X-Odac-Connection-Ssl")
+	req.Header.Del("X-Odac-Websocket")
 	req.Header.Del("X-Forwarded-For")
 	req.Header.Del("X-Real-IP")
 	req.Header.Del("X-Forwarded-Proto")
@@ -334,10 +360,21 @@ func (p *Proxy) director(req *http.Request) {
 		req.Header.Set("X-Forwarded-Proto", "http")
 	}
 
-	if strings.ToLower(req.Header.Get("Connection")) == "upgrade" &&
-		strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
+	if isWebSocketUpgrade(req.Header) {
 		req.Header.Set("X-Odac-Websocket", "true")
 	}
+
+	if state := clientAuthFrom(req); state != nil {
+		applyClientAuthHeaders(req, state, time.Now())
+	}
+}
+
+// isWebSocketUpgrade reads Connection and Upgrade as token lists: Firefox sends
+// "Connection: keep-alive, Upgrade", and a whole-value match sent it through the cache
+// writers, which cannot switch protocols.
+func isWebSocketUpgrade(h http.Header) bool {
+	return httpguts.HeaderValuesContainsToken(h["Connection"], "upgrade") &&
+		httpguts.HeaderValuesContainsToken(h["Upgrade"], "websocket")
 }
 
 func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
@@ -348,6 +385,13 @@ func (p *Proxy) resolveDomain(host string) (config.Website, bool) {
 	parts := strings.Split(host, ".")
 	for i := 1; i < len(parts); i++ {
 		parent := strings.Join(parts[i:], ".")
+		// A *.x record exists when x itself is not registered for the same app.
+		// It covers one label, the same reach as its certificate.
+		if i == 1 {
+			if site, ok := p.domains["*."+parent]; ok {
+				return site, true
+			}
+		}
 		if site, ok := p.domains[parent]; ok {
 			return site, true
 		}
@@ -369,7 +413,7 @@ func (p *Proxy) setEdgeHeaders(h http.Header, r *http.Request) {
 	if net.ParseIP(host) == nil && host != "localhost" {
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 	}
-	if p.http3Available.Load() {
+	if state := clientAuthFrom(r); p.http3Available.Load() && (state == nil || !state.tcpOnly) {
 		h.Set("Alt-Svc", altSvcHTTP3)
 	}
 }
@@ -395,6 +439,7 @@ func (p *Proxy) Tunnel() *TunnelManager {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Host = strings.ToLower(r.Host)
 	host := r.Host
 	if strings.Contains(host, ":") {
 		host, _, _ = net.SplitHostPort(host)
@@ -453,16 +498,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// This prevents IP-based scanners from fingerprinting the server.
 	if !exists {
 		debugLog("[SECURITY] Unknown host '%s' - rejecting request (anti-scan)", host)
-		if hijacker, ok := w.(http.Hijacker); ok {
-			conn, _, err := hijacker.Hijack()
-			if err == nil {
-				conn.Close()
-				return
-			}
-		}
-		http.Error(w, "", http.StatusNotFound)
+		dropConnection(w)
 		return
 	}
+
+	r, releaseClientAuth, handled := p.gateClientAuth(w, r, host, website, hasSSL)
+	if handled {
+		return
+	}
+	defer releaseClientAuth()
+	identified := presentsClientCert(r)
 
 	// Security: Prevent Domain Fronting (SNI Mismatch)
 	// If TLS SNI exists but Host header differs significantly, it might be an attack.
@@ -524,16 +569,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Skip compression for WebSocket connections
-	isWebSocket := strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
-		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+	isWebSocket := isWebSocketUpgrade(r.Header)
 
 	// ── 103 Early Hints: send learned preload hints before proxying ──
-	if !isWebSocket && r.Method == http.MethodGet {
+	if !identified && !isWebSocket && r.Method == http.MethodGet {
 		p.hints.Send(w, host, r.URL.Path)
 	}
 
 	// ── Smart Cache: Serve static assets from memory ──
-	if !isWebSocket && IsCacheable(r) {
+	if !identified && !isWebSocket && IsCacheable(r) {
 		if entry := p.cache.Get(host, r.URL.Path); entry != nil {
 			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
@@ -559,7 +603,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.reverseProxy.ServeHTTP(crw, r)
 
 		// Store in cache if response was cacheable (runs inline, body already buffered)
-		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 {
+		if crw.statusCode == http.StatusOK && crw.body.Len() > 0 && storeAllowedFor(r, crw.headers) {
 			p.cache.storeUnlessPurged(gen, func() {
 				p.cache.Put(host, r.URL.Path, crw.toFakeResponse(), crw.body.Bytes())
 			})
@@ -568,7 +612,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Page Cache: App-controlled HTML caching via X-Odac-Cache header ──
-	if !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
+	if !identified && !isWebSocket && r.Method == http.MethodGet && r.URL.RawQuery == "" {
 		if entry := p.pages.Get(host, r.URL.Path, r); entry != nil {
 			p.setEdgeHeaders(w.Header(), r)
 			if encoding != "" {
@@ -638,6 +682,12 @@ func newCompressionResponseWriter(w http.ResponseWriter, encoding string) *compr
 		w:        w,
 		encoding: encoding,
 	}
+}
+
+// Unwrap lets http.ResponseController reach the connection, which ReverseProxy needs to
+// switch protocols and to set deadlines.
+func (cw *compressionResponseWriter) Unwrap() http.ResponseWriter {
+	return cw.w
 }
 
 func (cw *compressionResponseWriter) Header() http.Header {
@@ -781,6 +831,20 @@ func isCompressible(contentType string) bool {
 	return false
 }
 
+// certID names a key pair by its files. The certificate cache is keyed by it rather than
+// by SNI: any number of names can resolve to one record, and a client picks the names.
+type certID struct {
+	cert, key string
+}
+
+// certCall is one load of a key pair that concurrent handshakes for it wait on.
+type certCall struct {
+	done chan struct{}
+	gen  uint64
+	cert *tls.Certificate
+	err  error
+}
+
 // GetCertificate implements tls.Config.GetCertificate with OCSP Stapling support.
 // OCSP Stapling eliminates the need for clients to contact the CA's OCSP responder,
 // reducing handshake latency by ~100ms and improving privacy.
@@ -788,8 +852,11 @@ func isCompressible(contentType string) bool {
 // Security: Strict SNI validation is enforced to prevent domain discovery attacks.
 // Requests without SNI or with unknown SNI are rejected to prevent IP-based scanning
 // (Shodan, Censys, etc.) from discovering which domains are hosted on this server.
+//
+// This runs before the client has done any work, so no disk or network I/O happens under
+// p.mu: files load outside it, once per key pair, and the staple is fetched in the background.
 func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	host := hello.ServerName
+	host := strings.ToLower(hello.ServerName)
 	debugLog("[DEBUG] TLS Handshake for SNI: %s", host)
 
 	// Security: Reject empty SNI to prevent IP-based domain discovery
@@ -810,91 +877,75 @@ func (p *Proxy) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 		return nil, nil // Returns TLS alert: unrecognized_name
 	}
 
-	// Check cache
-	if cert, ok := p.sslCache[host]; ok {
-		// Check if OCSP response needs refresh (background refresh)
-		if entry, hasOCSP := p.ocspCache[host]; hasOCSP {
-			if time.Now().After(entry.expiresAt.Add(-1 * time.Hour)) {
-				// Refresh in background if expiring within 1 hour
-				go p.refreshOCSPStaple(host, cert)
-			}
-		}
-		p.mu.RUnlock()
-		debugLog("[DEBUG] Found cached cert for %s", host)
-		return cert, nil
-	}
-	p.mu.RUnlock()
-
-	var certKey, certFile string
-	var source string
-
 	// Use site-specific cert or fallback to global for KNOWN websites only
+	var id certID
 	if website.Cert.SSL.Key != "" && website.Cert.SSL.Cert != "" {
-		debugLog("[DEBUG] Found specific cert for %s (Key: %s, Cert: %s)", host, website.Cert.SSL.Key, website.Cert.SSL.Cert)
-		certKey = website.Cert.SSL.Key
-		certFile = website.Cert.SSL.Cert
-		source = "site"
+		id = certID{cert: website.Cert.SSL.Cert, key: website.Cert.SSL.Key}
 	} else if p.globalSSL != nil && p.globalSSL.Key != "" && p.globalSSL.Cert != "" {
-		// Global SSL fallback - only for known websites without specific certs
-		debugLog("[DEBUG] Using Global SSL for known website %s", host)
-		certKey = p.globalSSL.Key
-		certFile = p.globalSSL.Cert
-		source = "global"
+		id = certID{cert: p.globalSSL.Cert, key: p.globalSSL.Key}
 	} else {
+		p.mu.RUnlock()
 		debugLog("[DEBUG] No cert available for known website %s", host)
 		return nil, nil
 	}
 
-	// Load certificate
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Double check
-	if cert, ok := p.sslCache[host]; ok {
+	gen := p.certGen
+	if cert, ok := p.sslCache[id]; ok {
+		if entry, hasOCSP := p.ocspCache[id]; hasOCSP &&
+			time.Now().After(entry.expiresAt.Add(-1*time.Hour)) && entry.refreshing.CompareAndSwap(false, true) {
+			go p.refreshOCSPStaple(id, cert, gen)
+		}
+		p.mu.RUnlock()
 		return cert, nil
 	}
+	p.mu.RUnlock()
 
-	debugLog("[DEBUG] Loading cert files for %s from %s...", host, source)
-	cert, err := tls.LoadX509KeyPair(certFile, certKey)
-	if err != nil {
-		log.Printf("[ERROR] Failed to load SSL for %s (Key: %s, Cert: %s): %v", host, certKey, certFile, err)
-		return nil, err
-	}
-
-	// Fetch OCSP staple (non-blocking, best-effort)
-	p.fetchAndStapleOCSP(host, &cert)
-
-	p.sslCache[host] = &cert
-	debugLog("[DEBUG] Successfully loaded and cached cert for %s", host)
-	return &cert, nil
+	return p.loadCertificate(id, gen)
 }
 
-// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
-// This is a best-effort operation - if it fails, the certificate works without stapling.
-// fetchAndStapleOCSP fetches OCSP response and attaches it to the certificate.
-// It assumes p.mu is held by the caller.
-func (p *Proxy) fetchAndStapleOCSP(host string, cert *tls.Certificate) {
-	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
+// loadCertificate reads a key pair once for every handshake waiting on it. A load that a
+// config push overtook is returned to its callers but not cached, since the push may have
+// come with renewed files.
+func (p *Proxy) loadCertificate(id certID, gen uint64) (*tls.Certificate, error) {
+	p.certMu.Lock()
+	if c, ok := p.certCalls[id]; ok && c.gen == gen {
+		p.certMu.Unlock()
+		<-c.done
+		return c.cert, c.err
+	}
+	c := &certCall{done: make(chan struct{}), gen: gen}
+	p.certCalls[id] = c
+	p.certMu.Unlock()
+
+	cert, err := tls.LoadX509KeyPair(id.cert, id.key)
 	if err != nil {
-		debugLog("[DEBUG] OCSP: Fetch failed for %s: %v", host, err)
-		return
+		log.Printf("[ERROR] Failed to load SSL (Key: %s, Cert: %s): %v", id.key, id.cert, err)
+		c.err = err
+	} else {
+		c.cert = &cert
+		p.mu.Lock()
+		if p.certGen == gen {
+			p.sslCache[id] = c.cert
+		}
+		p.mu.Unlock()
 	}
 
-	// Staple the response
-	cert.OCSPStaple = ocspResp
-
-	// Cache with expiration
-	p.ocspCache[host] = &ocspCacheEntry{
-		response:  ocspResp,
-		expiresAt: *nextUpdate,
+	p.certMu.Lock()
+	if p.certCalls[id] == c {
+		delete(p.certCalls, id)
 	}
+	p.certMu.Unlock()
+	close(c.done)
 
-	debugLog("[DEBUG] OCSP: Successfully stapled for %s (valid until %s)", host, nextUpdate.Format(time.RFC3339))
+	if c.cert != nil {
+		go p.refreshOCSPStaple(id, c.cert, gen)
+	}
+	return c.cert, c.err
 }
 
 // fetchOCSP performs the network request and parsing for OCSP.
 // It is safe to call without holding p.mu.
-func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Time, error) {
+func (p *Proxy) fetchOCSP(cert *tls.Certificate) ([]byte, *time.Time, error) {
 	if len(cert.Certificate) < 2 {
 		return nil, nil, fmt.Errorf("certificate chain too short")
 	}
@@ -915,7 +966,6 @@ func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Tim
 	}
 
 	ocspURL := leaf.OCSPServer[0]
-	// debugLog("[DEBUG] OCSP: Fetching staple from %s for %s", ocspURL, host) // Optional: avoid spamming logs
 
 	// Create OCSP request
 	ocspReq, err := ocsp.CreateRequest(leaf, issuer, nil)
@@ -954,31 +1004,32 @@ func (p *Proxy) fetchOCSP(host string, cert *tls.Certificate) ([]byte, *time.Tim
 	return ocspResp, &parsedResp.NextUpdate, nil
 }
 
-// refreshOCSPStaple refreshes OCSP staple in background when nearing expiration.
-func (p *Proxy) refreshOCSPStaple(host string, cert *tls.Certificate) {
-	// Performance: Do network I/O WITHOUT holding the lock
-	ocspResp, nextUpdate, err := p.fetchOCSP(host, cert)
-	if err != nil {
-		debugLog("[DEBUG] OCSP: Update failed for %s: %v", host, err)
-		return
-	}
-
-	// Safety: Clone the certificate struct to avoid Data Race.
-	// We only modify OCSPStaple (slice header), so shallow copy is safe.
-	// The active connections will continue to use the old pointer.
-	newCert := *cert
-	newCert.OCSPStaple = ocspResp
+// refreshOCSPStaple fetches a staple for a cached certificate and swaps in a copy that
+// carries it. Handshakes already holding the old pointer keep it, so nothing is mutated.
+func (p *Proxy) refreshOCSPStaple(id certID, cert *tls.Certificate, gen uint64) {
+	ocspResp, nextUpdate, err := p.fetchOCSP(cert)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if entry, ok := p.ocspCache[id]; ok {
+		entry.refreshing.Store(false)
+	}
+	if err != nil {
+		debugLog("[DEBUG] OCSP: Fetch failed for %s: %v", id.cert, err)
+		return
+	}
+	if p.certGen != gen || p.sslCache[id] != cert {
+		return
+	}
 
-	// Update caches with the new pointer
-	p.sslCache[host] = &newCert
-	p.ocspCache[host] = &ocspCacheEntry{
+	newCert := *cert
+	newCert.OCSPStaple = ocspResp
+	p.sslCache[id] = &newCert
+	p.ocspCache[id] = &ocspCacheEntry{
 		response:  ocspResp,
 		expiresAt: *nextUpdate,
 	}
-	debugLog("[DEBUG] OCSP: Refreshed staple for %s", host)
+	debugLog("[DEBUG] OCSP: Stapled %s (valid until %s)", id.cert, nextUpdate.Format(time.RFC3339))
 }
 
 // ============================================================================
@@ -1014,6 +1065,11 @@ func newCacheRecordWriter(w http.ResponseWriter, encoding string, limit int) *ca
 		crw.compressor = newCompressionResponseWriter(w, encoding)
 	}
 	return crw
+}
+
+// Unwrap lets http.ResponseController reach the connection, as on compressionResponseWriter.
+func (crw *cacheRecordWriter) Unwrap() http.ResponseWriter {
+	return crw.w
 }
 
 func (crw *cacheRecordWriter) Header() http.Header {

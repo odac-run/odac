@@ -23,14 +23,11 @@ import (
 type Server struct {
 	inboundBackend    *Backend
 	submissionBackend *Backend
-	dkimSigner        interface {
-		Sign(string, []byte) ([]byte, error)
-	}
-	getConfig func() config.Config
-	mu        sync.Mutex
-	secure    *gosmtp.Server // Port 465 (implicit TLS)
-	insecure  *gosmtp.Server // Port 25 (STARTTLS)
-	sslCache  sync.Map       // map[string]*tls.Certificate
+	getConfig         func() config.Config
+	mu                sync.Mutex
+	secure            *gosmtp.Server // Port 465 (implicit TLS)
+	insecure          *gosmtp.Server // Port 25 (STARTTLS)
+	sslCache          sync.Map       // map[string]*tls.Certificate
 }
 
 // NewServer creates a new SMTP server with the given dependencies.
@@ -38,13 +35,12 @@ type Server struct {
 // Two backends are created with separate limiter instances so port 25
 // (inbound MTA traffic) and port 465 (authenticated submission) get
 // independent ceilings; a flood from one cannot starve the other.
-func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, dkimSigner interface {
-	Sign(string, []byte) ([]byte, error)
-}) *Server {
+//
+// outbox is woken when a submission queues mail for remote recipients.
+func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, outbox Outbox) *Server {
 	return &Server{
-		inboundBackend:    NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPInboundProfile()), "inbound"),
-		submissionBackend: NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), "submission"),
-		dkimSigner:        dkimSigner,
+		inboundBackend:    NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPInboundProfile()), outbox, "inbound"),
+		submissionBackend: NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), outbox, "submission"),
 		getConfig:         getConfig,
 	}
 }
@@ -57,9 +53,6 @@ func (s *Server) Start() {
 	if s.insecure != nil || s.secure != nil {
 		return // Already started
 	}
-
-	// Initialize outbound client with DKIM signer
-	InitClient(s.getConfig, s.dkimSigner)
 
 	// Port 25 — Plaintext with STARTTLS
 	// AllowInsecureAuth=false: Auth credentials only accepted after STARTTLS upgrade.
@@ -92,7 +85,7 @@ func (s *Server) Start() {
 	go s.listenWithRetry(s.secure, 465, "SMTP Secure")
 }
 
-// Stop gracefully shuts down both SMTP listeners and the outbound client.
+// Stop gracefully shuts down both SMTP listeners.
 func (s *Server) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,9 +97,6 @@ func (s *Server) Stop() {
 	if s.secure != nil {
 		s.secure.Close()
 		s.secure = nil
-	}
-	if client := GetClient(); client != nil {
-		client.Stop()
 	}
 	log.Println("[SMTP] Servers stopped")
 }

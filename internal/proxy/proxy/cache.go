@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"cmp"
 	"log"
 	"net/http"
 	"path"
@@ -59,6 +60,18 @@ const (
 	// memoryPressurePercent — when free RAM drops below this, only high-frequency
 	// assets are cached and low-frequency entries are aggressively evicted.
 	memoryPressurePercent = 30
+
+	// cacheMaxKeyLen bounds the host and path a frequency record may hold. Real asset URLs
+	// are far shorter, and a request can carry close to the 32 KB header limit.
+	cacheMaxKeyLen = 1024
+
+	// cacheMaxFrequencyRecords bounds pre-admission tracking. Every cacheable-looking URL
+	// gets a record, hit or miss, so this is the table a scanner fills.
+	cacheMaxFrequencyRecords = 65536
+
+	// cacheEvictHeadroom is the share of the budget eviction frees beyond what one store
+	// needs, so a full cache does not walk every entry on each miss.
+	cacheEvictHeadroom = 10 // percent
 )
 
 // replayedHeaders are the app's policies for a response, which a cached copy has to
@@ -106,13 +119,26 @@ func varyFields(h http.Header) string {
 	return strings.Join(h.Values("Vary"), ", ")
 }
 
+// varyIsPersonal reports a response that differs per visitor, which no store keyed by URL
+// may share.
+func varyIsPersonal(h http.Header) bool {
+	vary := strings.ToLower(varyFields(h))
+	return strings.Contains(vary, "*") || strings.Contains(vary, "cookie") ||
+		strings.Contains(vary, "authorization")
+}
+
 // varyPreventsAssetCache rejects Vary fields the asset cache cannot honor, since its key
 // is only host and path. Origin belongs here because an app that reflects it would have
 // one site's Access-Control-Allow-Origin served to every other site.
 func varyPreventsAssetCache(h http.Header) bool {
-	vary := strings.ToLower(varyFields(h))
-	return strings.Contains(vary, "*") || strings.Contains(vary, "cookie") ||
-		strings.Contains(vary, "authorization") || strings.Contains(vary, "origin")
+	return varyIsPersonal(h) || strings.Contains(strings.ToLower(varyFields(h)), "origin")
+}
+
+// cacheControlForbidsSharing reads every Cache-Control line, ignoring case, since one
+// line of several can make a response private.
+func cacheControlForbidsSharing(h http.Header) bool {
+	cc := strings.ToLower(strings.Join(h.Values("Cache-Control"), ", "))
+	return strings.Contains(cc, "no-store") || strings.Contains(cc, "private")
 }
 
 // cacheEntry represents a single cached response.
@@ -175,6 +201,7 @@ type CacheManager struct {
 	frequency sync.Map // key (domain+path) -> *frequencyRecord (pre-admission tracking)
 
 	totalSize     atomic.Int64 // Total bytes cached
+	freqCount     atomic.Int64 // Records in frequency
 	maxSize       atomic.Int64 // Dynamic max size based on available RAM
 	enabled       atomic.Bool  // Master switch — disabled under extreme memory pressure
 	underPressure atomic.Bool  // True when memory is tight (only cache hot assets)
@@ -232,6 +259,8 @@ func cacheKey(host, urlPath string) string {
 // has to reach it too.
 func keyBelongsToHost(key, host string) bool {
 	keyHost, _, _ := strings.Cut(key, "/")
+	// A *.x record caches under the names it serves, never under its own.
+	host = strings.TrimPrefix(host, "*.")
 	return keyHost == host || strings.HasSuffix(keyHost, "."+host)
 }
 
@@ -265,7 +294,8 @@ func IsCacheable(r *http.Request) bool {
 		return false
 	}
 
-	// Don't cache requests with authorization or cookies that suggest dynamic content
+	// A cookied request may still read the cache; storeAllowedFor decides whether its
+	// response may be stored.
 	if r.Header.Get("Authorization") != "" {
 		return false
 	}
@@ -279,6 +309,51 @@ func IsCacheable(r *http.Request) bool {
 	// Check URL extension
 	ext := strings.ToLower(path.Ext(r.URL.Path))
 	return cacheableExtension(ext)
+}
+
+// storeAllowedFor reports whether a response produced for r may be shared. An app can
+// answer a cookied request with that visitor's data under a URL that looks static
+// (/api/me/x.js), so such a response is stored only when the app called it public.
+func storeAllowedFor(r *http.Request, h http.Header) bool {
+	if r.Header.Get("Cookie") == "" {
+		return true
+	}
+	for _, directive := range strings.Split(strings.Join(h.Values("Cache-Control"), ","), ",") {
+		if strings.EqualFold(strings.TrimSpace(directive), "public") {
+			return true
+		}
+	}
+	return false
+}
+
+// contentTypeMatchesExtension ties a stored type to the family its extension implies, so a
+// JSON or HTML answer under a .js or .png URL is never shared as that asset.
+func contentTypeMatchesExtension(urlPath, ct string) bool {
+	if idx := strings.Index(ct, ";"); idx != -1 {
+		ct = ct[:idx]
+	}
+	ct = strings.TrimSpace(strings.ToLower(ct))
+	switch strings.ToLower(path.Ext(urlPath)) {
+	case ".css":
+		return ct == "text/css"
+	case ".js", ".mjs":
+		switch ct {
+		case "text/javascript", "application/javascript", "application/x-javascript",
+			"application/ecmascript", "text/ecmascript":
+			return true
+		}
+	case ".map":
+		return ct == "application/json" || ct == "application/octet-stream"
+	case ".svg":
+		return ct == "image/svg+xml"
+	case ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".webp":
+		return (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") || ct == "application/octet-stream"
+	case ".eot", ".otf", ".ttf", ".woff", ".woff2":
+		return strings.HasPrefix(ct, "font/") || strings.HasPrefix(ct, "application/font") ||
+			strings.HasPrefix(ct, "application/x-font") || ct == "application/vnd.ms-fontobject" ||
+			ct == "application/octet-stream"
+	}
+	return false
 }
 
 // cacheableExtension returns true for static asset file extensions.
@@ -328,8 +403,7 @@ func IsCacheableResponse(resp *http.Response) bool {
 	if !cacheableContentType(resp.Header.Get("Content-Type")) {
 		return false
 	}
-	cc := resp.Header.Get("Cache-Control")
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
+	if cacheControlForbidsSharing(resp.Header) {
 		return false
 	}
 	if resp.Header.Get("Set-Cookie") != "" {
@@ -403,7 +477,7 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 
 	// Content-Type validation
 	ct := resp.Header.Get("Content-Type")
-	if !cacheableContentType(ct) {
+	if !cacheableContentType(ct) || !contentTypeMatchesExtension(urlPath, ct) {
 		return
 	}
 
@@ -413,8 +487,7 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 	}
 
 	// Respect Cache-Control: no-store, private
-	cc := resp.Header.Get("Cache-Control")
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
+	if cacheControlForbidsSharing(resp.Header) {
 		return
 	}
 
@@ -453,13 +526,28 @@ func (cm *CacheManager) Put(host, urlPath string, resp *http.Response, body []by
 	entry.lastAccess.Store(now.UnixNano())
 	entry.hitCount.Store(1)
 
-	// Check if replacing existing entry
-	if old, loaded := cm.entries.LoadAndDelete(key); loaded {
+	// Swap, so that of two stores racing on one key each subtracts what it replaced
+	cm.totalSize.Add(int64(entry.size))
+	if old, loaded := cm.entries.Swap(key, entry); loaded {
 		cm.totalSize.Add(-int64(old.(*cacheEntry).size))
 	}
+}
 
-	cm.entries.Store(key, entry)
-	cm.totalSize.Add(int64(entry.size))
+// removeEntry deletes key only while it still holds entry, so the size subtracted is
+// always the size removed: a Put may have replaced it since the caller read it.
+func (cm *CacheManager) removeEntry(key any, entry *cacheEntry) bool {
+	if !cm.entries.CompareAndDelete(key, entry) {
+		return false
+	}
+	cm.totalSize.Add(-int64(entry.size))
+	return true
+}
+
+// removeFrequency deletes a pre-admission record and keeps freqCount in step.
+func (cm *CacheManager) removeFrequency(key any) {
+	if _, loaded := cm.frequency.LoadAndDelete(key); loaded {
+		cm.freqCount.Add(-1)
+	}
 }
 
 // Purge removes all cache entries for a specific domain (app) and its subdomains.
@@ -470,10 +558,7 @@ func (cm *CacheManager) Purge(host string) int {
 
 	cm.entries.Range(func(key, value interface{}) bool {
 		k := key.(string)
-		if keyBelongsToHost(k, host) {
-			entry := value.(*cacheEntry)
-			cm.entries.Delete(key)
-			cm.totalSize.Add(-int64(entry.size))
+		if keyBelongsToHost(k, host) && cm.removeEntry(key, value.(*cacheEntry)) {
 			count++
 		}
 		return true
@@ -483,7 +568,7 @@ func (cm *CacheManager) Purge(host string) int {
 	cm.frequency.Range(func(key, _ interface{}) bool {
 		k := key.(string)
 		if keyBelongsToHost(k, host) {
-			cm.frequency.Delete(key)
+			cm.removeFrequency(key)
 		}
 		return true
 	})
@@ -496,16 +581,15 @@ func (cm *CacheManager) PurgeAll() int {
 	cm.invalidateFetches()
 	count := 0
 	cm.entries.Range(func(key, value interface{}) bool {
-		entry := value.(*cacheEntry)
-		cm.entries.Delete(key)
-		cm.totalSize.Add(-int64(entry.size))
-		count++
+		if cm.removeEntry(key, value.(*cacheEntry)) {
+			count++
+		}
 		return true
 	})
 
 	// Clear all frequency records
 	cm.frequency.Range(func(key, _ interface{}) bool {
-		cm.frequency.Delete(key)
+		cm.removeFrequency(key)
 		return true
 	})
 
@@ -566,17 +650,24 @@ func ServeFromCache(w http.ResponseWriter, r *http.Request, entry *cacheEntry) {
 // Internal: Admission Control
 // ============================================================================
 
-// recordFrequency tracks request frequency for a key before it enters cache.
+// recordFrequency tracks request frequency for a key before it enters cache. A key it
+// declines (too long, or the table is full) is simply never admitted: the request still
+// reaches the app, and the records already held keep counting.
 func (cm *CacheManager) recordFrequency(key string) {
-	val, loaded := cm.frequency.LoadOrStore(key, &frequencyRecord{
-		firstSeen: time.Now().UnixNano(),
-	})
-	fr := val.(*frequencyRecord)
-	if loaded {
-		fr.count.Add(1)
-	} else {
-		fr.count.Store(1)
+	if val, ok := cm.frequency.Load(key); ok {
+		val.(*frequencyRecord).count.Add(1)
+		return
 	}
+	if len(key) > cacheMaxKeyLen || cm.freqCount.Load() >= cacheMaxFrequencyRecords {
+		return
+	}
+	fr := &frequencyRecord{firstSeen: time.Now().UnixNano()}
+	fr.count.Store(1)
+	if val, loaded := cm.frequency.LoadOrStore(key, fr); loaded {
+		val.(*frequencyRecord).count.Add(1)
+		return
+	}
+	cm.freqCount.Add(1)
 }
 
 // shouldAdmit decides if an asset should be admitted to cache based on
@@ -584,17 +675,7 @@ func (cm *CacheManager) recordFrequency(key string) {
 // Score = frequency × priority weight. A 1 req/s CSS (×3.0 = 3.0) beats
 // a 2 req/s source map (×0.3 = 0.6) when memory is tight.
 func (cm *CacheManager) shouldAdmit(key, urlPath string, size int) bool {
-	// Would this exceed our memory budget?
-	if cm.totalSize.Load()+int64(size) > cm.maxSize.Load() {
-		// Try eviction first
-		cm.evictLRU(int64(size))
-		// Re-check after eviction
-		if cm.totalSize.Load()+int64(size) > cm.maxSize.Load() {
-			return false
-		}
-	}
-
-	// Check pre-admission frequency
+	// Frequency first: an asset that would be refused must not evict anything
 	val, ok := cm.frequency.Load(key)
 	if !ok {
 		return false
@@ -603,12 +684,23 @@ func (cm *CacheManager) shouldAdmit(key, urlPath string, size int) bool {
 	fr := val.(*frequencyRecord)
 	score := fr.frequency() * assetPriority(urlPath)
 
-	// Under memory pressure: only admit high-score assets
+	threshold := cacheMinFrequency
 	if cm.underPressure.Load() {
-		return score >= cacheHighFrequency
+		threshold = cacheHighFrequency
+	}
+	if score < threshold {
+		return false
 	}
 
-	return score >= cacheMinFrequency
+	// Would this exceed our memory budget?
+	maxSize := cm.maxSize.Load()
+	if cm.totalSize.Load()+int64(size) > maxSize {
+		cm.evictLRU(cm.totalSize.Load() + int64(size) - maxSize + maxSize*cacheEvictHeadroom/100)
+		if cm.totalSize.Load()+int64(size) > maxSize {
+			return false
+		}
+	}
+	return true
 }
 
 // ============================================================================
@@ -687,9 +779,7 @@ func (cm *CacheManager) evictExpired() {
 		entry := value.(*cacheEntry)
 		lastAccess := entry.lastAccess.Load()
 
-		if now-lastAccess > ttlNanos {
-			cm.entries.Delete(key)
-			cm.totalSize.Add(-int64(entry.size))
+		if now-lastAccess > ttlNanos && cm.removeEntry(key, entry) {
 			debugLog("[Cache] TTL evicted: %s (freq: %.2f req/s)", key, entry.frequency())
 		}
 		return true
@@ -702,7 +792,7 @@ func (cm *CacheManager) evictExpired() {
 		if now-fr.firstSeen > staleThreshold {
 			// Only delete if there's no corresponding cache entry
 			if _, exists := cm.entries.Load(key); !exists {
-				cm.frequency.Delete(key)
+				cm.removeFrequency(key)
 			}
 		}
 		return true
@@ -717,6 +807,7 @@ func (cm *CacheManager) evictLRU(needed int64) {
 		entry := value.(*cacheEntry)
 		k := key.(string)
 		candidates = append(candidates, evictCandidate{
+			entry:      entry,
 			key:        k,
 			lastAccess: entry.lastAccess.Load(),
 			score:      entry.frequency() * assetPriority(k),
@@ -737,10 +828,8 @@ func (cm *CacheManager) evictLRU(needed int64) {
 		if freed >= needed {
 			break
 		}
-		if val, loaded := cm.entries.LoadAndDelete(c.key); loaded {
-			entry := val.(*cacheEntry)
-			cm.totalSize.Add(-int64(entry.size))
-			freed += int64(entry.size)
+		if cm.removeEntry(c.key, c.entry) {
+			freed += int64(c.size)
 			debugLog("[Cache] LRU evicted: %s (score: %.2f, size: %d)", c.key, c.score, c.size)
 		}
 	}
@@ -755,9 +844,7 @@ func (cm *CacheManager) evictUnderPressure() {
 	cm.entries.Range(func(key, value interface{}) bool {
 		entry := value.(*cacheEntry)
 		score := entry.frequency() * assetPriority(key.(string))
-		if score < cacheHighFrequency {
-			cm.entries.Delete(key)
-			cm.totalSize.Add(-int64(entry.size))
+		if score < cacheHighFrequency && cm.removeEntry(key, entry) {
 			debugLog("[Cache] Pressure evicted: %s (score: %.2f)", key, score)
 		}
 		return true
@@ -766,24 +853,22 @@ func (cm *CacheManager) evictUnderPressure() {
 
 // evictCandidate represents a cache entry being considered for eviction.
 type evictCandidate struct {
+	entry      *cacheEntry
 	key        string
 	lastAccess int64
 	score      float64 // frequency × asset priority
 	size       int
 }
 
-// sortCandidates sorts eviction candidates: lowest score first,
-// then oldest lastAccess as tiebreaker. Simple insertion sort since
-// eviction runs infrequently and candidate lists are typically small.
+// sortCandidates sorts eviction candidates: lowest score first, then oldest lastAccess as
+// tiebreaker. The list is the whole cache and this runs on a request, so O(n log n).
 func sortCandidates(c []evictCandidate) {
-	for i := 1; i < len(c); i++ {
-		j := i
-		for j > 0 && (c[j].score < c[j-1].score ||
-			(c[j].score == c[j-1].score && c[j].lastAccess < c[j-1].lastAccess)) {
-			c[j], c[j-1] = c[j-1], c[j]
-			j--
+	slices.SortFunc(c, func(a, b evictCandidate) int {
+		if a.score != b.score {
+			return cmp.Compare(a.score, b.score)
 		}
-	}
+		return cmp.Compare(a.lastAccess, b.lastAccess)
+	})
 }
 
 // ============================================================================

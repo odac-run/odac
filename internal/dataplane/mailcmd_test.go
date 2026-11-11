@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"odac/internal/api"
 )
 
 // fakeMailModule fakes the Go mail binary's HTTP API (unix socket): the
@@ -352,12 +354,13 @@ func TestMailSendNodeFixtures(t *testing.T) {
 			wantTo:   "user@dest.test",
 		},
 		{
-			// Existing From is kept; Reply-To's "to:" substring suppresses
-			// the To: injection (Node quirk, preserved).
+			// Existing From is kept. Node matched "to:" anywhere in the
+			// header block, so Reply-To suppressed To; presence is now
+			// decided by header name and To is added.
 			name: "textWithFrom",
 			data: `{"from":{"value":[{"address":"a@example.com"}]},"to":{"value":[{"address":"b@dest.test"}]},` +
 				`"header":{"From":"Custom <a@example.com>","Reply-To":"c@example.com"},"text":"plain body"}`,
-			wantBody: "From: Custom <a@example.com>\r\nReply-To: c@example.com\r\nSubject: \r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nplain body",
+			wantBody: "From: Custom <a@example.com>\r\nReply-To: c@example.com\r\nTo: b@dest.test\r\nSubject: \r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nplain body",
 			wantFrom: "a@example.com",
 			wantTo:   "b@dest.test",
 		},
@@ -375,7 +378,7 @@ func TestMailSendNodeFixtures(t *testing.T) {
 		if err := json.Unmarshal([]byte(tc.data), &data); err != nil {
 			t.Fatal(err)
 		}
-		res := m.Send(data, json.RawMessage(tc.data))
+		res := m.Send(api.Operator, data, json.RawMessage(tc.data))
 		if !res.Status || res.Message != "Mail sent successfully." {
 			t.Fatalf("%s: Send = %+v", tc.name, res)
 		}
@@ -407,13 +410,125 @@ func TestMailSendValidation(t *testing.T) {
 	} {
 		var data any
 		json.Unmarshal([]byte(tc.data), &data)
-		res := m.Send(data, json.RawMessage(tc.data))
+		res := m.Send(api.Operator, data, json.RawMessage(tc.data))
 		if res.Status || res.Message != tc.want {
 			t.Errorf("%s: %+v, want %q", name, res, tc.want)
 		}
 	}
 	if f.count() != 0 {
 		t.Errorf("validation failures hit the module API (%d requests)", f.count())
+	}
+}
+
+// Header names and values were joined with CRLF unchecked, so a caller could
+// end the header block and write headers or a body of its own; a subject that
+// merely contained "from:" suppressed the From header.
+func TestMailSendRefusesHeaderInjection(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{"example.com": map[string]any{}})
+
+	envelope := `"from":{"value":[{"address":"a@example.com"}]},"to":{"value":[{"address":"b@dest.test"}]}`
+	for name, data := range map[string]string{
+		"CRLF in value":     `{` + envelope + `,"header":{"X-Tag":"ok\r\nBcc: victim@x.test"},"text":"t"}`,
+		"LF in value":       `{` + envelope + `,"header":{"X-Tag":"ok\nBcc: victim@x.test"},"text":"t"}`,
+		"CRLF in name":      `{` + envelope + `,"header":{"X-Tag\r\nBcc":"victim@x.test"},"text":"t"}`,
+		"colon in name":     `{` + envelope + `,"header":{"Bcc: victim@x.test\r\nX":"y"},"text":"t"}`,
+		"space in name":     `{` + envelope + `,"header":{"X Tag":"y"},"text":"t"}`,
+		"CRLF in subject":   `{` + envelope + `,"header":{},"subject":"hi\r\nBcc: victim@x.test","text":"t"}`,
+		"CRLF in from":      `{"from":{"value":[{"address":"a@example.com\r\nBcc: v@x.test"}]},"to":{"value":[{"address":"b@dest.test"}]},"header":{},"text":"t"}`,
+		"CRLF in recipient": `{"from":{"value":[{"address":"a@example.com"}]},"to":{"value":[{"address":"b@dest.test\r\nX: y"}]},"header":{},"text":"t"}`,
+		"empty header name": `{` + envelope + `,"header":{"":"y"},"text":"t"}`,
+	} {
+		var v any
+		if err := json.Unmarshal([]byte(data), &v); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res := m.Send(api.Operator, v, json.RawMessage(data)); res.Status {
+			t.Errorf("%s: Send accepted it", name)
+		}
+	}
+	if f.count() != 0 {
+		t.Errorf("refused messages reached the module API (%d requests)", f.count())
+	}
+
+	// A subject that mentions a header name does not suppress that header.
+	data := `{` + envelope + `,"header":{"Subject":"re: from: to: here"},"text":"t"}`
+	var v any
+	json.Unmarshal([]byte(data), &v)
+	if res := m.Send(api.Operator, v, json.RawMessage(data)); !res.Status {
+		t.Fatalf("Send = %+v", res)
+	}
+	body, _ := f.last(t).body["body"].(string)
+	if !strings.Contains(body, "\r\nFrom: a@example.com\r\n") || !strings.Contains(body, "\r\nTo: b@dest.test\r\n") {
+		t.Errorf("From/To missing from %q", body)
+	}
+}
+
+// mail.send went out DKIM-signed as any configured domain whoever asked. An
+// app now sends only as a domain routed to it; the operator as any.
+func TestMailSendIsScopedToTheCallersDomains(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{
+		"shop.test": map[string]any{"appId": "shop"},
+		"bank.test": map[string]any{"appId": "bank"},
+	})
+	send := func(caller api.Caller, from string) api.Result {
+		data := `{"from":{"value":[{"address":"` + from + `"}]},"to":{"value":[{"address":"b@dest.test"}]},"header":{},"text":"t"}`
+		var v any
+		json.Unmarshal([]byte(data), &v)
+		return m.Send(caller, v, json.RawMessage(data))
+	}
+
+	shop := api.Caller{App: "shop"}
+	if res := send(shop, "noreply@shop.test"); !res.Status {
+		t.Errorf("app sending as its own domain: %+v", res)
+	}
+	if res := send(shop, "noreply@mail.shop.test"); !res.Status {
+		t.Errorf("app sending as a subdomain of its own domain: %+v", res)
+	}
+	before := f.count()
+	for _, from := range []string{"security@bank.test", "x@mail.bank.test"} {
+		res := send(shop, from)
+		if res.Status {
+			t.Errorf("app shop sent as %s", from)
+		}
+		if want := "Domain bank.test not found."; res.Message != want {
+			t.Errorf("refusal for %s = %q, want %q (no hint that the domain exists)", from, res.Message, want)
+		}
+	}
+	if res := send(api.Caller{}, "noreply@shop.test"); res.Status {
+		t.Error("a caller with no identity sent mail")
+	}
+	if f.count() != before {
+		t.Errorf("refused sends reached the module API (%d requests)", f.count()-before)
+	}
+	if res := send(api.Operator, "security@bank.test"); !res.Status {
+		t.Errorf("operator refused: %+v", res)
+	}
+}
+
+// The request in docs/server/03-app/08-api-access.md, verbatim. The page once
+// showed from and to as bare strings, which this handler refuses.
+func TestMailSendDocExample(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{"example.com": map[string]any{"appId": "my-app"}})
+	data := `{
+    "from": { "value": [{ "address": "no-reply@example.com" }] },
+    "to": { "value": [{ "address": "someone@example.com" }] },
+    "subject": "Welcome",
+    "header": { "Content-Type": "text/html; charset=utf-8" },
+    "html": "<p>Hello</p>",
+    "text": "Hello"
+  }`
+	var v any
+	if err := json.Unmarshal([]byte(data), &v); err != nil {
+		t.Fatal(err)
+	}
+	if res := m.Send(api.Caller{App: "my-app"}, v, json.RawMessage(data)); !res.Status {
+		t.Fatalf("documented request refused: %+v", res)
+	}
+	if got := f.last(t).body["to"]; got != "someone@example.com" {
+		t.Errorf("to = %v", got)
 	}
 }
 
@@ -493,9 +608,17 @@ func TestDKIMGeneration(t *testing.T) {
 		t.Errorf("TXT value = %v", txt["value"])
 	}
 
-	// Persisted + synced.
-	raw, err := os.ReadFile(filepath.Join(m.cfg.BaseDir(), "config", "domain.json"))
-	if err != nil || !strings.Contains(string(raw), "_domainkey") && !strings.Contains(string(raw), "dkim") {
+	// Persisted + synced. The record is visible in memory before SaveDirty
+	// (which fsyncs every module) returns, so wait for the file too.
+	var raw []byte
+	for time.Now().Before(deadline) {
+		raw, err = os.ReadFile(filepath.Join(m.cfg.BaseDir(), "config", "domain.json"))
+		if err == nil && strings.Contains(string(raw), "dkim") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || !strings.Contains(string(raw), "dkim") {
 		t.Errorf("domain.json not persisted: %v", err)
 	}
 	waitConfigPush(t, f)

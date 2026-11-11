@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -30,27 +31,53 @@ const (
 // tunnelConn represents a single active tunnel connection to ODAC Cloud
 // for one domain. Each tunnel has its own WebSocket + yamux session.
 type tunnelConn struct {
-	domain  string
-	host    string // Resolved backend IP/hostname
-	port    int    // Resolved backend port
-	token   string
+	domain string
+	host   string // Resolved backend IP/hostname
+	port   int    // Resolved backend port
+	token  string
+	stopCh chan struct{}
+
+	// mu guards the live connection against closeTunnel, which runs on the config
+	// goroutine while connect runs on the tunnel's own.
+	mu      sync.Mutex
+	stopped bool
 	session *yamux.Session
 	ws      *websocket.Conn
-	stopCh  chan struct{}
+}
+
+// attach records the WebSocket and session in use, or reports false once the tunnel was
+// closed, so a Dial that finished after closeTunnel cannot keep a removed tunnel serving.
+func (tc *tunnelConn) attach(ws *websocket.Conn, session *yamux.Session) bool {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.stopped {
+		return false
+	}
+	tc.ws, tc.session = ws, session
+	return true
+}
+
+// detach forgets the connection connect is about to close.
+func (tc *tunnelConn) detach() {
+	tc.mu.Lock()
+	tc.ws, tc.session = nil, nil
+	tc.mu.Unlock()
 }
 
 // TunnelManager manages outbound tunnel connections to ODAC Cloud.
 // This ODAC instance acts as the tunnel AGENT (client) — it connects
 // to the cloud tunnel proxy and forwards incoming streams to local apps.
 type TunnelManager struct {
-	conns map[string]*tunnelConn // domain -> active connection
-	mu    sync.RWMutex
+	conns    map[string]*tunnelConn // domain -> active connection
+	endpoint string                 // tunnelWSURL; a field only so tests can dial a local server
+	mu       sync.RWMutex
 }
 
 // NewTunnelManager creates a tunnel manager for outbound cloud connections.
 func NewTunnelManager() *TunnelManager {
 	return &TunnelManager{
-		conns: make(map[string]*tunnelConn),
+		conns:    make(map[string]*tunnelConn),
+		endpoint: tunnelWSURL,
 	}
 }
 
@@ -147,15 +174,24 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 	header := http.Header{}
 	header.Set("X-Agent-Domain", tc.domain)
 
-	url := tunnelWSURL + "?odac_ws_token=" + tc.token
-
-	log.Printf("[Tunnel] Connecting to cloud for domain: %s", tc.domain)
-
-	ws, _, err := dialer.Dial(url, header)
+	target, err := url.Parse(tm.endpoint)
 	if err != nil {
 		return err
 	}
-	tc.ws = ws
+	query := target.Query()
+	query.Set("odac_ws_token", tc.token)
+	target.RawQuery = query.Encode()
+
+	log.Printf("[Tunnel] Connecting to cloud for domain: %s", tc.domain)
+
+	ws, _, err := dialer.Dial(target.String(), header)
+	if err != nil {
+		return err
+	}
+	if !tc.attach(ws, nil) {
+		ws.Close()
+		return nil
+	}
 
 	log.Printf("[Tunnel] Connected for domain: %s", tc.domain)
 
@@ -172,19 +208,23 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 
 	session, err := yamux.Client(conn, yamuxCfg)
 	if err != nil {
+		tc.detach()
 		ws.Close()
 		return err
 	}
-	tc.session = session
+	if !tc.attach(ws, session) {
+		session.Close()
+		ws.Close()
+		return nil
+	}
 
 	// Accept streams from ODAC Cloud and forward to local app
-	tm.acceptStreams(tc)
+	tm.acceptStreams(tc, session)
 
 	// Cleanup
+	tc.detach()
 	session.Close()
 	ws.Close()
-	tc.session = nil
-	tc.ws = nil
 
 	log.Printf("[Tunnel] Disconnected from cloud for domain: %s", tc.domain)
 	return nil
@@ -192,9 +232,9 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 
 // acceptStreams continuously accepts yamux streams from ODAC Cloud
 // and forwards each one to the local app as a raw TCP pipe.
-func (tm *TunnelManager) acceptStreams(tc *tunnelConn) {
+func (tm *TunnelManager) acceptStreams(tc *tunnelConn, session *yamux.Session) {
 	for {
-		stream, err := tc.session.AcceptStream()
+		stream, err := session.AcceptStream()
 		if err != nil {
 			// Session closed or error — trigger reconnect
 			select {
@@ -323,6 +363,12 @@ func (c *wsConn) SetWriteDeadline(t time.Time) error { return c.ws.SetWriteDeadl
 // AcceptStream unblocks immediately instead of hanging until the remote
 // side closes — preventing goroutine and connection leaks.
 func (tm *TunnelManager) closeTunnel(tc *tunnelConn) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.stopped {
+		return
+	}
+	tc.stopped = true
 	close(tc.stopCh)
 	if tc.session != nil {
 		tc.session.Close()

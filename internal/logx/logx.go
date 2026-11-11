@@ -90,7 +90,39 @@ func (l *Logger) write(w io.Writer, rendered []string) {
 	// console.log(module, ...args): single-space join, module keeps its
 	// trailing space. Write errors (e.g. EPIPE) are ignored — Node swallows
 	// EPIPE on stdout/stderr too.
-	fmt.Fprintln(w, strings.Join(append([]string{l.prefix}, rendered...), " "))
+	fmt.Fprintln(w, RedactURLCredentials(strings.Join(append([]string{l.prefix}, rendered...), " ")))
+}
+
+// RedactURLCredentials replaces the userinfo of every URL in s with "***", so
+// "https://user:token@host/x" logs as "https://***@host/x". It runs on whole
+// lines because a URL usually arrives as a bare string or inside a message
+// built by the caller, where Sanitize cannot see it. A line with no "://" is
+// returned as is.
+func RedactURLCredentials(s string) string {
+	if !strings.Contains(s, "://") {
+		return s
+	}
+	var b strings.Builder
+	rest := s
+	for {
+		i := strings.Index(rest, "://")
+		if i < 0 {
+			break
+		}
+		start := i + len("://")
+		b.WriteString(rest[:start])
+		rest = rest[start:]
+		end := strings.IndexAny(rest, "/?# \t\r\n\"'<>")
+		if end < 0 {
+			end = len(rest)
+		}
+		if at := strings.LastIndexByte(rest[:end], '@'); at > 0 {
+			b.WriteString("***")
+			rest = rest[at:]
+		}
+	}
+	b.WriteString(rest)
+	return b.String()
 }
 
 func renderAll(args []any) []string {

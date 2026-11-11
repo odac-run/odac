@@ -1,7 +1,5 @@
-// terminal.go ports server/src/Container/Terminal.js plus Container.js's
-// createTerminalSession(): one interactive shell inside a running container,
-// over a Docker exec with a real TTY. Full behavioral pinning lives in
-// docs/migration/contracts/hub-protocol.md "Terminal sessions".
+// terminal.go runs one interactive shell inside a running container, over a
+// Docker exec with a real TTY.
 //
 // Reaping: Docker exposes no "kill exec" API and exec PIDs live in the
 // daemon's namespace, so each session tags its exec with a unique env var;

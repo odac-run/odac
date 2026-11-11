@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -133,8 +132,14 @@ func main() {
 	// Initialize DKIM signer
 	dkimSigner := dkim.NewSigner(getConfig)
 
+	// The durable outbound queue: accepted mail is written here before the
+	// sender hears 250, and delivered, retried or bounced from here.
+	queue := smtpserver.NewQueue(store, blobs, smtpserver.NewClient(getConfig, dkimSigner))
+	queue.Start()
+	defer queue.Stop()
+
 	// Start SMTP Server (ports 25 and 465)
-	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, dkimSigner)
+	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, queue)
 	smtpSrv.Start()
 	defer smtpSrv.Stop()
 
@@ -151,13 +156,11 @@ func main() {
 		log.Printf("[Mail] SSL/DKIM cache cleared for: %s", domain)
 	})
 
-	// Wire outbound send to SMTP client
+	// mail.send queues like an SMTP submission and answers once it is stored.
 	apiSrv.SetSendCallback(func(from, to string, body []byte) error {
-		client := smtpserver.GetClient()
-		if client == nil {
-			return fmt.Errorf("SMTP client not initialized")
-		}
-		return client.Send(from, to, body)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return queue.Enqueue(ctx, from, []string{to}, body)
 	})
 
 	log.Println("[Mail] All servers started (SMTP: 25/465, IMAP: 143/993).")
@@ -175,8 +178,12 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Shutdown SMTP and IMAP servers
-	wg.Add(2)
+	// Shutdown SMTP and IMAP servers and the outbound queue
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		queue.Stop()
+	}()
 	go func() {
 		defer wg.Done()
 		smtpSrv.Stop()
@@ -240,7 +247,7 @@ func startControlAPI(apiServer *api.Server) net.Listener {
 	}
 
 	go func() {
-		if err := http.Serve(listener, apiServer); err != nil {
+		if err := netutil.ServeControl(listener, apiServer); err != nil {
 			log.Printf("[Mail] Control API error: %v", err)
 		}
 	}()

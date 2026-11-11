@@ -1,13 +1,10 @@
-// Package dataplane holds the orchestrator-side services for the Go
-// data-plane binaries — the ports of server/src/{Proxy,DNS,Mail}.js on top of
-// internal/supervise. Each service implements its system.Services slot
-// (Start/Stop/Check) and pushes full-replace config over the binary's unix
-// control socket per contracts/{proxy,dns,mail}-control.md.
+// Package dataplane holds the orchestrator-side services for the data-plane
+// binaries (proxy, dns, mail) on top of internal/supervise. Each service
+// implements its system.Services slot (Start/Stop/Check) and pushes
+// full-replace config over the binary's unix control socket.
 //
-// Task 3.2 decision (recorded in STATE.md): the TCP fallback mode of the
-// control APIs is NOT ported. It was dead code in Node — the binaries printed
-// their port to a stdout the orchestrator discards — so the socket env var is
-// simply always set, on every platform.
+// The control APIs have no TCP fallback: the socket env var is always set, on
+// every platform.
 package dataplane
 
 import (
@@ -34,10 +31,18 @@ type process interface {
 // syncRetries is Node's retry cap for config pushes (retryCount < 3).
 const syncRetries = 3
 
+// controlTimeout bounds a control-socket call. A daemon that stops answering
+// would otherwise hold a sync path's syncMu forever.
+const controlTimeout = 30 * time.Second
+
+// socketClient makes a client that closes its connection after one response.
+// A per-call Transport with keep-alives parked every connection in a pool
+// nothing reused, leaking a descriptor on both ends per call.
 func socketClient(socketPath string, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
 				return d.DialContext(ctx, "unix", socketPath)
@@ -60,7 +65,7 @@ func postJSON(socketPath, path string, payload any) error {
 // postRaw is postJSON with a pre-marshaled body — the sync paths marshal
 // inside the config value lock and send outside it.
 func postRaw(socketPath, path string, body []byte) error {
-	resp, err := socketClient(socketPath, 0).Post("http://localhost"+path, "application/json", bytes.NewReader(body))
+	resp, err := socketClient(socketPath, controlTimeout).Post("http://localhost"+path, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -69,11 +74,24 @@ func postRaw(socketPath, path string, body []byte) error {
 	return nil
 }
 
+// postStatus is postRaw for a caller that has to know whether the other side
+// understood the request.
+func postStatus(socketPath, path string, body []byte) (int, error) {
+	resp, err := socketClient(socketPath, controlTimeout).Post("http://localhost"+path, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
 // requestJSON ports Mail.#apiRequest: any method, JSON body, any HTTP status
 // accepted, response body parsed as the module's JSON envelope ({success,
 // message, ...}). A non-JSON body yields a nil map — like Node, where
-// res?.success on a string is simply undefined.
-func requestJSON(socketPath, method, path string, payload any) (map[string]any, error) {
+// res?.success on a string is simply undefined. A zero timeout waits for
+// the daemon's answer however long it takes.
+func requestJSON(socketPath, method, path string, payload any, timeout time.Duration) (map[string]any, error) {
 	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -89,7 +107,7 @@ func requestJSON(socketPath, method, path string, payload any) (map[string]any, 
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := socketClient(socketPath, 0).Do(req)
+	resp, err := socketClient(socketPath, timeout).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +133,7 @@ func requestStatus(socketPath, method, path string, payload any) (int, error) {
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := socketClient(socketPath, 0).Do(req)
+	resp, err := socketClient(socketPath, controlTimeout).Do(req)
 	if err != nil {
 		return 0, err
 	}

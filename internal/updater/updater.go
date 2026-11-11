@@ -1,20 +1,14 @@
-// Package updater is the Go port of server/src/System/Updater.js (task 3.7):
-// zero-downtime self-update per docs/migration/contracts/lifecycle.md. It
-// implements BOTH handshake roles byte-exact — at cutover a Go NEW instance
-// handshakes with a Node OLD one (and reversed under rollback) over
+// Package updater implements ODAC's zero-downtime self-update. It implements
+// BOTH handshake roles byte-exact (old and new instance) over
 // ~/.odac/run/update.sock with the 60s/300s/12s load-bearing timings.
 //
-// Deviations from Node (deliberate, see STATE.md's 3.7 entry):
-//   - docker CLI exec calls (pull, cp, build) are unified on the Docker SDK /
-//     a socket-mounted docker:cli runner — sanctioned by lifecycle.md's
-//     migration notes; the image-ID comparison semantics (.Image of the
-//     container vs .Id of the image tag) are preserved.
-//   - Start() clears the #updating latch when the update-availability check
-//     fails (Node's throw left it latched forever, blocking every later
-//     update attempt until a restart).
-//   - New-container log streaming reads the TTY stream as-is; Node demuxes a
-//     non-multiplexed stream, corrupting the first bytes of each chunk
-//     (cosmetic — the lines are only relayed into the old instance's log).
+//   - Image pull, copy and build go through the Docker SDK or a
+//     socket-mounted docker:cli runner; the image-ID comparison is the
+//     container's .Image against the image tag's .Id.
+//   - Start() clears the updating latch when the update-availability check
+//     fails, so one failed check never blocks every later attempt.
+//   - New-container log streaming reads the TTY stream as-is (no demux); the
+//     lines are only relayed into the old instance's log.
 package updater
 
 import (
@@ -243,8 +237,7 @@ func (u *Updater) triggerReady() {
 	cbs := u.callbacks
 	u.callbacks = nil
 	u.mu.Unlock()
-	// Node wraps each callback in try/catch. Go policy (PLAN.md 3.1 trap
-	// note): no recover — a panicking startup callback crashes the process.
+	// No recover: a panicking startup callback crashes the process.
 	for _, cb := range cbs {
 		cb()
 	}

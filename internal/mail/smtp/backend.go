@@ -34,17 +34,25 @@ type Backend struct {
 	firewall  *auth.Firewall
 	getConfig func() config.Config
 	limiter   *limits.Limiter
+	outbox    Outbox
 	store     *storage.Store
 	tag       string // "inbound" or "submission" — included in log lines
 }
 
-// NewBackend creates a new SMTP backend with the given dependencies.
-func NewBackend(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, tag string) *Backend {
+// Outbox is told when a transaction has queued mail for remote recipients.
+type Outbox interface {
+	Wake()
+}
+
+// NewBackend creates a new SMTP backend with the given dependencies. outbox
+// may be nil, in which case queued rows wait for the queue's next poll.
+func NewBackend(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, limiter *limits.Limiter, outbox Outbox, tag string) *Backend {
 	return &Backend{
 		blobs:     blobs,
 		firewall:  fw,
 		getConfig: getConfig,
 		limiter:   limiter,
+		outbox:    outbox,
 		store:     store,
 		tag:       tag,
 	}
@@ -249,10 +257,24 @@ func (s *Session) Data(r io.Reader) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Every recipient is classified before anything is written, so a refusal
+	// or a failed lookup never leaves part of the transaction stored.
+	plan, err := s.planDelivery(ctx)
+	if err != nil {
+		return err
+	}
+
 	// The verbatim message is the source of truth: IMAP serves BODY[] and
 	// BODYSTRUCTURE from it, so attachments survive exactly as sent. The
 	// parsed fields below are derived display data, not the record itself.
 	rawRef := s.storeRaw(body)
+	// Local copies survive a failed blob write through their parsed columns,
+	// a queued message does not: the queue reads the bytes it sends from the
+	// blob store.
+	if rawRef == "" && len(plan.outbound) > 0 {
+		log.Printf("[SMTP] DATA cannot queue without the raw message, answering 451: sender=%s ip=%s", s.from, s.ip)
+		return errTryLater
+	}
 
 	// Parse RFC 2822 message into headers and body parts
 	parsed := message.Parse(body)
@@ -260,18 +282,73 @@ func (s *Session) Data(r io.Reader) error {
 		len(body), s.from, s.recipients, s.ip,
 		parsed.MessageID, parsed.Subject, len(parsed.HTML), len(parsed.Text))
 
-	sentStored := false
-	storedCount := 0
-	outboundCount := 0
+	rows := make([]*storage.MessageRow, 0, len(plan.inbox)+1)
+	for _, email := range plan.inbox {
+		rows = append(rows, &storage.MessageRow{
+			Email:   email,
+			Flags:   toNullString("[]"),
+			Mailbox: "INBOX",
+			RawRef:  toNullString(rawRef),
+		})
+	}
+	if plan.sent {
+		rows = append(rows, &storage.MessageRow{
+			Email:   s.user,
+			Flags:   toNullString(`["seen"]`),
+			Mailbox: "Sent",
+			RawRef:  toNullString(rawRef),
+		})
+	}
+	for _, row := range rows {
+		parsed.Apply(row)
+	}
+
+	// One reply covers every recipient, so the rows commit together or not at
+	// all, queue rows included, and a failure answers 451: the sender keeps
+	// the message and retries instead of being told it was delivered.
+	outbound := OutboundRows(s.from, plan.outbound, rawRef, time.Now())
+	if err := s.backend.store.Deliver(ctx, rows, outbound); err != nil {
+		log.Printf("[SMTP] DATA store failed, answering 451: sender=%s rcpts=%v ip=%s: %v",
+			s.from, s.recipients, s.ip, err)
+		return errTryLater
+	}
+	if len(outbound) > 0 && s.backend.outbox != nil {
+		s.backend.outbox.Wake()
+	}
+
+	log.Printf("[SMTP] DATA complete: stored=%d queued=%d sender=%s rcpts=%d ip=%s",
+		len(plan.inbox), len(plan.outbound), s.from, len(s.recipients), s.ip)
+	return nil
+}
+
+// errTryLater is the transient reply for a transaction the server could not
+// commit. A 4xx makes the sending MTA keep the message and retry.
+var errTryLater = &smtp.SMTPError{
+	Code:         451,
+	EnhancedCode: smtp.EnhancedCode{4, 3, 0},
+	Message:      "temporary local failure, try again later",
+}
+
+// deliveryPlan is where one transaction's message goes.
+type deliveryPlan struct {
+	inbox    []string // stored spelling of each local account to receive it
+	outbound []string // remote recipients of an authenticated local sender
+	sent     bool     // keep a copy in the sender's Sent folder
+}
+
+// planDelivery classifies every recipient of the transaction. A lookup error
+// is transient and refuses the whole transaction with 451, since storing for
+// the recipients that answered and failing the rest has no honest reply.
+func (s *Session) planDelivery(ctx context.Context) (deliveryPlan, error) {
+	var plan deliveryPlan
+	senderIsLocal := s.user != "" && strings.EqualFold(s.from, s.user)
+	seen := map[string]bool{}
 
 	for _, rcpt := range s.recipients {
-		// Check if sender is a local authenticated user
-		senderIsLocal := s.user != "" && strings.EqualFold(s.from, s.user)
-
-		// Check if recipient is a local account
-		rcptAccount, lookupErr := s.backend.store.AccountExists(ctx, rcpt)
-		if lookupErr != nil {
-			log.Printf("[SMTP] DATA rcpt lookup error for %s: %v", rcpt, lookupErr)
+		rcptAccount, err := s.backend.store.AccountExists(ctx, rcpt)
+		if err != nil {
+			log.Printf("[SMTP] DATA rcpt lookup error for %s, answering 451: %v", rcpt, err)
+			return deliveryPlan{}, errTryLater
 		}
 		rcptIsLocal := rcptAccount != nil
 
@@ -284,78 +361,41 @@ func (s *Session) Data(r io.Reader) error {
 		log.Printf("[SMTP] DATA dispatch: rcpt=%s sender_local=%v rcpt_local=%v role=%v from=%s ip=%s",
 			rcpt, senderIsLocal, rcptIsLocal, roleAddress, s.from, s.ip)
 
-		// Reject if neither sender nor recipient is local
 		if !senderIsLocal && !rcptIsLocal && !roleAddress {
 			log.Printf("[SMTP] Rejected relay attempt: %s -> %s from %s", s.from, rcpt, s.ip)
-			return errors.New("relay access denied")
+			return deliveryPlan{}, errors.New("relay access denied")
 		}
 
-		// A role address with no account behind it is accepted and dropped.
-		// Storing it would write a row keyed to an address no session can log
-		// in as, so nothing could ever open it while the row and its blob still
-		// consume disk. Creating the mailbox is what makes the mail readable.
-		// The sender's own Sent copy below is unaffected: the drop concerns the
-		// recipient's missing mailbox, not the transaction.
-		if roleAddress {
+		switch {
+		case roleAddress:
+			// Accepted and dropped. Storing it would write a row keyed to an
+			// address no session can log in as, so nothing could ever open it
+			// while the row and its blob still consume disk. Creating the
+			// mailbox is what makes the mail readable.
 			log.Printf("[SMTP] Accepted and discarded (role address, no mailbox): rcpt=%s from=%s ip=%s", rcpt, s.from, s.ip)
-		}
-
-		// Store locally for local recipients
-		if rcptIsLocal && !strings.EqualFold(rcpt, s.from) {
-			msg := &storage.MessageRow{
-				// The account's stored spelling keys the row, so a message
-				// addressed to <Ali@x.com> lands in the same mailbox IMAP opens
-				// for <ali@x.com> instead of a set of rows nothing can reach.
-				Email:   rcptAccount.Email,
-				Flags:   toNullString("[]"),
-				Mailbox: "INBOX",
-				RawRef:  toNullString(rawRef),
-			}
-			parsed.Apply(msg)
-			if err := s.backend.store.MessageStore(ctx, msg); err != nil {
-				log.Printf("[SMTP] Failed to store message for %s: %v", rcpt, err)
-			} else {
-				storedCount++
-				log.Printf("[SMTP] Stored INBOX message: rcpt=%s msg-id=%q subject=%q",
-					rcpt, parsed.MessageID, parsed.Subject)
-			}
-		} else if rcptIsLocal {
+		case rcptIsLocal && strings.EqualFold(rcpt, s.from):
 			log.Printf("[SMTP] Skipped store (self-loop, rcpt==from): %s", rcpt)
-		}
-
-		// Outbound delivery for authenticated local senders. A role address on
-		// a configured domain is local even without a mailbox, so it is never
-		// sent outward: that would hand the message straight back to us.
-		if senderIsLocal && !rcptIsLocal && !roleAddress {
-			outboundCount++
-			go func(recipient string, data []byte) {
-				if err := GetClient().Send(s.from, recipient, data); err != nil {
-					log.Printf("[SMTP] Outbound delivery failed: %s -> %s: %v", s.from, recipient, err)
-				}
-			}(rcpt, body)
-		}
-
-		// Store once in Sent folder for authenticated local senders
-		if senderIsLocal && !sentStored {
-			sentStored = true
-			sentMsg := &storage.MessageRow{
-				Email:   s.user,
-				Flags:   toNullString(`["seen"]`),
-				Mailbox: "Sent",
-				RawRef:  toNullString(rawRef),
+		case rcptIsLocal:
+			// The account's stored spelling keys the row, so a message
+			// addressed to <Ali@x.com> lands in the same mailbox IMAP opens
+			// for <ali@x.com> instead of a set of rows nothing can reach.
+			if key := "in:" + strings.ToLower(rcptAccount.Email); !seen[key] {
+				seen[key] = true
+				plan.inbox = append(plan.inbox, rcptAccount.Email)
 			}
-			parsed.Apply(sentMsg)
-			if err := s.backend.store.MessageStore(ctx, sentMsg); err != nil {
-				log.Printf("[SMTP] Failed to store sent message for %s: %v", s.from, err)
-			} else {
-				log.Printf("[SMTP] Stored Sent message: from=%s msg-id=%q", s.from, parsed.MessageID)
+		default:
+			// Only an authenticated local sender reaches here. A role address
+			// on a configured domain is local even without a mailbox, so it is
+			// never sent outward: that would hand the message straight back.
+			if key := "out:" + strings.ToLower(rcpt); !seen[key] {
+				seen[key] = true
+				plan.outbound = append(plan.outbound, rcpt)
 			}
 		}
 	}
 
-	log.Printf("[SMTP] DATA complete: stored=%d outbound=%d sender=%s rcpts=%d ip=%s",
-		storedCount, outboundCount, s.from, len(s.recipients), s.ip)
-	return nil
+	plan.sent = senderIsLocal && len(s.recipients) > 0
+	return plan, nil
 }
 
 // storeRaw persists the verbatim message and returns its content address.

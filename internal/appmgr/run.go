@@ -15,6 +15,7 @@ import (
 	"odac/internal/docker"
 	"odac/internal/gpu"
 	"odac/internal/kernel"
+	"odac/internal/mtls"
 	"odac/internal/ports"
 	"odac/internal/resources"
 )
@@ -155,6 +156,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		privileged            string
 		networkMode           string
 		isolated              bool
+		networks              []string
 		kernel                *kernel.Spec
 		resources             *resources.Spec
 		port                  int
@@ -186,6 +188,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])
+		s.networks = toNetworks(app["networks"])
 		s.kernel = toKernel(app)
 		s.resources = toResources(app)
 		s.cmd = toCmd(app["cmd"])
@@ -230,6 +233,8 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 
 	env := envToStrings(s.env)
 
+	m.injectClientCertKey(s.identity, env)
+
 	// API permission injection.
 	if s.hasAPI && m.deps.Api != nil {
 		env["ODAC_API_KEY"] = m.deps.Api.GenerateAppToken(s.identity, s.apiPerms)
@@ -251,6 +256,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 		Cmd:         s.cmd,
 		NetworkMode: s.networkMode,
 		Isolated:    s.isolated,
+		Networks:    s.networks,
 		Kernel:      s.kernel,
 		Resources:   s.resources,
 	}
@@ -311,6 +317,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		privileged            string
 		networkMode           string
 		isolated              bool
+		networks              []string
 		kernel                *kernel.Spec
 		resources             *resources.Spec
 	}
@@ -335,6 +342,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])
+		s.networks = toNetworks(app["networks"])
 		s.kernel = toKernel(app)
 		s.resources = toResources(app)
 		s.cmd = toCmd(app["cmd"])
@@ -376,6 +384,8 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		env["PORT"] = strconv.Itoa(port)
 	}
 
+	m.injectClientCertKey(s.identity, env)
+
 	if s.hasAPI && m.deps.Api != nil {
 		env["ODAC_API_KEY"] = m.deps.Api.GenerateAppToken(s.identity, s.apiPerms)
 		if dir := m.deps.Api.HostSocketDir(); dir != "" {
@@ -396,6 +406,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		Cmd:         s.cmd,
 		NetworkMode: s.networkMode,
 		Isolated:    s.isolated,
+		Networks:    s.networks,
 		Kernel:      s.kernel,
 		Resources:   s.resources,
 	}
@@ -551,6 +562,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		privileged           string
 		networkMode          string
 		isolated             bool
+		networks             []string
 		kernel               *kernel.Spec
 		resources            *resources.Spec
 	}
@@ -571,6 +583,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])
+		s.networks = toNetworks(app["networks"])
 		s.kernel = toKernel(app)
 		s.resources = toResources(app)
 		s.devices = toDevices(app["devices"])
@@ -597,6 +610,8 @@ func (m *Manager) runScriptContainer(id any) error {
 	env := map[string]string{"ODAC_APP": "true"}
 	volumes := []docker.Mount{{Host: dir, Container: "/app"}}
 
+	m.injectClientCertKey(s.identity, env)
+
 	if s.hasAPI && m.deps.Api != nil {
 		env["ODAC_API_KEY"] = m.deps.Api.GenerateAppToken(s.identity, s.apiPerms)
 		if dirPath := m.deps.Api.HostSocketDir(); dirPath != "" {
@@ -615,6 +630,7 @@ func (m *Manager) runScriptContainer(id any) error {
 		Env:         env,
 		NetworkMode: s.networkMode,
 		Isolated:    s.isolated,
+		Networks:    s.networks,
 		Kernel:      s.kernel,
 		Resources:   s.resources,
 	}
@@ -670,6 +686,24 @@ func (m *Manager) mountIsFile(name, fsPath, container string) bool {
 	// A leading dot is not an extension separator: '/root/.ollama' and '.ssh'
 	// are dotted directory names, while '.env.local' still ends in one.
 	return path.Ext(strings.TrimLeft(path.Base(cPath), ".")) != ""
+}
+
+// injectClientCertKey gives an app with a client certificate policy the key its
+// signed identity headers verify against. Like the API key it only reaches a
+// container at start, so turning a policy on needs a restart before the app can
+// trust a verdict; until then it has no key and treats every request as unverified.
+func (m *Manager) injectClientCertKey(identity string, env map[string]string) {
+	var key string
+	m.cfg.View(func() {
+		domains, _ := m.cfg.Get("domains").(map[string]any)
+		if mtls.AppIDs(domains)[identity] {
+			auth, _ := m.cfg.Map("api")["auth"].(string)
+			key = mtls.AppKey(auth, identity)
+		}
+	})
+	if key != "" {
+		env[mtls.KeyEnv] = key
+	}
 }
 
 // fixVolumePermissions ports #fixVolumePermissions: materialize each volume

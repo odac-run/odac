@@ -192,7 +192,7 @@ func (c *Connection) cmdAuthenticate(tag, args string) {
 	c.write("+ \r\n")
 
 	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	line, err := c.reader.ReadString('\n')
+	line, err := c.readLine()
 	if err != nil {
 		c.write(fmt.Sprintf("%s NO Authentication timeout\r\n", tag))
 		return
@@ -1206,7 +1206,7 @@ func (c *Connection) cmdIdle(tag string) {
 	errCh := make(chan struct{})
 	go func() {
 		c.conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
-		line, err := c.reader.ReadString('\n')
+		line, err := c.readLine()
 		if err != nil {
 			close(errCh)
 			return

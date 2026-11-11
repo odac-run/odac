@@ -331,3 +331,18 @@ func TestAssetCacheRefusesVaryOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestCacheControlIsReadAcrossLinesAndCase(t *testing.T) {
+	for _, lines := range [][]string{{"Private"}, {"NO-STORE"}, {"max-age=60", "private"}} {
+		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{
+			"Content-Type":  {"text/css"},
+			"Cache-Control": lines,
+		}}
+		if IsCacheableResponse(resp) {
+			t.Errorf("%q: asset cache accepted it", lines)
+		}
+		if IsPageCacheAllowed(resp) {
+			t.Errorf("%q: page cache accepted it", lines)
+		}
+	}
+}

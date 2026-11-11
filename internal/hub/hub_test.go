@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -183,7 +184,10 @@ func (f *fakeApp) called() []string {
 
 func ok(msg string) *api.Result { r := api.Res(true, msg); return &r }
 
-func (f *fakeApp) Create(config any) *api.Result { f.record("create"); return ok("created") }
+func (f *fakeApp) Create(_ api.Caller, config any) *api.Result {
+	f.record("create")
+	return ok("created")
+}
 func (f *fakeApp) GetBuildStats(id any) *api.Result {
 	f.record("buildstats:" + str(id))
 	return ok("stats")
@@ -302,6 +306,50 @@ func (fakeDomain) List(appIDArg any) api.Result {
 	return api.Res(true, json.RawMessage(`[]`))
 }
 
+// operator marks a call made with the operator's reach, which is the only one
+// the hub may use: it acts for the server's owner, never for an app.
+func operator(caller api.Caller) string {
+	if caller == api.Operator {
+		return "(operator) "
+	}
+	return "(NOT operator) "
+}
+
+type fakeMTLS struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeMTLS) record(call string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, call)
+	f.mu.Unlock()
+}
+func (f *fakeMTLS) Issue(caller api.Caller, domainArg, optsArg any) api.Result {
+	f.record("issue " + operator(caller) + str(domainArg) + " " + str(pmap(optsArg)["csr"]))
+	return api.Res(true, "issued", map[string]any{"fingerprint": "aa"})
+}
+func (f *fakeMTLS) Import(caller api.Caller, optsArg any) api.Result {
+	f.record("import " + operator(caller) + str(pmap(optsArg)["cert"]))
+	return api.Res(true, "imported", map[string]any{"fingerprint": "aa"})
+}
+func (f *fakeMTLS) List(caller api.Caller, domainArg any) api.Result {
+	f.record("list " + operator(caller) + str(domainArg))
+	return api.Res(true, json.RawMessage(`[]`))
+}
+func (f *fakeMTLS) Revoke(caller api.Caller, fingerprintArg any) api.Result {
+	f.record("revoke " + operator(caller) + str(fingerprintArg))
+	return api.Res(true, "revoked")
+}
+func (f *fakeMTLS) Scope(fingerprintArg, hostsArg any) api.Result {
+	f.record("scope " + str(fingerprintArg))
+	return api.Res(true, "scoped")
+}
+func (f *fakeMTLS) Set(domainArg, modeArg, optsArg any) api.Result {
+	f.record("set " + str(domainArg) + " " + str(modeArg) + " " + str(pmap(optsArg)["caPem"]))
+	return api.Res(true, "set")
+}
+
 type fakeProxy struct {
 	mu      sync.Mutex
 	tunnels [][]dataplane.Tunnel
@@ -405,6 +453,7 @@ type hubFixture struct {
 	proxy  *fakeProxy
 	mail   *fakeMail
 	cont   *fakeContainer
+	mtls   *fakeMTLS
 	dials  chan string
 	noApp  bool
 	noMail bool
@@ -421,6 +470,7 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 		proxy: &fakeProxy{},
 		mail:  &fakeMail{},
 		cont:  &fakeContainer{},
+		mtls:  &fakeMTLS{},
 		dials: make(chan string, 16),
 	}
 	for _, opt := range opts {
@@ -439,6 +489,7 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 	deps := Deps{
 		DNS:       fx.dns,
 		Domain:    fakeDomain{},
+		MTLS:      fx.mtls,
 		Proxy:     fx.proxy,
 		Container: fx.cont,
 		SysInfo: func() jscanon.Obj {
@@ -482,7 +533,7 @@ func (fx *hubFixture) connect() []string {
 	fx.t.Helper()
 	fx.h.Start()
 	fx.h.Check()
-	expected := 5
+	expected := 6
 	if fx.noApp {
 		expected--
 	}
@@ -539,7 +590,7 @@ func TestConnectSendsInitialTasksAndBearer(t *testing.T) {
 	fx := newHubFixture(t)
 	types := fx.connect()
 
-	want := []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list"}
+	want := []string{"system.info", "app.list", "dns.list", "domain.list", "mail.list", "domain.mtls.cert.list"}
 	for i, w := range want {
 		if types[i] != w {
 			t.Fatalf("initial pushes = %v, want %v", types, want)
@@ -1153,7 +1204,9 @@ func TestCommandTableOrder(t *testing.T) {
 		"domain.delete", "domain.list", "proxy.tunnel", "system.info", "system.stats",
 		"app.logs.on", "app.logs.off", "app.build_logs.on", "app.build_logs.off",
 		"terminal.open", "terminal.close", "mail.create", "mail.delete", "mail.list",
-		"mail.password", "system.update",
+		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
+		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
+		"domain.mtls.cert.import",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1170,12 +1223,52 @@ func TestCommandTableOrder(t *testing.T) {
 	intervals := map[string]time.Duration{
 		"app.list": 30 * time.Minute, "app.stats": 60 * time.Second,
 		"dns.list": 60 * time.Minute, "domain.list": 30 * time.Minute,
-		"mail.list":   60 * time.Minute,
-		"system.info": 60 * time.Minute, "system.stats": 60 * time.Second,
+		"domain.mtls.cert.list": 30 * time.Minute,
+		"mail.list":             60 * time.Minute,
+		"system.info":           60 * time.Minute, "system.stats": 60 * time.Second,
 	}
 	for name, want := range intervals {
 		if got := fx.h.commands[name].interval; got != want {
 			t.Errorf("%s interval = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestMTLSCommandsReachTheService(t *testing.T) {
+	fx := newHubFixture(t)
+	run := func(name string, payload map[string]any) {
+		t.Helper()
+		if _, err := fx.h.commands[name].fn(payload); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	run("domain.mtls.set", map[string]any{"domain": "x.com", "mode": "optional", "caPem": "PEM"})
+	run("domain.mtls.cert.issue", map[string]any{"domain": "x.com", "csr": "CSR"})
+	run("domain.mtls.cert.scope", map[string]any{"fingerprint": "aa", "hosts": []any{"x.com"}})
+	run("domain.mtls.cert.revoke", map[string]any{"fingerprint": "aa"})
+	run("domain.mtls.cert.list", map[string]any{"domain": "x.com"})
+	run("domain.mtls.cert.import", map[string]any{"cert": "PEM", "hosts": []any{"x.com"}})
+
+	want := []string{
+		"set x.com optional PEM", "issue (operator) x.com CSR", "scope aa",
+		"revoke (operator) aa", "list (operator) x.com", "import (operator) PEM",
+	}
+	// A new record reaches the dashboard's mirror right away, like an issue does.
+	if got := fx.h.commands["domain.mtls.cert.import"].triggers; !reflect.DeepEqual(got, []string{"domain.mtls.cert.list"}) {
+		t.Fatalf("import triggers = %v", got)
+	}
+	if got := fx.mtls.calls; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+}
+
+// A CA import carries the CA's private key, which must never cross the hub, and
+// removing one destroys it, which is the operator's call on the server itself.
+func TestHubCannotImportOrRemoveACA(t *testing.T) {
+	fx := newHubFixture(t)
+	for name := range fx.h.commands {
+		if strings.Contains(name, "ca.import") || strings.Contains(name, "ca.remove") {
+			t.Fatalf("the hub offers %s", name)
 		}
 	}
 }

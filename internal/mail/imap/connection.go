@@ -3,6 +3,7 @@ package imap
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -92,18 +93,16 @@ func (c *Connection) Serve() {
 	for {
 		c.conn.SetReadDeadline(time.Now().Add(idleTimeout))
 
-		line, err := c.reader.ReadString('\n')
+		line, err := c.readLine()
+		if errors.Is(err, errLineTooLong) {
+			c.write("* BAD Line too long\r\n")
+			return
+		}
 		if err != nil {
 			if imapDebug {
 				log.Printf("[IMAP] disconnect %s auth=%q mailbox=%q: %v",
 					c.conn.RemoteAddr(), c.auth, c.mailbox, err)
 			}
-			return
-		}
-
-		// Guard against oversized lines that didn't hit maxLineSize
-		if len(line) > maxLineSize {
-			c.write("* BAD Line too long\r\n")
 			return
 		}
 
@@ -218,6 +217,23 @@ func (c *Connection) Serve() {
 			c.write(fmt.Sprintf("%s BAD Unknown command\r\n", tag))
 		}
 	}
+}
+
+// errLineTooLong reports a protocol line that filled the reader's buffer.
+var errLineTooLong = errors.New("line too long")
+
+// readLine reads one protocol line of at most the reader's buffer size.
+// ReadString would keep allocating until it saw a newline, so a peer that never
+// sends one could make the server hold everything it delivers, before login.
+func (c *Connection) readLine() (string, error) {
+	line, err := c.reader.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return "", errLineTooLong
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(line), nil
 }
 
 func (c *Connection) requireAuth(tag string) bool {

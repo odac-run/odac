@@ -14,9 +14,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"odac/internal/api"
+	"odac/internal/mail/address"
 )
 
 // Mail command handlers — the port of Mail.js create()/delete()/list()/
@@ -165,17 +167,25 @@ var boundaryRe = regexp.MustCompile(`boundary="?([^";\s]+)"?`)
 // the request argument's untouched JSON — header lines are emitted in
 // document order, matching Node's for..in over the parsed object (nil is
 // tolerated: internal callers without raw JSON get sorted header order).
-func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
+//
+// The caller narrows the sender: the operator may send as any configured
+// domain, an app only as a domain routed to it, and anyone else (the zero
+// Caller) as none. A domain of another app answers like an unknown one, the
+// rule the mTLS handlers follow, because the message goes out DKIM-signed for
+// that domain.
+func (m *Mail) Send(caller api.Caller, data any, rawData json.RawMessage) api.Result {
 	dm, _ := data.(map[string]any)
 	if !truthy(data) || dm == nil || !truthy(dm["from"]) || !truthy(dm["to"]) || !truthy(dm["header"]) {
 		return api.Res(false, __("All fields are required."))
 	}
+	// Both addresses are written into header lines below, so they pass the
+	// mail server's own envelope check here, control characters included.
 	fromAddr := mailAddr(dm["from"])
-	if fromAddr == "" {
+	if !address.Valid(fromAddr) {
 		return api.Res(false, __("Invalid email address."))
 	}
 	toAddr := mailAddr(dm["to"])
-	if toAddr == "" {
+	if !address.Valid(toAddr) {
 		return api.Res(false, __("Invalid email address."))
 	}
 
@@ -193,7 +203,7 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 			labels = labels[1:]
 		}
 		domain = strings.Join(labels, ".")
-		if !truthy(domains[domain]) {
+		if !truthy(domains[domain]) || !callerOwnsDomain(caller, domains[domain]) {
 			domain = ""
 		}
 	})
@@ -215,27 +225,39 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		}
 	}
 
+	// A header is present when its name is, not when its text contains the
+	// name somewhere: matching "to:" anywhere let a Reply-To header suppress
+	// To, and a subject reading "re: from: x" suppress From.
 	headers := ""
+	present := map[string]bool{}
 	for _, key := range headerKeysInOrder(rawData, headerMap) {
+		value := jsString(headerMap[key])
+		if !validHeaderName(key) || strings.ContainsAny(value, "\r\n") {
+			return api.Res(false, __("Invalid header %s.", strconv.Quote(key)))
+		}
+		present[strings.ToLower(key)] = true
 		if isMultipart && key == "Content-Type" {
 			continue // rebuilt below with the extracted boundary
 		}
-		headers += key + ": " + jsString(headerMap[key]) + "\r\n"
+		headers += key + ": " + value + "\r\n"
 	}
-	if !strings.Contains(strings.ToLower(headers), "from:") {
+	if !present["from"] {
 		headers += "From: " + fromAddr + "\r\n"
 	}
-	if !strings.Contains(strings.ToLower(headers), "to:") {
+	if !present["to"] {
 		headers += "To: " + toAddr + "\r\n"
 	}
-	if !strings.Contains(strings.ToLower(headers), "subject:") {
+	if !present["subject"] {
 		subject := ""
 		if v, ok := dm["subject"]; ok && v != nil { // data.subject ?? ''
 			subject = jsString(v)
 		}
+		if strings.ContainsAny(subject, "\r\n") {
+			return api.Res(false, __("Invalid header %s.", strconv.Quote("Subject")))
+		}
 		headers += "Subject: " + subject + "\r\n"
 	}
-	if !strings.Contains(strings.ToLower(headers), "mime-version:") {
+	if !present["mime-version"] {
 		headers += "MIME-Version: 1.0\r\n"
 	}
 
@@ -255,12 +277,12 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		body += jsString(dm["html"]) + "\r\n"
 		body += "--" + boundary + "--\r\n"
 	case truthy(dm["html"]):
-		if !strings.Contains(strings.ToLower(headers), "content-type:") {
+		if !present["content-type"] {
 			headers += "Content-Type: text/html; charset=UTF-8\r\n"
 		}
 		body = headers + "\r\n" + jsString(dm["html"])
 	case truthy(dm["text"]):
-		if !strings.Contains(strings.ToLower(headers), "content-type:") {
+		if !present["content-type"] {
 			headers += "Content-Type: text/plain; charset=UTF-8\r\n"
 		}
 		body = headers + "\r\n" + jsString(dm["text"])
@@ -268,6 +290,7 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		body = headers + "\r\n"
 	}
 
+	// /send answers once the message is queued, so the usual bound applies.
 	res, err := m.moduleRequest("POST", "/send", map[string]any{
 		"body": body, "from": fromAddr, "to": toAddr,
 	})
@@ -282,6 +305,30 @@ func (m *Mail) Send(data any, rawData json.RawMessage) api.Result {
 		return api.Res(false, res["message"])
 	}
 	return api.Res(false, __("Mail sending failed."))
+}
+
+// callerOwnsDomain reports whether caller may send as the domain record.
+func callerOwnsDomain(caller api.Caller, record any) bool {
+	if caller.Root {
+		return true
+	}
+	rec, _ := record.(map[string]any)
+	return caller.App != "" && rec != nil && rec["appId"] == any(caller.App)
+}
+
+// validHeaderName reports whether name is an RFC 5322 field name: printable
+// US-ASCII without a colon. Anything else, CR and LF above all, would let a
+// caller end the header and write headers or a body of its own.
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; c < 33 || c > 126 || c == ':' {
+			return false
+		}
+	}
+	return true
 }
 
 // accountAddress reads one /accounts entry's address; a bare string is
@@ -337,7 +384,7 @@ func (m *Mail) moduleRequest(method, path string, payload any) (map[string]any, 
 	if !m.proc.Running() {
 		return nil, errors.New("Mail process not running")
 	}
-	return requestJSON(m.proc.SocketPath(), method, path, payload)
+	return requestJSON(m.proc.SocketPath(), method, path, payload, controlTimeout)
 }
 
 // dkimCheck ports the DKIM half of Mail.check(): for every configured
@@ -432,7 +479,7 @@ func (m *Mail) dkim(domain string) error {
 			"value": "v=DKIM1; k=rsa; p=" + publicKeyBase64,
 		})
 	}
-	if err := m.cfg.ForceSave(); err != nil {
+	if err := m.cfg.SaveDirty(); err != nil {
 		return err
 	}
 	go m.SyncConfig() // Node fires syncConfig un-awaited after DKIM setup

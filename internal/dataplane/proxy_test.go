@@ -2,6 +2,8 @@ package dataplane
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"odac/internal/mtls"
+	proxyconfig "odac/internal/proxy/config"
 )
 
 func newTestProxy(t *testing.T, cs *controlServer, resolver ContainerIPs) (*Proxy, *fakeProc) {
@@ -145,6 +150,213 @@ func TestProxySetTunnels(t *testing.T) {
 	persisted := p.cfg.Map("tunnels")
 	if len(persisted) != 2 || persisted["t.test"] == nil || persisted["ghost.test"] == nil {
 		t.Errorf("persisted tunnels = %v", persisted)
+	}
+}
+
+func TestProxyPayloadCarriesClientAuth(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.cfg.Set("api", map[string]any{"auth": "root"})
+	p.cfg.Set("domains", map[string]any{
+		"sec.test":  map[string]any{"appId": "hostapp", "subdomain": []any{"auth"}, "mtls": map[string]any{"mode": "required", "ca": []any{"c1"}}},
+		"also.test": map[string]any{"appId": "hostapp"},
+		"open.test": map[string]any{"appId": "portapp"},
+	})
+	p.cfg.Set("mtls", map[string]any{
+		"cas": map[string]any{"c1": map[string]any{"cert": "PEM", "managed": true, "name": "secret-name"}},
+	})
+	p.SetClientCerts(&fakeCertStore{certs: mtls.CertSnapshot{Scopes: json.RawMessage(`{"fp":["auth.sec.test"]}`), Revoked: []string{}}})
+
+	payload := pushedConfig(t, p, cs)
+	domains := payload["domains"].(map[string]any)
+
+	sec := domains["sec.test"].(map[string]any)["mtls"].(map[string]any)
+	if sec["mode"] != "required" || sec["key"] != mtls.AppKey("root", "hostapp") {
+		t.Fatalf("sec.test mtls = %#v", sec)
+	}
+	// Same app, no mode of its own: it still gets an entry, or the parent walk
+	// would stay open on it and reach the protected app.
+	also, ok := domains["also.test"].(map[string]any)["mtls"].(map[string]any)
+	if !ok || also["key"] == nil || also["mode"] != nil {
+		t.Fatalf("also.test mtls = %#v", also)
+	}
+	if _, has := domains["open.test"].(map[string]any)["mtls"]; has {
+		t.Fatal("an unrelated app must not pay for this")
+	}
+
+	if !strings.Contains(fmt.Sprint(payload["mtls"]), "auth.sec.test") {
+		t.Fatalf("store payload = %v", payload["mtls"])
+	}
+	raw, _ := json.Marshal(payload["mtls"])
+	for _, leaked := range []string{"LEAF", "secret-name", "spki", "auth\":\"root"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Fatalf("store payload leaked %q: %s", leaked, raw)
+		}
+	}
+}
+
+// The proxy decodes this payload into its own types and ignores what it does not
+// know, so a renamed member here would turn a policy off without any error.
+func TestClientAuthPayloadDecodesOnTheProxySide(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.cfg.Set("api", map[string]any{"auth": "root"})
+	p.cfg.Set("domains", map[string]any{
+		"sec.test": map[string]any{"appId": "hostapp", "mtls": map[string]any{
+			"mode": "required", "ca": []any{"c1"},
+			"hosts": map[string]any{"a.sec.test": map[string]any{"mode": "optional", "ca": []any{"c2"}}},
+		}},
+	})
+	p.cfg.Set("mtls", map[string]any{
+		"cas": map[string]any{"c1": map[string]any{"cert": "PEM", "managed": true}},
+	})
+	p.SetClientCerts(&fakeCertStore{certs: mtls.CertSnapshot{Scopes: json.RawMessage(`{"fp":["a.sec.test"]}`), Revoked: []string{"gone"}}})
+	p.SyncConfig()
+
+	var got proxyconfig.Config
+	if err := json.Unmarshal(<-cs.configs, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	site := got.Domains["sec.test"].MTLS
+	if site == nil || site.Mode != "required" || site.CA[0] != "c1" || site.Key != mtls.AppKey("root", "hostapp") {
+		t.Fatalf("site = %+v", site)
+	}
+	if override := site.Hosts["a.sec.test"]; override.Mode != "optional" || override.CA[0] != "c2" {
+		t.Fatalf("override = %+v", override)
+	}
+	if got.MTLS == nil || !got.MTLS.CAs["c1"].Managed || got.MTLS.CAs["c1"].Cert != "PEM" {
+		t.Fatalf("store = %+v", got.MTLS)
+	}
+	if got.MTLS.Certs["fp"][0] != "a.sec.test" || got.MTLS.Revoked[0] != "gone" {
+		t.Fatalf("store = %+v", got.MTLS)
+	}
+}
+
+func TestProxyPayloadOmitsClientAuthWhenUnused(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.SetClientCerts(&fakeCertStore{certs: mtls.CertSnapshot{Scopes: json.RawMessage("{}"), Revoked: []string{}}})
+	if _, has := pushedConfig(t, p, cs)["mtls"]; has {
+		t.Fatal("no certificates must mean no member, the proxy payload is diffed")
+	}
+}
+
+type fakeCertStore struct {
+	certs mtls.CertSnapshot
+	err   error
+}
+
+func (f *fakeCertStore) CertSnapshot(time.Time) (mtls.CertSnapshot, error) {
+	return f.certs, f.err
+}
+
+func pushedConfig(t *testing.T, p *Proxy, cs *controlServer) map[string]any {
+	t.Helper()
+	p.SyncConfig()
+	var out map[string]any
+	if err := json.Unmarshal(<-cs.configs, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestCertificateChangeTakesItsOwnRoute(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.cfg.Set("mtls", map[string]any{"cas": map[string]any{"c1": map[string]any{"cert": "PEM", "managed": true}}})
+	p.SetClientCerts(&fakeCertStore{certs: mtls.CertSnapshot{Scopes: json.RawMessage(`{"fp":["a.test"]}`), Revoked: []string{"gone"}}})
+
+	p.SyncClientCerts()
+
+	var got proxyconfig.MTLS
+	if err := json.Unmarshal(<-cs.clientCerts, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Certs["fp"][0] != "a.test" || got.Revoked[0] != "gone" || got.CAs["c1"].Cert != "PEM" {
+		t.Fatalf("store = %+v", got)
+	}
+	if len(cs.configs) != 0 {
+		t.Fatal("a full push resets the TLS caches of every other site")
+	}
+}
+
+// During an update the server can be newer than the proxy it talks to.
+func TestCertificateChangeReachesAnOlderProxy(t *testing.T) {
+	cs := newControlServer(t)
+	cs.clientCertStatus.Store(http.StatusNotFound)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.SetClientCerts(&fakeCertStore{certs: mtls.CertSnapshot{Scopes: json.RawMessage("{}"), Revoked: []string{"gone"}}})
+
+	p.SyncClientCerts()
+
+	var got proxyconfig.Config
+	if err := json.Unmarshal(<-cs.configs, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MTLS == nil || got.MTLS.Revoked[0] != "gone" {
+		t.Fatalf("store = %+v", got.MTLS)
+	}
+}
+
+func TestFailedCertReadKeepsTheLastGoodCopy(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	store := &fakeCertStore{certs: mtls.CertSnapshot{Scopes: json.RawMessage(`{"fp":["a.test"]}`), Revoked: []string{"gone"}}}
+	p.SetClientCerts(store)
+	pushedConfig(t, p, cs)
+
+	store.err = errors.New("disk")
+	var got proxyconfig.Config
+	p.SyncConfig()
+	if err := json.Unmarshal(<-cs.configs, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MTLS == nil || got.MTLS.Revoked[0] != "gone" || got.MTLS.Certs["fp"][0] != "a.test" {
+		t.Fatalf("a disk hiccup must not lock everyone out or revive a revocation: %+v", got.MTLS)
+	}
+}
+
+func TestFailedCertReadWithNoCopyTrustsNothing(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.cfg.Set("mtls", map[string]any{"cas": map[string]any{"c1": map[string]any{"cert": "PEM", "managed": true}}})
+	p.SetClientCerts(&fakeCertStore{err: errors.New("disk")})
+
+	if _, has := pushedConfig(t, p, cs)["mtls"]; has {
+		t.Fatal("CAs with an empty revocation list would revive revoked certificates")
+	}
+
+	p.SyncClientCerts()
+	if len(cs.clientCerts) != 0 || len(cs.configs) != 0 {
+		t.Fatal("a failed read must leave the proxy with the table it has")
+	}
+}
+
+func TestTunnelIsNotPushedForAClientAuthApp(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.cfg.Set("domains", map[string]any{
+		"sec.test": map[string]any{"appId": "hostapp", "mtls": map[string]any{"mode": "optional", "ca": []any{"c1"}}},
+	})
+	p.tunnels = map[string]Tunnel{
+		"t.test": {Domain: "t.test", Container: "hostapp", Token: "tok"},
+		"u.test": {Domain: "u.test", Container: "portapp", Token: "tok"},
+	}
+	tunnels := p.buildPayload(p.resolveContainerIPs())["tunnels"].([]any)
+	if len(tunnels) != 1 || tunnels[0].(map[string]any)["domain"] != "u.test" {
+		t.Fatalf("tunnels = %#v: a tunnel would dial straight past the policy", tunnels)
+	}
+	if got := p.TunnelDomains("hostapp"); len(got) != 1 || got[0] != "t.test" {
+		t.Fatalf("TunnelDomains = %v", got)
 	}
 }
 
@@ -510,4 +722,21 @@ func TestProxyDeleteACMEChallenge(t *testing.T) {
 	// Best-effort: no proxy, no panic, no request.
 	p.proc = &fakeProc{running: false}
 	p.DeleteACMEChallenge("tok-2")
+}
+
+func TestProxySkipsContainerAppWithNoAddress(t *testing.T) {
+	cs := newControlServer(t)
+	resolver := &fakeResolver{ips: map[string]string{}}
+	resolver.available.Store(true)
+	p, _ := newTestProxy(t, cs, resolver)
+	p.cfg.Set("apps", []any{
+		map[string]any{"name": "api", "id": "a1", "ports": []any{map[string]any{"container": float64(1453)}}},
+	})
+	p.cfg.Set("domains", map[string]any{"api.test": map[string]any{"appId": "api"}})
+
+	p.SyncConfig()
+	domains, _ := cs.nextConfig(t)["domains"].(map[string]any)
+	if entry, ok := domains["api.test"]; ok {
+		t.Fatalf("a container app with no address was routed: %v", entry)
+	}
 }

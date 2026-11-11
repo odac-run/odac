@@ -50,7 +50,7 @@ func TestPurgeReachesSubdomainsInEveryStore(t *testing.T) {
 		"Content-Type": {"text/html"},
 		"Vary":         {"X-Requested-With"},
 	}}
-	hint := &http.Response{StatusCode: http.StatusOK, Header: http.Header{
+	hint := &http.Response{StatusCode: http.StatusOK, Request: anonymousPageRequest(), Header: http.Header{
 		"Content-Type": {"text/html"},
 		"Link":         {"</a.css>; rel=preload"},
 	}}

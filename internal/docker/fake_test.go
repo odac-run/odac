@@ -82,6 +82,7 @@ type fakeAPI struct {
 
 	netConnects    [][2]string
 	netDisconnects [][2]string
+	netConnectErr  error
 
 	removedImages []string
 	prunedImages  bool
@@ -292,10 +293,12 @@ func (f *fakeAPI) NetworkList(context.Context, network.ListOptions) ([]network.S
 	var out []network.Summary
 	for _, n := range f.networks {
 		internal := f.preInternal[n]
+		var options map[string]string
 		if opts, ok := f.netCreateOpts[n]; ok {
 			internal = opts.Internal
+			options = opts.Options
 		}
-		out = append(out, network.Summary{Name: n, Internal: internal})
+		out = append(out, network.Summary{Name: n, Internal: internal, Options: options})
 	}
 	return out, nil
 }
@@ -314,6 +317,9 @@ func (f *fakeAPI) NetworkCreate(_ context.Context, name string, opts network.Cre
 func (f *fakeAPI) NetworkConnect(_ context.Context, networkID, containerID string, _ *network.EndpointSettings) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.netConnectErr != nil {
+		return f.netConnectErr
+	}
 	f.netConnects = append(f.netConnects, [2]string{networkID, containerID})
 	return nil
 }
