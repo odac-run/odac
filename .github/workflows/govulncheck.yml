@@ -22,10 +22,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # Must satisfy the root go.mod directive; setup-go installs the latest
-          # matching patch, so standard-library advisories fixed in a newer 1.26.x
-          # are resolved by the build toolchain itself.
+          # Must satisfy the root go.mod directive. check-latest makes setup-go
+          # fetch the newest 1.26.x instead of the runner's cached patch, so a
+          # standard-library advisory fixed upstream is fixed here too.
           go-version: '1.26'
+          check-latest: true
 
       # Reachability-aware scan. The gate is "fixable-only": it fails only when a
       # vulnerability is BOTH reachable from our code AND has an upstream fix
