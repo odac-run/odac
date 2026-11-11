@@ -56,6 +56,7 @@ type Docker interface {
 	Rename(oldName, newName string) error
 	StreamLogs(name string, stdout, stderr io.Writer) (stop func(), err error)
 	IsRunning(name string) bool
+	RunningNames() (map[string]bool, error)
 	List() []docker.ContainerInfo
 	GetIP(nameOrID string) (string, error)
 	GetStatus(name string) docker.Status
@@ -146,6 +147,7 @@ type Manager struct {
 	netFollow  map[float64]bool          // app ids with a network reconcile queued
 	logStreams map[string]*runtimeStream // app name -> live runtime log
 	loggers    map[string]*applog.Logger // app name -> logger instance
+	probeDown  bool                      // last pulse could not list containers
 
 	// Test hooks: cadences default to Node's literals; sleep defaults to
 	// time.Sleep. deploySwitchDelay is Deploy.js's NODE_ENV!=='test' 5s.
@@ -261,11 +263,20 @@ func (m *Manager) Init() {
 
 // Check ports App.check — the 1s watchdog pulse: reload the working set from
 // config and (re)start active apps that are not running.
+//
+// Liveness comes from one bounded container list per pulse rather than an
+// inspect per app (Node's #isAppRunning): the pulse rides the system tick
+// that also drives the data-plane supervisors, so its cost must not grow
+// with the app count or wait on a stalled daemon. When the list fails the
+// state is unknown, and the pulse does nothing rather than read every app
+// as stopped and recreate it.
 func (m *Manager) Check() {
 	type pulse struct {
 		id     float64
 		name   string
 		status string
+		typ    string
+		pid    int
 	}
 	var pulses []pulse
 
@@ -278,9 +289,38 @@ func (m *Manager) Check() {
 			id, _ := app["id"].(float64)
 			name, _ := app["name"].(string)
 			status, _ := app["status"].(string)
-			pulses = append(pulses, pulse{id: id, name: name, status: status})
+			typ, _ := app["type"].(string)
+			pid, _ := app["pid"].(float64)
+			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid)})
 		}
 	})
+	if len(pulses) == 0 {
+		return
+	}
+
+	var running map[string]bool
+	useDocker := m.deps.Docker.Available()
+	needDocker := useDocker
+	for _, p := range pulses {
+		needDocker = needDocker || p.typ == "container"
+	}
+	if needDocker {
+		var err error
+		running, err = m.deps.Docker.RunningNames()
+		m.mu.Lock()
+		wasDown := m.probeDown
+		m.probeDown = err != nil
+		m.mu.Unlock()
+		if err != nil {
+			if !wasDown {
+				m.log.Error("[Watchdog] Cannot list containers, skipping app checks until Docker answers: %s", err.Error())
+			}
+			return
+		}
+		if wasDown {
+			m.log.Log("[Watchdog] Docker answers again, app checks resumed")
+		}
+	}
 
 	for _, p := range pulses {
 		m.mu.Lock()
@@ -291,7 +331,14 @@ func (m *Manager) Check() {
 			continue
 		}
 
-		isRunning := m.isAppRunning(p.id)
+		// Same decision as isAppRunning, from the pulse's snapshot.
+		var isRunning bool
+		switch {
+		case p.typ == "container" || useDocker:
+			isRunning = running[p.name]
+		case p.pid > 0:
+			isRunning = pidAlive(p.pid)
+		}
 
 		// Re-attach logger for running apps (if missing). Fire-and-forget
 		// like Node's un-awaited #attachLogger(app).catch(...).

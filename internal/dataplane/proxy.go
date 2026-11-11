@@ -371,15 +371,17 @@ func (p *Proxy) syncConfig(retry int) {
 	p.dockerWaitFirstSync(retry)
 
 	certs, certsOK := p.certSnapshot()
+	ips := p.resolveContainerIPs()
 
 	// Payload assembly and marshal run under the config value WRITE lock:
 	// resolveBackend caches container IPs back onto the live app entries
-	// (app.ip), so this is a mutation, not just a read. The send happens
-	// outside the lock.
+	// (app.ip), so this is a mutation, not just a read. Docker is asked
+	// before it (resolveContainerIPs) and the send happens after it, so the
+	// lock every config reader takes never waits on the daemon.
 	var body []byte
 	var marshalErr error
 	p.cfg.Mutate(func() {
-		payload := p.buildPayload()
+		payload := p.buildPayload(ips)
 		if certsOK {
 			if store := mtls.StorePayload(p.cfg.Map("mtls"), certs); store != nil {
 				payload["mtls"] = store
@@ -423,9 +425,64 @@ func (p *Proxy) dockerWaitFirstSync(retry int) {
 	}
 }
 
+// resolveTimeBudget bounds the container IP lookups of one sync. Each
+// lookup has its own timeout; this keeps a stalled daemon from costing that
+// timeout once per app while syncMu is held. Apps past the budget use their
+// cached app.ip, as when Docker is unreachable.
+const resolveTimeBudget = 5 * time.Second
+
+// resolveContainerIPs asks Docker for the address of every container a
+// domain or tunnel routes to, once per container, before syncConfig takes
+// the config write lock. The result is keyed by containerTarget.
+func (p *Proxy) resolveContainerIPs() map[string]string {
+	ips := map[string]string{}
+	if p.containers == nil {
+		return ips
+	}
+	targets := map[string]bool{}
+	p.cfg.View(func() {
+		apps, _ := p.cfg.Get("apps").([]any)
+		add := func(app map[string]any) {
+			if target := containerTarget(app); target != "" {
+				targets[target] = true
+			}
+		}
+		for _, rec := range p.cfg.Map("domains") {
+			if record, _ := rec.(map[string]any); record != nil {
+				if app := findApp(apps, record["appId"]); app != nil {
+					add(app)
+				}
+			}
+		}
+		for _, tn := range p.tunnelList() {
+			if app := findAppByName(apps, tn.Container); app != nil {
+				add(app)
+			}
+		}
+	})
+
+	names := make([]string, 0, len(targets))
+	for target := range targets {
+		names = append(names, target)
+	}
+	sort.Strings(names)
+	deadline := time.Now().Add(resolveTimeBudget)
+	for i, target := range names {
+		if time.Now().After(deadline) {
+			p.log.Log("Proxy: Docker lookups over budget, %d container(s) use their cached address", len(names)-i)
+			break
+		}
+		if ip, err := p.containers.GetIP(target); err == nil && ip != "" {
+			ips[target] = ip
+		}
+	}
+	return ips
+}
+
 // buildPayload assembles the /config body, except its mtls member, which syncConfig
-// adds. Caller holds cfg.Mutate (see syncConfig).
-func (p *Proxy) buildPayload() map[string]any {
+// adds. ips holds the container addresses resolveContainerIPs found. Caller
+// holds cfg.Mutate (see syncConfig).
+func (p *Proxy) buildPayload(ips map[string]string) map[string]any {
 	domains := p.cfg.Map("domains")
 	apps, _ := p.cfg.Get("apps").([]any)
 
@@ -443,7 +500,7 @@ func (p *Proxy) buildPayload() map[string]any {
 			p.log.Log("Proxy: App %s not found for domain %s", record["appId"], name)
 			continue
 		}
-		backend, why := p.resolveBackend(app)
+		backend, why := p.resolveBackend(app, ips)
 		if backend == nil {
 			p.log.Log("Proxy: Skipping domain %s, app %s: %s", name, app["name"], why)
 			continue
@@ -485,7 +542,7 @@ func (p *Proxy) buildPayload() map[string]any {
 			p.log.Log(fmt.Sprintf("Tunnel: Skipping %s, app %s uses client certificates", tn.Domain, tn.Container))
 			continue
 		}
-		backend, why := p.resolveBackend(app)
+		backend, why := p.resolveBackend(app, ips)
 		if backend == nil {
 			p.log.Log(fmt.Sprintf("Tunnel: Skipping %s, app %s: %s", tn.Domain, tn.Container, why))
 			continue
@@ -536,31 +593,48 @@ type backendInfo struct {
 	internal bool
 }
 
-// resolveBackend ports #resolveAppBackend (dev 5a23c38/db7cdb2 semantics):
-// Ports.primary picks the first proxy-routed entry (missing host or the
-// 'proxy' sentinel), else ports[0]; a published primary routes to its host
-// port, a proxy-routed one to its container port over the container network;
-// then app.port → app.http; no port → nil, domain skipped. Container-network
-// backends resolve the container IP, falling back to the cached app.ip; with
-// neither the domain is skipped too, since the loopback default would hand
-// public traffic to whatever the host runs on that port.
-func (p *Proxy) resolveBackend(app map[string]any) (*backendInfo, string) {
-	port, host, internal := 0, "127.0.0.1", false
-
+// backendPort is the port half of #resolveAppBackend (dev 5a23c38/db7cdb2
+// semantics): Ports.primary picks the first proxy-routed entry (missing host
+// or the 'proxy' sentinel), else ports[0]; a published primary routes to its
+// host port, a proxy-routed one to its container port over the container
+// network; then app.port → app.http. Zero means no port.
+func backendPort(app map[string]any) (port int, internal bool) {
 	portList, _ := app["ports"].([]any)
 	if primary := ports.Primary(portList); primary != nil {
 		if ports.IsPublished(primary) {
-			port = jsParseInt(primary["host"])
+			return jsParseInt(primary["host"]), false
 		} else if truthy(primary["container"]) {
-			port = jsParseInt(primary["container"])
-			internal = true
+			return jsParseInt(primary["container"]), true
 		}
 	} else if truthy(app["port"]) {
-		port = jsParseInt(app["port"])
+		return jsParseInt(app["port"]), false
 	} else if truthy(app["http"]) {
-		port = jsParseInt(app["http"])
-		internal = true
+		return jsParseInt(app["http"]), true
 	}
+	return 0, false
+}
+
+// containerTarget names the container whose address the app's backend
+// needs, or "" when the backend is not reached over a container network.
+func containerTarget(app map[string]any) string {
+	port, internal := backendPort(app)
+	if port == 0 || !internal || netmode.IsHost(app["networkMode"]) {
+		return ""
+	}
+	target := app["activeContainerId"]
+	if !truthy(target) {
+		target = app["name"]
+	}
+	return str(target)
+}
+
+// resolveBackend ports #resolveAppBackend: no port → nil, domain skipped.
+// Container-network backends take the address resolveContainerIPs found,
+// falling back to the cached app.ip; with neither the domain is skipped
+// too, since the loopback default would hand public traffic to whatever the
+// host runs on that port.
+func (p *Proxy) resolveBackend(app map[string]any, ips map[string]string) (*backendInfo, string) {
+	port, internal := backendPort(app)
 	if port == 0 {
 		return nil, "no port found"
 	}
@@ -568,23 +642,13 @@ func (p *Proxy) resolveBackend(app map[string]any) (*backendInfo, string) {
 	if internal && netmode.IsHost(app["networkMode"]) {
 		// A host-namespace app has no container IP to inspect: it binds the
 		// port on the host, and ODAC shares that namespace, so the container
-		// port is already reachable on loopback. The default host is exactly
-		// that, so only the inspect below needs skipping.
+		// port is already reachable on loopback.
 		return &backendInfo{host: netmode.LoopbackAddr, port: port, internal: internal}, ""
 	}
 
+	host := "127.0.0.1"
 	if internal {
-		target := app["activeContainerId"]
-		if !truthy(target) {
-			target = app["name"]
-		}
-		resolved := ""
-		if p.containers != nil {
-			if ip, err := p.containers.GetIP(str(target)); err == nil {
-				resolved = ip
-			}
-		}
-		if resolved != "" {
+		if resolved := ips[containerTarget(app)]; resolved != "" {
 			// Cache like Node (app.ip = containerIP): the live config map is
 			// mutated without marking the module dirty — it persists whenever
 			// the app module is next saved for another reason.

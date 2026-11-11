@@ -66,6 +66,12 @@ const IsolatedNetwork = "odac-network-isolated"
 // the Hub's payload path and must not wait on a wedged daemon.
 const infoTimeout = 2 * time.Second
 
+// probeTimeout caps the state probes (IsRunning, RunningNames, GetIP). They
+// run on the 1-second tick and on the proxy sync, and the SDK sets no
+// deadline of its own, so a daemon stalled under I/O pressure would hold
+// those paths forever.
+const probeTimeout = 3 * time.Second
+
 // API is the narrow slice of the Docker SDK client the orchestrator uses.
 // *client.Client satisfies it; tests inject fakes.
 type API interface {
@@ -872,7 +878,9 @@ func (c *Client) IsRunning(name string) bool {
 	if !c.available {
 		return false
 	}
-	data, err := c.api.ContainerInspect(context.Background(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	data, err := c.api.ContainerInspect(ctx, name)
 	if err != nil {
 		if !client.IsErrNotFound(err) {
 			c.log.Error("Failed to check if running %s: %s", name, err.Error())
@@ -880,6 +888,31 @@ func (c *Client) IsRunning(name string) bool {
 		return false
 	}
 	return data.State != nil && data.State.Running
+}
+
+// RunningNames returns the names of every running container in one daemon
+// call. It exists for the app pulse, which used to inspect each app in turn:
+// one bounded list costs the same for any number of apps, and an error means
+// "unknown", which the caller must not read as "stopped".
+func (c *Client) RunningNames() (map[string]bool, error) {
+	if !c.available {
+		return map[string]bool{}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	list, err := c.api.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	// Without All the daemon lists what inspect reports as State.Running
+	// (paused and restarting included), the same answer IsRunning gives.
+	out := make(map[string]bool, len(list))
+	for _, ct := range list {
+		for _, name := range ct.Names {
+			out[strings.TrimPrefix(name, "/")] = true
+		}
+	}
+	return out, nil
 }
 
 // ContainerInfo is one row of List.
@@ -923,7 +956,9 @@ func (c *Client) GetIP(nameOrID string) (string, error) {
 	if !c.available {
 		return "", fmt.Errorf("docker not available")
 	}
-	data, err := c.api.ContainerInspect(context.Background(), nameOrID)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	data, err := c.api.ContainerInspect(ctx, nameOrID)
 	if err != nil {
 		if !client.IsErrNotFound(err) {
 			c.log.Error("Failed to get IP for %s: %s", nameOrID, err.Error())

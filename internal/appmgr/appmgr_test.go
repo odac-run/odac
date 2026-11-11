@@ -40,6 +40,7 @@ type fakeDocker struct {
 	ips       map[string]string
 	exposed   map[string][]int // by image
 	running   map[string]bool
+	listErr   error // RunningNames fails with it (a stalled daemon)
 	status    map[string]docker.Status
 	statDirs  map[string]bool // key: name\x00containerPath → isDir; absent = unknown
 
@@ -179,6 +180,21 @@ func (f *fakeDocker) IsRunning(name string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.running[name]
+}
+
+func (f *fakeDocker) RunningNames() (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make(map[string]bool, len(f.running))
+	for name, up := range f.running {
+		if up && f.available {
+			out[name] = true
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeDocker) List() []docker.ContainerInfo {
