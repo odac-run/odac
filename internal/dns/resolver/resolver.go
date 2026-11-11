@@ -6,6 +6,7 @@ package resolver
 
 import (
 	"log"
+	"net"
 	"strings"
 	"sync"
 
@@ -38,6 +39,12 @@ type recordKey struct {
 	name  string
 	rtype string
 }
+
+// maxUDPPayload is the EDNS(0) buffer size ODAC advertises and the most it
+// sends over UDP whatever a client offers: 1232 bytes avoids IP
+// fragmentation on any path (DNS Flag Day 2020). Larger answers set TC and
+// the client retries over TCP.
+const maxUDPPayload = 1232
 
 // NewResolver creates a new DNS resolver with empty zone data.
 func NewResolver() *Resolver {
@@ -100,7 +107,7 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Validate request structure
 	if len(req.Question) == 0 {
 		msg.Rcode = dns.RcodeFormatError
-		w.WriteMsg(msg)
+		reply(w, req, msg)
 		return
 	}
 
@@ -115,9 +122,12 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	r.mu.RUnlock()
 
 	if zone == nil {
-		// Not authoritative for this domain → NXDOMAIN
-		msg.Rcode = dns.RcodeNameError
-		w.WriteMsg(msg)
+		// Not a zone we host. NXDOMAIN with AA would be an authoritative
+		// claim that the name does not exist anywhere (and is cached as
+		// such); an authoritative-only server answers REFUSED.
+		msg.Authoritative = false
+		msg.Rcode = dns.RcodeRefused
+		reply(w, req, msg)
 		return
 	}
 
@@ -127,7 +137,7 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// Name does not exist → NXDOMAIN with SOA in authority (RFC 2308)
 		msg.Rcode = dns.RcodeNameError
 		r.addSOAAuthority(msg, zone, domain)
-		w.WriteMsg(msg)
+		reply(w, req, msg)
 		return
 	}
 
@@ -135,7 +145,7 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Return only SOA to minimize response size.
 	if qType == dns.TypeANY {
 		r.processSOA(msg, zone, domain)
-		w.WriteMsg(msg)
+		reply(w, req, msg)
 		return
 	}
 
@@ -148,7 +158,7 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if cnameRecords, ok := zone.records[cnameKey]; ok && len(cnameRecords) > 0 {
 		r.processCNAME(msg, cnameRecords, qName)
 		r.chaseCNAME(msg, zone, cnameRecords, qType, ips)
-		w.WriteMsg(msg)
+		reply(w, req, msg)
 		return
 	}
 
@@ -176,6 +186,34 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// Unknown type → NODATA (empty answer, no error)
 	}
 
+	reply(w, req, msg)
+}
+
+// reply sizes msg for the transport the query came in on and writes it.
+// Over UDP the limit is 512 bytes unless the query carried an EDNS(0) OPT
+// record (RFC 6891), whose buffer size is honored up to maxUDPPayload; a
+// response that does not fit is cut at a record boundary with TC set, so
+// the client retries over TCP instead of receiving a datagram it may drop.
+// A query with OPT gets OPT back, as RFC 6891 section 7 requires.
+func reply(w dns.ResponseWriter, req, msg *dns.Msg) {
+	_, overUDP := w.RemoteAddr().(*net.UDPAddr)
+	size := dns.MaxMsgSize
+	if overUDP {
+		size = dns.MinMsgSize
+	}
+	if opt := req.IsEdns0(); opt != nil {
+		if opt.Version() != 0 {
+			// Only EDNS version 0 exists; anything else is BADVERS.
+			msg.Answer, msg.Ns, msg.Extra = nil, nil, nil
+			msg.Rcode = dns.RcodeBadVers
+		}
+		if overUDP {
+			size = min(max(int(opt.UDPSize()), dns.MinMsgSize), maxUDPPayload)
+		}
+		// Pack moves the upper bits of an extended rcode into this OPT.
+		msg.SetEdns0(maxUDPPayload, false)
+	}
+	msg.Truncate(size)
 	w.WriteMsg(msg)
 }
 
