@@ -166,3 +166,34 @@ func TestSanitizePassesScalars(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactURLCredentials(t *testing.T) {
+	cases := map[string]string{
+		"createFromGit: URL: https://user:ghp_secret@github.com/a/b.git, Branch: main": "createFromGit: URL: https://***@github.com/a/b.git, Branch: main",
+		`{"url":"https://ghp_secret@github.com/a/b.git"}`:                              `{"url":"https://***@github.com/a/b.git"}`,
+		"two: http://a:b@x.io and ftp://c:d@y.io/z":                                    "two: http://***@x.io and ftp://***@y.io/z",
+		"password with an at: https://u:p@ss@host/x":                                   "password with an at: https://***@host/x",
+		"no userinfo: https://example.com/a@b":                                         "no userinfo: https://example.com/a@b",
+		"mail only: someone@example.com":                                               "mail only: someone@example.com",
+		"bare scheme at the end https://":                                              "bare scheme at the end https://",
+	}
+	for in, want := range cases {
+		if got := RedactURLCredentials(in); got != want {
+			t.Errorf("RedactURLCredentials(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Every logger applies it: a URL is usually a bare string, which Sanitize
+// leaves alone, or part of a message the caller built itself.
+func TestLogLinesNeverCarryURLCredentials(t *testing.T) {
+	out, errBuf := capture(t)
+	l := New("App")
+	l.Log("Cloning %s", "https://user:tok@git.example.com/r.git")
+	l.Error("failed: " + "https://tok@git.example.com/r.git")
+	for _, got := range []string{out.String(), errBuf.String()} {
+		if bytes.Contains([]byte(got), []byte("tok@")) {
+			t.Errorf("credentials reached the log: %q", got)
+		}
+	}
+}

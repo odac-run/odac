@@ -1,8 +1,10 @@
 package appmgr
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"odac/internal/api"
@@ -122,5 +124,31 @@ func TestOperatorKeepsHostBindsAndTheZeroCallerDoesNot(t *testing.T) {
 	fx.waitIdle(t)
 	if got := fx.dock.runCallAt(0).options.Volumes; len(got) != 1 || got[0].Host != "/srv/media" {
 		t.Fatalf("operator volumes = %v", got)
+	}
+}
+
+// The create log line names what is being deployed and nothing it carries:
+// a git token, env values (top level and per template member) and config
+// file contents all stay out.
+func TestCreateLogSummaryKeepsSecretsOut(t *testing.T) {
+	cfg := map[string]any{
+		"type": "template", "name": "stack", "url": "https://github.com/a/b.git", "token": "ghp_secret",
+		"env": map[string]any{"web": map[string]any{"DB_PASSWORD": "hunter2"}},
+		"apps": map[string]any{
+			"web": map[string]any{"env": map[string]any{"API_SECRET": "s3"}, "configs": []any{map[string]any{"path": "/etc/x", "content": "pw=s4"}}},
+			"db":  map[string]any{},
+		},
+	}
+	raw, err := json.Marshal(createLogSummary(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"ghp_secret", "hunter2", "s3", "s4"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("summary carries %q: %s", secret, raw)
+		}
+	}
+	if want := `{"apps":["db","web"],"name":"stack","type":"template","url":"https://github.com/a/b.git"}`; string(raw) != want {
+		t.Errorf("summary = %s, want %s", raw, want)
 	}
 }

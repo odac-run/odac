@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"odac/internal/api"
@@ -151,7 +152,7 @@ func (m *Manager) Create(caller api.Caller, config any) *api.Result {
 		}
 	}
 
-	if cfgJSON, err := json.Marshal(cfg); err == nil {
+	if cfgJSON, err := json.Marshal(createLogSummary(cfg)); err == nil {
 		m.clog.Log("Creating app: " + string(cfgJSON))
 	}
 
@@ -170,6 +171,32 @@ func (m *Manager) Create(caller api.Caller, config any) *api.Result {
 	default:
 		return res(false, __("Unknown config type: %s", typ))
 	}
+}
+
+// createLogFields are the members of a create payload that are safe to log.
+// It is an allowlist because the payload carries secrets under many names: a
+// git token, env values at the top level and per template member, and config
+// file contents.
+var createLogFields = []string{"type", "app", "name", "url", "branch", "image", "dev"}
+
+// createLogSummary is the loggable part of a create payload, plus the member
+// names of a template so the line still says what was deployed.
+func createLogSummary(cfg map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, k := range createLogFields {
+		if v, ok := cfg[k]; ok {
+			out[k] = v
+		}
+	}
+	if apps, _ := cfg["apps"].(map[string]any); len(apps) > 0 {
+		keys := make([]string, 0, len(apps))
+		for k := range apps {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out["apps"] = keys
+	}
+	return out
 }
 
 // tryLockCreating claims a creation slot for name.
