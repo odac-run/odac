@@ -23,7 +23,7 @@ func secureURL(url, token string) string {
 }
 
 // CloneRepo ports Container.cloneRepo: shallow-clones the repository into
-// targetDir using an isolated, unprivileged alpine/git container. All
+// targetDir using an ephemeral alpine/git sandbox container. All
 // dynamic values reach the shell only via "$VAR" env expansion, never
 // string interpolation, so quote/metachars in them are not re-parsed.
 func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildLog) error {
@@ -120,6 +120,9 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 func (c *Client) runGitSandbox(gitCmd string, env []string, targetDir, token string, buildLog BuildLog, op string) error {
 	ctx := context.Background()
 	hostPath := c.ResolveHostPath(targetDir)
+	if err := c.ensureNetwork(ctx, BuildNetwork); err != nil {
+		return err
+	}
 
 	created, err := c.api.ContainerCreate(ctx, &container.Config{
 		Image:      gitImage,
@@ -127,10 +130,7 @@ func (c *Client) runGitSandbox(gitCmd string, env []string, targetDir, token str
 		Cmd:        []string{gitCmd},
 		Env:        env,
 		WorkingDir: "/git",
-	}, &container.HostConfig{
-		Binds:      []string{hostPath + ":/git"},
-		Privileged: false, // SECURITY: rootless git
-	}, nil, nil, "")
+	}, sandboxHostConfig([]string{hostPath + ":/git"}), nil, nil, "")
 	if err != nil {
 		return err
 	}

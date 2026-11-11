@@ -584,9 +584,7 @@ func TestCloneRepoCommandAssembly(t *testing.T) {
 	if call.Config.WorkingDir != "/git" || call.HostConfig.Binds[0] != "/apps/r:/git" {
 		t.Errorf("workdir/binds = %q/%v", call.Config.WorkingDir, call.HostConfig.Binds)
 	}
-	if call.HostConfig.Privileged {
-		t.Error("git sandbox must be unprivileged")
-	}
+	assertSandboxed(t, f, call.HostConfig)
 	// Ephemeral container force-removed afterwards.
 	if f.removed[len(f.removed)-1] != call.ID {
 		t.Errorf("git container not removed: %v", f.removed)
@@ -643,6 +641,7 @@ func TestFetchRepoCommandAssembly(t *testing.T) {
 	if !reflect.DeepEqual(call.Config.Env, wantEnv) {
 		t.Errorf("env = %v", call.Config.Env)
 	}
+	assertSandboxed(t, f, call.HostConfig)
 }
 
 func TestMaskingWriter(t *testing.T) {

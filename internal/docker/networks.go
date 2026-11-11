@@ -18,6 +18,13 @@ import (
 // ODAC's placement, not a choice: no list can name it and no report shows it.
 const PrivateNetwork = "odac-network-private"
 
+// BuildNetwork is where every build step that runs repository code or
+// handles its credentials lives: a bridge with egress, for registries, and
+// inter-container traffic switched off, so concurrent builds cannot reach
+// each other. It replaces host networking, which handed install scripts the
+// host's loopback services and a seat in the proxy's SO_REUSEPORT groups.
+const BuildNetwork = "odac-network-build"
+
 // iccOption is the bridge driver option behind PrivateNetwork. Like
 // `internal` it belongs to the network and cannot change after creation.
 const iccOption = "com.docker.network.bridge.enable_icc"
@@ -27,8 +34,9 @@ var networkNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 // reservedNetworks cannot appear in an app's list. "host" there would share
 // the host's stack past every guard on networkMode (domains, net.* sysctls),
 // "none" leaves the container without an address the proxy can reach, and
-// PrivateNetwork is only ever ODAC's fallback for an empty list.
-var reservedNetworks = map[string]bool{"host": true, "none": true, "default": true, PrivateNetwork: true}
+// PrivateNetwork is only ever ODAC's fallback for an empty list. BuildNetwork
+// belongs to build containers alone.
+var reservedNetworks = map[string]bool{"host": true, "none": true, "default": true, PrivateNetwork: true, BuildNetwork: true}
 
 // NormalizeNetworks validates an app's network list and returns it
 // deduplicated and sorted, never nil. It is the single check for both doors,
@@ -88,7 +96,7 @@ func networkSpec(name string) network.CreateOptions {
 		// FORWARD rules drop every packet routed between the subnet and any
 		// other interface: the enforcement behind RunOptions.Isolated.
 		opts.Internal = true
-	case PrivateNetwork:
+	case PrivateNetwork, BuildNetwork:
 		opts.Options = map[string]string{iccOption: "false"}
 	}
 	return opts

@@ -16,10 +16,10 @@ import (
 )
 
 // This file ports server/src/Container/Builder.js: the ODAC native builder.
-// Secure two-stage build (compile → package) that avoids DinD and
-// privileged mode entirely — compile runs in an unprivileged runner with
-// the source bind-mounted, packaging talks to the host daemon through a
-// socket-mounted docker:cli container.
+// Two-stage build (compile, then package) without DinD or privileged mode:
+// compile runs in a sandbox (sandboxHostConfig) with the source
+// bind-mounted, packaging talks to the host daemon through a socket-mounted
+// docker:cli container.
 
 // safeImageRef guards the `docker build -t <imageName>` shell interpolation
 // in packageImage/packageCustom. It permits the full image-reference set
@@ -229,6 +229,18 @@ var buildStrategies = map[string]buildStrategy{
 
 // packagerImage is the socket-mounted docker client used for image builds.
 const packagerImage = "docker:cli"
+
+// buildPidsLimit bounds the processes and threads of one build container,
+// which is what stops a fork bomb in an install script from taking the host.
+// It sits well above what a parallel cargo or webpack build uses.
+const buildPidsLimit int64 = 8192
+
+// buildCaps is what package managers running as root still need once every
+// capability is dropped: file ownership and permission bits (apk, npm),
+// and switching uid (npm runs scripts as the directory owner, apt as _apt).
+// Everything that reaches past the container's own files stays dropped,
+// NET_RAW and NET_BIND_SERVICE included.
+var buildCaps = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID"}
 
 // compileEnv silences interactive/progress output in runner containers.
 var compileEnv = []string{
@@ -450,9 +462,25 @@ func resolveImage(internalPath string, s *buildStrategy) string {
 	return fallback
 }
 
-// compile ports Builder.#compile: run install/build/cleanup in an
-// unprivileged runner with the source bind-mounted and host networking
-// (speed + registry caching).
+// sandboxHostConfig is the host config of every container that runs
+// repository code or receives its credentials: BuildNetwork instead of the
+// host's stack, the capabilities in buildCaps, no setuid escalation and a
+// process limit. It stays root because the toolchains install into
+// root-owned images and source trees.
+func sandboxHostConfig(binds []string) *container.HostConfig {
+	pids := buildPidsLimit
+	return &container.HostConfig{
+		Binds:       binds,
+		NetworkMode: container.NetworkMode(BuildNetwork),
+		CapDrop:     []string{"ALL"},
+		CapAdd:      buildCaps,
+		SecurityOpt: []string{"no-new-privileges"},
+		Resources:   container.Resources{PidsLimit: &pids},
+	}
+}
+
+// compile ports Builder.#compile: run install/build/cleanup in the build
+// sandbox with the source bind-mounted.
 func (c *Client) compile(strategy *buildStrategy, bctx BuildContext, buildLog BuildLog) error {
 	c.log.Log("[Phase 1] Compiling artifacts using %s...", strategy.image)
 
@@ -470,17 +498,17 @@ func (c *Client) compile(strategy *buildStrategy, bctx BuildContext, buildLog Bu
 	if err := c.EnsureImage(strategy.image, nil); err != nil {
 		return err
 	}
+	if err := c.ensureNetwork(context.Background(), BuildNetwork); err != nil {
+		return err
+	}
 	if buildLog != nil {
 		buildLog.EndPhase("pull_compiler", true)
 		buildLog.StartPhase("run_compile")
 	}
 
-	status, err := c.runBuilderContainer(strategy.image, []string{"sh", "-c", commands}, &container.HostConfig{
-		Binds:       []string{bctx.HostPath + ":/app"},
-		AutoRemove:  true,
-		Privileged:  false, // SECURITY: strict no to privileged
-		NetworkMode: "host",
-	}, "/app", compileEnv, buildLog)
+	hostCfg := sandboxHostConfig([]string{bctx.HostPath + ":/app"})
+	hostCfg.AutoRemove = true
+	status, err := c.runBuilderContainer(strategy.image, []string{"sh", "-c", commands}, hostCfg, "/app", compileEnv, buildLog)
 	if err != nil {
 		return err
 	}

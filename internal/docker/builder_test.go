@@ -3,9 +3,11 @@ package docker
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 )
 
@@ -137,9 +139,7 @@ func TestBuildTwoStagePipeline(t *testing.T) {
 	if !compile.HostConfig.AutoRemove || compile.HostConfig.Privileged {
 		t.Errorf("compile hostcfg = %+v", compile.HostConfig)
 	}
-	if string(compile.HostConfig.NetworkMode) != "host" {
-		t.Errorf("compile network = %q", compile.HostConfig.NetworkMode)
-	}
+	assertSandboxed(t, f, compile.HostConfig)
 	if compile.Config.WorkingDir != "/app" {
 		t.Errorf("compile workdir = %q", compile.Config.WorkingDir)
 	}
@@ -268,5 +268,40 @@ func TestBuildSelfCreatedLoggerFinalizes(t *testing.T) {
 	}
 	if !haveJSON {
 		t.Error("self-created build logger did not write a summary")
+	}
+}
+
+// assertSandboxed checks the build sandbox: never the host's network stack,
+// every capability that reaches past the container's own files dropped, no
+// setuid escalation, a process limit, and a build network that keeps
+// concurrent builds apart.
+func assertSandboxed(t *testing.T, f *fakeAPI, hc *container.HostConfig) {
+	t.Helper()
+	if string(hc.NetworkMode) != BuildNetwork {
+		t.Errorf("network = %q, want %s", hc.NetworkMode, BuildNetwork)
+	}
+	if hc.Privileged {
+		t.Error("build sandbox must not be privileged")
+	}
+	if !reflect.DeepEqual([]string(hc.CapDrop), []string{"ALL"}) {
+		t.Errorf("CapDrop = %v, want [ALL]", hc.CapDrop)
+	}
+	for _, c := range hc.CapAdd {
+		if c == "NET_RAW" || c == "NET_BIND_SERVICE" || c == "NET_ADMIN" || c == "SYS_ADMIN" {
+			t.Errorf("CapAdd carries %s", c)
+		}
+	}
+	if !reflect.DeepEqual(hc.SecurityOpt, []string{"no-new-privileges"}) {
+		t.Errorf("SecurityOpt = %v", hc.SecurityOpt)
+	}
+	if hc.PidsLimit == nil || *hc.PidsLimit <= 0 {
+		t.Errorf("PidsLimit = %v, want a positive limit", hc.PidsLimit)
+	}
+	opts, ok := f.netCreateOpts[BuildNetwork]
+	if !ok {
+		t.Fatalf("%s was not created", BuildNetwork)
+	}
+	if opts.Internal || opts.Options[iccOption] != "false" {
+		t.Errorf("%s options = %+v, want egress with icc off", BuildNetwork, opts)
 	}
 }
