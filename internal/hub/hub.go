@@ -559,7 +559,7 @@ func (h *Hub) handleMessage(raw []byte) {
 		// minutes) run inline would starve the heartbeat into terminating a
 		// healthy connection, and would also delay every command sent in the
 		// meantime (e.g. app.build_logs.on during that same build).
-		go h.processCommand(action, data["payload"], requestID)
+		h.spawn(func() { h.processCommand(action, data["payload"], requestID) })
 	}
 }
 
