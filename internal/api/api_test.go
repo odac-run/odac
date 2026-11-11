@@ -338,8 +338,10 @@ func TestAppTokenRBAC(t *testing.T) {
 	s.Register("auth", ok)
 	s.Register("app.privileged", ok)
 	s.Register("app.api", ok)
+	s.Register("app.device.add", ok)
+	s.Register("app.network", ok)
 	s.cfg.Set("apps", []any{map[string]any{"name": "myapp", "active": true, "api": true}})
-	for _, action := range []string{"update", "server.stop", "auth", "app.privileged", "app.api"} {
+	for _, action := range []string{"update", "server.stop", "auth", "app.privileged", "app.api", "app.device.add", "app.network"} {
 		lines = call(t, "tcp", tcpAddr(s), request(fixtureAppToken, action))
 		if !strings.Contains(lines[0], `"message":"permission_denied"`) {
 			t.Errorf("%s with a full grant = %v", action, lines)

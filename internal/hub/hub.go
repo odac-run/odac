@@ -42,7 +42,7 @@ const DefaultURL = "https://hub.odac.run"
 
 // AppService is the slice of appmgr.Manager the command table calls.
 type AppService interface {
-	Create(config any) *api.Result
+	Create(caller api.Caller, config any) *api.Result
 	GetBuildStats(id any) *api.Result
 	Delete(id any, purge bool) *api.Result
 	GetEnv(id any) *api.Result
@@ -672,7 +672,7 @@ func (h *Hub) buildCommands() {
 
 	h.register("configure", &command{fn: h.handleConfigure})
 	h.register("app.create", &command{
-		fn:       withApp(func(p any) (any, error) { return h.deps.App.Create(p), nil }),
+		fn:       withApp(func(p any) (any, error) { return h.deps.App.Create(api.Operator, p), nil }),
 		triggers: []string{"app.list"},
 	})
 	h.register("app.build_stats", &command{

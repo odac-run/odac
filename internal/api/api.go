@@ -157,7 +157,15 @@ func (s *Server) HostSocketDir() string {
 // domain.mtls.cert.scope widens a certificate, on any domain;
 // domain.mtls.ca.import plants a CA key, which signs for every record that
 // trusts that CA, and domain.mtls.ca.remove destroys one, cutting off every
-// certificate it signed on every record).
+// certificate it signed on every record). app.device.add and app.network are
+// here for the same reason as app.privileged: a host block device mapped into
+// a container is raw access to the host's disk, and a container moved into
+// the host's network namespace reaches every loopback service and, as root,
+// can join the proxy's SO_REUSEPORT groups on :80 and :443.
+//
+// app.create is grantable because Manager.Create narrows it by Caller: a
+// container an app creates may bind only named volumes inside its own app
+// directory (appBindRefusal).
 //
 // domain.mtls.cert.issue, revoke, list and import are deliberately absent.
 // Their danger was reach, not the action: on any domain they mint a way past
@@ -172,6 +180,8 @@ var appDeniedActions = map[string]bool{
 	"server.stop":            true,
 	"app.privileged":         true,
 	"app.api":                true,
+	"app.device.add":         true,
+	"app.network":            true,
 	"domain.mtls.set":        true,
 	"domain.mtls.cert.scope": true,
 	"domain.mtls.ca.import":  true,

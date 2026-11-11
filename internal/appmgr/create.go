@@ -136,7 +136,7 @@ func validAppName(name string) bool {
 
 // Create ports Create.create: dispatch on config shape. config is either a
 // string (recipe name or git URL) or a decoded JSON object.
-func (m *Manager) Create(config any) *api.Result {
+func (m *Manager) Create(caller api.Caller, config any) *api.Result {
 	cfg, _ := config.(map[string]any)
 	if str, ok := config.(string); ok {
 		if createDispatchGitRE.MatchString(str) || scpLikeURL.MatchString(str) {
@@ -162,11 +162,11 @@ func (m *Manager) Create(config any) *api.Result {
 
 	switch typ {
 	case "app":
-		return m.createFromRecipe(cfg)
+		return m.createFromRecipe(caller, cfg)
 	case "git", "github": // github is a legacy alias
 		return m.createFromGit(cfg)
 	case "template":
-		return m.createFromTemplatePayload(cfg)
+		return m.createFromTemplatePayload(caller, cfg)
 	default:
 		return res(false, __("Unknown config type: %s", typ))
 	}
@@ -196,7 +196,7 @@ func (m *Manager) isCreating(name string) bool {
 }
 
 // createFromRecipe ports #fromRecipe: single-app Hub recipes ("mysql").
-func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
+func (m *Manager) createFromRecipe(caller api.Caller, cfg map[string]any) *api.Result {
 	appType, _ := cfg["app"].(string)
 	customName, _ := cfg["name"].(string)
 
@@ -254,7 +254,7 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 		if baseName == "" {
 			m.cfg.View(func() { baseName = m.generateUniqueNameLocked(recipeName) })
 		}
-		return m.createFromTemplate(baseName, recipeName, apps, cfg)
+		return m.createFromTemplate(caller, baseName, recipeName, apps, cfg)
 	}
 
 	name := customName
@@ -275,6 +275,10 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 	if exists {
 		m.clog.Log("createFromRecipe: App %s already exists", name)
 		return res(false, __("App %s already exists", name))
+	}
+	if refusal := appBindRefusal(caller, filepath.Join(m.appsPath(), name), toMapSlice(recipe["volumes"]), recipe["configs"]); refusal != "" {
+		m.clog.Log("createFromRecipe: %s", refusal)
+		return res(false, refusal)
 	}
 	if !m.tryLockCreating(name) {
 		m.clog.Log("createFromRecipe: App %s is already being created", name)
@@ -372,7 +376,7 @@ func (m *Manager) createFromRecipe(cfg map[string]any) *api.Result {
 
 // createFromTemplatePayload ports #fromTemplatePayload: full template data
 // inline from the Hub (type: 'template').
-func (m *Manager) createFromTemplatePayload(cfg map[string]any) *api.Result {
+func (m *Manager) createFromTemplatePayload(caller api.Caller, cfg map[string]any) *api.Result {
 	apps, _ := cfg["apps"].(map[string]any)
 	name, _ := cfg["name"].(string)
 
@@ -395,13 +399,13 @@ func (m *Manager) createFromTemplatePayload(cfg map[string]any) *api.Result {
 	if !hasCloudContainers {
 		m.cfg.View(func() { baseName = m.generateUniqueNameLocked(name) })
 	}
-	return m.createFromTemplate(baseName, name, apps, cfg)
+	return m.createFromTemplate(caller, baseName, name, apps, cfg)
 }
 
 // createFromTemplate ports #fromTemplate: deploy a multi-app stack as one
 // atomic operation — topological start order, generated secrets, ${...}
 // interpolation, env.linked wiring, automatic rollback on partial failure.
-func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps map[string]any, cfg map[string]any) *api.Result {
+func (m *Manager) createFromTemplate(caller api.Caller, baseName, recipeName string, templateApps map[string]any, cfg map[string]any) *api.Result {
 	m.clog.Log("createFromTemplate: Starting template deployment for %s (%s)", baseName, recipeName)
 
 	if len(templateApps) == 0 {
@@ -490,6 +494,16 @@ func (m *Manager) createFromTemplate(baseName, recipeName string, templateApps m
 	})
 	if conflict != nil {
 		return conflict
+	}
+
+	// Phase 2b: bind sources, once every member has its directory name.
+	for _, key := range orderedKeys {
+		appDef, _ := templateApps[key].(map[string]any)
+		appDir := filepath.Join(m.appsPath(), nameMap[key])
+		if refusal := appBindRefusal(caller, appDir, toMapSlice(appDef["volumes"]), appDef["configs"]); refusal != "" {
+			m.clog.Log("createFromTemplate: %s (%s)", refusal, key)
+			return res(false, refusal)
+		}
 	}
 
 	// Acquire creation locks atomically for all template members.

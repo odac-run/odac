@@ -285,7 +285,7 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 			return appMgr.SetAPI(a.At(0), a.At(1)), nil
 		})
 		apiSrv.Register("app.create", func(a api.Args, _ api.Progress) (*api.Result, error) {
-			return appMgr.Create(a.At(0)), nil
+			return appMgr.Create(a.Caller(), a.At(0)), nil
 		})
 		apiSrv.Register("app.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			purge := true // Node: delete(id, {purge = true} = {})

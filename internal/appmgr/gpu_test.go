@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"odac/internal/api"
 	"odac/internal/docker"
 	"odac/internal/gpu"
 )
@@ -46,7 +47,7 @@ func TestOptionalGPUCreateSurvivesGPUlessHost(t *testing.T) {
 	fx.gpuHost.allow() // this host can pass nothing through
 	fx.gpuHost.runtime = ""
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "frigate", "name": "cam",
 		"gpu": map[string]any{"optional": true},
 	})
@@ -67,7 +68,7 @@ func TestRequiredGPUStillFailsPreflight(t *testing.T) {
 	fx.setRecipe(map[string]any{"name": "comfyui", "image": "x/comfyui:cuda"})
 	fx.gpuHost.allow()
 
-	r := fx.m.Create(map[string]any{
+	r := fx.m.Create(api.Operator, map[string]any{
 		"type": "app", "app": "comfyui", "name": "gen",
 		"gpu": map[string]any{"runtime": "nvidia"},
 	})

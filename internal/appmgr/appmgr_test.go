@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"odac/internal/api"
 	"odac/internal/applog"
 	"odac/internal/config"
 	"odac/internal/docker"
@@ -632,13 +633,13 @@ func TestCreateFromGitConcurrencyGuard(t *testing.T) {
 
 	done := make(chan *string, 1)
 	go func() {
-		r := fx.m.Create(cfgPayload)
+		r := fx.m.Create(api.Operator, cfgPayload)
 		msg := jsString(r.Message)
 		done <- &msg
 	}()
 	<-started
 
-	r2 := fx.m.Create(cfgPayload)
+	r2 := fx.m.Create(api.Operator, cfgPayload)
 	if r2.Status {
 		t.Fatalf("second create should fail, got success")
 	}

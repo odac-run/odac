@@ -35,15 +35,13 @@ These are the actions available to applications. An app may call the ones you gr
 | Action | `data` | What it does |
 |--------|--------|--------------|
 | `app.list` | `[]` or `[true]` for detail | List apps |
-| `app.create` | `[config]` | Create an app (same object the CLI builds) |
+| `app.create` | `[config]` | Create an app (same object the CLI builds). Volumes are limited, see below |
 | `app.delete` | `[app]`, or `[app, {"purge": false}]` to keep its data | Delete an app |
 | `app.start` | `[app]` | Start a stopped app |
 | `app.stop` | `[app]` | Stop a running app |
 | `app.restart` | `[app]` | Restart an app |
-| `app.network` | `[app, "bridge"\|"host"]` | Set the network mode |
 | `app.isolate` | `[app, true\|false]` | Cut off or restore outbound access |
 | `app.gpu` | `[app, {"runtime": "nvidia"}]`, or `[app, false]` to release | Reserve host GPUs for an app |
-| `app.device.add` | `[app, hostPath, containerPath]` | Connect a host device |
 | `app.device.delete` | `[app, hostPath]` | Disconnect a host device |
 | `domain.list` | `[]`, or `[app]` to filter | List domains |
 | `domain.add` | `[domain, app]` | Route a domain to an app |
@@ -82,6 +80,18 @@ These are the actions available to applications. An app may call the ones you gr
 `from` must belong to a domain routed to the calling app, or to a subdomain of one. A domain of another app is answered as `Domain ... not found.`, exactly like a domain the server does not have, because the message would go out DKIM-signed as that domain. `header` is required; supply at least a `Content-Type`, and provide `html`, `text`, or both. Header names must be plain field names and no value may contain a line break; such a message is refused. `From`, `To`, `Subject` and `MIME-Version` are added when `header` does not name them.
 
 A `true` result means the message is queued, not that it reached the recipient. ODAC keeps retrying a temporary refusal (greylisting, a busy server) for five days, or for `ODAC_MAIL_QUEUE_HOURS` when that is set on the server. When the recipient's server refuses the message for good, or the time runs out, the sender gets a bounce in its INBOX if it has a mailbox on this server. An address like `no-reply@` with no mailbox gets no bounce.
+
+### Creating Apps From an App
+
+An app that creates another app gets a container confined to that new app's own directory. Every volume must be a named volume, a relative path such as `data` or `db/files` that ODAC places under the new app's directory. The create is refused when a volume:
+
+- is an absolute host path (`/`, `/var/run/docker.sock`), or climbs out with `..`,
+- sits inside another of the same app's volumes, or contains the directory that holds its config files,
+- passes through a symbolic link that is already on disk.
+
+The first is the host itself. The other two would let the new container put a symbolic link where one of its own mounts resolves, which Docker follows on the next start. A recipe from the catalog is checked the same way when an app creates it. The CLI and the dashboard are not limited this way.
+
+Connecting a host device (`app.device.add`) and switching an app to host networking (`app.network`) are never available to apps. A mapped block device is raw access to the host's disk, and the host network namespace reaches every service on the host's loopback. Both are the operator's decision, like [privileged access](05-privileged-access.md).
 
 ### Client Certificates for the App's Own Domains
 
@@ -130,4 +140,4 @@ Action names are validated against the server's registered actions when you gran
 
 ### Choosing Permissions
 
-Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `domain.mtls.set`, `domain.mtls.cert.scope`, `domain.mtls.ca.import` or `domain.mtls.ca.remove`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).
+Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `app.device.add`, `app.network`, `domain.mtls.set`, `domain.mtls.cert.scope`, `domain.mtls.ca.import` or `domain.mtls.ca.remove`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).

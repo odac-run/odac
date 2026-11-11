@@ -184,7 +184,10 @@ func (f *fakeApp) called() []string {
 
 func ok(msg string) *api.Result { r := api.Res(true, msg); return &r }
 
-func (f *fakeApp) Create(config any) *api.Result { f.record("create"); return ok("created") }
+func (f *fakeApp) Create(_ api.Caller, config any) *api.Result {
+	f.record("create")
+	return ok("created")
+}
 func (f *fakeApp) GetBuildStats(id any) *api.Result {
 	f.record("buildstats:" + str(id))
 	return ok("stats")
