@@ -59,6 +59,11 @@ const (
 	minMaxRequestBytes     int64 = 64 << 10
 	defaultReadTimeout           = 10 * time.Second
 	defaultMaxPending            = 16
+
+	// A refused peer may still be sending; its input is read away within
+	// these bounds so the refusal is not lost to a reset (see lingerClose).
+	lingerTimeout       = 500 * time.Millisecond
+	lingerBytes   int64 = 1 << 20
 )
 
 // errRequestTooLarge ends a connection that sent more than MaxRequestBytes.
@@ -494,6 +499,7 @@ func (s *Server) handleConn(conn net.Conn, skipIPCheck bool, release func()) {
 				s.logReadLimit(err)
 				r := Res(false, "request_too_large") // like invalid_json, WITHOUT an id
 				c.write(encodeFinal(id, false, &r))
+				c.lingerClose()
 				return
 			}
 			if errors.Is(err, os.ErrDeadlineExceeded) {
@@ -737,6 +743,19 @@ func (c *apiConn) write(b []byte) {
 		return
 	}
 	c.conn.Write(b)
+}
+
+// lingerClose ends a connection whose peer is still sending. Closing with
+// unread input makes Linux answer with a reset, which can discard the reply
+// before the peer reads it, so the write side is shut first and the rest is
+// read away, bounded in time and bytes, before close.
+func (c *apiConn) lingerClose() {
+	if cw, ok := c.conn.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+	}
+	c.conn.SetReadDeadline(time.Now().Add(lingerTimeout))
+	io.Copy(io.Discard, io.LimitReader(c.conn, lingerBytes))
+	c.close()
 }
 
 func (c *apiConn) close() {
