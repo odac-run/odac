@@ -1,3 +1,62 @@
+### ✨ What's New
+
+- **app:** persist app networks, and share none when the list is empty
+- **cli:** odac domain mtls set --issuer, and the whole chain in a p12
+- **domains:** client certificate management for apps and edge nodes
+- **domains:** per-host issuer setting for client certificate records
+- **domains:** protect domains with client certificates (mTLS)
+- **domains:** remove client CAs nothing trusts, with their keys
+- **proxy:** per-host client certificate issuers and silent hosts
+
+### 📚 Documentation
+
+- **agents:** record the proxy's Rewrite hook and certificate cache key
+- **api:** show the address shape mail.send actually accepts
+- drop stale migration references from comments
+- **mtls:** per-host issuers and hosts that only ask when they can
+
+### 🛠️ Fixes & Improvements
+
+- **api:** bound what a connection costs before its handler runs
+- **api:** close the app grants that reach host root
+- **api:** keep the request_too_large reply from being lost to a reset
+- **api:** remove domain tokens
+- **app:** keep a network list saved while a restart holds the app
+- **builder:** chown Python apps to nogroup
+- **builder:** never write or read build files through symlinks
+- **builder:** run build steps in a sandbox off the host network
+- **config:** keep secrets private to the server and make saves durable
+- **dataplane:** skip a container app's domain when its address is unknown
+- **dataplane:** stop leaking a connection on every control-socket call
+- **dns:** refuse foreign zones and size answers for their transport
+- **domains:** name the certificates a CA removal destroys
+- **domains:** validate domains as hostnames and register each name once
+- **git:** keep the repository token out of .git/config
+- **hub:** refuse empty-key signatures and deep nesting before dispatch
+- **log:** keep create payloads and URL credentials out of the logs
+- **mail:** answer 451 when an inbound transaction cannot be stored
+- **mail:** bound IMAP protocol lines before reading them
+- **mail:** deliver outbound mail through a durable queue
+- **mail:** limit mail.send to the caller's own domains
+- **mail:** refuse header injection in mail.send
+- **mtls:** enforce the CA's path length on per-host chains
+- **proxy:** close a tunnel removed while it was dialing
+- **proxy:** detect WebSocket upgrades from the Connection token list
+- **proxy:** forward through Rewrite so a client cannot strip forwarding headers
+- **proxy:** keep asset cache accounting exact and eviction cheap
+- **proxy:** keep private Link headers out of early hints
+- **proxy:** key the TLS certificate cache by key pair, load it off the lock
+- **proxy:** refuse cookied responses and mismatched types in the asset cache
+- **proxy:** stop the firewall table reset and count IPv6 clients per /64
+- **server:** keep Docker off the config lock and the tick's per-app path
+- **watchdog:** stop the server with SIGTERM so the Hub closes cleanly
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### 🛠️ Fixes & Improvements
 
 - **app:** enhance Blue-Green deployment logic for published host ports
