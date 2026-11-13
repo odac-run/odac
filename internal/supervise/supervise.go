@@ -24,6 +24,10 @@
 //   - The exit watcher only unlinks the PID file when it still holds our PID,
 //     so a stop then restart cannot lose the successor's PID file to a late
 //     exit handler.
+//   - LegacyRunDir is where run files lived before they left the directory
+//     mounted into apps (see internal/rundir). An orphan found there is still
+//     adopted and talked to on its old socket, files there that adopt nothing
+//     are removed, and the previous instance's files are GC'd from both.
 package supervise
 
 import (
@@ -40,18 +44,20 @@ import (
 	"time"
 
 	"odac/internal/logx"
+	"odac/internal/rundir"
 )
 
 // Options configures a Supervisor for one data-plane binary.
 type Options struct {
-	Name      string // run-file prefix: <Name>-<instanceId>.{pid,sock}
-	Binary    string // binary base name, e.g. "odac-proxy" (.exe appended on Windows)
-	SocketEnv string // env var carrying the control socket path (asymmetric per binary — keep)
-	Display   string // human name in log lines: "Proxy", "DNS", "Mail"
-	BinDir    string // directory holding the binary
-	RunDir    string // <base>/run
-	Log       *logx.Logger
-	OnSync    func() // config push, scheduled SyncDelay after spawn/adopt
+	Name         string // run-file prefix: <Name>-<instanceId>.{pid,sock}
+	Binary       string // binary base name, e.g. "odac-proxy" (.exe appended on Windows)
+	SocketEnv    string // env var carrying the control socket path (asymmetric per binary — keep)
+	Display      string // human name in log lines: "Proxy", "DNS", "Mail"
+	BinDir       string // directory holding the binary
+	RunDir       string // rundir.Control, created 0700
+	LegacyRunDir string // rundir.App, read for files of an older release; may be empty
+	Log          *logx.Logger
+	OnSync       func() // config push, scheduled SyncDelay after spawn/adopt
 }
 
 // Supervisor manages one detached data-plane process.
@@ -70,10 +76,14 @@ type Supervisor struct {
 	claimPid func(path string, pid int, update bool) error // test seam
 }
 
-// proc is a running child (cmd set) or an adopted orphan (cmd nil).
+// proc is a running child (cmd set) or an adopted orphan (cmd nil), with the
+// run files it was found at or spawned with.
 type proc struct {
-	pid int
-	cmd *exec.Cmd
+	pid     int
+	cmd     *exec.Cmd
+	pidFile string
+	sock    string
+	legacy  bool
 }
 
 // New wires a Supervisor. Nothing runs until Ensure.
@@ -95,14 +105,25 @@ func InstanceID() string {
 	return "default"
 }
 
-// PidFile returns <runDir>/<name>-<instanceId>.pid.
-func (s *Supervisor) PidFile() string {
-	return filepath.Join(s.o.RunDir, s.o.Name+"-"+InstanceID()+".pid")
+func (s *Supervisor) runFile(dir, ext string) string {
+	return filepath.Join(dir, s.o.Name+"-"+InstanceID()+ext)
 }
 
-// SocketPath returns <runDir>/<name>-<instanceId>.sock.
+// PidFile returns <runDir>/<name>-<instanceId>.pid, where a spawn records its PID.
+func (s *Supervisor) PidFile() string {
+	return s.runFile(s.o.RunDir, ".pid")
+}
+
+// SocketPath returns the managed process's control socket:
+// <runDir>/<name>-<instanceId>.sock, or the old one of an orphan adopted from
+// LegacyRunDir.
 func (s *Supervisor) SocketPath() string {
-	return filepath.Join(s.o.RunDir, s.o.Name+"-"+InstanceID()+".sock")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.proc != nil && s.proc.sock != "" {
+		return s.proc.sock
+	}
+	return s.runFile(s.o.RunDir, ".sock")
 }
 
 // Running reports whether a process is currently managed (spawned or adopted).
@@ -136,11 +157,14 @@ func (s *Supervisor) Ensure() {
 			return
 		}
 		s.o.Log.Error(fmt.Sprintf("Adopted Go %s (PID %d) is gone. Respawning...", s.o.Display, s.proc.pid))
-		removePidFileIfOwn(s.PidFile(), s.proc.pid)
+		removePidFileIfOwn(s.proc.pidFile, s.proc.pid)
+		if s.proc.legacy {
+			os.Remove(s.proc.sock)
+		}
 		s.proc = nil
 	}
 
-	if err := os.MkdirAll(s.o.RunDir, 0o755); err != nil {
+	if err := rundir.Prepare(s.o.RunDir); err != nil {
 		s.o.Log.Error(fmt.Sprintf("Failed to create run dir %s: %s", s.o.RunDir, err))
 		return
 	}
@@ -154,32 +178,61 @@ func (s *Supervisor) Ensure() {
 	s.spawnLocked(update)
 }
 
-// adoptLocked runs the orphan-adoption triple check. True = adopted.
+// adoptLocked runs the orphan-adoption triple check, in RunDir first and then
+// in LegacyRunDir. True = adopted.
 func (s *Supervisor) adoptLocked() bool {
-	pidFile := s.PidFile()
+	if p := s.findOrphan(s.o.RunDir); p != nil {
+		s.o.Log.Log(fmt.Sprintf("Found orphaned Go %s (PID: %d). Reconnecting...", s.o.Display, p.pid))
+		s.proc = p
+		s.scheduleSyncLocked()
+		return true
+	}
+	if s.o.LegacyRunDir == "" {
+		return false
+	}
+	p := s.findOrphan(s.o.LegacyRunDir)
+	if p == nil {
+		// Nothing lives there any more: an older release's leftovers must not
+		// stay visible to apps.
+		os.Remove(s.runFile(s.o.LegacyRunDir, ".pid"))
+		os.Remove(s.runFile(s.o.LegacyRunDir, ".sock"))
+		return false
+	}
+	p.legacy = true
+	s.o.Log.Log(fmt.Sprintf("Found orphaned Go %s (PID: %d) in the legacy run dir. Reconnecting...", s.o.Display, p.pid))
+	s.proc = p
+	s.scheduleSyncLocked()
+	return true
+}
+
+// findOrphan returns the live process recorded by dir's run files, or nil
+// after removing a stale PID file.
+func (s *Supervisor) findOrphan(dir string) *proc {
+	pidFile := s.runFile(dir, ".pid")
+	sock := s.runFile(dir, ".sock")
 	raw, err := os.ReadFile(pidFile)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			s.o.Log.Log(fmt.Sprintf("Orphaned %s PID file issue. Cleaning up.", s.o.Display))
 			os.Remove(pidFile)
 		}
-		return false
+		return nil
 	}
 
 	pid, perr := strconv.Atoi(strings.TrimSpace(string(raw)))
 	if perr != nil || pid <= 0 || !pidAlive(pid) {
 		s.o.Log.Log(fmt.Sprintf("Orphaned %s PID file issue. Cleaning up.", s.o.Display))
 		os.Remove(pidFile)
-		return false
+		return nil
 	}
 
 	// The socket file MUST exist — PID reuse or a crashed binary otherwise.
 	// The process is NOT killed (it may be an unrelated process reusing the
 	// PID); only the stale PID file goes.
-	if _, err := os.Stat(s.SocketPath()); err != nil {
+	if _, err := os.Stat(sock); err != nil {
 		s.o.Log.Log(fmt.Sprintf("PID %d exists but socket file is missing. PID reuse detected or %s crashed. Ignoring orphan...", pid, s.o.Display))
 		os.Remove(pidFile)
-		return false
+		return nil
 	}
 
 	// /proc cmdline double check (Linux only; elsewhere the socket check above
@@ -188,14 +241,11 @@ func (s *Supervisor) adoptLocked() bool {
 		if !strings.Contains(string(cmdline), s.o.Binary) {
 			s.o.Log.Log(fmt.Sprintf("PID %d is active but command line does not match %s. PID reuse detected!", pid, s.o.Display))
 			os.Remove(pidFile)
-			return false
+			return nil
 		}
 	}
 
-	s.o.Log.Log(fmt.Sprintf("Found orphaned Go %s (PID: %d). Reconnecting...", s.o.Display, pid))
-	s.proc = &proc{pid: pid}
-	s.scheduleSyncLocked()
-	return true
+	return &proc{pid: pid, pidFile: pidFile, sock: sock}
 }
 
 func (s *Supervisor) binaryFile() string {
@@ -212,7 +262,7 @@ func (s *Supervisor) spawnLocked(update bool) {
 		return
 	}
 
-	socket := s.SocketPath()
+	socket := s.runFile(s.o.RunDir, ".sock")
 	s.o.Log.Log(fmt.Sprintf("Starting Go %s (Socket: %s)...", s.o.Display, socket))
 
 	cmd := exec.Command(binPath)
@@ -239,7 +289,7 @@ func (s *Supervisor) spawnLocked(update bool) {
 	}
 
 	s.o.Log.Log(fmt.Sprintf("Go %s started with PID %d", s.o.Display, pid))
-	p := &proc{pid: pid, cmd: cmd}
+	p := &proc{pid: pid, cmd: cmd, pidFile: s.PidFile(), sock: socket}
 	s.proc = p
 	s.watchExit(p)
 	s.scheduleSyncLocked()
@@ -264,7 +314,7 @@ func (s *Supervisor) watchExit(p *proc) {
 			s.proc = nil
 		}
 		s.mu.Unlock()
-		removePidFileIfOwn(s.PidFile(), p.pid)
+		removePidFileIfOwn(p.pidFile, p.pid)
 	}()
 }
 
@@ -286,10 +336,15 @@ func (s *Supervisor) scheduleCleanupLocked(prev string) {
 	}
 	s.cleanupTimer = time.AfterFunc(s.CleanupDelay, func() {
 		s.o.Log.Log(fmt.Sprintf("Cleaning up files from previous instance: %s", prev))
-		for _, ext := range []string{".pid", ".sock"} {
-			file := filepath.Join(s.o.RunDir, s.o.Name+"-"+prev+ext)
-			if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				s.o.Log.Log(fmt.Sprintf("Warning: Failed to cleanup previous instance files: %s", err))
+		for _, dir := range []string{s.o.RunDir, s.o.LegacyRunDir} {
+			if dir == "" {
+				continue
+			}
+			for _, ext := range []string{".pid", ".sock"} {
+				file := filepath.Join(dir, s.o.Name+"-"+prev+ext)
+				if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					s.o.Log.Log(fmt.Sprintf("Warning: Failed to cleanup previous instance files: %s", err))
+				}
 			}
 		}
 		s.o.Log.Log(fmt.Sprintf("Cleanup successful for instance %s", prev))
@@ -315,7 +370,7 @@ func (s *Supervisor) Stop() {
 
 	if p != nil {
 		terminate(p.pid)
-		os.Remove(s.SocketPath())
+		os.Remove(p.sock)
 	}
 }
 

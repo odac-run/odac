@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"odac/internal/mtls"
 	"odac/internal/netmode"
 	"odac/internal/ports"
+	"odac/internal/rundir"
 	"odac/internal/supervise"
 )
 
@@ -80,14 +80,15 @@ func NewProxy(cfg *config.Store, binDir string, containers ContainerIPs) *Proxy 
 		tunnels:    map[string]Tunnel{},
 	}
 	p.proc = supervise.New(supervise.Options{
-		Name:      "proxy",
-		Binary:    "odac-proxy",
-		SocketEnv: "ODAC_SOCKET_PATH",
-		Display:   "Proxy",
-		BinDir:    binDir,
-		RunDir:    filepath.Join(cfg.BaseDir(), "run"),
-		Log:       p.log,
-		OnSync:    p.SyncConfig,
+		Name:         "proxy",
+		Binary:       "odac-proxy",
+		SocketEnv:    "ODAC_SOCKET_PATH",
+		Display:      "Proxy",
+		BinDir:       binDir,
+		RunDir:       rundir.Control(cfg.BaseDir()),
+		LegacyRunDir: rundir.App(cfg.BaseDir()),
+		Log:          p.log,
+		OnSync:       p.SyncConfig,
 	})
 	return p
 }

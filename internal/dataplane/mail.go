@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"odac/internal/config"
 	"odac/internal/logx"
+	"odac/internal/rundir"
 	"odac/internal/supervise"
 )
 
@@ -59,14 +59,15 @@ func NewMail(cfg *config.Store, binDir string, dns DNSService) *Mail {
 		retryDelay: time.Second,
 	}
 	m.proc = supervise.New(supervise.Options{
-		Name:      "mail",
-		Binary:    "odac-mail",
-		SocketEnv: "ODAC_MAIL_SOCKET_PATH",
-		Display:   "Mail",
-		BinDir:    binDir,
-		RunDir:    filepath.Join(cfg.BaseDir(), "run"),
-		Log:       m.log,
-		OnSync:    m.onProcessUp,
+		Name:         "mail",
+		Binary:       "odac-mail",
+		SocketEnv:    "ODAC_MAIL_SOCKET_PATH",
+		Display:      "Mail",
+		BinDir:       binDir,
+		RunDir:       rundir.Control(cfg.BaseDir()),
+		LegacyRunDir: rundir.App(cfg.BaseDir()),
+		Log:          m.log,
+		OnSync:       m.onProcessUp,
 	})
 	return m
 }

@@ -1,6 +1,6 @@
 // Package updater implements ODAC's zero-downtime self-update. It implements
 // BOTH handshake roles byte-exact (old and new instance) over
-// ~/.odac/run/update.sock with the 60s/300s/12s load-bearing timings.
+// ~/.odac/control/update.sock with the 60s/300s/12s load-bearing timings.
 //
 //   - Image pull, copy and build go through the Docker SDK or a
 //     socket-mounted docker:cli runner; the image-ID comparison is the
@@ -26,6 +26,7 @@ import (
 
 	"odac/internal/api"
 	"odac/internal/logx"
+	"odac/internal/rundir"
 )
 
 const (
@@ -169,7 +170,11 @@ func (u *Updater) targetBranch() string {
 }
 
 func (u *Updater) socketPath() string {
-	return filepath.Join(u.baseDir, "run", "update.sock")
+	return filepath.Join(rundir.Control(u.baseDir), "update.sock")
+}
+
+func (u *Updater) legacySocketPath() string {
+	return filepath.Join(rundir.App(u.baseDir), "update.sock")
 }
 
 func (u *Updater) downloadPath() string {
@@ -179,11 +184,13 @@ func (u *Updater) downloadPath() string {
 // Init ports Updater.init(): an existing update socket means we are the NEW
 // instance of an update — attempt the handshake (blocking until the handover
 // completes); a failed handshake unlinks the stale socket and continues as a
-// normal startup with the 11a9b00 self-heal steps.
+// normal startup with the 11a9b00 self-heal steps. The legacy path is where
+// an older release still listens while it hands over to this one.
 func (u *Updater) Init() error {
-	socketPath := u.socketPath()
-
-	if _, err := os.Stat(socketPath); err == nil {
+	for _, socketPath := range []string{u.socketPath(), u.legacySocketPath()} {
+		if _, err := os.Stat(socketPath); err != nil {
+			continue
+		}
 		u.log.Log("Update socket found. Attempting handshake with previous process...")
 		if err := u.performHandshake(socketPath); err == nil {
 			u.mu.Lock()

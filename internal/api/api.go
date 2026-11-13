@@ -45,6 +45,7 @@ import (
 
 	"odac/internal/config"
 	"odac/internal/logx"
+	"odac/internal/rundir"
 )
 
 // DefaultAddr is the fixed TCP address from the contract.
@@ -188,12 +189,13 @@ func (s *Server) Register(action string, h Handler) {
 
 // SocketPath returns the unix socket path (<base>/run/api.sock).
 func (s *Server) SocketPath() string {
-	return filepath.Join(s.cfg.BaseDir(), "run", "api.sock")
+	return filepath.Join(rundir.App(s.cfg.BaseDir()), "api.sock")
 }
 
 // HostSocketDir ports Api's hostSocketDir getter: the run directory holding
 // api.sock, mounted read-only into api-enabled app containers (Container's
-// ResolveHostPath translates it for the Docker daemon under DooD).
+// ResolveHostPath translates it for the Docker daemon under DooD). Nothing
+// else may live there; see internal/rundir.
 func (s *Server) HostSocketDir() string {
 	return filepath.Dir(s.SocketPath())
 }

@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"odac/internal/config"
 	"odac/internal/logx"
+	"odac/internal/rundir"
 	"odac/internal/supervise"
 )
 
@@ -65,14 +65,15 @@ func NewDNS(cfg *config.Store, binDir string) *DNS {
 		primary:    "127.0.0.1",
 	}
 	d.proc = supervise.New(supervise.Options{
-		Name:      "dns",
-		Binary:    "odac-dns",
-		SocketEnv: "ODAC_DNS_SOCKET_PATH", // proxy uses ODAC_SOCKET_PATH — keep the asymmetry
-		Display:   "DNS",
-		BinDir:    binDir,
-		RunDir:    filepath.Join(cfg.BaseDir(), "run"),
-		Log:       d.log,
-		OnSync:    d.SyncConfig,
+		Name:         "dns",
+		Binary:       "odac-dns",
+		SocketEnv:    "ODAC_DNS_SOCKET_PATH", // proxy uses ODAC_SOCKET_PATH — keep the asymmetry
+		Display:      "DNS",
+		BinDir:       binDir,
+		RunDir:       rundir.Control(cfg.BaseDir()),
+		LegacyRunDir: rundir.App(cfg.BaseDir()),
+		Log:          d.log,
+		OnSync:       d.SyncConfig,
 	})
 	return d
 }

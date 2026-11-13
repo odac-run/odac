@@ -128,7 +128,7 @@ func TestServerSpawnsDataPlaneModules(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	runDir := filepath.Join(home, ".odac", "run")
+	runDir := filepath.Join(home, ".odac", "control")
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home,
 		"ODAC_BIN_DIR="+modDir, "ODAC_API_ADDR=127.0.0.1:0")
@@ -165,6 +165,18 @@ func TestServerSpawnsDataPlaneModules(t *testing.T) {
 				t.Fatalf("%s pid file never claimed", name)
 			}
 			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// The run dir is mounted at /odac into apps with an API grant, and a
+	// read-only mount does not stop connect(): api.sock is all it may hold.
+	entries, err := os.ReadDir(filepath.Join(home, ".odac", "run"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "api.sock" {
+			t.Errorf("app-mounted run dir holds %s", e.Name())
 		}
 	}
 }

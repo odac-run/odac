@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"odac/internal/rundir"
 )
 
 // handover is the OLD-instance side of the update: the unix-socket listener
@@ -40,7 +42,7 @@ func (l *handover) complete(err error) {
 func (u *Updater) createUpdateListener() (*handover, error) {
 	socketPath := u.socketPath()
 
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+	if err := rundir.Prepare(filepath.Dir(socketPath)); err != nil {
 		return nil, err
 	}
 	os.Remove(socketPath)

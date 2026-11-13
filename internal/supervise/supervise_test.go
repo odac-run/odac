@@ -43,10 +43,11 @@ func copyTestBinary(t *testing.T, dst string) {
 }
 
 type fixture struct {
-	sup    *Supervisor
-	binDir string
-	runDir string
-	synced chan struct{}
+	sup       *Supervisor
+	binDir    string
+	runDir    string
+	legacyDir string
+	synced    chan struct{}
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -54,21 +55,27 @@ func newFixture(t *testing.T) *fixture {
 	t.Setenv("GO_TEST_FAKE_MODULE", "1")
 
 	f := &fixture{
-		binDir: t.TempDir(),
-		runDir: shortTempDir(t),
-		synced: make(chan struct{}, 16),
+		binDir:    t.TempDir(),
+		runDir:    filepath.Join(shortTempDir(t), "control"),
+		legacyDir: shortTempDir(t),
+		synced:    make(chan struct{}, 16),
+	}
+	// 0755 on purpose: Ensure must tighten it.
+	if err := os.MkdirAll(f.runDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	copyTestBinary(t, filepath.Join(f.binDir, "odac-proxy"))
 
 	f.sup = New(Options{
-		Name:      "proxy",
-		Binary:    "odac-proxy",
-		SocketEnv: "ODAC_SOCKET_PATH",
-		Display:   "Proxy",
-		BinDir:    f.binDir,
-		RunDir:    f.runDir,
-		Log:       logx.New("Proxy"),
-		OnSync:    func() { f.synced <- struct{}{} },
+		Name:         "proxy",
+		Binary:       "odac-proxy",
+		SocketEnv:    "ODAC_SOCKET_PATH",
+		Display:      "Proxy",
+		BinDir:       f.binDir,
+		RunDir:       f.runDir,
+		LegacyRunDir: f.legacyDir,
+		Log:          logx.New("Proxy"),
+		OnSync:       func() { f.synced <- struct{}{} },
 	})
 	f.sup.SyncDelay = 30 * time.Millisecond
 	f.sup.CleanupDelay = 30 * time.Millisecond
@@ -82,8 +89,13 @@ func newFixture(t *testing.T) *fixture {
 // pass pidAlive on unix).
 func (f *fixture) spawnOrphan(t *testing.T) (int, func()) {
 	t.Helper()
+	return f.spawnOrphanAt(t, f.sup.SocketPath())
+}
+
+func (f *fixture) spawnOrphanAt(t *testing.T, sock string) (int, func()) {
+	t.Helper()
 	cmd := exec.Command(filepath.Join(f.binDir, "odac-proxy"))
-	cmd.Env = append(os.Environ(), "ODAC_SOCKET_PATH="+f.sup.SocketPath())
+	cmd.Env = append(os.Environ(), "ODAC_SOCKET_PATH="+sock)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +108,7 @@ func (f *fixture) spawnOrphan(t *testing.T) (int, func()) {
 	}
 	t.Cleanup(reap)
 	waitFor(t, 5*time.Second, "orphan socket", func() bool {
-		_, err := os.Stat(f.sup.SocketPath())
+		_, err := os.Stat(sock)
 		return err == nil
 	})
 	return cmd.Process.Pid, reap
@@ -396,4 +408,114 @@ func TestInstanceIDNamesRunFiles(t *testing.T) {
 	if got := filepath.Base(f.sup.SocketPath()); got != "proxy-abc42.sock" {
 		t.Errorf("socket name = %q", got)
 	}
+}
+
+func TestSpawnKeepsRunFilesOutOfLegacyDir(t *testing.T) {
+	f := newFixture(t)
+	f.sup.Ensure()
+	waitFor(t, 5*time.Second, "control socket", func() bool {
+		_, err := os.Stat(f.sup.SocketPath())
+		return err == nil
+	})
+
+	if dir := filepath.Dir(f.sup.SocketPath()); dir != f.runDir {
+		t.Errorf("socket dir = %q, want %q", dir, f.runDir)
+	}
+	entries, err := os.ReadDir(f.legacyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("legacy dir holds %d entries after a spawn, want none", len(entries))
+	}
+	info, err := os.Stat(f.runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("run dir mode = %o, want 700", got)
+	}
+}
+
+// An orphan started by an older release lives in the legacy dir. It is
+// adopted where it is, and once it dies the replacement lands in RunDir and
+// the legacy files are gone.
+func TestAdoptOrphanFromLegacyDir(t *testing.T) {
+	f := newFixture(t)
+	legacySock := filepath.Join(f.legacyDir, "proxy-default.sock")
+	legacyPid := filepath.Join(f.legacyDir, "proxy-default.pid")
+	orphan, reap := f.spawnOrphanAt(t, legacySock)
+	if err := os.WriteFile(legacyPid, []byte(strconv.Itoa(orphan)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.sup.Ensure()
+
+	if got := f.sup.Pid(); got != orphan {
+		t.Fatalf("adopted pid = %d, want legacy orphan %d", got, orphan)
+	}
+	if got := f.sup.SocketPath(); got != legacySock {
+		t.Fatalf("SocketPath() = %q, want the orphan's %q", got, legacySock)
+	}
+
+	reap()
+	waitFor(t, 5*time.Second, "orphan death", func() bool { return !pidAlive(orphan) })
+	f.sup.Ensure()
+
+	if !f.sup.Running() || f.sup.Pid() == orphan {
+		t.Fatalf("dead legacy orphan not replaced: running=%v pid=%d", f.sup.Running(), f.sup.Pid())
+	}
+	if dir := filepath.Dir(f.sup.SocketPath()); dir != f.runDir {
+		t.Errorf("replacement socket dir = %q, want %q", dir, f.runDir)
+	}
+	for _, p := range []string{legacySock, legacyPid} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s left behind (err=%v)", filepath.Base(p), err)
+		}
+	}
+}
+
+func TestLegacyLeftoversRemoved(t *testing.T) {
+	f := newFixture(t)
+	legacySock := filepath.Join(f.legacyDir, "proxy-default.sock")
+	legacyPid := filepath.Join(f.legacyDir, "proxy-default.pid")
+	for _, p := range []string{legacySock, legacyPid} {
+		if err := os.WriteFile(p, []byte("0"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f.sup.Ensure()
+
+	if !f.sup.Running() {
+		t.Fatal("no spawn after legacy leftovers")
+	}
+	for _, p := range []string{legacySock, legacyPid} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s left behind (err=%v)", filepath.Base(p), err)
+		}
+	}
+}
+
+// An update from an older release leaves the previous instance's files in
+// the legacy dir.
+func TestPrevInstanceFilesGCdFromLegacyDir(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("ODAC_PREVIOUS_INSTANCE_ID", "oldinst")
+	t.Setenv("ODAC_UPDATE_MODE", "true")
+	prevPid := filepath.Join(f.legacyDir, "proxy-oldinst.pid")
+	prevSock := filepath.Join(f.legacyDir, "proxy-oldinst.sock")
+	for _, p := range []string{prevPid, prevSock} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f.sup.Ensure()
+
+	waitFor(t, 5*time.Second, "previous-instance GC", func() bool {
+		_, e1 := os.Stat(prevPid)
+		_, e2 := os.Stat(prevSock)
+		return os.IsNotExist(e1) && os.IsNotExist(e2)
+	})
 }
