@@ -79,6 +79,11 @@ type Website struct {
 	TunnelID    string   `json:"tunnelId,omitempty"` // Non-empty if site is served via remote tunnel
 
 	MTLS *WebsiteMTLS `json:"mtls,omitempty"`
+
+	// Socket is the app's unix socket under the proxy's backend socket root.
+	// The TCP target stays filled so an older proxy, or a failed socket dial,
+	// still reaches the app.
+	Socket string `json:"socket,omitempty"`
 }
 
 // Cert represents SSL certificate paths
