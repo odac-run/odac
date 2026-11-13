@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -26,8 +28,10 @@ import (
 type ContainerIPs interface {
 	// Available reports whether Docker is reachable (Container.available).
 	Available() bool
-	// GetIP resolves a container name or ID to its network IP.
-	GetIP(nameOrID string) (string, error)
+	// GetBackend resolves a container name or ID to its network IP and, when
+	// socketRoot is set, to the backend socket directory the container
+	// mounts directly under it ("" when it mounts none).
+	GetBackend(nameOrID, socketRoot string) (ip, socketDir string, err error)
 }
 
 // Tunnel is one Hub-managed tunnel route.
@@ -89,8 +93,16 @@ func NewProxy(cfg *config.Store, binDir string, containers ContainerIPs) *Proxy 
 		LegacyRunDir: rundir.App(cfg.BaseDir()),
 		Log:          p.log,
 		OnSync:       p.SyncConfig,
+		Env:          proxyEnv(cfg.BaseDir()),
 	})
 	return p
+}
+
+func proxyEnv(base string) []string {
+	if root := rundir.Backends(base); root != "" {
+		return []string{"ODAC_BACKEND_SOCKET_DIR=" + root}
+	}
+	return nil
 }
 
 // Start ports start(): restore persisted tunnels, then spawn/adopt.
@@ -372,7 +384,7 @@ func (p *Proxy) syncConfig(retry int) {
 	p.dockerWaitFirstSync(retry)
 
 	certs, certsOK := p.certSnapshot()
-	ips := p.resolveContainerIPs()
+	ips, sockets := p.resolveContainerIPs()
 
 	// Payload assembly and marshal run under the config value WRITE lock:
 	// resolveBackend caches container IPs back onto the live app entries
@@ -382,7 +394,7 @@ func (p *Proxy) syncConfig(retry int) {
 	var body []byte
 	var marshalErr error
 	p.cfg.Mutate(func() {
-		payload := p.buildPayload(ips)
+		payload := p.buildPayload(ips, sockets)
 		if certsOK {
 			if store := mtls.StorePayload(p.cfg.Map("mtls"), certs); store != nil {
 				payload["mtls"] = store
@@ -434,12 +446,15 @@ const resolveTimeBudget = 5 * time.Second
 
 // resolveContainerIPs asks Docker for the address of every container a
 // domain or tunnel routes to, once per container, before syncConfig takes
-// the config write lock. The result is keyed by containerTarget.
-func (p *Proxy) resolveContainerIPs() map[string]string {
-	ips := map[string]string{}
+// the config write lock. Both results are keyed by containerTarget. sockets
+// holds a container's backend socket only when the same lookup produced its
+// address and the socket exists, so a cached address never carries one.
+func (p *Proxy) resolveContainerIPs() (ips, sockets map[string]string) {
+	ips, sockets = map[string]string{}, map[string]string{}
 	if p.containers == nil {
-		return ips
+		return ips, sockets
 	}
+	root := rundir.Backends(p.cfg.BaseDir())
 	targets := map[string]bool{}
 	p.cfg.View(func() {
 		apps, _ := p.cfg.Get("apps").([]any)
@@ -473,17 +488,25 @@ func (p *Proxy) resolveContainerIPs() map[string]string {
 			p.log.Log("Proxy: Docker lookups over budget, %d container(s) use their cached address", len(names)-i)
 			break
 		}
-		if ip, err := p.containers.GetIP(target); err == nil && ip != "" {
-			ips[target] = ip
+		ip, dir, err := p.containers.GetBackend(target, root)
+		if err != nil || ip == "" {
+			continue
+		}
+		ips[target] = ip
+		if dir != "" {
+			sock := filepath.Join(dir, rundir.BackendSocket)
+			if fi, err := os.Lstat(sock); err == nil && fi.Mode().Type() == fs.ModeSocket {
+				sockets[target] = sock
+			}
 		}
 	}
-	return ips
+	return ips, sockets
 }
 
 // buildPayload assembles the /config body, except its mtls member, which syncConfig
-// adds. ips holds the container addresses resolveContainerIPs found. Caller
-// holds cfg.Mutate (see syncConfig).
-func (p *Proxy) buildPayload(ips map[string]string) map[string]any {
+// adds. ips and sockets are what resolveContainerIPs found. Caller holds
+// cfg.Mutate (see syncConfig).
+func (p *Proxy) buildPayload(ips, sockets map[string]string) map[string]any {
 	domains := p.cfg.Map("domains")
 	apps, _ := p.cfg.Get("apps").([]any)
 
@@ -522,6 +545,9 @@ func (p *Proxy) buildPayload(ips map[string]string) map[string]any {
 		}
 		if backend.internal {
 			entry["container"] = backend.host
+			if sock := sockets[containerTarget(app)]; sock != "" {
+				entry["socket"] = sock
+			}
 		}
 		if clientAuthApps[fmt.Sprint(record["appId"])] {
 			entry["mtls"] = mtls.DomainPayload(record, mtls.AppKey(authKey, mtls.AppIdentity(app)))

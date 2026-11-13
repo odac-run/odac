@@ -48,6 +48,7 @@ import (
 	"odac/internal/netmode"
 	"odac/internal/ports"
 	"odac/internal/resources"
+	"odac/internal/rundir"
 )
 
 // DefaultNetwork is the shared bridge an app joins when its record names no
@@ -953,8 +954,19 @@ func (c *Client) List() []ContainerInfo {
 // GetIP resolves the container's IP: DefaultNetwork first, then the first
 // network with an address. ("", error) mirrors Node's null.
 func (c *Client) GetIP(nameOrID string) (string, error) {
+	ip, _, err := c.GetBackend(nameOrID, "")
+	return ip, err
+}
+
+// GetBackend is GetIP plus the container's backend socket directory, read
+// from the same inspect. The directory is the source of the mount at
+// rundir.BackendMount when it sits directly under socketRoot, translated back
+// to socketRoot; "" otherwise. It comes from the engine rather than the
+// container's name because a Blue-Green rename keeps the mount it was
+// created with.
+func (c *Client) GetBackend(nameOrID, socketRoot string) (ip, socketDir string, err error) {
 	if !c.available {
-		return "", fmt.Errorf("docker not available")
+		return "", "", fmt.Errorf("docker not available")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -963,13 +975,21 @@ func (c *Client) GetIP(nameOrID string) (string, error) {
 		if !client.IsErrNotFound(err) {
 			c.log.Error("Failed to get IP for %s: %s", nameOrID, err.Error())
 		}
-		return "", err
+		return "", "", err
+	}
+	if socketRoot != "" {
+		for _, m := range data.Mounts {
+			if name := c.socketDirName(m, socketRoot); name != "" {
+				socketDir = filepath.Join(socketRoot, name)
+				break
+			}
+		}
 	}
 	if data.NetworkSettings == nil {
-		return "", fmt.Errorf("no network settings")
+		return "", "", fmt.Errorf("no network settings")
 	}
 	if n := data.NetworkSettings.Networks[DefaultNetwork]; n != nil && n.IPAddress != "" {
-		return n.IPAddress, nil
+		return n.IPAddress, socketDir, nil
 	}
 	// Fallback: first network, in sorted name order for determinism (Node
 	// takes JS object order).
@@ -980,10 +1000,47 @@ func (c *Client) GetIP(nameOrID string) (string, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		if n := data.NetworkSettings.Networks[name]; n != nil && n.IPAddress != "" {
-			return n.IPAddress, nil
+			return n.IPAddress, socketDir, nil
 		}
 	}
-	return "", fmt.Errorf("no IP address")
+	return "", "", fmt.Errorf("no IP address")
+}
+
+// ProxySocketDirs names the directories that some container, running or not,
+// mounts as its backend socket directory. It errs toward keeping: the list API
+// reports a different Source than inspect on Docker Desktop (/host_mnt/...),
+// so any mount at rundir.BackendMount counts by its base name, wherever it
+// comes from.
+func (c *Client) ProxySocketDirs() (map[string]bool, error) {
+	if !c.available {
+		return nil, fmt.Errorf("docker not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	list, err := c.api.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, err
+	}
+	used := map[string]bool{}
+	for _, ct := range list {
+		for _, m := range ct.Mounts {
+			if m.Destination == rundir.BackendMount {
+				used[filepath.Base(filepath.Clean(m.Source))] = true
+			}
+		}
+	}
+	return used, nil
+}
+
+func (c *Client) socketDirName(m container.MountPoint, socketRoot string) string {
+	if m.Destination != rundir.BackendMount {
+		return ""
+	}
+	src := filepath.Clean(m.Source)
+	if filepath.Dir(src) != filepath.Clean(c.ResolveHostPath(socketRoot)) {
+		return ""
+	}
+	return filepath.Base(src)
 }
 
 // GetEnv returns the container's environment as a map (empty on errors).

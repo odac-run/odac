@@ -20,6 +20,7 @@ import (
 	"odac/internal/kernel"
 	"odac/internal/logx"
 	"odac/internal/resources"
+	"odac/internal/rundir"
 )
 
 func newTestClient(t *testing.T, f *fakeAPI) *Client {
@@ -1265,5 +1266,45 @@ func TestGPUNodePathsCoverEveryRuntime(t *testing.T) {
 				t.Errorf("%s passes %s but gpuAttachment does not recognise it", runtime, node)
 			}
 		}
+	}
+}
+
+func TestGetBackendReadsSocketDirFromTheMount(t *testing.T) {
+	f := newFakeAPI()
+	nets := &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{"odac-network": {IPAddress: "172.20.0.5"}}}
+	mount := func(src, dst string) container.MountPoint { return container.MountPoint{Source: src, Destination: dst} }
+	f.inspects["web"] = container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{}, NetworkSettings: nets,
+		Mounts: []container.MountPoint{
+			mount("/var/odac/.odac/run", "/odac"),
+			mount("/var/odac/.odac/sockets/web-green-ab12", rundir.BackendMount),
+		},
+	}
+	f.inspects["elsewhere"] = container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{}, NetworkSettings: nets,
+		Mounts: []container.MountPoint{mount("/var/odac/.odac/apps/x/sockets/other", rundir.BackendMount)},
+	}
+	c := newTestClient(t, f)
+	c.hostRoot = "/var/odac"
+	root := "/app/.odac/sockets"
+
+	ip, dir, err := c.GetBackend("web", root)
+	if err != nil || ip != "172.20.0.5" || dir != root+"/web-green-ab12" {
+		t.Fatalf("GetBackend = %q, %q, %v", ip, dir, err)
+	}
+	if _, dir, _ := c.GetBackend("web", ""); dir != "" {
+		t.Errorf("no root still returned %q", dir)
+	}
+	if _, dir, _ := c.GetBackend("elsewhere", root); dir != "" {
+		t.Errorf("a mount outside the root was taken: %q", dir)
+	}
+
+	f.list = []container.Summary{
+		{Names: []string{"/web"}, Mounts: f.inspects["web"].Mounts},
+		{Names: []string{"/elsewhere"}, Mounts: f.inspects["elsewhere"].Mounts},
+	}
+	used, err := c.ProxySocketDirs()
+	if err != nil || len(used) != 2 || !used["web-green-ab12"] || !used["other"] {
+		t.Fatalf("ProxySocketDirs = %v, %v", used, err)
 	}
 }

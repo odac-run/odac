@@ -119,6 +119,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) error {
 	// Trigger Proxy sync after every successful start/restart. Container IP
 	// changes on restart; without this the proxy routes to the dead IP.
 	m.proxySync()
+	m.spawn(func() { m.syncOnProxySocket(id, name) })
 	return nil
 }
 
@@ -273,6 +274,8 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 	// Fix volume permissions before starting the app container.
 	m.fixVolumePermissions(s.name, s.volumes)
 
+	m.attachProxySocket(s.name, &runOptions)
+
 	if m.appDeleted(id) {
 		return nil
 	}
@@ -411,6 +414,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		Resources:   s.resources,
 	}
 	m.applyPrivilege(s.name, s.privileged, &runOptions)
+	m.attachProxySocket(s.name, &runOptions)
 
 	var buildLog docker.BuildLog
 	if logCtrl != nil {

@@ -158,15 +158,19 @@ func newStore(t *testing.T) *config.Store {
 type fakeResolver struct {
 	available atomic.Bool
 	ips       map[string]string
+	sockets   map[string]string // socket dir name under the root, by container
 }
 
 func (f *fakeResolver) Available() bool { return f.available.Load() }
 
-func (f *fakeResolver) GetIP(name string) (string, error) {
+func (f *fakeResolver) GetBackend(name, socketRoot string) (string, string, error) {
 	if ip, ok := f.ips[name]; ok {
-		return ip, nil
+		if socketRoot != "" && f.sockets[name] != "" {
+			return ip, filepath.Join(socketRoot, f.sockets[name]), nil
+		}
+		return ip, "", nil
 	}
-	return "", errors.New("no such container")
+	return "", "", errors.New("no such container")
 }
 
 // fakeIPSource implements DNSService (IPSource + a recording Record).

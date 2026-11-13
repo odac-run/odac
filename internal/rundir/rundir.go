@@ -11,6 +11,15 @@ package rundir
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+)
+
+// BackendMount is where a container sees its own backend socket directory, and
+// BackendSocket the socket the app creates there. ODAC_PROXY_SOCKET carries the
+// joined path to the app; the env var is the contract, these are not.
+const (
+	BackendMount  = "/odac-proxy"
+	BackendSocket = "http.sock"
 )
 
 // App returns <base>/run, the directory mounted into apps. Only api.sock may
@@ -31,4 +40,16 @@ func Prepare(dir string) error {
 		return err
 	}
 	return os.Chmod(dir, 0o700)
+}
+
+// Backends returns <base>/sockets, which holds one directory per app container
+// for the unix socket the proxy dials. Each directory is mounted into its own
+// container only. It returns "" off Linux, where the proxy cannot dial a
+// socket pinned, and when ODAC_BACKEND_SOCKETS is "off", which keeps every app
+// on TCP.
+func Backends(base string) string {
+	if runtime.GOOS != "linux" || os.Getenv("ODAC_BACKEND_SOCKETS") == "off" {
+		return ""
+	}
+	return filepath.Join(base, "sockets")
 }

@@ -19,7 +19,7 @@ type slowResolver struct {
 
 func (s *slowResolver) Available() bool { return true }
 
-func (s *slowResolver) GetIP(name string) (string, error) {
+func (s *slowResolver) GetBackend(name, _ string) (string, string, error) {
 	s.mu.Lock()
 	s.calls[name]++
 	s.mu.Unlock()
@@ -30,7 +30,7 @@ func (s *slowResolver) GetIP(name string) (string, error) {
 		}
 		<-s.release
 	}
-	return s.ip, nil
+	return s.ip, "", nil
 }
 
 func (s *slowResolver) count(name string) int {

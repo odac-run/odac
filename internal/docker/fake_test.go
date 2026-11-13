@@ -73,6 +73,7 @@ type fakeAPI struct {
 	logOutputs map[string]string
 
 	inspects map[string]container.InspectResponse
+	list     []container.Summary // ContainerList result when set
 
 	execCmds    []string
 	execOutputs map[string]string // command -> stdout
@@ -160,6 +161,9 @@ func (f *fakeAPI) ContainerStatPath(_ context.Context, _, _ string) (container.P
 }
 
 func (f *fakeAPI) ContainerList(context.Context, container.ListOptions) ([]container.Summary, error) {
+	if f.list != nil {
+		return f.list, nil
+	}
 	return []container.Summary{
 		{ID: "abcdef0123456789", Names: []string{"/one"}, Image: "img", State: "running", Status: "Up", Created: 5},
 	}, nil

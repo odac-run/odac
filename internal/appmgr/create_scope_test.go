@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"odac/internal/api"
+	"odac/internal/docker"
+	"odac/internal/rundir"
 )
 
 // templateWithVolumes is a one-member template payload whose member binds the
@@ -122,7 +124,13 @@ func TestOperatorKeepsHostBindsAndTheZeroCallerDoesNot(t *testing.T) {
 		t.Fatalf("operator host bind refused: %s", r.Message)
 	}
 	fx.waitIdle(t)
-	if got := fx.dock.runCallAt(0).options.Volumes; len(got) != 1 || got[0].Host != "/srv/media" {
+	var got []docker.Mount
+	for _, v := range fx.dock.runCallAt(0).options.Volumes {
+		if v.Container != rundir.BackendMount {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0].Host != "/srv/media" {
 		t.Fatalf("operator volumes = %v", got)
 	}
 }

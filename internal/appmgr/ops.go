@@ -174,6 +174,7 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 	// a green container can survive as a ghost under its temporary name (or
 	// worse, get renamed to app.name after we already removed it).
 	m.SweepGreenContainersFor(name, activeContainerID)
+	m.SweepProxySockets()
 
 	var unlinked []string
 	m.cfg.Mutate(func() {

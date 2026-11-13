@@ -57,7 +57,8 @@ type Options struct {
 	RunDir       string // rundir.Control, created 0700
 	LegacyRunDir string // rundir.App, read for files of an older release; may be empty
 	Log          *logx.Logger
-	OnSync       func() // config push, scheduled SyncDelay after spawn/adopt
+	OnSync       func()   // config push, scheduled SyncDelay after spawn/adopt
+	Env          []string // extra KEY=VALUE pairs for the binary
 }
 
 // Supervisor manages one detached data-plane process.
@@ -266,7 +267,7 @@ func (s *Supervisor) spawnLocked(update bool) {
 	s.o.Log.Log(fmt.Sprintf("Starting Go %s (Socket: %s)...", s.o.Display, socket))
 
 	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(), s.o.SocketEnv+"="+socket)
+	cmd.Env = append(append(os.Environ(), s.o.Env...), s.o.SocketEnv+"="+socket)
 	cmd.SysProcAttr = detachAttr()
 	// Stdin/Stdout/Stderr stay nil → the null device (Node: stdio ignored, so
 	// an orchestrator restart can't SIGPIPE the detached process).

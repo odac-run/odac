@@ -74,6 +74,9 @@ type fakeDocker struct {
 
 	registered   []string
 	unregistered []string
+
+	socketDirs    map[string]bool
+	socketDirsErr error
 }
 
 func newFakeDocker() *fakeDocker {
@@ -325,6 +328,12 @@ func (f *fakeDocker) UnregisterBuildLogger(appName string) {
 }
 
 func (f *fakeDocker) ResolveHostPath(localPath string) string { return localPath }
+
+func (f *fakeDocker) ProxySocketDirs() (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.socketDirs, f.socketDirsErr
+}
 
 // ---- other fakes ----
 

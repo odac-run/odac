@@ -351,7 +351,8 @@ func TestTunnelIsNotPushedForAClientAuthApp(t *testing.T) {
 		"t.test": {Domain: "t.test", Container: "hostapp", Token: "tok"},
 		"u.test": {Domain: "u.test", Container: "portapp", Token: "tok"},
 	}
-	tunnels := p.buildPayload(p.resolveContainerIPs())["tunnels"].([]any)
+	ips, sockets := p.resolveContainerIPs()
+	tunnels := p.buildPayload(ips, sockets)["tunnels"].([]any)
 	if len(tunnels) != 1 || tunnels[0].(map[string]any)["domain"] != "u.test" {
 		t.Fatalf("tunnels = %#v: a tunnel would dial straight past the policy", tunnels)
 	}
