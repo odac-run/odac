@@ -209,7 +209,7 @@ Compare in constant time and reject a `t` more than 60 seconds away from your cl
 
 To identify a user, match on issuer and subject together. These stay the same when a certificate is renewed with `--renews`, while the fingerprint changes.
 
-`ODAC_CLIENT_CERT_KEY` is set when a container starts, so restart the app after giving it its first mode. Until then it has no key and every request counts as unverified.
+`ODAC_CLIENT_CERT_KEY` is set when a container starts, so restart the app after giving it its first mode. Until then it has no key and every request counts as unverified. It holds the same value as `ODAC_PROXY_KEY`, which every app gets for the [connection headers](../07-proxy/03-app-integration.md#verifying-the-signature), so an app can verify both with either variable.
 
 ### Browser Behavior
 

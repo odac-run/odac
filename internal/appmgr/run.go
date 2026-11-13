@@ -17,6 +17,7 @@ import (
 	"odac/internal/kernel"
 	"odac/internal/mtls"
 	"odac/internal/ports"
+	"odac/internal/proxysig"
 	"odac/internal/resources"
 )
 
@@ -234,7 +235,7 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 
 	env := envToStrings(s.env)
 
-	m.injectClientCertKey(s.identity, env)
+	m.injectProxyKeys(s.identity, env)
 
 	// API permission injection.
 	if s.hasAPI && m.deps.Api != nil {
@@ -387,7 +388,7 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 		env["PORT"] = strconv.Itoa(port)
 	}
 
-	m.injectClientCertKey(s.identity, env)
+	m.injectProxyKeys(s.identity, env)
 
 	if s.hasAPI && m.deps.Api != nil {
 		env["ODAC_API_KEY"] = m.deps.Api.GenerateAppToken(s.identity, s.apiPerms)
@@ -614,7 +615,7 @@ func (m *Manager) runScriptContainer(id any) error {
 	env := map[string]string{"ODAC_APP": "true"}
 	volumes := []docker.Mount{{Host: dir, Container: "/app"}}
 
-	m.injectClientCertKey(s.identity, env)
+	m.injectProxyKeys(s.identity, env)
 
 	if s.hasAPI && m.deps.Api != nil {
 		env["ODAC_API_KEY"] = m.deps.Api.GenerateAppToken(s.identity, s.apiPerms)
@@ -692,20 +693,24 @@ func (m *Manager) mountIsFile(name, fsPath, container string) bool {
 	return path.Ext(strings.TrimLeft(path.Base(cPath), ".")) != ""
 }
 
-// injectClientCertKey gives an app with a client certificate policy the key its
-// signed identity headers verify against. Like the API key it only reaches a
-// container at start, so turning a policy on needs a restart before the app can
-// trust a verdict; until then it has no key and treats every request as unverified.
-func (m *Manager) injectClientCertKey(identity string, env map[string]string) {
-	var key string
+// injectProxyKeys gives every app the key the proxy signs its connection headers
+// with, and an app with a client certificate policy the same key under
+// mtls.KeyEnv, the name its identity headers were documented with. Like the API
+// key it only reaches a container at start: an app started before it existed
+// has none and falls back to trusting its network.
+func (m *Manager) injectProxyKeys(identity string, env map[string]string) {
+	var auth string
+	var clientCerts bool
 	m.cfg.View(func() {
+		auth, _ = m.cfg.Map("api")["auth"].(string)
 		domains, _ := m.cfg.Get("domains").(map[string]any)
-		if mtls.AppIDs(domains)[identity] {
-			auth, _ := m.cfg.Map("api")["auth"].(string)
-			key = mtls.AppKey(auth, identity)
-		}
+		clientCerts = mtls.AppIDs(domains)[identity]
 	})
-	if key != "" {
+	key := mtls.AppKey(auth, identity)
+	if auth != "" {
+		env[proxysig.KeyEnv] = key
+	}
+	if clientCerts {
 		env[mtls.KeyEnv] = key
 	}
 }

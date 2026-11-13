@@ -549,8 +549,12 @@ func (p *Proxy) buildPayload(ips, sockets map[string]string) map[string]any {
 				entry["socket"] = sock
 			}
 		}
+		appKey := mtls.AppKey(authKey, mtls.AppIdentity(app))
+		if authKey != "" {
+			entry["key"] = appKey
+		}
 		if clientAuthApps[fmt.Sprint(record["appId"])] {
-			entry["mtls"] = mtls.DomainPayload(record, mtls.AppKey(authKey, mtls.AppIdentity(app)))
+			entry["mtls"] = mtls.DomainPayload(record, appKey)
 		}
 		proxyDomains[name] = entry
 	}
@@ -574,9 +578,13 @@ func (p *Proxy) buildPayload(ips, sockets map[string]string) map[string]any {
 			p.log.Log(fmt.Sprintf("Tunnel: Skipping %s, app %s: %s", tn.Domain, tn.Container, why))
 			continue
 		}
-		tunnels = append(tunnels, map[string]any{
+		entry := map[string]any{
 			"domain": tn.Domain, "host": backend.host, "port": backend.port, "token": tn.Token,
-		})
+		}
+		if authKey != "" {
+			entry["key"] = mtls.AppKey(authKey, mtls.AppIdentity(app))
+		}
+		tunnels = append(tunnels, entry)
 	}
 
 	p.log.Log("Proxy: Syncing %d domains, %d tunnels", len(proxyDomains), len(tunnels))

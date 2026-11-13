@@ -66,6 +66,9 @@ type Tunnel struct {
 	Host   string `json:"host"`
 	Port   int    `json:"port"`
 	Token  string `json:"token"`
+
+	// Key signs the connection headers the agent forwards, as Website.Key does.
+	Key string `json:"key,omitempty"`
 }
 
 // Website represents a single site configuration
@@ -84,6 +87,10 @@ type Website struct {
 	// The TCP target stays filled so an older proxy, or a failed socket dial,
 	// still reaches the app.
 	Socket string `json:"socket,omitempty"`
+
+	// Key signs the connection headers (proxysig). Without it they go unsigned
+	// and an app falls back to trusting its network.
+	Key string `json:"key,omitempty"`
 }
 
 // Cert represents SSL certificate paths

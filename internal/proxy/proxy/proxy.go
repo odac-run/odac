@@ -28,6 +28,7 @@ import (
 
 	"odac/internal/mtls"
 	"odac/internal/proxy/config"
+	"odac/internal/proxysig"
 )
 
 const (
@@ -284,28 +285,7 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 }
 
 func (p *Proxy) director(req *http.Request) {
-	for _, header := range mtls.Headers {
-		req.Header.Del(header)
-	}
-	req.Header.Del("X-Odac-Connection-RemoteAddress")
-	req.Header.Del("X-Odac-Connection-Ssl")
-	req.Header.Del("X-Odac-Websocket")
-	req.Header.Del("X-Forwarded-For")
-	req.Header.Del("X-Real-IP")
-	req.Header.Del("X-Forwarded-Proto")
-	req.Header.Del("Proxy")
-	req.Header.Del("Client-IP")
-	req.Header.Del("X-Remote-IP")
-	req.Header.Del("X-Remote-Addr")
-	req.Header.Del("X-Client-IP")
-	req.Header.Del("X-Originating-IP")
-
-	if req.Header.Get("X-Request-ID") == "" {
-		uuid := make([]byte, 16)
-		if _, err := rand.Read(uuid); err == nil {
-			req.Header.Set("X-Request-ID", hex.EncodeToString(uuid))
-		}
-	}
+	stripForwardingHeaders(req.Header)
 
 	host := req.Host
 	if strings.Contains(host, ":") {
@@ -323,33 +303,78 @@ func (p *Proxy) director(req *http.Request) {
 	req.URL.Scheme = "http"
 	req.URL.Host = backendAddr(website)
 
+	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		remoteIP = ""
+	}
+	setConnectionHeaders(req, remoteIP, req.TLS != nil, website.Key)
+
+	if state := clientAuthFrom(req); state != nil {
+		applyClientAuthHeaders(req, state, time.Now())
+	}
+}
+
+// stripForwardingHeaders removes everything an app could read as a statement
+// about the connection, so only what setConnectionHeaders writes reaches it.
+func stripForwardingHeaders(h http.Header) {
+	for _, header := range mtls.Headers {
+		h.Del(header)
+	}
+	for _, header := range proxysig.Headers {
+		h.Del(header)
+	}
+	for _, header := range []string{
+		"X-Odac-Websocket", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Proto", "Proxy",
+		"Client-IP", "X-Remote-IP", "X-Remote-Addr", "X-Client-IP", "X-Originating-IP",
+	} {
+		h.Del(header)
+	}
+
+	if h.Get("X-Request-ID") == "" {
+		uuid := make([]byte, 16)
+		if _, err := rand.Read(uuid); err == nil {
+			h.Set("X-Request-ID", hex.EncodeToString(uuid))
+		}
+	}
+}
+
+// setConnectionHeaders tells the app who is connecting, signed with its key.
+// The proxy and the tunnel agent both forward through it, so an app sees one
+// contract whichever way a request arrived. req.URL must already be final,
+// since its request URI is signed.
+func setConnectionHeaders(req *http.Request, remoteIP string, ssl bool, key string) {
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
 	}
 
-	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
-	if err == nil {
+	if remoteIP != "" {
 		req.Header.Set("X-Forwarded-For", remoteIP)
-		req.Header.Set("X-Odac-Connection-RemoteAddress", remoteIP)
+		req.Header.Set(proxysig.HeaderRemoteAddress, remoteIP)
 		req.Header.Set("X-Real-IP", remoteIP)
 	}
 
-	// Preserve original Host header for upstream apps
 	req.Header.Set("X-Forwarded-Host", req.Host)
 
-	if req.TLS != nil {
-		req.Header.Set("X-Odac-Connection-Ssl", "true")
+	if ssl {
+		req.Header.Set(proxysig.HeaderSSL, "true")
 		req.Header.Set("X-Forwarded-Proto", "https")
 	} else {
 		req.Header.Set("X-Forwarded-Proto", "http")
 	}
 
-	if isWebSocketUpgrade(req.Header) {
-		req.Header.Set("X-Odac-Websocket", "true")
+	if key != "" {
+		req.Header.Set(proxysig.HeaderSignature, proxysig.Connection{
+			Host:          req.Host,
+			Method:        req.Method,
+			RemoteAddress: remoteIP,
+			SSL:           ssl,
+			Timestamp:     time.Now().Unix(),
+			URI:           req.URL.RequestURI(),
+		}.Sign(key))
 	}
 
-	if state := clientAuthFrom(req); state != nil {
-		applyClientAuthHeaders(req, state, time.Now())
+	if isWebSocketUpgrade(req.Header) {
+		req.Header.Set("X-Odac-Websocket", "true")
 	}
 }
 

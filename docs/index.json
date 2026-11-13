@@ -151,6 +151,10 @@
         {
           "file": "02-asset-cache.md",
           "title": "Asset Cache"
+        },
+        {
+          "file": "03-app-integration.md",
+          "title": "Building an ODAC-Compatible App"
         }
       ]
     }

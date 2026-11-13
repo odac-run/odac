@@ -20,6 +20,7 @@ import (
 	"odac/internal/docker"
 	"odac/internal/lang"
 	"odac/internal/mtls"
+	"odac/internal/proxysig"
 )
 
 func init() { lang.SetLocale("en-US") }
@@ -707,16 +708,34 @@ func TestClientCertKeyReachesOnlyAppsWithAPolicy(t *testing.T) {
 
 	fx.checkAndSettle(t)
 
-	seen := map[string]string{}
+	seen := map[string]map[string]string{}
 	for i := 0; i < fx.dock.runCallCount(); i++ {
 		call := fx.dock.runCallAt(i)
-		seen[call.name] = call.options.Env[mtls.KeyEnv]
+		seen[call.name] = call.options.Env
 	}
-	if got, want := seen["secured"], mtls.AppKey("root", "secured"); got != want {
+	if got, want := seen["secured"][mtls.KeyEnv], mtls.AppKey("root", "secured"); got != want {
 		t.Fatalf("secured key = %q, want %q", got, want)
 	}
-	if got, ran := seen["plain"]; !ran || got != "" {
-		t.Fatalf("plain: ran=%v key=%q", ran, got)
+	if env, ran := seen["plain"]; !ran || env[mtls.KeyEnv] != "" {
+		t.Fatalf("plain: ran=%v key=%q", ran, env[mtls.KeyEnv])
+	}
+	for _, name := range []string{"secured", "plain"} {
+		if got, want := seen[name][proxysig.KeyEnv], mtls.AppKey("root", name); got != want {
+			t.Fatalf("%s proxy key = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestProxyKeyNeedsAnAPISecret(t *testing.T) {
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(101), "name": "plain", "active": true, "type": "container", "image": "test:latest"},
+	})
+	fx.checkAndSettle(t)
+	if fx.dock.runCallCount() == 0 {
+		t.Fatal("runApp not called")
+	}
+	if key, ok := fx.dock.runCallAt(0).options.Env[proxysig.KeyEnv]; ok {
+		t.Fatalf("key %q derived from no secret", key)
 	}
 }
 
