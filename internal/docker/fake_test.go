@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/docker/docker/api/types"
@@ -268,8 +269,10 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ image.PullOptions) 
 	if !ok {
 		body = `{"status":"Pulling from library"}` + "\n"
 	}
-	// The image becomes "local" after a pull.
-	f.images[ref] = image.InspectResponse{}
+	// The image becomes "local" after a pull that did not report an error.
+	if !strings.Contains(body, `"error"`) {
+		f.images[ref] = image.InspectResponse{}
+	}
 	return io.NopCloser(bytes.NewReader([]byte(body))), nil
 }
 

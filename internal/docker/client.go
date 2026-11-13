@@ -342,10 +342,45 @@ func (c *Client) EnsureImage(imageName string, logw io.Writer) error {
 	if logw != nil {
 		fmt.Fprintf(logw, "Pulling image %s...\n", imageName)
 	}
+	if err := c.pull(ctx, imageName, logw); err != nil {
+		return c.pullFailed(imageName, logw, err)
+	}
+	if logw != nil {
+		fmt.Fprintf(logw, "Image %s pulled successfully.\n", imageName)
+	}
+	c.log.Log("Image %s pulled successfully.", imageName)
+	return nil
+}
 
+// RefreshImage pulls a tag even when a local copy exists, because a floating
+// tag such as golang:1.26-alpine or node:lts-alpine moves upstream and the
+// cached copy never does: a go.mod asking for the next patch release then
+// fails to build forever. An unreachable or rate-limited registry falls back
+// to the local copy, noted in logw, so a refresh never fails a build that
+// would have worked before. Digest-pinned images need only EnsureImage.
+func (c *Client) RefreshImage(imageName string, logw io.Writer) error {
+	ctx := context.Background()
+	err := c.pull(ctx, imageName, nil)
+	if err == nil {
+		return nil
+	}
+	if _, _, ierr := c.api.ImageInspectWithRaw(ctx, imageName); ierr != nil {
+		return c.pullFailed(imageName, logw, err)
+	}
+	c.log.Warn("Could not refresh image %s, using the local copy: %s", imageName, err.Error())
+	if logw != nil {
+		fmt.Fprintf(logw, "Could not refresh image %s, using the local copy: %s\n", imageName, err.Error())
+	}
+	return nil
+}
+
+// pull streams one image pull, rendering progress into logw the way Node's
+// followProgress did: raw `stream` events verbatim, `status [progress]`
+// lines otherwise.
+func (c *Client) pull(ctx context.Context, imageName string, logw io.Writer) error {
 	rc, err := c.api.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
-		return c.pullFailed(imageName, logw, err)
+		return err
 	}
 	defer rc.Close()
 
@@ -359,12 +394,12 @@ func (c *Client) EnsureImage(imageName string, logw io.Writer) error {
 		}
 		if err := dec.Decode(&msg); err != nil {
 			if err == io.EOF {
-				break
+				return nil
 			}
-			return c.pullFailed(imageName, logw, err)
+			return err
 		}
 		if msg.Error != "" {
-			return c.pullFailed(imageName, logw, fmt.Errorf("%s", msg.Error))
+			return errors.New(msg.Error)
 		}
 		if logw == nil {
 			continue
@@ -379,12 +414,6 @@ func (c *Client) EnsureImage(imageName string, logw io.Writer) error {
 			io.WriteString(logw, line+"\n")
 		}
 	}
-
-	if logw != nil {
-		fmt.Fprintf(logw, "Image %s pulled successfully.\n", imageName)
-	}
-	c.log.Log("Image %s pulled successfully.", imageName)
-	return nil
 }
 
 func (c *Client) pullFailed(imageName string, logw io.Writer, err error) error {

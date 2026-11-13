@@ -58,23 +58,30 @@ func TestDetectStrategy(t *testing.T) {
 	}
 }
 
+// Interpreted languages run on the image that installed their dependencies:
+// a native addon or wheel built for Node 20 or Python 3.12 does not load on
+// whatever lts or 3 points at.
 func TestResolveImageVersions(t *testing.T) {
 	cases := []struct {
-		name  string
-		files map[string]string
-		want  string
+		name    string
+		files   map[string]string
+		image   string
+		runtime string
 	}{
-		{"go version from go.mod", map[string]string{"go.mod": "module x\n\ngo 1.22.5\n"}, "golang:1.22-alpine"},
-		{"go default", map[string]string{"go.mod": "module x\n"}, "golang:alpine"},
-		{"node engines", map[string]string{"package-lock.json": "", "package.json": `{"engines":{"node":">=20.11"}}`}, "node:20-alpine"},
-		{"node default", map[string]string{"package-lock.json": "", "package.json": `{}`}, "node:lts-alpine"},
-		{"php composer require", map[string]string{"composer.json": `{"require":{"php":"^8.2"}}`}, "composer:8.2"},
-		{"python pyproject", map[string]string{"pyproject.toml": `requires-python = ">=3.12"`}, "python:3.12-slim"},
-		{"python runtime.txt fallback", map[string]string{"requirements.txt": "", "runtime.txt": "python-3.11.4"}, "python:3.11-slim"},
-		{"python default", map[string]string{"requirements.txt": ""}, "python:3-slim"},
-		{"rust toolchain toml", map[string]string{"Cargo.toml": "", "rust-toolchain.toml": `channel = "1.78.0"`}, "rust:1.78-alpine"},
-		{"rust bare toolchain", map[string]string{"Cargo.toml": "", "rust-toolchain": "1.75.0\n"}, "rust:1.75-alpine"},
-		{"static no resolver", map[string]string{"index.html": ""}, "alpine:latest"},
+		{"go version from go.mod", map[string]string{"go.mod": "module x\n\ngo 1.22.5\n"}, "golang:1.22-alpine", "alpine:latest"},
+		{"go default", map[string]string{"go.mod": "module x\n"}, "golang:alpine", "alpine:latest"},
+		{"node engines", map[string]string{"package-lock.json": "", "package.json": `{"engines":{"node":">=20.11"}}`}, "node:20-alpine", "node:20-alpine"},
+		{"node default", map[string]string{"package-lock.json": "", "package.json": `{}`}, "node:lts-alpine", "node:lts-alpine"},
+		{"pnpm engines", map[string]string{"pnpm-lock.yaml": "", "package.json": `{"engines":{"node":"22"}}`}, "node:22-alpine", "node:22-alpine"},
+		{"bun", map[string]string{"bun.lock": "", "package.json": `{}`}, "oven/bun:alpine", "oven/bun:alpine"},
+		{"php composer require", map[string]string{"composer.json": `{"require":{"php":"^8.3"}}`}, "composer:lts", "php:8.3-apache"},
+		{"php default", map[string]string{"index.php": "<?php"}, "composer:lts", "php:8.2-apache"},
+		{"python pyproject", map[string]string{"pyproject.toml": `requires-python = ">=3.12"`}, "python:3.12-slim", "python:3.12-slim"},
+		{"python runtime.txt fallback", map[string]string{"requirements.txt": "", "runtime.txt": "python-3.11.4"}, "python:3.11-slim", "python:3.11-slim"},
+		{"python default", map[string]string{"requirements.txt": ""}, "python:3-slim", "python:3-slim"},
+		{"rust toolchain toml", map[string]string{"Cargo.toml": "", "rust-toolchain.toml": `channel = "1.78.0"`}, "rust:1.78-alpine", "alpine:latest"},
+		{"rust bare toolchain", map[string]string{"Cargo.toml": "", "rust-toolchain": "1.75.0\n"}, "rust:1.75-alpine", "alpine:latest"},
+		{"static no resolver", map[string]string{"index.html": ""}, "alpine:latest", "nginx:alpine"},
 	}
 	for _, c := range cases {
 		dir := writeFiles(t, c.files)
@@ -83,21 +90,44 @@ func TestResolveImageVersions(t *testing.T) {
 			t.Errorf("%s: no strategy", c.name)
 			continue
 		}
-		if got.image != c.want {
-			t.Errorf("%s: image = %q, want %q", c.name, got.image, c.want)
+		if got.image != c.image || got.runtime != c.runtime {
+			t.Errorf("%s: images = %q, %q, want %q, %q", c.name, got.image, got.runtime, c.image, c.runtime)
 		}
 	}
 }
 
+func TestDockerfileBaseImages(t *testing.T) {
+	got := dockerfileBaseImages(`# syntax=docker/dockerfile:1
+ARG GO=1.26
+FROM golang:${GO}-alpine AS build
+from node:22-alpine as assets
+FROM --platform=linux/amd64 alpine:3.22 AS cross
+FROM build AS test
+FROM ASSETS
+FROM scratch
+FROM gcr.io/distroless/static:nonroot
+FROM node:22-alpine
+`)
+	want := []string{"node:22-alpine", "gcr.io/distroless/static:nonroot"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("bases = %v, want %v", got, want)
+	}
+
+	many := strings.Repeat("FROM a\nFROM b\nFROM c\nFROM d\nFROM e\nFROM f\nFROM g\nFROM h\nFROM i\n", 2)
+	if n := len(dockerfileBaseImages(many)); n != maxDockerfileBases {
+		t.Errorf("refreshed %d bases, want the cap %d", n, maxDockerfileBases)
+	}
+}
+
 func TestGenerateDockerfile(t *testing.T) {
-	got := generateDockerfile(buildStrategies["GO"].pkg)
+	got := generateDockerfile("alpine:latest", buildStrategies["GO"].pkg)
 	want := "\nFROM alpine:latest\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R nobody:nobody /app\nUSER nobody\nCMD [\"/app/app\"]\n"
 	if got != want {
 		t.Errorf("dockerfile = %q, want %q", got, want)
 	}
 
 	// PHP: setup commands rendered as RUN lines between chown and USER.
-	php := generateDockerfile(buildStrategies["PHP"].pkg)
+	php := generateDockerfile("php:8.2-apache", buildStrategies["PHP"].pkg)
 	if !strings.Contains(php, "RUN sed -ri -e \"s!/var/www/html!/app!g\"") {
 		t.Errorf("php setup missing: %q", php)
 	}
@@ -109,7 +139,7 @@ func TestGenerateDockerfile(t *testing.T) {
 	}
 
 	// PYTHON: env rendered.
-	py := generateDockerfile(buildStrategies["PYTHON"].pkg)
+	py := generateDockerfile("python:3-slim", buildStrategies["PYTHON"].pkg)
 	if !strings.Contains(py, "ENV PYTHONPATH=\"/app/deps\"") {
 		t.Errorf("python env missing: %q", py)
 	}
@@ -170,6 +200,11 @@ func TestBuildTwoStagePipeline(t *testing.T) {
 		t.Errorf("package cmd = %q", got)
 	}
 
+	// Floating tags are pulled although cached; the digest-pinned packager is not.
+	if want := []string{"golang:1.22-alpine", "alpine:latest"}; !reflect.DeepEqual(f.pulled, want) {
+		t.Errorf("pulled = %v, want %v", f.pulled, want)
+	}
+
 	// Ephemeral build files cleaned up.
 	if _, err := os.Stat(filepath.Join(src, "Dockerfile.odac")); !os.IsNotExist(err) {
 		t.Error("Dockerfile.odac not cleaned up")
@@ -193,6 +228,24 @@ func TestBuildCustomDockerfile(t *testing.T) {
 	}
 	if got := f.created[0].Config.Cmd[2]; got != "docker build --progress=plain -t custom-img /app" {
 		t.Errorf("custom cmd = %q", got)
+	}
+}
+
+func TestBuildCustomDockerfileRefreshesBases(t *testing.T) {
+	f := newFakeAPI()
+	f.images[packagerImage] = image.InspectResponse{}
+	f.pullBodies["local-only:1"] = `{"error":"pull access denied"}` + "\n"
+	c := newTestClient(t, f)
+
+	src := writeFiles(t, map[string]string{"Dockerfile": "FROM golang:1.26-alpine AS build\nFROM local-only:1\n"})
+	if err := c.Build(src, "custom-img", "x", nil); err != nil {
+		t.Fatalf("a base the registry refuses must be left to docker build: %v", err)
+	}
+	if want := []string{"golang:1.26-alpine", "local-only:1"}; !reflect.DeepEqual(f.pulled, want) {
+		t.Errorf("pulled = %v, want %v", f.pulled, want)
+	}
+	if len(f.created) != 1 {
+		t.Errorf("created %d containers, want the build", len(f.created))
 	}
 }
 

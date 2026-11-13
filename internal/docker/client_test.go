@@ -555,6 +555,34 @@ func TestEnsureImagePullsOnlyWhenMissing(t *testing.T) {
 	}
 }
 
+func TestRefreshImage(t *testing.T) {
+	f := newFakeAPI()
+	f.images["golang:1.26-alpine"] = image.InspectResponse{}
+	c := newTestClient(t, f)
+
+	if err := c.RefreshImage("golang:1.26-alpine", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.pulled) != 1 {
+		t.Errorf("cached floating tag was not refreshed: pulled = %v", f.pulled)
+	}
+
+	f.pullBodies["node:22-alpine"] = `{"error":"toomanyrequests: rate limit"}` + "\n"
+	f.images["node:22-alpine"] = image.InspectResponse{}
+	var log bytes.Buffer
+	if err := c.RefreshImage("node:22-alpine", &log); err != nil {
+		t.Errorf("unreachable registry with a local copy must not fail: %v", err)
+	}
+	if !strings.Contains(log.String(), "using the local copy") || !strings.Contains(log.String(), "rate limit") {
+		t.Errorf("log = %q", log.String())
+	}
+
+	f.pullBodies["gone:1"] = `{"error":"manifest unknown"}` + "\n"
+	if err := c.RefreshImage("gone:1", nil); err == nil || !strings.Contains(err.Error(), "manifest unknown") {
+		t.Errorf("no local copy: err = %v", err)
+	}
+}
+
 func TestEnsureImagePullErrorEvent(t *testing.T) {
 	f := newFakeAPI()
 	f.pullBodies["bad:1"] = `{"error":"manifest unknown"}` + "\n"
