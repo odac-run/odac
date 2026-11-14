@@ -8,7 +8,7 @@
 //	Init: server.pid/started set → Updater.Init() → when ready:
 //	      Proxy.Start, DNS.Start, Hub.Start; +1s: Mail.Start, Api.Start.
 //	      +1s after Init (regardless of readiness): 1s tick of
-//	      App.Check, SSL.Check, Proxy.Check, Mail.Check, Hub.Check.
+//	      App.Check, SSL.Check, Proxy.Check, DNS.Check, Mail.Check, Hub.Check.
 //	Stop(exceptWeb): tick stops; Mail, Api, Hub stop always; DNS and Proxy
 //	      only when exceptWeb is false (true = update-overlap mode, they keep
 //	      serving via SO_REUSEPORT until the new instance takes over).
@@ -57,7 +57,7 @@ type Services struct {
 	App   Checker          // 3.4 — check only (App has no system-level start)
 	SSL   Checker          // 3.5 — check only
 	Proxy StartStopChecker // 3.2
-	DNS   StartStopper     // 3.2 — no check in the tick (Node parity)
+	DNS   StartStopChecker // 3.2
 	Mail  StartStopChecker // 3.2
 	Api   StartStopper     // 3.3
 	Hub   StartStopChecker // 3.6
@@ -202,6 +202,7 @@ func (s *System) startTick() {
 				check(s.svc.App)
 				check(s.svc.SSL)
 				check(s.svc.Proxy)
+				check(s.svc.DNS)
 				check(s.svc.Mail)
 				check(s.svc.Hub)
 				check(s.svc.Swap)
