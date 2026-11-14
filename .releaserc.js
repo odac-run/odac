@@ -4,7 +4,8 @@ module.exports = {
     [
       '@semantic-release/commit-analyzer',
       {
-        preset: 'conventionalcommits'
+        preset: 'conventionalcommits',
+        releaseRules: [{type: 'major', release: 'major'}, {type: 'minor', release: 'minor'}, {release: 'patch'}]
       }
     ],
     [
@@ -14,7 +15,7 @@ module.exports = {
         writerOpts: {
           transform: (c, context) => {
             const commit = JSON.parse(JSON.stringify(c))
-
+            if (commit.type === 'major' || commit.type === 'minor') return false
             const map = {
               feat: "✨ What's New",
               fix: '🛠️ Fixes & Improvements',
