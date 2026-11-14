@@ -109,8 +109,11 @@ type GPUHost interface {
 }
 
 // DomainDeleter cascades app deletion into the domain table (task 3.5).
+// HasClientAuthPolicy lets Delete refuse an app caller a cascade that would
+// drop a client certificate policy.
 type DomainDeleter interface {
 	DeleteByApp(appName string) error
+	HasClientAuthPolicy(appName string) bool
 }
 
 // Deps carries the Manager's collaborators. Hub, Domains, Api and Proxy may

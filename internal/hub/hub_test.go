@@ -192,7 +192,7 @@ func (f *fakeApp) GetBuildStats(id any) *api.Result {
 	f.record("buildstats:" + str(id))
 	return ok("stats")
 }
-func (f *fakeApp) Delete(id any, purge bool) *api.Result {
+func (f *fakeApp) Delete(_ api.Caller, id any, purge bool) *api.Result {
 	f.record("delete:" + str(id) + ":" + str(purge))
 	return ok("deleted")
 }
@@ -296,10 +296,10 @@ func (f *fakeDNS) List(domainArg any) api.Result {
 
 type fakeDomain struct{}
 
-func (fakeDomain) Add(domainArg, appID any) api.Result {
+func (fakeDomain) Add(_ api.Caller, domainArg, appID any) api.Result {
 	return api.Res(true, "domain "+str(domainArg)+" added to "+str(appID))
 }
-func (fakeDomain) Delete(domainArg any, skipSync bool) api.Result {
+func (fakeDomain) Delete(_ api.Caller, domainArg any, skipSync bool) api.Result {
 	return api.Res(true, "domain "+str(domainArg)+" deleted")
 }
 func (fakeDomain) List(appIDArg any) api.Result {

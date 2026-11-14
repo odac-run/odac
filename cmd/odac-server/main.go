@@ -294,7 +294,7 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 					purge = v == true
 				}
 			}
-			return appMgr.Delete(a.At(0), purge), nil
+			return appMgr.Delete(a.Caller(), a.At(0), purge), nil
 		})
 		apiSrv.Register("app.device.add", func(a api.Args, _ api.Progress) (*api.Result, error) {
 			return appMgr.DeviceAdd(a.At(0), argStr(a.At(1)), argStr(a.At(2))), nil
@@ -332,10 +332,10 @@ func registerActions(apiSrv *api.Server, sys *system.System, upd *updater.Update
 		return res(dnsSvc.List(a.At(0)))
 	})
 	apiSrv.Register("domain.add", func(a api.Args, _ api.Progress) (*api.Result, error) {
-		return res(domainSvc.Add(a.At(0), a.At(1)))
+		return res(domainSvc.Add(a.Caller(), a.At(0), a.At(1)))
 	})
 	apiSrv.Register("domain.delete", func(a api.Args, _ api.Progress) (*api.Result, error) {
-		return res(domainSvc.Delete(a.At(0), a.At(1) == true))
+		return res(domainSvc.Delete(a.Caller(), a.At(0), a.At(1) == true))
 	})
 	apiSrv.Register("domain.list", func(a api.Args, _ api.Progress) (*api.Result, error) {
 		return res(domainSvc.List(a.At(0)))

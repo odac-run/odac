@@ -210,7 +210,12 @@ func (d *Domain) domainsLocked(create bool) map[string]any {
 
 // Add ports add(): validate, bind the domain to an existing app, create the
 // DNS record set, register the domain and kick off SSL provisioning.
-func (d *Domain) Add(domainArg, appID any) api.Result {
+//
+// An app caller may not bind a domain at or below another app's record that
+// carries a client certificate policy: an exact record outranks the parent
+// walk, so admin.x.com would leave x.com's policy behind, which is the reach
+// domain.mtls.set is closed to apps for.
+func (d *Domain) Add(caller api.Caller, domainArg, appID any) api.Result {
 	domain, errMsg := validate(domainArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
@@ -225,7 +230,7 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 
 	// Existence + app lookup + subdomain-parent scan, snapshotted under the
 	// read lock. targetName is the app the domain binds to.
-	var exists, found, targetHostNet bool
+	var exists, found, targetHostNet, foreign bool
 	var targetName string
 	var parentDomain, sub string
 	var subAlready bool
@@ -247,6 +252,10 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 			}
 		}
 		if !found {
+			return
+		}
+		if !caller.Root && underForeignPolicy(domains, domain, targetName) {
+			foreign = true
 			return
 		}
 
@@ -271,6 +280,9 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 	}
 	if !found {
 		return api.Res(false, __("App %s not found.", str(appID)))
+	}
+	if foreign {
+		return api.Res(false, __("Domain %s falls under a domain with a client certificate policy, so only the server operator can add it.", domain))
 	}
 
 	// Mirror of appmgr.SetNetworkMode's refusal, from the other direction: a
@@ -327,6 +339,10 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 			raced = true
 			return
 		}
+		if !caller.Root && underForeignPolicy(domains, domain, targetName) {
+			foreign = true
+			return
+		}
 		record := map[string]any{
 			"appId":     targetName,
 			"created":   float64(time.Now().UnixMilli()),
@@ -343,6 +359,9 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 	})
 	if raced {
 		return api.Res(false, __("Domain %s is already registered.", domain))
+	}
+	if foreign {
+		return api.Res(false, __("Domain %s falls under a domain with a client certificate policy, so only the server operator can add it.", domain))
 	}
 
 	// DNS records (skipped for localhost/IPs). A and AAAA carry no value —
@@ -403,14 +422,19 @@ func (d *Domain) Add(domainArg, appID any) api.Result {
 // Delete ports delete(): remove a main domain (with its full DNS record set,
 // DKIM key files and mail TLS cache) or a subdomain (CNAME + parent renewal).
 // skipSync suppresses the proxy sync for batch deletes (DeleteByApp).
-func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
+//
+// An app caller may not delete a record that carries a client certificate
+// policy, or one of its subdomains: Prune drops the policy's certificates with
+// the domain, so delete plus add would reopen a host without domain.mtls.set,
+// which is closed to apps.
+func (d *Domain) Delete(caller api.Caller, domainArg any, skipSync bool) api.Result {
 	domain, errMsg := d.validateStored(domainArg)
 	if errMsg != "" {
 		return api.Res(false, errMsg)
 	}
 
 	// Snapshot what we need under the read lock.
-	var isMain bool
+	var isMain, protected bool
 	var recordAppID any
 	var dkimSelector string
 	var parentDomain, sub string
@@ -421,6 +445,7 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 			isMain = true
 			if record != nil {
 				recordAppID = record["appId"]
+				_, protected = record["mtls"]
 				cert, _ := record["cert"].(map[string]any)
 				dkim, _ := cert["dkim"].(map[string]any)
 				dkimSelector, _ = dkim["selector"].(string)
@@ -435,11 +460,16 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 				if rec != nil && listContains(rec["subdomain"], candidate) {
 					parentDomain = parent
 					sub = candidate
+					_, protected = rec["mtls"]
 					return
 				}
 			}
 		}
 	})
+
+	if protected && !caller.Root {
+		return api.Res(false, __("Domain %s has a client certificate policy, so only the server operator can delete it.", domain))
+	}
 
 	if isMain {
 		if domain != "localhost" && !ipv4Re.MatchString(domain) {
@@ -531,6 +561,49 @@ func (d *Domain) Delete(domainArg any, skipSync bool) api.Result {
 	return api.Res(false, __("Domain %s not found.", domain))
 }
 
+// underForeignPolicy reports whether domain equals or falls under a record
+// that carries a client certificate policy and is bound to an app other than
+// app. A wildcard is compared by its base, since *.x.com claims every host
+// below x.com. The same app's records are not a concern: a domain below one
+// of them becomes its subdomain and inherits the policy.
+func underForeignPolicy(domains map[string]any, domain, app string) bool {
+	base := strings.TrimPrefix(domain, "*.")
+	for name, rec := range domains {
+		record, _ := rec.(map[string]any)
+		if record == nil || record["appId"] == any(app) {
+			continue
+		}
+		if _, ok := record["mtls"]; !ok {
+			continue
+		}
+		other := strings.TrimPrefix(name, "*.")
+		if base == other || strings.HasSuffix(base, "."+other) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasClientAuthPolicy reports whether any record bound to app carries a client
+// certificate policy. Deleting such an app deletes those records, so an app
+// caller must not reach it through app.delete either.
+func (d *Domain) HasClientAuthPolicy(app string) bool {
+	found := false
+	d.cfg.View(func() {
+		for _, rec := range d.domainsLocked(false) {
+			record, _ := rec.(map[string]any)
+			if record == nil || record["appId"] != any(app) {
+				continue
+			}
+			if _, ok := record["mtls"]; ok {
+				found = true
+				return
+			}
+		}
+	})
+	return found
+}
+
 // DeleteByApp ports deleteByApp(): remove every domain bound to the app,
 // syncing the proxy once at the end. Fills appmgr's DomainDeleter seam.
 func (d *Domain) DeleteByApp(appID string) error {
@@ -555,7 +628,7 @@ func (d *Domain) DeleteByApp(appID string) error {
 	d.log.Log("Deleting %d domains for app %s", len(targets), appID)
 	for _, domain := range targets {
 		// Reuse the full delete logic; skip the per-domain proxy sync.
-		d.Delete(domain, true)
+		d.Delete(api.Operator, domain, true)
 	}
 
 	if d.proxy != nil {

@@ -440,8 +440,15 @@ func (f *fakeGPUHost) allow(runtimes ...string) {
 }
 
 type fakeDomains struct {
-	mu      sync.Mutex
-	deleted []string
+	mu        sync.Mutex
+	deleted   []string
+	protected map[string]bool
+}
+
+func (f *fakeDomains) HasClientAuthPolicy(appName string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.protected[appName]
 }
 
 func (f *fakeDomains) DeleteByApp(appName string) error {
@@ -820,12 +827,31 @@ func TestAppIdentityForTokens(t *testing.T) {
 
 // ---- delete() ----
 
+func TestDeleteByAppSparesClientCertPolicies(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "guarded", "active": true, "type": "container",
+	}})
+	fx.domains.protected = map[string]bool{"guarded": true}
+
+	for _, caller := range []api.Caller{{App: "edge"}, {}} {
+		if r := fx.m.Delete(caller, float64(1), true); r.Status {
+			t.Fatalf("Delete(%+v) = %+v", caller, r)
+		}
+	}
+	if fx.appCount() != 1 || len(fx.domains.deleted) != 0 {
+		t.Fatalf("refused delete removed something: apps=%d domains=%v", fx.appCount(), fx.domains.deleted)
+	}
+	if r := fx.m.Delete(api.Operator, float64(1), true); !r.Status {
+		t.Fatalf("operator: %+v", r)
+	}
+}
+
 func TestDeleteCascadesDomains(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{
 		"id": float64(1), "name": "delete-me", "active": true, "type": "container",
 	}})
 
-	r := fx.m.Delete(float64(1), true)
+	r := fx.m.Delete(api.Operator, float64(1), true)
 	if !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}

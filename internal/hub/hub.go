@@ -44,7 +44,7 @@ const DefaultURL = "https://hub.odac.run"
 type AppService interface {
 	Create(caller api.Caller, config any) *api.Result
 	GetBuildStats(id any) *api.Result
-	Delete(id any, purge bool) *api.Result
+	Delete(caller api.Caller, id any, purge bool) *api.Result
 	GetEnv(id any) *api.Result
 	DeleteEnv(id any, keys []string) *api.Result
 	LinkEnv(id any, target string) *api.Result
@@ -72,8 +72,8 @@ type DNSService interface {
 
 // DomainService is the slice of domains.Domain the command table calls.
 type DomainService interface {
-	Add(domainArg, appID any) api.Result
-	Delete(domainArg any, skipSync bool) api.Result
+	Add(caller api.Caller, domainArg, appID any) api.Result
+	Delete(caller api.Caller, domainArg any, skipSync bool) api.Result
 	List(appIDArg any) api.Result
 }
 
@@ -685,7 +685,7 @@ func (h *Hub) buildCommands() {
 	h.register("app.delete", &command{
 		fn: withApp(func(p any) (any, error) {
 			m := pmap(p)
-			return h.deps.App.Delete(m["id"], m["purge"] != false), nil
+			return h.deps.App.Delete(api.Operator, m["id"], m["purge"] != false), nil
 		}),
 		triggers: []string{"app.list"},
 	})
@@ -804,13 +804,13 @@ func (h *Hub) buildCommands() {
 	h.register("domain.add", &command{
 		fn: func(p any) (any, error) {
 			m := pmap(p)
-			return h.deps.Domain.Add(m["domain"], m["app"]), nil
+			return h.deps.Domain.Add(api.Operator, m["domain"], m["app"]), nil
 		},
 		triggers: []string{"domain.list", "system.info"},
 	})
 	h.register("domain.delete", &command{
 		fn: func(p any) (any, error) {
-			return h.deps.Domain.Delete(pmap(p)["domain"], false), nil
+			return h.deps.Domain.Delete(api.Operator, pmap(p)["domain"], false), nil
 		},
 		triggers: []string{"domain.list", "system.info"},
 	})

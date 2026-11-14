@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"odac/internal/api"
 )
 
 func msgOf(t *testing.T, v any) string {
@@ -21,7 +23,7 @@ func msgOf(t *testing.T, v any) string {
 func TestAddValidDomain(t *testing.T) {
 	fx := newFixture(t)
 
-	r := fx.d.Add("example.com", "myapp")
+	r := fx.d.Add(api.Operator, "example.com", "myapp")
 	if !r.Status {
 		t.Fatalf("add failed: %v", r.Message)
 	}
@@ -76,7 +78,7 @@ func TestAddRejectsInvalidFormats(t *testing.T) {
 	fx := newFixture(t)
 
 	for _, bad := range []string{"invalid", "../hack.com", "a", "exa/mple.com", `exa\mple.com`} {
-		r := fx.d.Add(bad, "myapp")
+		r := fx.d.Add(api.Operator, bad, "myapp")
 		if r.Status {
 			t.Fatalf("%q accepted", bad)
 		}
@@ -85,11 +87,11 @@ func TestAddRejectsInvalidFormats(t *testing.T) {
 		}
 	}
 
-	r := fx.d.Add(nil, "myapp")
+	r := fx.d.Add(api.Operator, nil, "myapp")
 	if r.Status || !strings.Contains(msgOf(t, r.Message), "Domain is required") {
 		t.Fatalf("nil domain = %+v", r)
 	}
-	r = fx.d.Add("example.com", nil)
+	r = fx.d.Add(api.Operator, "example.com", nil)
 	if r.Status || !strings.Contains(msgOf(t, r.Message), "App ID is required") {
 		t.Fatalf("nil app = %+v", r)
 	}
@@ -98,7 +100,7 @@ func TestAddRejectsInvalidFormats(t *testing.T) {
 func TestAddRejectsUnknownApp(t *testing.T) {
 	fx := newFixture(t)
 
-	r := fx.d.Add("example.com", "nonexistent")
+	r := fx.d.Add(api.Operator, "example.com", "nonexistent")
 	if r.Status || !strings.Contains(msgOf(t, r.Message), "App nonexistent not found") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -111,7 +113,7 @@ func TestAddRejectsDuplicate(t *testing.T) {
 	fx := newFixture(t)
 	fx.setDomains(map[string]any{"example.com": map[string]any{"appId": "myapp"}})
 
-	r := fx.d.Add("example.com", "otherapp")
+	r := fx.d.Add(api.Operator, "example.com", "otherapp")
 	if r.Status || !strings.Contains(msgOf(t, r.Message), "Domain example.com is already registered") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -135,7 +137,7 @@ func TestAddRejectsHostNetworkedApp(t *testing.T) {
 	t.Run("root domain", func(t *testing.T) {
 		fx := hostFixture(t)
 
-		r := fx.d.Add("example.com", "myapp")
+		r := fx.d.Add(api.Operator, "example.com", "myapp")
 		if r.Status || !strings.Contains(msgOf(t, r.Message), "host networking") {
 			t.Fatalf("r = %+v", r)
 		}
@@ -154,7 +156,7 @@ func TestAddRejectsHostNetworkedApp(t *testing.T) {
 			"example.com": map[string]any{"appId": "myapp", "created": nowMs()},
 		})
 
-		r := fx.d.Add("sub.example.com", "myapp")
+		r := fx.d.Add(api.Operator, "sub.example.com", "myapp")
 		if r.Status || !strings.Contains(msgOf(t, r.Message), "host networking") {
 			t.Fatalf("r = %+v", r)
 		}
@@ -167,7 +169,7 @@ func TestAddRejectsHostNetworkedApp(t *testing.T) {
 	// Lookup by id must be gated identically to lookup by name.
 	t.Run("app referenced by id", func(t *testing.T) {
 		fx := hostFixture(t)
-		if r := fx.d.Add("example.com", "app-1"); r.Status {
+		if r := fx.d.Add(api.Operator, "example.com", "app-1"); r.Status {
 			t.Fatal("host-networked app accepted a domain via its id")
 		}
 	})
@@ -175,7 +177,7 @@ func TestAddRejectsHostNetworkedApp(t *testing.T) {
 	// A bridge app in the same config must stay unaffected.
 	t.Run("bridge app is unaffected", func(t *testing.T) {
 		fx := hostFixture(t)
-		if r := fx.d.Add("example.com", "otherapp"); !r.Status {
+		if r := fx.d.Add(api.Operator, "example.com", "otherapp"); !r.Status {
 			t.Fatalf("bridge app refused: %v", r.Message)
 		}
 	})
@@ -184,7 +186,7 @@ func TestAddRejectsHostNetworkedApp(t *testing.T) {
 func TestAddSkipsDNSAndSSLForLocalhost(t *testing.T) {
 	fx := newFixture(t)
 
-	r := fx.d.Add("localhost", "myapp")
+	r := fx.d.Add(api.Operator, "localhost", "myapp")
 	if !r.Status {
 		t.Fatalf("add failed: %v", r.Message)
 	}
@@ -209,7 +211,7 @@ func TestAddSkipsDNSAndSSLForLocalhost(t *testing.T) {
 func TestAddSkipsDNSForIPAddress(t *testing.T) {
 	fx := newFixture(t)
 
-	r := fx.d.Add("192.168.1.10", "myapp")
+	r := fx.d.Add(api.Operator, "192.168.1.10", "myapp")
 	if !r.Status {
 		t.Fatalf("add failed: %v", r.Message)
 	}
@@ -224,7 +226,7 @@ func TestAddSubdomainToExistingParent(t *testing.T) {
 		"example.com": map[string]any{"appId": "myapp", "created": nowMs()},
 	})
 
-	r := fx.d.Add("sub.example.com", "myapp")
+	r := fx.d.Add(api.Operator, "sub.example.com", "myapp")
 	if !r.Status {
 		t.Fatalf("add failed: %v", r.Message)
 	}
@@ -257,7 +259,7 @@ func TestAddSubdomainAlreadyExists(t *testing.T) {
 		"example.com": map[string]any{"appId": "myapp", "subdomain": []any{"sub"}},
 	})
 
-	r := fx.d.Add("sub.example.com", "myapp")
+	r := fx.d.Add(api.Operator, "sub.example.com", "myapp")
 	if !r.Status || !strings.Contains(msgOf(t, r.Message), "Subdomain sub already exists on example.com") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -269,7 +271,7 @@ func TestAddSubdomainAlreadyExists(t *testing.T) {
 func TestAddStripsProtocolAndWWW(t *testing.T) {
 	fx := newFixture(t)
 
-	r := fx.d.Add("https://WWW.Example.com", "myapp")
+	r := fx.d.Add(api.Operator, "https://WWW.Example.com", "myapp")
 	if !r.Status {
 		t.Fatalf("add failed: %v", r.Message)
 	}
@@ -281,7 +283,7 @@ func TestAddStripsProtocolAndWWW(t *testing.T) {
 func TestAddWildcardDomain(t *testing.T) {
 	fx := newFixture(t)
 
-	r := fx.d.Add("*.example.com", "myapp")
+	r := fx.d.Add(api.Operator, "*.example.com", "myapp")
 	if !r.Status {
 		t.Fatalf("add failed: %v", r.Message)
 	}
@@ -306,7 +308,7 @@ func TestDeleteExistingDomain(t *testing.T) {
 		"example.com": map[string]any{"appId": "myapp", "created": nowMs()},
 	})
 
-	r := fx.d.Delete("example.com", false)
+	r := fx.d.Delete(api.Operator, "example.com", false)
 	if !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}
@@ -337,7 +339,7 @@ func TestDeleteMissingDomain(t *testing.T) {
 	fx := newFixture(t)
 	fx.setDomains(map[string]any{"example.com": map[string]any{"appId": "myapp"}})
 
-	r := fx.d.Delete("other.com", false)
+	r := fx.d.Delete(api.Operator, "other.com", false)
 	if r.Status || !strings.Contains(msgOf(t, r.Message), "Domain other.com not found") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -349,7 +351,7 @@ func TestDeleteSubdomain(t *testing.T) {
 		"example.com": map[string]any{"appId": "myapp", "created": nowMs(), "subdomain": []any{"sub"}},
 	})
 
-	r := fx.d.Delete("sub.example.com", false)
+	r := fx.d.Delete(api.Operator, "sub.example.com", false)
 	if !r.Status || !strings.Contains(msgOf(t, r.Message), "Subdomain sub removed from example.com") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -372,7 +374,7 @@ func TestDeleteWWWSubdomainKeepsParent(t *testing.T) {
 		"example.com": map[string]any{"appId": "myapp", "created": nowMs(), "subdomain": []any{"www", "mail"}},
 	})
 
-	r := fx.d.Delete("www.example.com", false)
+	r := fx.d.Delete(api.Operator, "www.example.com", false)
 	if !r.Status || !strings.Contains(msgOf(t, r.Message), "Subdomain www removed from example.com") {
 		t.Fatalf("r = %+v", r)
 	}
@@ -390,7 +392,7 @@ func TestDeleteLocalhostSkipsDNS(t *testing.T) {
 	fx := newFixture(t)
 	fx.setDomains(map[string]any{"localhost": map[string]any{"appId": "myapp"}})
 
-	r := fx.d.Delete("localhost", false)
+	r := fx.d.Delete(api.Operator, "localhost", false)
 	if !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}
@@ -408,7 +410,7 @@ func TestDeleteUsesRecordedDKIMSelector(t *testing.T) {
 		},
 	})
 
-	fx.d.Delete("example.com", false)
+	fx.d.Delete(api.Operator, "example.com", false)
 	found := false
 	for _, del := range fx.dns.deleted() {
 		if del["name"] == "odac1._domainkey.example.com" {
@@ -559,5 +561,91 @@ func TestDeleteByAppNoDomains(t *testing.T) {
 	}
 	if err := fx.d.DeleteByApp(""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ─── client certificate policy guard ────────────────────────────────────
+
+func TestAddByAppCannotLandUnderAnotherAppsPolicy(t *testing.T) {
+	fx := newFixture(t)
+	fx.setDomains(map[string]any{
+		"x.com": map[string]any{"appId": "otherapp", "subdomain": []any{"www"},
+			"mtls": map[string]any{"mode": "required"}},
+		"open.com": map[string]any{"appId": "otherapp", "subdomain": []any{"www"}},
+	})
+	app := api.Caller{App: "myapp"}
+
+	for _, name := range []string{"admin.x.com", "*.x.com", "deep.admin.x.com"} {
+		if r := fx.d.Add(app, name, "myapp"); r.Status || !strings.Contains(msgOf(t, r.Message), "only the server operator") {
+			t.Fatalf("Add(%s) = %+v", name, r)
+		}
+		if fx.domain(name) != nil {
+			t.Fatalf("%s stored", name)
+		}
+	}
+	if r := fx.d.Add(api.Caller{}, "admin.x.com", "myapp"); r.Status {
+		t.Fatalf("zero caller: %+v", r)
+	}
+
+	// The grant is the operator's call everywhere a policy is not at stake.
+	if r := fx.d.Add(app, "admin.open.com", "myapp"); !r.Status {
+		t.Fatalf("below an unprotected domain: %+v", r)
+	}
+	if r := fx.d.Add(app, "mine.com", "otherapp"); !r.Status {
+		t.Fatalf("to another app: %+v", r)
+	}
+	if r := fx.d.Add(app, "api.x.com", "otherapp"); !r.Status {
+		t.Fatalf("subdomain of the policy's own app: %+v", r)
+	}
+	if subs, _ := fx.domain("x.com")["subdomain"].([]any); len(subs) != 2 {
+		t.Fatalf("api.x.com did not join x.com: %v", subs)
+	}
+	if r := fx.d.Add(api.Operator, "admin.x.com", "myapp"); !r.Status {
+		t.Fatalf("operator: %+v", r)
+	}
+}
+
+func TestDeleteByAppSparesPolicies(t *testing.T) {
+	fx := newFixture(t)
+	fx.setDomains(map[string]any{
+		"other.com": map[string]any{"appId": "otherapp", "subdomain": []any{"www"}},
+		"safe.com": map[string]any{"appId": "myapp", "subdomain": []any{"admin"},
+			"mtls": map[string]any{"mode": "required", "ca": []any{"c1"}}},
+	})
+	app := api.Caller{App: "myapp"}
+
+	for _, caller := range []api.Caller{app, {}} {
+		for _, name := range []string{"safe.com", "admin.safe.com"} {
+			if r := fx.d.Delete(caller, name, true); r.Status || !strings.Contains(msgOf(t, r.Message), "only the server operator") {
+				t.Fatalf("Delete(%+v, %s) = %+v", caller, name, r)
+			}
+		}
+	}
+	if subs, _ := fx.domain("safe.com")["subdomain"].([]any); len(subs) != 1 {
+		t.Fatalf("protected subdomain removed: %v", subs)
+	}
+	if len(fx.dns.deleted()) != 0 {
+		t.Fatalf("refused deletes touched DNS: %v", fx.dns.deleted())
+	}
+
+	if r := fx.d.Delete(app, "www.other.com", true); !r.Status {
+		t.Fatalf("another app's unprotected subdomain: %+v", r)
+	}
+	if r := fx.d.Delete(app, "other.com", true); !r.Status {
+		t.Fatalf("another app's unprotected domain: %+v", r)
+	}
+	if r := fx.d.Delete(api.Operator, "safe.com", true); !r.Status {
+		t.Fatalf("operator: %+v", r)
+	}
+}
+
+func TestHasClientAuthPolicy(t *testing.T) {
+	fx := newFixture(t)
+	fx.setDomains(map[string]any{
+		"a.com": map[string]any{"appId": "myapp"},
+		"b.com": map[string]any{"appId": "otherapp", "mtls": map[string]any{"mode": "optional"}},
+	})
+	if fx.d.HasClientAuthPolicy("myapp") || !fx.d.HasClientAuthPolicy("otherapp") || fx.d.HasClientAuthPolicy("") {
+		t.Fatal("wrong policy report")
 	}
 }

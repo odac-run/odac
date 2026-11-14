@@ -3,7 +3,11 @@ package appmgr
 // Ports of App.test.js "environment management" (incl. the cd7f08b masking
 // change: `pass` no longer masks).
 
-import "testing"
+import (
+	"testing"
+
+	"odac/internal/api"
+)
 
 func envFixture(t *testing.T) *fixture {
 	return newFixture(t, []any{
@@ -196,7 +200,7 @@ func TestDeleteSweepsLinkedEnvRefs(t *testing.T) {
 		},
 	})
 
-	if r := fx.m.Delete("app-db", false); !r.Status {
+	if r := fx.m.Delete(api.Operator, "app-db", false); !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}
 
@@ -232,7 +236,7 @@ func TestDeleteThenRecreateSameNameDoesNotReviveLink(t *testing.T) {
 		},
 	})
 
-	if r := fx.m.Delete("app-db", false); !r.Status {
+	if r := fx.m.Delete(api.Operator, "app-db", false); !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}
 

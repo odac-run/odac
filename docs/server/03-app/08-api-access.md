@@ -46,8 +46,8 @@ These are the actions available to applications. An app may call the ones you gr
 | `app.gpu` | `[app, {"runtime": "nvidia"}]`, or `[app, false]` to release | Reserve host GPUs for an app |
 | `app.device.delete` | `[app, hostPath]` | Disconnect a host device |
 | `domain.list` | `[]`, or `[app]` to filter | List domains |
-| `domain.add` | `[domain, app]` | Route a domain to an app |
-| `domain.delete` | `[domain]` | Remove a domain |
+| `domain.add` | `[domain, app]` | Route a domain to an app. See below |
+| `domain.delete` | `[domain]` | Remove a domain. See below |
 | `dns.list` | `[domain]` | List a domain's DNS records |
 | `ssl.renew` | `[domain]` | Force an SSL certificate renewal |
 | `mail.send` | `[message]` | Send mail from one of your domains |
@@ -61,6 +61,8 @@ These are the actions available to applications. An app may call the ones you gr
 | `domain.mtls.cert.import` | `[{"cert", "hosts", "name"?}]` | Record a certificate another server signed with a shared CA |
 
 `app` is an App ID or name, exactly like the CLI's `-i` argument.
+
+An app can never take a client certificate policy off a host, whatever it was granted, because `domain.mtls.set` is closed to apps. Three calls are refused to it for that reason, and only the server operator can make them: `domain.delete` on a domain that has a policy (or on one of its subdomains), `domain.add` of a domain at or below another app's domain that has a policy, and `app.delete` of an app that has a domain with a policy.
 
 `mail.send` is the one action whose argument is a message object rather than plain strings. `from` and `to` use the parsed-mail address shape, a `value` list of `{ "address": ... }` objects, and only the first entry of each is used:
 

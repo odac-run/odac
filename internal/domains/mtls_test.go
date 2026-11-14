@@ -1013,17 +1013,17 @@ func TestDomainDeleteRunsPrune(t *testing.T) {
 	base := newFixture(t)
 	mx := NewMTLS(base.cfg, &fakeMTLSProxy{})
 	base.d.SetClientAuth(mx)
-	mustOK(t, base.d.Add("sec.example.com", "myapp"))
-	mustOK(t, base.d.Add("auth.sec.example.com", "myapp"))
+	mustOK(t, base.d.Add(api.Operator, "sec.example.com", "myapp"))
+	mustOK(t, base.d.Add(api.Operator, "auth.sec.example.com", "myapp"))
 
 	reply := mustOK(t, mx.Issue(api.Operator, "sec.example.com", map[string]any{"name": "ali", "hosts": []any{"auth.sec.example.com"}, "csr": newCSR(t)})).Data.(map[string]any)
 
-	mustOK(t, base.d.Delete("auth.sec.example.com", false))
+	mustOK(t, base.d.Delete(api.Operator, "auth.sec.example.com", false))
 	if hosts := stringList(storedCert(t, mx, reply["fingerprint"].(string))["hosts"]); len(hosts) != 0 {
 		t.Fatalf("hosts = %v", hosts)
 	}
 
-	mustOK(t, base.d.Delete("sec.example.com", false))
+	mustOK(t, base.d.Delete(api.Operator, "sec.example.com", false))
 	if left := storedCert(t, mx, reply["fingerprint"].(string)); left != nil {
 		t.Fatalf("cert = %v", left)
 	}
@@ -1032,8 +1032,8 @@ func TestDomainDeleteRunsPrune(t *testing.T) {
 func TestDomainListShowsPolicyOnlyWhenSet(t *testing.T) {
 	base := newFixture(t)
 	mx := NewMTLS(base.cfg, &fakeMTLSProxy{})
-	mustOK(t, base.d.Add("plain.example.com", "myapp"))
-	mustOK(t, base.d.Add("sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add(api.Operator, "plain.example.com", "myapp"))
+	mustOK(t, base.d.Add(api.Operator, "sec.example.org", "otherapp"))
 	mustOK(t, mx.Set("sec.example.org", "optional", nil))
 
 	raw, _ := json.Marshal(base.d.List(nil).Data)
@@ -1055,9 +1055,9 @@ func TestDomainListNamesExternalCAs(t *testing.T) {
 	base := newFixture(t)
 	mx := NewMTLS(base.cfg, &fakeMTLSProxy{})
 	t.Cleanup(mx.Stop)
-	mustOK(t, base.d.Add("sec.example.org", "otherapp"))
-	mustOK(t, base.d.Add("auth.sec.example.org", "otherapp"))
-	mustOK(t, base.d.Add("plain.example.com", "myapp"))
+	mustOK(t, base.d.Add(api.Operator, "sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add(api.Operator, "auth.sec.example.org", "otherapp"))
+	mustOK(t, base.d.Add(api.Operator, "plain.example.com", "myapp"))
 	mustOK(t, mx.Set("plain.example.com", "optional", nil))
 	mustOK(t, mx.Set("sec.example.org", "optional", nil))
 	managed := stringList(mx.recordFor(t, "sec.example.org")["ca"])[0]
