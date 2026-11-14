@@ -144,4 +144,7 @@ Action names are validated against the server's registered actions when you gran
 
 ### Choosing Permissions
 
+> [!WARNING]
+> A grant is trust you place in the app's code, and the decision is yours. Apart from the client certificate guard above, a granted action reaches every app, domain and mailbox on this server, not only the app's own: an app holding `app.delete` can delete any app, and one holding `domain.add` can route any free domain to any app. Only grant access to apps whose code you know and trust, and never to an image or repository you have not reviewed.
+
 Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `app.device.add`, `app.network`, `domain.mtls.set`, `domain.mtls.cert.scope`, `domain.mtls.ca.import` or `domain.mtls.ca.remove`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).
