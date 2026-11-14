@@ -1,5 +1,29 @@
 ### ✨ What's New
 
+- **appmgr:** give bridge app containers a backend socket directory
+- **proxy:** dial app backends over a pinned unix socket with TCP fallback
+- **proxy:** sign connection headers and document app integration
+
+### 📚 Documentation
+
+- **api:** warn that an API grant is trust in the app's code
+
+### 🛠️ Fixes & Improvements
+
+- **builder:** refresh floating base images and run interpreters on their build version
+- **dataplane:** respawn odac-dns on the check tick
+- **security:** keep apps from dropping a client certificate policy through domain and app deletes
+- **security:** move control sockets out of the app-mounted run dir
+- **tunnel:** send token in Authorization header and back off on reconnect
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
+### ✨ What's New
+
 - **app:** persist app networks, and share none when the list is empty
 - **cli:** odac domain mtls set --issuer, and the whole chain in a p12
 - **domains:** client certificate management for apps and edge nodes
