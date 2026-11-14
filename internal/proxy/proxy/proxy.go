@@ -28,6 +28,7 @@ import (
 
 	"odac/internal/mtls"
 	"odac/internal/proxy/config"
+	"odac/internal/proxysig"
 )
 
 const (
@@ -128,6 +129,8 @@ type Proxy struct {
 	globalSSL      *config.SSL
 	mu             sync.RWMutex
 	reverseProxy   *httputil.ReverseProxy
+	revalidator    *http.Client
+	sockets        socketBackends
 	tlsBase        *tls.Config
 	tunnel         *TunnelManager
 	httpClient     *http.Client // For OCSP requests
@@ -158,22 +161,8 @@ func NewProxy() *Proxy {
 			Timeout: 5 * time.Second, // OCSP requests should be fast
 		},
 	}
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2: true,
-		// MaxIdleConns: 10000 ensures we can reuse many connections in high-throughput scenarios
-		// (Performance > Memory for this Enterprise Proxy)
-		MaxIdleConns:          10000,
-		MaxIdleConnsPerHost:   1000,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second, // Timeout if backend server doesn't send headers in time
-	}
+	transport := backendRouter{sockets: &p.sockets, tcp: newUpstreamTransport()}
+	p.revalidator = newRevalidator(&p.sockets)
 
 	p.reverseProxy = &httputil.ReverseProxy{
 		// Rewrite, not Director: ReverseProxy drops every header the client names in
@@ -266,7 +255,14 @@ func (p *Proxy) SetACMEChallenge(token, keyAuthorization string) {
 	log.Printf("ACME HTTP-01 challenge token set: %.8s...", token)
 }
 
+// SetSocketRoot names the directory that holds app sockets. Empty, the default,
+// keeps every backend on TCP. Call it before the first UpdateConfig.
+func (p *Proxy) SetSocketRoot(root string) {
+	p.sockets.setRoot(root)
+}
+
 func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *config.SSL, tunnels []config.Tunnel, memory *config.Memory) {
+	p.sockets.update(domains)
 	p.mu.Lock()
 	p.domains = domains
 	p.globalSSL = globalSSL
@@ -289,28 +285,7 @@ func (p *Proxy) UpdateConfig(domains map[string]config.Website, globalSSL *confi
 }
 
 func (p *Proxy) director(req *http.Request) {
-	for _, header := range mtls.Headers {
-		req.Header.Del(header)
-	}
-	req.Header.Del("X-Odac-Connection-RemoteAddress")
-	req.Header.Del("X-Odac-Connection-Ssl")
-	req.Header.Del("X-Odac-Websocket")
-	req.Header.Del("X-Forwarded-For")
-	req.Header.Del("X-Real-IP")
-	req.Header.Del("X-Forwarded-Proto")
-	req.Header.Del("Proxy")
-	req.Header.Del("Client-IP")
-	req.Header.Del("X-Remote-IP")
-	req.Header.Del("X-Remote-Addr")
-	req.Header.Del("X-Client-IP")
-	req.Header.Del("X-Originating-IP")
-
-	if req.Header.Get("X-Request-ID") == "" {
-		uuid := make([]byte, 16)
-		if _, err := rand.Read(uuid); err == nil {
-			req.Header.Set("X-Request-ID", hex.EncodeToString(uuid))
-		}
-	}
+	stripForwardingHeaders(req.Header)
 
 	host := req.Host
 	if strings.Contains(host, ":") {
@@ -325,47 +300,81 @@ func (p *Proxy) director(req *http.Request) {
 		return
 	}
 
-	targetHost := "127.0.0.1"
-	targetPort := strconv.Itoa(website.Port)
+	req.URL.Scheme = "http"
+	req.URL.Host = backendAddr(website)
 
-	// If we have an explicit container reference (IP address sent by Node.js for internal networking)
-	// we use it as the hostname. Port comes from website.Port (auto-detected).
-	if website.ContainerIP != "" {
-		targetHost = website.ContainerIP
-	} else if website.Container != "" {
-		targetHost = website.Container
+	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		remoteIP = ""
+	}
+	setConnectionHeaders(req, remoteIP, req.TLS != nil, website.Key)
+
+	if state := clientAuthFrom(req); state != nil {
+		applyClientAuthHeaders(req, state, time.Now())
+	}
+}
+
+// stripForwardingHeaders removes everything an app could read as a statement
+// about the connection, so only what setConnectionHeaders writes reaches it.
+func stripForwardingHeaders(h http.Header) {
+	for _, header := range mtls.Headers {
+		h.Del(header)
+	}
+	for _, header := range proxysig.Headers {
+		h.Del(header)
+	}
+	for _, header := range []string{
+		"X-Odac-Websocket", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Proto", "Proxy",
+		"Client-IP", "X-Remote-IP", "X-Remote-Addr", "X-Client-IP", "X-Originating-IP",
+	} {
+		h.Del(header)
 	}
 
-	req.URL.Scheme = "http"
-	req.URL.Host = net.JoinHostPort(targetHost, targetPort)
+	if h.Get("X-Request-ID") == "" {
+		uuid := make([]byte, 16)
+		if _, err := rand.Read(uuid); err == nil {
+			h.Set("X-Request-ID", hex.EncodeToString(uuid))
+		}
+	}
+}
 
+// setConnectionHeaders tells the app who is connecting, signed with its key.
+// The proxy and the tunnel agent both forward through it, so an app sees one
+// contract whichever way a request arrived. req.URL must already be final,
+// since its request URI is signed.
+func setConnectionHeaders(req *http.Request, remoteIP string, ssl bool, key string) {
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
 	}
 
-	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
-	if err == nil {
+	if remoteIP != "" {
 		req.Header.Set("X-Forwarded-For", remoteIP)
-		req.Header.Set("X-Odac-Connection-RemoteAddress", remoteIP)
+		req.Header.Set(proxysig.HeaderRemoteAddress, remoteIP)
 		req.Header.Set("X-Real-IP", remoteIP)
 	}
 
-	// Preserve original Host header for upstream apps
 	req.Header.Set("X-Forwarded-Host", req.Host)
 
-	if req.TLS != nil {
-		req.Header.Set("X-Odac-Connection-Ssl", "true")
+	if ssl {
+		req.Header.Set(proxysig.HeaderSSL, "true")
 		req.Header.Set("X-Forwarded-Proto", "https")
 	} else {
 		req.Header.Set("X-Forwarded-Proto", "http")
 	}
 
-	if isWebSocketUpgrade(req.Header) {
-		req.Header.Set("X-Odac-Websocket", "true")
+	if key != "" {
+		req.Header.Set(proxysig.HeaderSignature, proxysig.Connection{
+			Host:          req.Host,
+			Method:        req.Method,
+			RemoteAddress: remoteIP,
+			SSL:           ssl,
+			Timestamp:     time.Now().Unix(),
+			URI:           req.URL.RequestURI(),
+		}.Sign(key))
 	}
 
-	if state := clientAuthFrom(req); state != nil {
-		applyClientAuthHeaders(req, state, time.Now())
+	if isWebSocketUpgrade(req.Header) {
+		req.Header.Set("X-Odac-Websocket", "true")
 	}
 }
 
@@ -1184,14 +1193,7 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 		return
 	}
 
-	targetHost := "127.0.0.1"
-	if website.ContainerIP != "" {
-		targetHost = website.ContainerIP
-	} else if website.Container != "" {
-		targetHost = website.Container
-	}
-
-	targetURL := "http://" + net.JoinHostPort(targetHost, strconv.Itoa(website.Port)) + originalReq.URL.Path
+	targetURL := "http://" + backendAddr(website) + originalReq.URL.Path
 	if originalReq.URL.RawQuery != "" {
 		targetURL += "?" + originalReq.URL.RawQuery
 	}
@@ -1214,7 +1216,7 @@ func (p *Proxy) revalidateCache(host string, originalReq *http.Request, entry *c
 
 	p.prepareRevalidation(req, originalReq)
 
-	resp, err := revalidationClient.Do(req)
+	resp, err := p.revalidator.Do(req)
 	if err != nil {
 		debugLog("[Cache] Revalidation failed for %s%s: %v", host, originalReq.URL.Path, err)
 		return
@@ -1250,19 +1252,21 @@ func (p *Proxy) prepareRevalidation(req, originalReq *http.Request) {
 	p.director(req)
 }
 
-// revalidationClient is a dedicated HTTP client for background cache revalidation.
-// Separate from the main proxy transport to avoid interference with user traffic.
+// newRevalidator builds the client for background cache revalidation. Its TCP pool is
+// separate from the main proxy transport to avoid interference with user traffic.
 // Redirects are not followed: the target's body does not belong under the original URL.
-var revalidationClient = &http.Client{
-	Timeout: 5 * time.Second,
-	CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
-	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     30 * time.Second,
-	},
+func newRevalidator(sockets *socketBackends) *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: backendRouter{sockets: sockets, tcp: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     30 * time.Second,
+		}},
+	}
 }
 
 // Cache returns the cache manager for external access (API purge, stats).
@@ -1295,14 +1299,7 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 		return
 	}
 
-	targetHost := "127.0.0.1"
-	if website.ContainerIP != "" {
-		targetHost = website.ContainerIP
-	} else if website.Container != "" {
-		targetHost = website.Container
-	}
-
-	targetURL := "http://" + net.JoinHostPort(targetHost, strconv.Itoa(website.Port)) + originalReq.URL.Path
+	targetURL := "http://" + backendAddr(website) + originalReq.URL.Path
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1333,7 +1330,7 @@ func (p *Proxy) revalidatePageCache(host string, originalReq *http.Request, entr
 
 	p.prepareRevalidation(req, originalReq)
 
-	resp, err := revalidationClient.Do(req)
+	resp, err := p.revalidator.Do(req)
 	if err != nil {
 		debugLog("[PageCache] Revalidation failed for %s%s: %v", host, originalReq.URL.Path, err)
 		return

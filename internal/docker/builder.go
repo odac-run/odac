@@ -30,7 +30,9 @@ import (
 // so imageName can never break out of the build command.
 var safeImageRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$`)
 
-// versionResolver extracts a Docker tag suffix from a project version file.
+// versionResolver extracts the language version a project asks for ("1.22",
+// "20", "3.12") from its version file. The strategy decides which image the
+// version selects (versionTag, packageSpec.versionedBase).
 type versionResolver struct {
 	file         string
 	fallbackFile string
@@ -53,7 +55,7 @@ var (
 	versionResolvers = map[string]versionResolver{
 		"GO": {file: "go.mod", parse: func(content, _ string) string {
 			if m := goDirectiveRe.FindStringSubmatch(content); m != nil {
-				return m[1] + "-alpine"
+				return m[1]
 			}
 			return ""
 		}},
@@ -66,10 +68,7 @@ var (
 			if json.Unmarshal([]byte(content), &pkg) != nil || pkg.Engines.Node == "" {
 				return ""
 			}
-			if m := nodeMajorRe.FindString(pkg.Engines.Node); m != "" {
-				return m + "-alpine"
-			}
-			return ""
+			return nodeMajorRe.FindString(pkg.Engines.Node)
 		}},
 		"PHP": {file: "composer.json", parse: func(content, _ string) string {
 			var composer struct {
@@ -83,32 +82,21 @@ var (
 		"PYTHON": {file: "pyproject.toml", fallbackFile: "runtime.txt", parse: func(content, filename string) string {
 			if filename == "runtime.txt" {
 				if m := pythonRuntimeRe.FindStringSubmatch(content); m != nil {
-					return m[1] + "-slim"
+					return m[1]
 				}
 				return ""
 			}
-			m := requiresPythonRe.FindStringSubmatch(content)
-			if m == nil {
-				return ""
-			}
-			if v := parseMajorMinor(m[1]); v != "" {
-				return v + "-slim"
+			if m := requiresPythonRe.FindStringSubmatch(content); m != nil {
+				return parseMajorMinor(m[1])
 			}
 			return ""
 		}},
 		"RUST": {file: "rust-toolchain.toml", fallbackFile: "rust-toolchain", parse: func(content, filename string) string {
 			if filename == "rust-toolchain" {
-				if v := parseMajorMinor(strings.TrimSpace(content)); v != "" {
-					return v + "-alpine"
-				}
-				return ""
+				return parseMajorMinor(strings.TrimSpace(content))
 			}
-			m := rustChannelRe.FindStringSubmatch(content)
-			if m == nil {
-				return ""
-			}
-			if v := parseMajorMinor(m[1]); v != "" {
-				return v + "-alpine"
+			if m := rustChannelRe.FindStringSubmatch(content); m != nil {
+				return parseMajorMinor(m[1])
 			}
 			return ""
 		}},
@@ -117,12 +105,19 @@ var (
 
 // packageSpec describes the final-image Dockerfile of a strategy.
 type packageSpec struct {
+	// baseImage is the runtime image. Empty means the compiler image itself,
+	// for interpreters whose installed dependencies (native addons, compiled
+	// wheels) only load on the version that installed them.
 	baseImage string
-	user      string
-	group     string // when the base image names user's group differently
-	cmd       []string
-	setup     []string
-	env       [][2]string // ordered KEY,VALUE pairs
+	// versionedBase formats the runtime image from the resolved version
+	// when the compiler image does not follow it (PHP: composer builds,
+	// php:<version>-apache runs).
+	versionedBase string
+	user          string
+	group         string // when the base image names user's group differently
+	cmd           []string
+	setup         []string
+	env           [][2]string // ordered KEY,VALUE pairs
 }
 
 // buildStrategy is one entry of Node's BUILD_STRATEGIES.
@@ -133,12 +128,14 @@ type buildStrategy struct {
 	imageBase       string
 	imageDefault    string
 	versionResolver string
+	versionTag      string // compiler tag for a resolved version, e.g. "%s-alpine"
 	installCmd      string
 	buildCmd        string
 	cleanupCmd      string
 	pkg             *packageSpec
 	custom          bool
 	image           string // resolved compiler image
+	runtime         string // resolved runtime image
 }
 
 var buildStrategies = map[string]buildStrategy{
@@ -148,38 +145,38 @@ var buildStrategies = map[string]buildStrategy{
 		installCmd: "bun install --frozen-lockfile",
 		buildCmd:   "bun run build --if-present",
 		cleanupCmd: "bun install --production && rm -rf test tests",
-		pkg:        &packageSpec{baseImage: "oven/bun:alpine", user: "bun", cmd: []string{"bun", "run", "start"}},
+		pkg:        &packageSpec{user: "bun", cmd: []string{"bun", "run", "start"}},
 	},
 	"GO": {
 		key: "GO", name: "Go", triggers: []string{"go.mod"},
-		imageBase: "golang", imageDefault: "alpine", versionResolver: "GO",
+		imageBase: "golang", imageDefault: "alpine", versionResolver: "GO", versionTag: "%s-alpine",
 		installCmd: "go mod download",
 		buildCmd:   `PKG=$(go list -f "{{.Name}} {{.ImportPath}}" ./... | grep "^main " | head -n 1 | cut -d" " -f2); if [ -z "$PKG" ]; then PKG="."; fi; go build -o app $PKG`,
 		pkg:        &packageSpec{baseImage: "alpine:latest", user: "nobody", cmd: []string{"/app/app"}},
 	},
 	"NODE_NPM": {
 		key: "NODE_NPM", name: "Node.js (npm)", triggers: []string{"package-lock.json"},
-		imageBase: "node", imageDefault: "lts-alpine", versionResolver: "NODE",
+		imageBase: "node", imageDefault: "lts-alpine", versionResolver: "NODE", versionTag: "%s-alpine",
 		installCmd: "if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi",
 		buildCmd:   "npm run build --if-present",
 		cleanupCmd: "npm prune --production && rm -rf test tests",
-		pkg:        &packageSpec{baseImage: "node:lts-alpine", user: "node", cmd: []string{"npm", "start"}},
+		pkg:        &packageSpec{user: "node", cmd: []string{"npm", "start"}},
 	},
 	"NODE_PNPM": {
 		key: "NODE_PNPM", name: "Node.js (pnpm)", triggers: []string{"pnpm-lock.yaml"},
-		imageBase: "node", imageDefault: "lts-alpine", versionResolver: "NODE",
+		imageBase: "node", imageDefault: "lts-alpine", versionResolver: "NODE", versionTag: "%s-alpine",
 		installCmd: "corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile",
 		buildCmd:   "pnpm run build --if-present",
 		cleanupCmd: "pnpm prune --prod && rm -rf test tests",
-		pkg:        &packageSpec{baseImage: "node:lts-alpine", user: "node", cmd: []string{"npm", "start"}},
+		pkg:        &packageSpec{user: "node", cmd: []string{"npm", "start"}},
 	},
 	"NODE_YARN": {
 		key: "NODE_YARN", name: "Node.js (yarn)", triggers: []string{"yarn.lock"},
-		imageBase: "node", imageDefault: "lts-alpine", versionResolver: "NODE",
+		imageBase: "node", imageDefault: "lts-alpine", versionResolver: "NODE", versionTag: "%s-alpine",
 		installCmd: "corepack enable && yarn install --frozen-lockfile",
 		buildCmd:   "yarn run build --if-present",
 		cleanupCmd: "yarn install --production --frozen-lockfile && rm -rf test tests",
-		pkg:        &packageSpec{baseImage: "node:lts-alpine", user: "node", cmd: []string{"npm", "start"}},
+		pkg:        &packageSpec{user: "node", cmd: []string{"npm", "start"}},
 	},
 	"PHP": {
 		key: "PHP", name: "PHP", triggers: []string{"composer.json", "index.php"},
@@ -187,7 +184,7 @@ var buildStrategies = map[string]buildStrategy{
 		installCmd: "if [ -f composer.json ]; then composer install --no-dev --ignore-platform-reqs; fi",
 		buildCmd:   "true",
 		pkg: &packageSpec{
-			baseImage: "php:8.2-apache", user: "www-data", cmd: []string{"apache2-foreground"},
+			baseImage: "php:8.2-apache", versionedBase: "php:%s-apache", user: "www-data", cmd: []string{"apache2-foreground"},
 			setup: []string{
 				`sed -ri -e "s!/var/www/html!/app!g" /etc/apache2/sites-available/*.conf`,
 				`sed -ri -e "s!/var/www/!/app!g" /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf`,
@@ -197,18 +194,18 @@ var buildStrategies = map[string]buildStrategy{
 	},
 	"PYTHON": {
 		key: "PYTHON", name: "Python", triggers: []string{"requirements.txt", "pyproject.toml"},
-		imageBase: "python", imageDefault: "3-slim", versionResolver: "PYTHON",
+		imageBase: "python", imageDefault: "3-slim", versionResolver: "PYTHON", versionTag: "%s-slim",
 		installCmd: "[ ! -f requirements.txt ] || pip install --no-cache-dir -r requirements.txt --target /app/deps",
 		buildCmd:   "rm -rf __pycache__",
 		pkg: &packageSpec{
-			baseImage: "python:3-slim", user: "nobody", group: "nogroup", // Debian has no "nobody" group
+			user: "nobody", group: "nogroup", // Debian has no "nobody" group
 			cmd: []string{"sh", "-c", "if [ -f main.py ]; then python main.py; elif [ -f run.py ]; then python run.py; else python app.py; fi"},
 			env: [][2]string{{"PYTHONPATH", "/app/deps"}},
 		},
 	},
 	"RUST": {
 		key: "RUST", name: "Rust", triggers: []string{"Cargo.toml", "Cargo.lock"},
-		imageBase: "rust", imageDefault: "alpine", versionResolver: "RUST",
+		imageBase: "rust", imageDefault: "alpine", versionResolver: "RUST", versionTag: "%s-alpine",
 		installCmd: "apk add --no-cache musl-dev",
 		buildCmd:   `cargo build --release && find target/release -maxdepth 1 -type f -executable -not -name "*.*" | head -n 1 | xargs -I {} cp {} /app/app`,
 		cleanupCmd: "rm -rf target src",
@@ -430,7 +427,7 @@ func detectStrategy(internalPath string) *buildStrategy {
 	if chosen == nil {
 		return nil
 	}
-	chosen.image = resolveImage(internalPath, chosen)
+	resolveImages(internalPath, chosen)
 	return chosen
 }
 
@@ -448,13 +445,31 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// resolveImage ports Builder.#resolveImage: version-file lookup with the
-// strategy default as fallback.
-func resolveImage(internalPath string, s *buildStrategy) string {
-	fallback := s.imageBase + ":" + s.imageDefault
-	resolver, ok := versionResolvers[s.versionResolver]
+// resolveImages picks the compiler and runtime images from the version the
+// project asks for, falling back to the strategy defaults.
+func resolveImages(internalPath string, s *buildStrategy) {
+	version := resolveVersion(internalPath, s.versionResolver)
+	s.image = s.imageBase + ":" + s.imageDefault
+	if version != "" && s.versionTag != "" {
+		s.image = s.imageBase + ":" + fmt.Sprintf(s.versionTag, version)
+	}
+	switch {
+	case s.pkg == nil:
+	case version != "" && s.pkg.versionedBase != "":
+		s.runtime = fmt.Sprintf(s.pkg.versionedBase, version)
+	case s.pkg.baseImage != "":
+		s.runtime = s.pkg.baseImage
+	default:
+		s.runtime = s.image
+	}
+}
+
+// resolveVersion reads the version a project's version file asks for, ""
+// when there is none.
+func resolveVersion(internalPath, resolverKey string) string {
+	resolver, ok := versionResolvers[resolverKey]
 	if !ok {
-		return fallback
+		return ""
 	}
 	files := []string{resolver.file}
 	if resolver.fallbackFile != "" {
@@ -465,11 +480,11 @@ func resolveImage(internalPath string, s *buildStrategy) string {
 		if err != nil {
 			continue
 		}
-		if tag := resolver.parse(string(content), file); tag != "" {
-			return s.imageBase + ":" + tag
+		if v := resolver.parse(string(content), file); v != "" {
+			return v
 		}
 	}
-	return fallback
+	return ""
 }
 
 // readProjectFile reads a file the repository committed, refusing anything
@@ -550,7 +565,7 @@ func (c *Client) compile(strategy *buildStrategy, bctx BuildContext, buildLog Bu
 	if buildLog != nil {
 		buildLog.StartPhase("pull_compiler")
 	}
-	if err := c.EnsureImage(strategy.image, nil); err != nil {
+	if err := c.RefreshImage(strategy.image, writerOrNil(buildLog)); err != nil {
 		return err
 	}
 	if err := c.ensureNetwork(context.Background(), BuildNetwork); err != nil {
@@ -583,7 +598,7 @@ func (c *Client) compile(strategy *buildStrategy, bctx BuildContext, buildLog Bu
 func (c *Client) packageImage(strategy *buildStrategy, bctx BuildContext, imageName string, buildLog BuildLog) error {
 	c.log.Log("[Phase 2] Packaging final image %s...", imageName)
 
-	dockerfile := generateDockerfile(strategy.pkg)
+	dockerfile := generateDockerfile(strategy.runtime, strategy.pkg)
 	dockerfilePath := filepath.Join(bctx.InternalPath, "Dockerfile.odac")
 	dockerignorePath := filepath.Join(bctx.InternalPath, ".dockerignore")
 
@@ -611,6 +626,11 @@ func (c *Client) packageImage(strategy *buildStrategy, bctx BuildContext, imageN
 		buildLog.StartPhase("pull_packager")
 	}
 	if err := c.EnsureImage(packagerImage, nil); err != nil {
+		return err
+	}
+	// docker build reuses a local base image as is, so the runtime tag is
+	// refreshed here the same way the compiler's is.
+	if err := c.RefreshImage(strategy.runtime, writerOrNil(buildLog)); err != nil {
 		return err
 	}
 	if buildLog != nil {
@@ -652,6 +672,13 @@ func (c *Client) packageCustom(bctx BuildContext, imageName string, buildLog Bui
 	if err := c.EnsureImage(packagerImage, nil); err != nil {
 		return err
 	}
+	if content, err := readProjectFile(filepath.Join(bctx.InternalPath, "Dockerfile")); err == nil {
+		for _, ref := range dockerfileBaseImages(string(content)) {
+			// docker build reports a base image that exists nowhere in its
+			// own words, so only the refresh is wanted here.
+			_ = c.RefreshImage(ref, writerOrNil(buildLog))
+		}
+	}
 	if buildLog != nil {
 		buildLog.EndPhase("pull_builder", true)
 		buildLog.StartPhase("run_custom_build")
@@ -691,15 +718,59 @@ func (c *Client) runBuilderContainer(image string, cmd []string, hostCfg *contai
 	return c.runToCompletion(ctx, created.ID, writerOrNil(buildLog), "")
 }
 
-// generateDockerfile renders the ephemeral packaging Dockerfile exactly as
-// Node's template does.
-func generateDockerfile(pkg *packageSpec) string {
+// maxDockerfileBases bounds the base images refreshed for one custom
+// Dockerfile, which the repository writes: each refresh is a registry round
+// trip before the build starts.
+const maxDockerfileBases = 8
+
+// dockerfileBaseImages lists the registry images a Dockerfile's FROM lines
+// name, skipping earlier stages, scratch, ARG-substituted references and
+// --platform stages (an API pull fetches the host's platform, not theirs).
+func dockerfileBaseImages(content string) []string {
+	stages := map[string]bool{}
+	seen := map[string]bool{}
+	var refs []string
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		args := fields[1:]
+		platform := false
+		for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+			platform = platform || strings.HasPrefix(args[0], "--platform")
+			args = args[1:]
+		}
+		if len(args) == 0 {
+			continue
+		}
+		ref := args[0]
+		skip := platform || seen[ref] || stages[strings.ToLower(ref)] ||
+			strings.Contains(ref, "$") || strings.EqualFold(ref, "scratch")
+		if len(args) >= 3 && strings.EqualFold(args[1], "AS") {
+			stages[strings.ToLower(args[2])] = true
+		}
+		if skip {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+		if len(refs) == maxDockerfileBases {
+			break
+		}
+	}
+	return refs
+}
+
+// generateDockerfile renders the ephemeral packaging Dockerfile on base, the
+// strategy's resolved runtime image.
+func generateDockerfile(base string, pkg *packageSpec) string {
 	var b strings.Builder
 	group := pkg.group
 	if group == "" {
 		group = pkg.user
 	}
-	fmt.Fprintf(&b, "\nFROM %s\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R %s:%s /app\n", pkg.baseImage, pkg.user, group)
+	fmt.Fprintf(&b, "\nFROM %s\nWORKDIR /app\nCOPY . .\nUSER root\nRUN chown -R %s:%s /app\n", base, pkg.user, group)
 	for _, cmd := range pkg.setup {
 		fmt.Fprintf(&b, "RUN %s\n", cmd)
 	}

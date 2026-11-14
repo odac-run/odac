@@ -46,8 +46,8 @@ These are the actions available to applications. An app may call the ones you gr
 | `app.gpu` | `[app, {"runtime": "nvidia"}]`, or `[app, false]` to release | Reserve host GPUs for an app |
 | `app.device.delete` | `[app, hostPath]` | Disconnect a host device |
 | `domain.list` | `[]`, or `[app]` to filter | List domains |
-| `domain.add` | `[domain, app]` | Route a domain to an app |
-| `domain.delete` | `[domain]` | Remove a domain |
+| `domain.add` | `[domain, app]` | Route a domain to an app. See below |
+| `domain.delete` | `[domain]` | Remove a domain. See below |
 | `dns.list` | `[domain]` | List a domain's DNS records |
 | `ssl.renew` | `[domain]` | Force an SSL certificate renewal |
 | `mail.send` | `[message]` | Send mail from one of your domains |
@@ -61,6 +61,8 @@ These are the actions available to applications. An app may call the ones you gr
 | `domain.mtls.cert.import` | `[{"cert", "hosts", "name"?}]` | Record a certificate another server signed with a shared CA |
 
 `app` is an App ID or name, exactly like the CLI's `-i` argument.
+
+An app can never take a client certificate policy off a host, whatever it was granted, because `domain.mtls.set` is closed to apps. Three calls are refused to it for that reason, and only the server operator can make them: `domain.delete` on a domain that has a policy (or on one of its subdomains), `domain.add` of a domain at or below another app's domain that has a policy, and `app.delete` of an app that has a domain with a policy.
 
 `mail.send` is the one action whose argument is a message object rather than plain strings. `from` and `to` use the parsed-mail address shape, a `value` list of `{ "address": ... }` objects, and only the first entry of each is used:
 
@@ -141,5 +143,8 @@ Action names are validated against the server's registered actions when you gran
 **Revoking does not.** Permissions are read from the configuration on every request, so `--off` (or a narrowed `--allow`) refuses the app's very next call. The running container keeps its now-worthless key until you restart it. If you are revoking because an app misbehaved, the access is gone the moment the command returns.
 
 ### Choosing Permissions
+
+> [!WARNING]
+> A grant is trust you place in the app's code, and the decision is yours. Apart from the client certificate guard above, a granted action reaches every app, domain and mailbox on this server, not only the app's own: an app holding `app.delete` can delete any app, and one holding `domain.add` can route any free domain to any app. Only grant access to apps whose code you know and trust, and never to an image or repository you have not reviewed.
 
 Grant the narrowest list that works. `--all` still means an app can create and delete other apps, and add or remove domains and mailboxes, from inside a container with no further check. It never covers `auth`, `update`, `server.stop`, `app.privileged`, `app.api`, `app.device.add`, `app.network`, `domain.mtls.set`, `domain.mtls.cert.scope`, `domain.mtls.ca.import` or `domain.mtls.ca.remove`. An app that needs to send mail wants `--allow mail.send`. Treat a full grant the way you would treat [privileged access](05-privileged-access.md).

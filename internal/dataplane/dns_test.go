@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -144,5 +145,106 @@ func TestDNSStopDuringDetectionPreventsSpawn(t *testing.T) {
 	time.Sleep(500 * time.Millisecond) // let detection finish
 	if e, _ := fp.counts(); e != 0 {
 		t.Errorf("spawned despite Stop during detection (%d ensures)", e)
+	}
+}
+
+func TestDNSCheckRespawnsOnlyAfterDetection(t *testing.T) {
+	cs := newControlServer(t)
+	d, fp := newTestDNS(t, cs)
+	fp.running = false
+
+	d.Check()
+	if e, _ := fp.counts(); e != 0 {
+		t.Fatalf("Check spawned before Start (%d ensures)", e)
+	}
+
+	release := make(chan struct{})
+	stubDetector(d, 0)
+	d.detect.httpGet = func(string, bool) (string, error) {
+		<-release
+		return "5.6.7.8\n", nil
+	}
+	d.Start()
+	d.Check()
+	if e, _ := fp.counts(); e != 0 {
+		t.Fatalf("Check spawned while IP detection was running (%d ensures)", e)
+	}
+
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if e, _ := fp.counts(); e == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Ensure never called after detection")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	d.Check()
+	if e, _ := fp.counts(); e != 2 {
+		t.Fatalf("Check after detection did not ensure the process (%d ensures)", e)
+	}
+
+	d.Stop()
+	d.Check()
+	if e, _ := fp.counts(); e != 2 {
+		t.Fatalf("Check respawned after Stop (%d ensures)", e)
+	}
+}
+
+func TestDNSStaleDetectionDoesNotEnableRespawn(t *testing.T) {
+	cs := newControlServer(t)
+	d, fp := newTestDNS(t, cs)
+	fp.running = false
+	stubDetector(d, 0)
+
+	// localAddrs runs once per detection, first: call #1 belongs to the first
+	// Start, call #2 to the second, and each blocks on its own gate.
+	gates := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	entered := make(chan int, 2)
+	var mu sync.Mutex
+	calls := 0
+	d.detect.localAddrs = func() []localAddr {
+		mu.Lock()
+		n := calls
+		calls++
+		mu.Unlock()
+		entered <- n
+		<-gates[n]
+		return nil
+	}
+	d.Start()
+	<-entered
+	d.Stop()
+	d.Start()
+	<-entered
+	close(gates[0]) // the superseded detection finishes while the current one runs
+
+	// Detection itself is fast here (stubbed HTTP, 50ms PTR budget), so this
+	// window covers the superseded run reaching its end.
+	until := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(until) {
+		d.Check()
+		if e, _ := fp.counts(); e != 0 {
+			t.Fatalf("a superseded detection made the tick spawn (%d ensures)", e)
+		}
+		if _, _, primary := d.IPInfo(); primary != "127.0.0.1" {
+			t.Fatalf("a superseded detection overwrote the addresses (primary %q)", primary)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	close(gates[1])
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if e, _ := fp.counts(); e == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the current detection never spawned")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

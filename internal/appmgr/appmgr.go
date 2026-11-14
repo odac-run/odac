@@ -72,6 +72,7 @@ type Docker interface {
 	RegisterBuildLogger(appName string, logger *applog.Logger)
 	UnregisterBuildLogger(appName string)
 	ResolveHostPath(localPath string) string
+	ProxySocketDirs() (map[string]bool, error)
 }
 
 // TokenIssuer is the Api surface App needs: app tokens for ODAC_API_KEY, the
@@ -108,8 +109,11 @@ type GPUHost interface {
 }
 
 // DomainDeleter cascades app deletion into the domain table (task 3.5).
+// HasClientAuthPolicy lets Delete refuse an app caller a cascade that would
+// drop a client certificate policy.
 type DomainDeleter interface {
 	DeleteByApp(appName string) error
+	HasClientAuthPolicy(appName string) bool
 }
 
 // Deps carries the Manager's collaborators. Hub, Domains, Api and Proxy may
@@ -139,6 +143,10 @@ type Manager struct {
 	// bg tracks fire-and-forget goroutines (check dispatches, port pollers,
 	// HTTP scans) so tests — and a future graceful stop — can drain them.
 	bg sync.WaitGroup
+
+	// socketSweep runs the first proxy socket sweep once Docker answers, since
+	// it is not reachable yet when Init runs.
+	socketSweep sync.Once
 
 	// mu guards the bookkeeping maps below (Node relied on the event loop).
 	mu         sync.Mutex
@@ -279,6 +287,10 @@ func (m *Manager) Check() {
 		pid    int
 	}
 	var pulses []pulse
+
+	if m.deps.Docker.Available() {
+		m.socketSweep.Do(func() { m.spawn(m.SweepProxySockets) })
+	}
 
 	m.cfg.Mutate(func() {
 		m.apps = m.loadAppsFromConfig()

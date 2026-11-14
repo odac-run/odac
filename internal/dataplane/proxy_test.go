@@ -235,6 +235,48 @@ func TestClientAuthPayloadDecodesOnTheProxySide(t *testing.T) {
 	}
 }
 
+// Every routed record carries its app's key, so the proxy can sign the
+// connection headers of apps that never set a client certificate policy.
+func TestProxyPayloadCarriesSigningKey(t *testing.T) {
+	cs := newControlServer(t)
+	p, _ := newTestProxy(t, cs, nil)
+	seedApps(p)
+	p.cfg.Set("api", map[string]any{"auth": "root"})
+	p.SyncConfig()
+	var got proxyconfig.Config
+	if err := json.Unmarshal(<-cs.configs, &got); err != nil {
+		t.Fatal(err)
+	}
+	if key := got.Domains["host.test"].Key; key != mtls.AppKey("root", "hostapp") {
+		t.Fatalf("host.test key = %q", key)
+	}
+	if got.Domains["host.test"].Key == got.Domains["port.test"].Key {
+		t.Fatal("two apps share a key")
+	}
+
+	p.SetTunnels([]Tunnel{{Domain: "t.test", Container: "hostapp", Token: "tok"}})
+	if err := json.Unmarshal(<-cs.configs, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tunnels) != 1 || got.Tunnels[0].Key != got.Domains["host.test"].Key {
+		t.Fatalf("tunnels = %+v: a tunnel must sign with its app's key", got.Tunnels)
+	}
+
+	p.cfg.Set("api", map[string]any{})
+	p.SyncConfig()
+	payload := cs.nextConfig(t)
+	for name, site := range payload["domains"].(map[string]any) {
+		if key, ok := site.(map[string]any)["key"]; ok {
+			t.Fatalf("%s carries key %v derived from no secret", name, key)
+		}
+	}
+	for _, tn := range payload["tunnels"].([]any) {
+		if key, ok := tn.(map[string]any)["key"]; ok {
+			t.Fatalf("tunnel carries key %v derived from no secret", key)
+		}
+	}
+}
+
 func TestProxyPayloadOmitsClientAuthWhenUnused(t *testing.T) {
 	cs := newControlServer(t)
 	p, _ := newTestProxy(t, cs, nil)
@@ -351,7 +393,8 @@ func TestTunnelIsNotPushedForAClientAuthApp(t *testing.T) {
 		"t.test": {Domain: "t.test", Container: "hostapp", Token: "tok"},
 		"u.test": {Domain: "u.test", Container: "portapp", Token: "tok"},
 	}
-	tunnels := p.buildPayload(p.resolveContainerIPs())["tunnels"].([]any)
+	ips, sockets := p.resolveContainerIPs()
+	tunnels := p.buildPayload(ips, sockets)["tunnels"].([]any)
 	if len(tunnels) != 1 || tunnels[0].(map[string]any)["domain"] != "u.test" {
 		t.Fatalf("tunnels = %#v: a tunnel would dial straight past the policy", tunnels)
 	}

@@ -3,9 +3,10 @@ package proxy
 import (
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/url"
+	"net/http/httputil"
 	"strconv"
 	"sync"
 	"time"
@@ -14,18 +15,23 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"odac/internal/proxy/config"
+	"odac/internal/proxysig"
 )
 
 const (
 	// tunnelWSURL is the ODAC Cloud tunnel proxy WebSocket endpoint.
 	tunnelWSURL = "wss://tunnel.odac.run/_odac/ws"
 
-	// tunnelReconnectInterval is the delay between reconnection attempts.
-	tunnelReconnectInterval = 5 * time.Second
+	// tunnelReconnectMin and tunnelReconnectMax bound the reconnect wait, which doubles
+	// per short-lived attempt so two agents sharing a token do not evict each other
+	// every few seconds.
+	tunnelReconnectMin = 5 * time.Second
+	tunnelReconnectMax = 5 * time.Minute
 
-	// tunnelCopyBufSize is the buffer size for bidirectional stream copying.
-	// 64KB reduces syscall frequency vs the default 32KB, improving throughput.
-	tunnelCopyBufSize = 64 * 1024
+	// tunnelStableAfter is how long a session must last before the wait resets: the
+	// edge accepts a duplicate token and drops the older agent, so a successful dial
+	// alone says nothing.
+	tunnelStableAfter = time.Minute
 )
 
 // tunnelConn represents a single active tunnel connection to ODAC Cloud
@@ -35,6 +41,7 @@ type tunnelConn struct {
 	host   string // Resolved backend IP/hostname
 	port   int    // Resolved backend port
 	token  string
+	key    string
 	stopCh chan struct{}
 
 	// mu guards the live connection against closeTunnel, which runs on the config
@@ -81,14 +88,6 @@ func NewTunnelManager() *TunnelManager {
 	}
 }
 
-// tunnelBufPool reuses 64KB buffers for stream copying to reduce GC pressure.
-var tunnelBufPool = sync.Pool{
-	New: func() interface{} {
-		buf := make([]byte, tunnelCopyBufSize)
-		return &buf
-	},
-}
-
 // UpdateConfig replaces the entire tunnel configuration (full-replace reconciliation).
 // New tunnels are connected, removed tunnels are disconnected, unchanged tunnels are kept.
 func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
@@ -114,7 +113,7 @@ func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 	for domain, t := range incoming {
 		if existing, ok := tm.conns[domain]; ok {
 			// Token or backend changed — reconnect
-			if existing.token != t.Token || existing.host != t.Host || existing.port != t.Port {
+			if existing.token != t.Token || existing.host != t.Host || existing.port != t.Port || existing.key != t.Key {
 				log.Printf("[Tunnel] Config changed, reconnecting: %s", domain)
 				tm.closeTunnel(existing)
 				delete(tm.conns, domain)
@@ -128,6 +127,7 @@ func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 			host:   t.Host,
 			port:   t.Port,
 			token:  t.Token,
+			key:    t.Key,
 			stopCh: make(chan struct{}),
 		}
 		tm.conns[domain] = conn
@@ -140,6 +140,7 @@ func (tm *TunnelManager) UpdateConfig(tunnels []config.Tunnel) {
 // runTunnel maintains a persistent tunnel connection for a single domain.
 // It reconnects automatically on failure until stopCh is closed.
 func (tm *TunnelManager) runTunnel(tc *tunnelConn) {
+	wait := tunnelReconnectMin
 	for {
 		select {
 		case <-tc.stopCh:
@@ -147,18 +148,29 @@ func (tm *TunnelManager) runTunnel(tc *tunnelConn) {
 		default:
 		}
 
+		started := time.Now()
 		err := tm.connect(tc)
 		if err != nil {
 			log.Printf("[Tunnel] Connection failed for %s: %v", tc.domain, err)
 		}
+		if time.Since(started) >= tunnelStableAfter {
+			wait = tunnelReconnectMin
+		}
 
-		// Wait before reconnecting (or exit if stopped)
+		timer := time.NewTimer(jitter(wait))
 		select {
 		case <-tc.stopCh:
+			timer.Stop()
 			return
-		case <-time.After(tunnelReconnectInterval):
+		case <-timer.C:
 		}
+		wait = min(wait*2, tunnelReconnectMax)
 	}
+}
+
+// jitter spreads a wait over [d/2, d) so agents dropped together do not return together.
+func jitter(d time.Duration) time.Duration {
+	return d/2 + rand.N(d/2)
 }
 
 // connect establishes a single WebSocket + yamux session to ODAC Cloud.
@@ -173,18 +185,12 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 
 	header := http.Header{}
 	header.Set("X-Agent-Domain", tc.domain)
-
-	target, err := url.Parse(tm.endpoint)
-	if err != nil {
-		return err
-	}
-	query := target.Query()
-	query.Set("odac_ws_token", tc.token)
-	target.RawQuery = query.Encode()
+	// In a header, not the query: a URL lands in access logs in front of the edge.
+	header.Set("Authorization", "Bearer "+tc.token)
 
 	log.Printf("[Tunnel] Connecting to cloud for domain: %s", tc.domain)
 
-	ws, _, err := dialer.Dial(target.String(), header)
+	ws, _, err := dialer.Dial(tm.endpoint, header)
 	if err != nil {
 		return err
 	}
@@ -218,8 +224,7 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 		return nil
 	}
 
-	// Accept streams from ODAC Cloud and forward to local app
-	tm.acceptStreams(tc, session)
+	serveTunnel(tc, session)
 
 	// Cleanup
 	tc.detach()
@@ -230,75 +235,62 @@ func (tm *TunnelManager) connect(tc *tunnelConn) error {
 	return nil
 }
 
-// acceptStreams continuously accepts yamux streams from ODAC Cloud
-// and forwards each one to the local app as a raw TCP pipe.
-func (tm *TunnelManager) acceptStreams(tc *tunnelConn, session *yamux.Session) {
-	for {
-		stream, err := session.AcceptStream()
-		if err != nil {
-			// Session closed or error — trigger reconnect
-			select {
-			case <-tc.stopCh:
-				return
-			default:
-			}
-			debugLog("[Tunnel] AcceptStream error for %s: %v", tc.domain, err)
-			return
-		}
-
-		go handleStream(tc, stream)
+// serveTunnel answers the Cloud's streams as HTTP until the session ends. Each
+// stream is one keep-alive connection.
+func serveTunnel(tc *tunnelConn, session net.Listener) {
+	handler, transport := newTunnelProxy(tc)
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		ErrorLog:          log.New(io.Discard, "", 0),
+	}
+	err := srv.Serve(session)
+	srv.Close()
+	transport.CloseIdleConnections()
+	select {
+	case <-tc.stopCh:
+	default:
+		debugLog("[Tunnel] Session ended for %s: %v", tc.domain, err)
 	}
 }
 
-// handleStream pipes a single yamux stream to the local app backend.
-// The stream carries raw HTTP/WebSocket bytes — zero parsing, pure relay.
-// Uses pooled buffers, TCP_NODELAY, and proper half-close to prevent data loss.
-func handleStream(tc *tunnelConn, stream net.Conn) {
+// newTunnelProxy forwards a tunnel's requests to its app. ODAC Cloud reports the
+// visitor's address and TLS state, and the stream comes from the Cloud this
+// agent dialed over verified TLS, so the agent carries those two values over
+// and signs them with the app's key, as the proxy does for a request it
+// receives itself. A raw pipe could not sign, and the app would have
+// to choose between trusting nobody's headers and anybody's.
+func newTunnelProxy(tc *tunnelConn) (*httputil.ReverseProxy, *http.Transport) {
 	target := net.JoinHostPort(tc.host, strconv.Itoa(tc.port))
+	transport := newUpstreamTransport()
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			remoteIP, ssl := cloudConnection(pr.In.Header)
+			pr.Out.URL.Scheme = "http"
+			pr.Out.URL.Host = target
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
+			stripForwardingHeaders(pr.Out.Header)
+			setConnectionHeaders(pr.Out, remoteIP, ssl, tc.key)
+		},
+		Transport:     transport,
+		BufferPool:    bufferPool{},
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			debugLog("[Tunnel] Backend %s for %s: %v", target, tc.domain, err)
+			w.WriteHeader(http.StatusBadGateway)
+		},
+	}, transport
+}
 
-	backend, err := net.DialTimeout("tcp", target, 5*time.Second)
-	if err != nil {
-		stream.Close()
-		debugLog("[Tunnel] Failed to connect to backend %s for %s: %v", target, tc.domain, err)
-		return
+// cloudConnection reads what ODAC Cloud said about the visitor. An address
+// that does not parse is dropped rather than signed.
+func cloudConnection(h http.Header) (remoteIP string, ssl bool) {
+	remoteIP = h.Get(proxysig.HeaderRemoteAddress)
+	if net.ParseIP(remoteIP) == nil {
+		remoteIP = ""
 	}
-
-	// Disable Nagle's algorithm for minimum latency on small writes
-	if conn, ok := backend.(*net.TCPConn); ok {
-		conn.SetNoDelay(true)
-	}
-
-	// Bidirectional raw byte pipe with proper half-close.
-	// When one direction finishes (EOF), we half-close that side
-	// so the other direction can finish flushing its remaining data.
-	// This prevents data loss on large binary transfers (png, mp4).
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Cloud → Backend (request direction)
-	go func() {
-		defer wg.Done()
-		bp := tunnelBufPool.Get().(*[]byte)
-		io.CopyBuffer(backend, stream, *bp)
-		tunnelBufPool.Put(bp)
-		// Half-close: signal backend that request is complete
-		if conn, ok := backend.(*net.TCPConn); ok {
-			conn.CloseWrite()
-		}
-	}()
-
-	// Backend → Cloud (response direction)
-	go func() {
-		defer wg.Done()
-		bp := tunnelBufPool.Get().(*[]byte)
-		io.CopyBuffer(stream, backend, *bp)
-		tunnelBufPool.Put(bp)
-		// Half-close: signal cloud that response is complete
-		stream.Close()
-	}()
-
-	wg.Wait()
-	backend.Close()
+	return remoteIP, h.Get(proxysig.HeaderSSL) == "true"
 }
 
 // wsConn wraps gorilla/websocket.Conn to implement net.Conn for yamux.

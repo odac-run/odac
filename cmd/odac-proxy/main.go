@@ -62,6 +62,7 @@ func main() {
 	cfg := config.Firewall{Enabled: true} // Default
 	fw := proxy.NewFirewall(cfg)
 	prx := proxy.NewProxy()
+	prx.SetSocketRoot(os.Getenv("ODAC_BACKEND_SOCKET_DIR"))
 
 	// Stack middleware: Firewall -> Proxy
 	// We removed timeoutMiddleware because robust timeout handling is now done

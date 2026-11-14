@@ -373,6 +373,9 @@ func newFixture(t *testing.T) *fixture {
 	if err := os.MkdirAll(filepath.Join(base, "run"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(base, "control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	u := New(base, Deps{Docker: fx.w, Proxy: fx.proxy, DNS: fx.dns})
 	u.SetSystem(fx.sys)

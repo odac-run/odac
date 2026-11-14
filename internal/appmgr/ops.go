@@ -123,7 +123,9 @@ func (m *Manager) StopAll() {
 }
 
 // Delete ports App.delete: force-cleanup regardless of in-flight state.
-func (m *Manager) Delete(id any, purge bool) *api.Result {
+// An app caller may not delete an app whose domains carry a client certificate
+// policy, since the cascade removes them (see Domain.Delete).
+func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 	var name string
 	var idNum float64
 	var activeContainerID string
@@ -138,6 +140,9 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 	})
 	if !found {
 		return res(false, __("App %s not found.", jsString(id)))
+	}
+	if !caller.Root && m.deps.Domains != nil && m.deps.Domains.HasClientAuthPolicy(name) {
+		return res(false, __("App %s has a domain with a client certificate policy, so only the server operator can delete it.", name))
 	}
 
 	m.log.Log("Deleting app %s (force-cleanup any in-flight blue/green containers)", name)
@@ -174,6 +179,7 @@ func (m *Manager) Delete(id any, purge bool) *api.Result {
 	// a green container can survive as a ghost under its temporary name (or
 	// worse, get renamed to app.name after we already removed it).
 	m.SweepGreenContainersFor(name, activeContainerID)
+	m.SweepProxySockets()
 
 	var unlinked []string
 	m.cfg.Mutate(func() {

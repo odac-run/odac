@@ -213,6 +213,7 @@ func (m *Manager) performBlueGreenDeploy(id any, greenName string, options deplo
 	}
 
 	m.set(id, map[string]any{"started": nowMs()})
+	m.spawn(m.SweepProxySockets)
 	return nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"odac/internal/api"
 	"odac/internal/docker"
 	"odac/internal/gpu"
 )
@@ -339,7 +340,7 @@ func TestDeleteSweepsGreenCompanions(t *testing.T) {
 	fx.dock.containers = []docker.ContainerInfo{{Names: []string{"/" + ghost}}}
 	fx.dock.mu.Unlock()
 
-	r := fx.m.Delete(float64(1), true)
+	r := fx.m.Delete(api.Operator, float64(1), true)
 	if !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}
@@ -431,7 +432,7 @@ func TestDeleteAbortsInFlightRunApp(t *testing.T) {
 	fx.m.Check()
 	waitFor(t, "run to reach runApp", func() bool { return fx.dock.runCallCount() == 1 })
 
-	r := fx.m.Delete(float64(1), false)
+	r := fx.m.Delete(api.Operator, float64(1), false)
 	if !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}
@@ -489,7 +490,7 @@ func TestRedeployAbortsWhenDeletedDuringGitFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	fx.dock.mu.Lock()
-	fx.dock.fetchHook = func() { fx.m.Delete(float64(1), false) }
+	fx.dock.fetchHook = func() { fx.m.Delete(api.Operator, float64(1), false) }
 	fx.dock.mu.Unlock()
 
 	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
@@ -508,7 +509,7 @@ func TestRedeployAbortsWhenDeletedDuringGitFetch(t *testing.T) {
 func TestRedeployAbortsWhenDeletedDuringBuild(t *testing.T) {
 	fx := gitAppWithDomain(t)
 	fx.dock.mu.Lock()
-	fx.dock.buildHook = func() { fx.m.Delete(float64(1), false) }
+	fx.dock.buildHook = func() { fx.m.Delete(api.Operator, float64(1), false) }
 	fx.dock.mu.Unlock()
 
 	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
@@ -551,7 +552,7 @@ func TestBlueGreenEntryGuardWhenFlaggedDeleted(t *testing.T) {
 func TestBlueGreenAbortsAfterGreenStartWhenDeleted(t *testing.T) {
 	fx := gitAppWithDomain(t)
 	fx.dock.mu.Lock()
-	fx.dock.runHook = func(string) { fx.m.Delete(float64(1), false) }
+	fx.dock.runHook = func(string) { fx.m.Delete(api.Operator, float64(1), false) }
 	fx.dock.mu.Unlock()
 
 	// Node quirk preserved: redeploy itself still reports success.
@@ -598,7 +599,7 @@ func TestBlueGreenAbortsBeforeRenameWhenDeleted(t *testing.T) {
 		// re-enters on the same goroutine — the flag stops the recursion.
 		if name == "web" && !deleted {
 			deleted = true
-			fx.m.Delete(float64(1), false)
+			fx.m.Delete(api.Operator, float64(1), false)
 		}
 	}
 	fx.dock.mu.Unlock()

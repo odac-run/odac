@@ -20,6 +20,7 @@ import (
 	"odac/internal/docker"
 	"odac/internal/lang"
 	"odac/internal/mtls"
+	"odac/internal/proxysig"
 )
 
 func init() { lang.SetLocale("en-US") }
@@ -74,6 +75,9 @@ type fakeDocker struct {
 
 	registered   []string
 	unregistered []string
+
+	socketDirs    map[string]bool
+	socketDirsErr error
 }
 
 func newFakeDocker() *fakeDocker {
@@ -326,6 +330,12 @@ func (f *fakeDocker) UnregisterBuildLogger(appName string) {
 
 func (f *fakeDocker) ResolveHostPath(localPath string) string { return localPath }
 
+func (f *fakeDocker) ProxySocketDirs() (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.socketDirs, f.socketDirsErr
+}
+
 // ---- other fakes ----
 
 type fakeAPI struct {
@@ -430,8 +440,15 @@ func (f *fakeGPUHost) allow(runtimes ...string) {
 }
 
 type fakeDomains struct {
-	mu      sync.Mutex
-	deleted []string
+	mu        sync.Mutex
+	deleted   []string
+	protected map[string]bool
+}
+
+func (f *fakeDomains) HasClientAuthPolicy(appName string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.protected[appName]
 }
 
 func (f *fakeDomains) DeleteByApp(appName string) error {
@@ -698,16 +715,34 @@ func TestClientCertKeyReachesOnlyAppsWithAPolicy(t *testing.T) {
 
 	fx.checkAndSettle(t)
 
-	seen := map[string]string{}
+	seen := map[string]map[string]string{}
 	for i := 0; i < fx.dock.runCallCount(); i++ {
 		call := fx.dock.runCallAt(i)
-		seen[call.name] = call.options.Env[mtls.KeyEnv]
+		seen[call.name] = call.options.Env
 	}
-	if got, want := seen["secured"], mtls.AppKey("root", "secured"); got != want {
+	if got, want := seen["secured"][mtls.KeyEnv], mtls.AppKey("root", "secured"); got != want {
 		t.Fatalf("secured key = %q, want %q", got, want)
 	}
-	if got, ran := seen["plain"]; !ran || got != "" {
-		t.Fatalf("plain: ran=%v key=%q", ran, got)
+	if env, ran := seen["plain"]; !ran || env[mtls.KeyEnv] != "" {
+		t.Fatalf("plain: ran=%v key=%q", ran, env[mtls.KeyEnv])
+	}
+	for _, name := range []string{"secured", "plain"} {
+		if got, want := seen[name][proxysig.KeyEnv], mtls.AppKey("root", name); got != want {
+			t.Fatalf("%s proxy key = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestProxyKeyNeedsAnAPISecret(t *testing.T) {
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(101), "name": "plain", "active": true, "type": "container", "image": "test:latest"},
+	})
+	fx.checkAndSettle(t)
+	if fx.dock.runCallCount() == 0 {
+		t.Fatal("runApp not called")
+	}
+	if key, ok := fx.dock.runCallAt(0).options.Env[proxysig.KeyEnv]; ok {
+		t.Fatalf("key %q derived from no secret", key)
 	}
 }
 
@@ -792,12 +827,31 @@ func TestAppIdentityForTokens(t *testing.T) {
 
 // ---- delete() ----
 
+func TestDeleteByAppSparesClientCertPolicies(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "guarded", "active": true, "type": "container",
+	}})
+	fx.domains.protected = map[string]bool{"guarded": true}
+
+	for _, caller := range []api.Caller{{App: "edge"}, {}} {
+		if r := fx.m.Delete(caller, float64(1), true); r.Status {
+			t.Fatalf("Delete(%+v) = %+v", caller, r)
+		}
+	}
+	if fx.appCount() != 1 || len(fx.domains.deleted) != 0 {
+		t.Fatalf("refused delete removed something: apps=%d domains=%v", fx.appCount(), fx.domains.deleted)
+	}
+	if r := fx.m.Delete(api.Operator, float64(1), true); !r.Status {
+		t.Fatalf("operator: %+v", r)
+	}
+}
+
 func TestDeleteCascadesDomains(t *testing.T) {
 	fx := newFixture(t, []any{map[string]any{
 		"id": float64(1), "name": "delete-me", "active": true, "type": "container",
 	}})
 
-	r := fx.m.Delete(float64(1), true)
+	r := fx.m.Delete(api.Operator, float64(1), true)
 	if !r.Status {
 		t.Fatalf("delete failed: %v", r.Message)
 	}

@@ -149,7 +149,7 @@ func TestInitStartOrderAndTick(t *testing.T) {
 		t.Fatalf("mail/api order wrong: %v", ev)
 	}
 
-	// Tick fires repeatedly with exact per-round order app,ssl,proxy,mail,hub.
+	// Tick fires repeatedly with exact per-round order app,ssl,proxy,dns,mail,hub.
 	tr.waitFor(t, "hub.check")
 	deadline := time.Now().Add(2 * time.Second)
 	for tr.count("hub.check") < 2 && time.Now().Before(deadline) {
@@ -157,15 +157,12 @@ func TestInitStartOrderAndTick(t *testing.T) {
 	}
 	ev = tr.snapshot()
 	first := indexOf(ev, "app.check")
-	round := ev[first : first+5]
-	want := []string{"app.check", "ssl.check", "proxy.check", "mail.check", "hub.check"}
+	round := ev[first : first+6]
+	want := []string{"app.check", "ssl.check", "proxy.check", "dns.check", "mail.check", "hub.check"}
 	for i := range want {
 		if round[i] != want[i] {
 			t.Fatalf("tick round = %v, want %v", round, want)
 		}
-	}
-	if indexOf(ev, "dns.check") != -1 {
-		t.Fatalf("dns.check must never run (not in Node's tick): %v", ev)
 	}
 }
 

@@ -9,6 +9,7 @@ package updater
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -425,6 +426,68 @@ func TestFullHandshakeBothRolesRealAgainstOneDaemon(t *testing.T) {
 	}
 	if _, err := os.Stat(fxOld.u.socketPath()); err == nil {
 		t.Fatal("update socket must be unlinked after the handover")
+	}
+}
+
+// An older release listens on run/update.sock, inside the directory mounted
+// into apps. The incoming instance must still find it there.
+func TestInitHandshakesWithLegacySocket(t *testing.T) {
+	fx := newFixture(t)
+	t.Setenv("ODAC_PREVIOUS_CONTAINER_NAME", "")
+	fx.u.stabilityDelay = time.Hour
+	fx.w.world["odac"] = &fakeContainer{policy: "unless-stopped", running: true}
+	fx.w.world["odac-update"] = &fakeContainer{policy: "no", running: true}
+
+	webReady := make(chan struct{})
+	_, cleanup := scriptOldSide(t, fx.u.legacySocketPath(), func(msg string, conn net.Conn) bool {
+		switch msg {
+		case "HANDSHAKE_READY":
+			conn.Write([]byte("HANDSHAKE_ACK"))
+		case "WEB_READY":
+			close(webReady)
+			return true
+		}
+		return false
+	})
+	defer cleanup()
+
+	go fx.u.Init()
+
+	select {
+	case <-webReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the legacy update socket was never used for the handshake")
+	}
+}
+
+// Nothing the handover listens on may land in the directory mounted into apps.
+func TestUpdateListenerStaysOutOfAppDir(t *testing.T) {
+	fx := newFixture(t)
+	l, err := fx.u.createUpdateListener()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		l.globalTimer.Stop()
+		l.ln.Close()
+	}()
+
+	if filepath.Dir(fx.u.socketPath()) == filepath.Dir(fx.u.legacySocketPath()) {
+		t.Fatal("update socket shares the app-mounted directory")
+	}
+	entries, err := os.ReadDir(filepath.Dir(fx.u.legacySocketPath()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("app-mounted dir holds %d entries, want none", len(entries))
+	}
+	info, err := os.Stat(filepath.Dir(fx.u.socketPath()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("control dir mode = %o, want 700", got)
 	}
 }
 

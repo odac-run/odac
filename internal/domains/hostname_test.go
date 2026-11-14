@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"odac/internal/api"
 )
 
 func TestValidateAcceptsHostnames(t *testing.T) {
@@ -75,7 +77,7 @@ func TestConcurrentAddsRegisterOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if fx.d.Add("example.com", "myapp").Status {
+			if fx.d.Add(api.Operator, "example.com", "myapp").Status {
 				mu.Lock()
 				won++
 				mu.Unlock()
@@ -106,19 +108,19 @@ func TestDeleteRemovesALegacyName(t *testing.T) {
 		"my_site.example.com": map[string]any{"appId": "myapp"},
 		"example.org":         map[string]any{"appId": "myapp", "subdomain": []any{"www", "old_sub"}},
 	})
-	if r := fx.d.Delete("my_site.example.com", true); !r.Status {
+	if r := fx.d.Delete(api.Operator, "my_site.example.com", true); !r.Status {
 		t.Fatalf("legacy domain not deleted: %v", r.Message)
 	}
 	if fx.domain("my_site.example.com") != nil {
 		t.Fatal("legacy domain still registered")
 	}
-	if r := fx.d.Delete("old_sub.example.org", true); !r.Status {
+	if r := fx.d.Delete(api.Operator, "old_sub.example.org", true); !r.Status {
 		t.Fatalf("legacy subdomain not deleted: %v", r.Message)
 	}
 	if subs, _ := fx.domain("example.org")["subdomain"].([]any); len(subs) != 1 {
 		t.Fatalf("subdomains = %v, want [www]", subs)
 	}
-	if r := fx.d.Delete("other_site.example.com", true); r.Status {
+	if r := fx.d.Delete(api.Operator, "other_site.example.com", true); r.Status {
 		t.Fatal("an unknown invalid name was accepted")
 	}
 }

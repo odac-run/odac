@@ -22,6 +22,8 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, 'ODAC v') || github.event_name == 'workflow_dispatch'"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout
@@ -113,3 +115,62 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  sync-dev:
+    name: Sync release into dev
+    needs: release
+    if: needs.release.outputs.version != '' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: sync-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Merge main into dev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          message="chore(release): sync ${VERSION:+v$VERSION from }main into dev"
+
+          # Retried because dev can move between the fetch and the push.
+          for attempt in 1 2 3; do
+            git fetch origin main dev
+            git checkout -B dev origin/dev
+
+            if git merge-base --is-ancestor origin/main origin/dev; then
+              echo "dev already contains main."
+              exit 0
+            fi
+
+            if ! git merge --no-edit -m "$message" origin/main; then
+              git merge --abort
+              if [ -z "$(gh pr list --base dev --head main --state open --json number --jq '.[].number')" ]; then
+                gh pr create --base dev --head main --title "$message" \
+                  --body "Merging main into dev conflicted. Resolve it here so dev builds report the released version."
+              fi
+              echo "::error::main does not merge cleanly into dev; a pull request was opened."
+              exit 1
+            fi
+
+            if git push origin dev; then
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt), retrying."
+            sleep 5
+          done
+
+          echo "::error::Could not push the sync to dev after 3 attempts."
+          exit 1
