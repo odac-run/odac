@@ -101,6 +101,15 @@ type fakeDocker struct {
 	containerImage map[string]string
 	runImageErr    map[string]error // RunApp fails for this image reference
 	stateHook      func(name string, st docker.ContainerState) docker.ContainerState
+
+	// Runtime backfill seams (runtime_backfill_test.go).
+	observed      docker.Runtime
+	observedErr   error
+	observedCalls [][2]string // sourceDir, imageID
+	observedHook  func()      // fires inside ObservedRuntime
+	checkoutHead  string
+	headErr       error
+	headCalls     []string
 }
 
 func newFakeDocker() *fakeDocker {

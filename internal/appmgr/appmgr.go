@@ -75,6 +75,8 @@ type Docker interface {
 	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) (string, error)
 	Build(sourceDir, imageName, appName, runtimeVersion string, buildLog docker.BuildLog) (docker.Runtime, error)
 	ImageDigest(imageID, ref string) string
+	ObservedRuntime(sourceDir, imageID string) (docker.Runtime, error)
+	CheckoutHead(targetDir string) (string, error)
 	RegisterBuildLogger(appName string, logger *applog.Logger)
 	UnregisterBuildLogger(appName string)
 	ResolveHostPath(localPath string) string
@@ -163,6 +165,15 @@ type Manager struct {
 	loggers    map[string]*applog.Logger // app name -> logger instance
 	probeDown  bool                      // last pulse could not list containers
 
+	// opEpoch counts processing claims per app, so work that ran without
+	// the lock can tell an operation started meanwhile (runtime_backfill.go).
+	opEpoch map[float64]uint64
+	// Runtime backfill: apps tried this process, failures included, and the
+	// queue its single worker drains.
+	runtimeTried    map[float64]bool
+	backfillQueue   []backfillJob
+	backfillRunning bool
+
 	// Test hooks: cadences default to Node's literals; sleep defaults to
 	// time.Sleep. deploySwitchDelay is Deploy.js's NODE_ENV!=='test' 5s.
 	// httpProbe answers whether ip:port speaks HTTP (jest mocked the http
@@ -224,6 +235,9 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 		netFollow:  map[float64]bool{},
 		logStreams: map[string]*runtimeStream{},
 		loggers:    map[string]*applog.Logger{},
+
+		opEpoch:      map[float64]uint64{},
+		runtimeTried: map[float64]bool{},
 
 		httpProbe:         realHTTPProbe,
 		sleep:             time.Sleep,
@@ -304,6 +318,8 @@ func (m *Manager) Check() {
 		status string
 		typ    string
 		pid    int
+		// backfill marks a git app whose record has no runtime yet.
+		backfill bool
 	}
 	var pulses []pulse
 	var interrupted []float64
@@ -326,7 +342,7 @@ func (m *Manager) Check() {
 			status, _ := app["status"].(string)
 			typ, _ := app["type"].(string)
 			pid, _ := app["pid"].(float64)
-			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid)})
+			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid), backfill: needsRuntimeBackfill(app)})
 		}
 	})
 
@@ -376,6 +392,7 @@ func (m *Manager) Check() {
 		m.mu.Lock()
 		busy := m.processing[p.id]
 		hasStream := m.logStreams[p.name] != nil
+		tried := m.runtimeTried[p.id]
 		m.mu.Unlock()
 		if busy {
 			continue
@@ -388,6 +405,10 @@ func (m *Manager) Check() {
 			isRunning = running[p.name]
 		case p.pid > 0:
 			isRunning = pidAlive(p.pid)
+		}
+
+		if p.backfill && isRunning && useDocker && !tried {
+			m.queueRuntimeBackfill(p.id)
 		}
 
 		// Re-attach logger for running apps (if missing). Fire-and-forget

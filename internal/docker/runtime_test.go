@@ -288,3 +288,72 @@ func TestEveryResolverFileIsAWireSource(t *testing.T) {
 		}
 	}
 }
+
+// TestObservedRuntime pins what a backfill may claim: the strategy from the
+// checkout, the version from the running image's Env, an image only for a
+// Dockerfile, and never a source.
+func TestObservedRuntime(t *testing.T) {
+	id := "sha256:" + strings.Repeat("e", 64)
+	cases := []struct {
+		name  string
+		files map[string]string
+		env   []string
+		want  Runtime
+	}{
+		{"node", map[string]string{"package.json": "{}", "package-lock.json": "{}", ".nvmrc": "22\n"},
+			[]string{"PATH=/bin", "NODE_VERSION=20.18.1", "YARN_VERSION=1.22.22"},
+			Runtime{Strategy: "node-npm", Version: "20.18.1"}},
+		{"python", map[string]string{"requirements.txt": "flask\n"},
+			[]string{"PYTHON_VERSION=3.12.4"},
+			Runtime{Strategy: "python", Version: "3.12.4"}},
+		{"dockerfile", map[string]string{"Dockerfile": "FROM node:22-alpine AS base\nFROM base\n"},
+			[]string{"NODE_VERSION=22.1.0"},
+			Runtime{Strategy: "dockerfile", Image: "node:22-alpine", Version: "22.1.0"}},
+		{"dockerfile from arg", map[string]string{"Dockerfile": "ARG B\nFROM $B\n"},
+			[]string{"NODE_VERSION=22.1.0", "PYTHON_VERSION=3.12.4"},
+			Runtime{Strategy: "dockerfile"}},
+		{"go has no version", map[string]string{"go.mod": "module x\n\ngo 1.22\n"},
+			[]string{"PATH=/bin"},
+			Runtime{Strategy: "go"}},
+		{"bun without a version key", map[string]string{"package.json": "{}", "bun.lock": ""},
+			[]string{"PATH=/bin"},
+			Runtime{Strategy: "bun"}},
+		{"image contradicts the checkout", map[string]string{"package.json": "{}", "bun.lock": ""},
+			[]string{"NODE_VERSION=20.18.1"},
+			Runtime{}},
+		{"go image carrying another language", map[string]string{"go.mod": "module x\n"},
+			[]string{"NODE_VERSION=20.18.1"},
+			Runtime{}},
+		{"nothing to detect", map[string]string{"README.md": "x"},
+			[]string{"NODE_VERSION=20.18.1"},
+			Runtime{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeAPI()
+			f.images[id] = withEnv(tc.env...)
+			c := newTestClient(t, f)
+			rt, err := c.ObservedRuntime(writeFiles(t, tc.files), id)
+			if rt != tc.want {
+				t.Errorf("runtime = %+v, want %+v", rt, tc.want)
+			}
+			if (err != nil) != (tc.want == Runtime{}) {
+				t.Errorf("err = %v", err)
+			}
+			if f.pulled != nil {
+				t.Errorf("pulled %v", f.pulled)
+			}
+		})
+	}
+}
+
+func TestObservedRuntimeNeedsTheImage(t *testing.T) {
+	c := newTestClient(t, newFakeAPI())
+	src := writeFiles(t, map[string]string{"requirements.txt": ""})
+	if rt, err := c.ObservedRuntime(src, "sha256:"+strings.Repeat("e", 64)); err == nil || rt != (Runtime{}) {
+		t.Errorf("missing image: rt = %+v, err = %v", rt, err)
+	}
+	if _, err := c.ObservedRuntime(src, "odac-app-x"); err == nil {
+		t.Error("a tag was accepted where an image ID belongs")
+	}
+}

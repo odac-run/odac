@@ -455,6 +455,50 @@ func (l *Logger) ReadLastBuildLog() string {
 	return string(raw)
 }
 
+// LastAttemptStatus is how the newest build attempt ended: its summary's
+// status, "pending" when its log has no summary (a build still running, or
+// one a crash cut short before Finalize, whose fetch may already have moved
+// the checkout), and "" when the app has no build history. Newest is by
+// build id, as in GetLastBuild.
+func (l *Logger) LastAttemptStatus() string {
+	names, err := os.ReadDir(l.buildsDir)
+	if err != nil {
+		return ""
+	}
+	newest := ""
+	summaries := map[string]bool{}
+	for _, de := range names {
+		id, isSummary := strings.CutSuffix(de.Name(), ".json")
+		if !isSummary {
+			var isLog bool
+			if id, isLog = strings.CutSuffix(de.Name(), ".log"); !isLog {
+				continue
+			}
+		}
+		if isSummary {
+			summaries[id] = true
+		}
+		if id > newest {
+			newest = id
+		}
+	}
+	if newest == "" {
+		return ""
+	}
+	if !summaries[newest] {
+		return "pending"
+	}
+	raw, err := os.ReadFile(filepath.Join(l.buildsDir, newest+".json"))
+	if err != nil {
+		return "pending"
+	}
+	var data buildSummary
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return "pending"
+	}
+	return data.Status
+}
+
 // pruneBuilds keeps the 10 newest build summaries by mtime and deletes the
 // .json/.log pairs of the rest. Best-effort.
 func (l *Logger) pruneBuilds() {

@@ -2,6 +2,8 @@ package docker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -232,4 +234,72 @@ func dockerfileRuntimeImage(content string) string {
 		last = resolved
 	}
 	return last
+}
+
+// ObservedRuntime derives the Runtime of an app whose record predates the
+// builder reporting one, from what the host holds now: the strategy its
+// checkout selects and the version the Env of imageID (the image the
+// container runs) declares. It claims less than a build does on purpose.
+// Source and, outside a Dockerfile, Image are never known afterwards (an
+// older agent did not read version files, so the base tag it chose is
+// gone), and a compiled language's version is not in its alpine runtime.
+// The caller must know the checkout is the one imageID was built from.
+func (c *Client) ObservedRuntime(sourceDir, imageID string) (Runtime, error) {
+	if !c.available {
+		return Runtime{}, fmt.Errorf("Docker is not available")
+	}
+	if !imageIDRe.MatchString(imageID) {
+		return Runtime{}, fmt.Errorf("invalid image ID")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	data, _, err := c.api.ImageInspectWithRaw(ctx, imageID)
+	if err != nil {
+		return Runtime{}, err
+	}
+	var env []string
+	if data.Config != nil {
+		env = data.Config.Env
+	}
+	rt := observedRuntime(sourceDir, env)
+	if rt.Strategy == "" {
+		return Runtime{}, errNoObservedRuntime
+	}
+	return rt, nil
+}
+
+// errNoObservedRuntime is ObservedRuntime's answer when the checkout selects
+// no strategy, or one the image contradicts.
+var errNoObservedRuntime = errors.New("runtime cannot be derived from this checkout and image")
+
+// observedRuntime is ObservedRuntime's decision over a checkout and an image
+// Env. A strategy the image contradicts (it declares another language's
+// version and not its own) is no answer: detection has changed since an
+// older agent built it, or the checkout has moved past the image.
+func observedRuntime(sourceDir string, env []string) Runtime {
+	strategy, err := detectStrategy(sourceDir, "")
+	if err != nil || strategy == nil {
+		return Runtime{}
+	}
+	if strategy.custom {
+		rt := Runtime{Strategy: "dockerfile", Version: soleEnvVersion(env)}
+		if content, err := readProjectFile(filepath.Join(sourceDir, "Dockerfile")); err == nil {
+			rt.Image = dockerfileRuntimeImage(string(content))
+		}
+		return rt
+	}
+	identity, ok := runtimeIdentities[strategy.key]
+	if !ok {
+		return Runtime{}
+	}
+	for _, key := range dockerfileVersionEnvs {
+		if key != identity.versionEnv && envVersion(env, key) != "" {
+			return Runtime{}
+		}
+	}
+	rt := Runtime{Strategy: identity.strategy}
+	if !identity.compiler {
+		rt.Version = envVersion(env, identity.versionEnv)
+	}
+	return rt
 }

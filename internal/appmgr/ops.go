@@ -372,6 +372,7 @@ func (m *Manager) tryLockProcessing(id float64) bool {
 		return false
 	}
 	m.processing[id] = true
+	m.opEpoch[id]++
 	return true
 }
 

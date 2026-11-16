@@ -1404,3 +1404,32 @@ func TestGetBackendReadsSocketDirFromTheMount(t *testing.T) {
 		t.Fatalf("ProxySocketDirs = %v, %v", used, err)
 	}
 }
+
+// TestCheckoutHead pins the HEAD probe to the git sandbox, with no step and
+// no pull.
+func TestCheckoutHead(t *testing.T) {
+	sha := strings.Repeat("cd", 20)
+	f := newFakeAPI()
+	c := newTestClient(t, f)
+	if _, err := c.CheckoutHead("/apps/r"); err == nil {
+		t.Fatal("probed without the sandbox image")
+	}
+	if len(f.created) != 0 || f.pulled != nil {
+		t.Fatalf("created %d, pulled %v", len(f.created), f.pulled)
+	}
+
+	f.images[gitImage] = image.InspectResponse{}
+	f.logOutputs["ctr1"] = sha + "\n"
+	head, err := c.CheckoutHead("/apps/r")
+	if err != nil || head != sha {
+		t.Fatalf("head = %q, err = %v", head, err)
+	}
+	call := f.created[0]
+	if want := "{ true; } 1>&2 && { git rev-parse --verify -q HEAD || true; }"; call.Config.Cmd[0] != want {
+		t.Errorf("cmd = %q", call.Config.Cmd[0])
+	}
+	assertSandboxed(t, f, call.HostConfig)
+	if len(f.removed) != 1 {
+		t.Errorf("sandbox not removed: %v", f.removed)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -102,7 +103,7 @@ func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildL
 		gitCmd = `git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REMOTE_URL" .`
 	}
 
-	head, err := c.runGitSandbox(gitCmd, env, targetDir, token, buildLog, "clone")
+	head, err := c.runGitSandbox(context.Background(), gitCmd, env, targetDir, token, buildLog, "clone")
 	if err != nil {
 		c.log.Error("[Git] Clone failed: %s", err.Error())
 		return "", err
@@ -163,7 +164,7 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 		gitCmd = `git remote set-url origin "$GIT_REMOTE_URL" && ` + gitCmd
 	}
 
-	head, err := c.runGitSandbox(gitCmd, env, targetDir, token, buildLog, "fetch")
+	head, err := c.runGitSandbox(context.Background(), gitCmd, env, targetDir, token, buildLog, "fetch")
 	if err != nil {
 		c.log.Error("[Git] Fetch failed: %s", err.Error())
 		return "", err
@@ -172,15 +173,34 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 	return head, nil
 }
 
+// CheckoutHead names the commit a checkout has, "" when git cannot name one.
+// It asks the git sandbox like every other HEAD read, because the tree is
+// written by repository code, and it never pulls: a host without the sandbox
+// image answers an error rather than a download nobody asked for.
+func (c *Client) CheckoutHead(targetDir string) (string, error) {
+	if !c.available {
+		return "", fmt.Errorf("Docker is not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), headProbeTimeout)
+	defer cancel()
+	if _, _, err := c.api.ImageInspectWithRaw(ctx, gitImage); err != nil {
+		return "", err
+	}
+	return c.runGitSandbox(ctx, "true", nil, targetDir, "", nil, "rev-parse")
+}
+
+// headProbeTimeout bounds CheckoutHead, container start included.
+const headProbeTimeout = time.Minute
+
 // runGitSandbox creates and runs one ephemeral alpine/git container with
 // targetDir bind-mounted at /git, streaming (token-sanitized) output into
 // buildLog, and force-removing the container afterwards. Git never prompts:
 // a missing or wrong credential fails the step instead of waiting for input.
 // The commit left checked out is resolved in the same container (withHead),
 // inside the sandbox rather than by reading .git from here, since the tree
-// is written by repository code.
-func (c *Client) runGitSandbox(gitCmd string, env []string, targetDir, token string, buildLog BuildLog, op string) (string, error) {
-	ctx := context.Background()
+// is written by repository code. The container is removed even when ctx has
+// ended, so a deadline never leaks one.
+func (c *Client) runGitSandbox(ctx context.Context, gitCmd string, env []string, targetDir, token string, buildLog BuildLog, op string) (string, error) {
 	hostPath := c.ResolveHostPath(targetDir)
 	if err := c.ensureNetwork(ctx, BuildNetwork); err != nil {
 		return "", err
@@ -196,7 +216,7 @@ func (c *Client) runGitSandbox(gitCmd string, env []string, targetDir, token str
 	if err != nil {
 		return "", err
 	}
-	defer c.api.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+	defer c.api.ContainerRemove(context.Background(), created.ID, container.RemoveOptions{Force: true})
 
 	head := &boundedBuffer{max: maxHeadOutput}
 	status, err := c.runToCompletionSplit(ctx, created.ID, head, writerOrNil(buildLog), token)
