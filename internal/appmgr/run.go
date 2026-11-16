@@ -77,6 +77,13 @@ func (m *Manager) run(id any, logCtrl *applog.BuildControl) error {
 // runHeld is run's body once the processing lock is held (Check acquires it
 // synchronously before dispatching, like Node's pre-await section of #run).
 func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) error {
+	return m.runHeldOn(id, logCtrl, "")
+}
+
+// runHeldOn is runHeld starting a container app on image instead of the one
+// its record names ("" = the record's). It exists for app.image.set, which
+// must run the new image before the record may say so.
+func (m *Manager) runHeldOn(id any, logCtrl *applog.BuildControl, image string) error {
 	var name, typ string
 	found := false
 	m.cfg.View(func() {
@@ -98,7 +105,7 @@ func (m *Manager) runHeld(id any, logCtrl *applog.BuildControl) error {
 	case "script":
 		err = m.runScript(id)
 	case "container":
-		err = m.runContainer(id, "", logCtrl)
+		err = m.runContainer(id, "", image, logCtrl)
 	case "git":
 		err = m.runGitApp(id, "")
 	}
@@ -302,8 +309,9 @@ func (m *Manager) runGitApp(id any, containerName string) error {
 }
 
 // runContainer ports #runContainer (recipe/template apps). containerName
-// overrides for Blue-Green ("" = the app itself).
-func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.BuildControl) error {
+// overrides for Blue-Green ("" = the app itself), image the record's image
+// ("" = the record's).
+func (m *Manager) runContainer(id any, containerName, image string, logCtrl *applog.BuildControl) error {
 	if !m.deps.Docker.Available() {
 		return errors.New("Docker is not available via Container service.")
 	}
@@ -343,6 +351,9 @@ func (m *Manager) runContainer(id any, containerName string, logCtrl *applog.Bui
 			s.name = containerName
 		}
 		s.image, _ = app["image"].(string)
+		if image != "" {
+			s.image = image
+		}
 		s.privileged, _ = app["privileged"].(string)
 		s.networkMode = toNetworkMode(app["networkMode"])
 		s.isolated = jsTruthy(app["isolated"])

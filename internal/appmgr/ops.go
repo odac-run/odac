@@ -128,7 +128,7 @@ func (m *Manager) StopAll() {
 func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 	var name string
 	var idNum float64
-	var activeContainerID string
+	var activeContainerID, hold string
 	found := false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
@@ -136,6 +136,9 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 			name, _ = app["name"].(string)
 			idNum, _ = app["id"].(float64)
 			activeContainerID, _ = app["activeContainerId"].(string)
+			if marker, _ := app[imageChangeKey].(map[string]any); marker != nil {
+				hold, _ = marker["hold"].(string)
+			}
 		}
 	})
 	if !found {
@@ -173,6 +176,11 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 		// Container.js left the built image behind; repeated create/delete
 		// then leaked one odac-app-<name> image per app until the disk filled.
 		m.deps.Docker.RemoveImage("odac-app-" + name)
+		// An interrupted image change would otherwise leave its hold tag,
+		// and the previous image with it, behind for good.
+		if hold != "" && hold == holdTag(idNum) {
+			m.deps.Docker.RemoveImage(hold)
+		}
 	}
 
 	// Sweep Blue-Green companions left behind by an in-flight ZDD deploy —
@@ -319,7 +327,7 @@ func (m *Manager) Restart(id any) *api.Result {
 				if typ == "git" {
 					return m.runGitApp(idNum, greenName)
 				}
-				return m.runContainer(idNum, greenName, nil)
+				return m.runContainer(idNum, greenName, "", nil)
 			},
 		})
 		if err != nil {
@@ -1663,6 +1671,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 			}
 		}
 		m.applyIdentity(cp, statusInfo)
+		delete(cp, imageChangeKey)
 
 		if detailed {
 			delete(cp, "pid")

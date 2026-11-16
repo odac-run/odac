@@ -88,6 +88,8 @@ type fakeAPI struct {
 
 	removedImages []string
 	prunedImages  bool
+	tagged        [][2]string // ImageTag source, target
+	tagErr        error
 
 	imageInspects int
 }
@@ -289,6 +291,29 @@ func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOption
 	delete(f.images, id)
 	f.removedImages = append(f.removedImages, id)
 	return []image.DeleteResponse{{Deleted: id}}, nil
+}
+
+func (f *fakeAPI) ImageTag(_ context.Context, source, target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tagErr != nil {
+		return f.tagErr
+	}
+	img, ok := f.images[source]
+	if !ok {
+		for _, candidate := range f.images {
+			if candidate.ID == source {
+				img, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return notFoundErr{"No such image: " + source}
+	}
+	f.images[target] = img
+	f.tagged = append(f.tagged, [2]string{source, target})
+	return nil
 }
 
 func (f *fakeAPI) ImagesPrune(context.Context, filters.Args) (image.PruneReport, error) {

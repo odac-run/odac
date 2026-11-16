@@ -83,6 +83,20 @@ type fakeDocker struct {
 
 	socketDirs    map[string]bool
 	socketDirsErr error
+
+	// Image change seams (image_set_test.go). images maps a local reference
+	// (or a hold tag) to its image ID; a container started on a known
+	// reference records that ID in containerImage.
+	images         map[string]string
+	imageHealth    map[string]bool   // image IDs with a HEALTHCHECK
+	pullResult     map[string]string // ref -> ID a pull resolves it to
+	pullErr        map[string]error
+	pullWaits      bool     // PullImage blocks until its context ends
+	pulls          []string // "ref force"
+	tags           [][2]string
+	containerImage map[string]string
+	runImageErr    map[string]error // RunApp fails for this image reference
+	stateHook      func(name string, st docker.ContainerState) docker.ContainerState
 }
 
 func newFakeDocker() *fakeDocker {
@@ -123,8 +137,20 @@ func (f *fakeDocker) RunApp(name string, options docker.RunOptions, _ docker.Bui
 		return false, nil
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.runImageErr[options.Image]; err != nil {
+		// The real RunApp removed the previous container first.
+		delete(f.running, name)
+		delete(f.containerImage, name)
+		return false, err
+	}
 	f.running[name] = true
-	f.mu.Unlock()
+	if id, ok := f.images[options.Image]; ok {
+		if f.containerImage == nil {
+			f.containerImage = map[string]string{}
+		}
+		f.containerImage[name] = id
+	}
 	return true, nil
 }
 
@@ -230,7 +256,7 @@ func (f *fakeDocker) GetStatus(name string) docker.Status {
 	if st, ok := f.status[name]; ok {
 		return st
 	}
-	return docker.Status{Running: f.running[name]}
+	return docker.Status{Running: f.running[name], ImageID: f.containerImage[name]}
 }
 
 func (f *fakeDocker) GetListeningPorts(name string) []int {

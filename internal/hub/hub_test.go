@@ -163,7 +163,8 @@ type fakeApp struct {
 	mu    sync.Mutex
 	calls []string
 
-	listResult *api.Result
+	listResult  *api.Result
+	imageResult appmgr.ImageSetResult
 
 	logCB    func(applog.Entry)
 	logUnsub func()
@@ -251,6 +252,12 @@ func (f *fakeApp) SetVolumes(id any, volumes []any, payloadOK bool) *api.Result 
 func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	f.record("redeploy:" + payload.Container + ":" + payload.Branch)
 	return ok("ok")
+}
+func (f *fakeApp) SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult {
+	f.record("image:" + payload.Container + ":" + payload.Image + ":" + str(payload.Pull))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.imageResult
 }
 func (f *fakeApp) Restart(id any) *api.Result { f.record("restart:" + str(id)); return ok("ok") }
 func (f *fakeApp) Start(id any) *api.Result   { f.record("start:" + str(id)); return ok("ok") }
@@ -717,6 +724,66 @@ func TestUnknownCommandAnswersFailure(t *testing.T) {
 	fx.cloud.expectNone(t, 150*time.Millisecond)
 }
 
+func TestImageSetRepliesFlat(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	ask := func(reqID string, result appmgr.ImageSetResult) map[string]any {
+		t.Helper()
+		fx.app.mu.Lock()
+		fx.app.imageResult = result
+		fx.app.mu.Unlock()
+		fx.cloud.send(t, jscanon.Obj{
+			{K: "id", V: reqID},
+			{K: "type", V: "command"},
+			{K: "data", V: map[string]any{"action": "app.image.set", "payload": map[string]any{
+				"id": "res-1", "container": "db", "image": "postgres:17.6-alpine", "pull": false,
+			}}},
+			{K: "timestamp", V: time.Now().Unix()},
+		})
+		for {
+			resp := fx.cloud.next(t)
+			if resp["type"] == "command.response" {
+				data, _ := resp["data"].(map[string]any)
+				return data
+			}
+		}
+	}
+
+	data := ask("req-1", appmgr.ImageSetResult{Reason: "unhealthy", RolledBack: true, Message: "Rolled back."})
+	if data["id"] != "req-1" || data["success"] != false || data["reason"] != "unhealthy" ||
+		data["rolledBack"] != true || data["message"] != "Rolled back." {
+		t.Fatalf("failure reply = %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("a flat reply must not nest data: %v", data)
+	}
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	data = ask("req-2", appmgr.ImageSetResult{
+		Success: true, Changed: true, Previous: "postgres:17.5-alpine", Image: "postgres:17.6-alpine",
+		ImageID: digest, ImageDigest: digest,
+	})
+	want := map[string]any{
+		"id": "req-2", "success": true, "changed": true, "previous": "postgres:17.5-alpine",
+		"image": "postgres:17.6-alpine", "imageId": digest, "imageDigest": digest,
+	}
+	if len(data) != len(want) {
+		t.Fatalf("success reply = %v", data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v, want %v", k, data[k], v)
+		}
+	}
+
+	data = ask("req-3", appmgr.ImageSetResult{Success: true})
+	if len(data) != 3 || data["success"] != true || data["changed"] != false {
+		t.Fatalf("unchanged reply = %v", data)
+	}
+}
+
 func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	fx := newHubFixture(t)
 	fx.connect()
@@ -960,6 +1027,8 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.network.isolate", map[string]any{"name": "web", "isolated": true})
 	run("app.network.isolate", map[string]any{"name": "web", "isolated": false})
 	run("app.network.isolate", map[string]any{"name": "web"}) // absent → off
+	run("app.image.set", map[string]any{"id": "res-1", "container": "db", "image": "postgres:17.6", "pull": true})
+	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "pull": "yes"}) // only true forces
 
 	want := []string{
 		"delete:web:true",
@@ -975,6 +1044,8 @@ func TestPayloadMappings(t *testing.T) {
 		"isolate:web:on",
 		"isolate:web:off",
 		"isolate:web:off",
+		"image:db:postgres:17.6:true",
+		"image:db:postgres:17.6:false",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {
@@ -1225,7 +1296,7 @@ func TestCommandTableOrder(t *testing.T) {
 		"terminal.open", "terminal.close", "mail.create", "mail.delete", "mail.list",
 		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
 		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
-		"domain.mtls.cert.import",
+		"domain.mtls.cert.import", "app.image.set",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)

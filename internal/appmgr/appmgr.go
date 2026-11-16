@@ -20,6 +20,7 @@
 package appmgr
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -65,6 +66,10 @@ type Docker interface {
 	SetNetworks(name string, networks []string) docker.SetNetworksResult
 	EnsureNetworks(names []string) error
 	EnsureImage(imageName string, logw io.Writer) error
+	PullImage(ctx context.Context, ref string, force bool) error
+	ImageMeta(ref string) (docker.ImageMeta, error)
+	TagImage(source, target string) error
+	InspectState(name string) (docker.ContainerState, error)
 	StatPathIsDir(name, containerPath string) (isDir bool, ok bool)
 	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) (string, error)
 	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) (string, error)
@@ -173,6 +178,13 @@ type Manager struct {
 	renameInterval    time.Duration // Deploy rename retry (2s)
 	restartDelay      time.Duration // standard restart settle (1s)
 	deploySwitchDelay time.Duration // Blue-Green pre-stop drain (5s)
+
+	// app.image.set budgets (image_set.go), fields so tests do not sleep.
+	imageSetBudget     time.Duration // whole operation, pull included (12m)
+	imagePullTimeout   time.Duration // pull alone (8m)
+	imageStableFor     time.Duration // continuous running the gate needs (30s)
+	imageHealthTimeout time.Duration // HEALTHCHECK must report healthy within (120s)
+	imageGateInterval  time.Duration // gate probe cadence (1s)
 }
 
 // spawn runs fn on a tracked goroutine (Node's un-awaited promises).
@@ -224,6 +236,12 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 		renameInterval:    2 * time.Second,
 		restartDelay:      time.Second,
 		deploySwitchDelay: 5 * time.Second,
+
+		imageSetBudget:     12 * time.Minute,
+		imagePullTimeout:   8 * time.Minute,
+		imageStableFor:     30 * time.Second,
+		imageHealthTimeout: 120 * time.Second,
+		imageGateInterval:  time.Second,
 	}
 }
 
@@ -288,6 +306,7 @@ func (m *Manager) Check() {
 		pid    int
 	}
 	var pulses []pulse
+	var interrupted []float64
 
 	if m.deps.Docker.Available() {
 		m.socketSweep.Do(func() { m.spawn(m.SweepProxySockets) })
@@ -296,10 +315,13 @@ func (m *Manager) Check() {
 	m.cfg.Mutate(func() {
 		m.apps = m.loadAppsFromConfig()
 		for _, app := range m.apps {
+			id, _ := app["id"].(float64)
+			if app[imageChangeKey] != nil {
+				interrupted = append(interrupted, id)
+			}
 			if app["active"] != true {
 				continue
 			}
-			id, _ := app["id"].(float64)
 			name, _ := app["name"].(string)
 			status, _ := app["status"].(string)
 			typ, _ := app["type"].(string)
@@ -307,6 +329,21 @@ func (m *Manager) Check() {
 			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid)})
 		}
 	})
+
+	// A marker on an app no operation holds is an image change a restart
+	// cut short. Claiming the processing lock here keeps the loop below from
+	// starting the app before the recovery has decided what it runs.
+	if m.deps.Docker.Available() {
+		for _, id := range interrupted {
+			if m.tryLockProcessing(id) {
+				m.spawn(func() {
+					defer m.unlockProcessing(id)
+					m.recoverImageChange(id)
+				})
+			}
+		}
+	}
+
 	if len(pulses) == 0 {
 		return
 	}
