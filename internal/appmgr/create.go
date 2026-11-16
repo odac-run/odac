@@ -755,6 +755,13 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		return res(false, __("Invalid resource configuration: %s", rerr.Error()))
 	}
 
+	rawRuntime, hasRuntime := cfg["runtime"]
+	override, _, oerr := parseRuntimeOverride(rawRuntime, hasRuntime)
+	if oerr != nil {
+		m.clog.Log("createFromGit: %s", oerr.Error())
+		return res(false, oerr.Error())
+	}
+
 	exists := false
 	m.cfg.View(func() { exists = m.getLocked(name) != nil })
 	if exists {
@@ -814,7 +821,7 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 	m.clog.Log("createFromGit: Clone successful")
 
 	m.clog.Log("createFromGit: Building image...")
-	built, err := m.deps.Docker.Build(appDir, imageName, name, logCtrl)
+	built, err := m.deps.Docker.Build(appDir, imageName, name, override, logCtrl)
 	recordBuildRuntime(logCtrl, built)
 	if err != nil {
 		return fail(err)
@@ -890,6 +897,7 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		if commit := deployedCommit(head, ""); commit != "" {
 			app["commitSha"] = commit
 		}
+		applyRuntimeOverrideLocked(app, override)
 		kernelSpec.Apply(app)
 		resourceSpec.Apply(app)
 		appID = app["id"]

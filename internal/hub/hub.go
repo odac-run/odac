@@ -775,12 +775,15 @@ func (h *Hub) buildCommands() {
 	h.register("app.redeploy", &command{
 		fn: withApp(func(p any) (any, error) {
 			m := pmap(p)
+			rt, hasRuntime := m["runtime"]
 			return h.deps.App.Redeploy(appmgr.RedeployPayload{
-				Container: str(m["container"]),
-				URL:       str(m["url"]),
-				Token:     str(m["token"]),
-				Branch:    str(m["branch"]),
-				CommitSha: str(m["commitSha"]),
+				Container:  str(m["container"]),
+				URL:        str(m["url"]),
+				Token:      str(m["token"]),
+				Branch:     str(m["branch"]),
+				CommitSha:  str(m["commitSha"]),
+				Runtime:    rt,
+				HasRuntime: hasRuntime,
 			}), nil
 		}),
 		triggers: []string{"app.list", "app.stats"},

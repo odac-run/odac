@@ -30,13 +30,13 @@ import (
 // so imageName can never break out of the build command.
 var safeImageRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$`)
 
-// versionResolver extracts the language version a project asks for ("1.22",
-// "20", "3.12") from its version file. The strategy decides which image the
-// version selects (versionTag, packageSpec.versionedBase).
-type versionResolver struct {
-	file         string
-	fallbackFile string
-	parse        func(content, filename string) string
+// versionSource is one file a project may name its language version in, and
+// how to read the version ("1.22", "20", "3.12") out of it. The strategy
+// decides which image the version selects (versionTag,
+// packageSpec.versionedBase).
+type versionSource struct {
+	file  string
+	parse func(content string) string
 }
 
 // parseMajorMinor returns the "1.22" of "1.22.5" / "^3.11" / ">=20.0".
@@ -46,20 +46,65 @@ func parseMajorMinor(raw string) string {
 	return majorMinorRe.FindString(raw)
 }
 
+// versionFileLine returns the first line of a version file that is neither
+// blank nor a comment, with any trailing comment and whitespace (CRLF
+// included) removed.
+func versionFileLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
 var (
-	goDirectiveRe    = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
-	nodeMajorRe      = regexp.MustCompile(`(\d+)`)
-	pythonRuntimeRe  = regexp.MustCompile(`python-(\d+\.\d+)`)
-	requiresPythonRe = regexp.MustCompile(`requires-python\s*=\s*["']([^"']+)["']`)
-	rustChannelRe    = regexp.MustCompile(`channel\s*=\s*["']([^"']+)["']`)
-	versionResolvers = map[string]versionResolver{
-		"GO": {file: "go.mod", parse: func(content, _ string) string {
-			if m := goDirectiveRe.FindStringSubmatch(content); m != nil {
-				return m[1]
-			}
-			return ""
-		}},
-		"NODE": {file: "package.json", parse: func(content, _ string) string {
+	// nodeVersionFileRe accepts the numeric forms of .nvmrc and
+	// .node-version (v20.11.0, 20.11, 20). Aliases such as lts/* or node
+	// match nothing, so detection falls through to the next source.
+	nodeVersionFileRe = regexp.MustCompile(`^v?(\d{1,2})(?:\.\d+){0,2}$`)
+	// pythonVersionFileRe accepts .python-version's CPython forms (3.12.1,
+	// 3.12). pyenv's other names (system, pypy3.10, a virtualenv) fall
+	// through.
+	pythonVersionFileRe = regexp.MustCompile(`^(3\.\d{1,2})(?:\.\d+)?$`)
+	goDirectiveRe       = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
+	nodeMajorRe         = regexp.MustCompile(`(\d+)`)
+	pythonRuntimeRe     = regexp.MustCompile(`python-(\d+\.\d+)`)
+	requiresPythonRe    = regexp.MustCompile(`requires-python\s*=\s*["']([^"']+)["']`)
+	rustChannelRe       = regexp.MustCompile(`channel\s*=\s*["']([^"']+)["']`)
+)
+
+func parseNodeVersionFile(content string) string {
+	if m := nodeVersionFileRe.FindStringSubmatch(versionFileLine(content)); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func parsePythonVersionFile(content string) string {
+	if m := pythonVersionFileRe.FindStringSubmatch(versionFileLine(content)); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// versionResolvers lists, per resolver key, the files that may decide a
+// project's language version, in precedence order. The first file that
+// names a version wins, and its name is the Runtime's Source.
+var versionResolvers = map[string][]versionSource{
+	"GO": {{file: "go.mod", parse: func(content string) string {
+		if m := goDirectiveRe.FindStringSubmatch(content); m != nil {
+			return m[1]
+		}
+		return ""
+	}}},
+	"NODE": {
+		{file: ".nvmrc", parse: parseNodeVersionFile},
+		{file: ".node-version", parse: parseNodeVersionFile},
+		{file: "package.json", parse: func(content string) string {
 			var pkg struct {
 				Engines struct {
 					Node string `json:"node"`
@@ -70,38 +115,73 @@ var (
 			}
 			return nodeMajorRe.FindString(pkg.Engines.Node)
 		}},
-		"PHP": {file: "composer.json", parse: func(content, _ string) string {
-			var composer struct {
-				Require map[string]string `json:"require"`
-			}
-			if json.Unmarshal([]byte(content), &composer) != nil {
-				return ""
-			}
-			return parseMajorMinor(composer.Require["php"])
-		}},
-		"PYTHON": {file: "pyproject.toml", fallbackFile: "runtime.txt", parse: func(content, filename string) string {
-			if filename == "runtime.txt" {
-				if m := pythonRuntimeRe.FindStringSubmatch(content); m != nil {
-					return m[1]
-				}
-				return ""
-			}
+	},
+	"PHP": {{file: "composer.json", parse: func(content string) string {
+		var composer struct {
+			Require map[string]string `json:"require"`
+		}
+		if json.Unmarshal([]byte(content), &composer) != nil {
+			return ""
+		}
+		return parseMajorMinor(composer.Require["php"])
+	}}},
+	"PYTHON": {
+		{file: ".python-version", parse: parsePythonVersionFile},
+		{file: "pyproject.toml", parse: func(content string) string {
 			if m := requiresPythonRe.FindStringSubmatch(content); m != nil {
 				return parseMajorMinor(m[1])
 			}
 			return ""
 		}},
-		"RUST": {file: "rust-toolchain.toml", fallbackFile: "rust-toolchain", parse: func(content, filename string) string {
-			if filename == "rust-toolchain" {
-				return parseMajorMinor(strings.TrimSpace(content))
+		{file: "runtime.txt", parse: func(content string) string {
+			if m := pythonRuntimeRe.FindStringSubmatch(content); m != nil {
+				return m[1]
 			}
+			return ""
+		}},
+	},
+	"RUST": {
+		{file: "rust-toolchain.toml", parse: func(content string) string {
 			if m := rustChannelRe.FindStringSubmatch(content); m != nil {
 				return parseMajorMinor(m[1])
 			}
 			return ""
 		}},
+		{file: "rust-toolchain", parse: func(content string) string {
+			return parseMajorMinor(strings.TrimSpace(content))
+		}},
+	},
+}
+
+// runtimeOverrideFormats is the version an operator may pin per resolver
+// key, which is also the tag shape the strategy's image is published under.
+// A strategy whose resolver has no entry (Bun, static, a Dockerfile)
+// ignores an override.
+var runtimeOverrideFormats = map[string]*regexp.Regexp{
+	"NODE":   regexp.MustCompile(`^\d{1,2}$`),
+	"PYTHON": regexp.MustCompile(`^3\.\d{1,2}$`),
+	"GO":     regexp.MustCompile(`^1\.\d{1,2}$`),
+	"RUST":   regexp.MustCompile(`^1\.\d{1,3}$`),
+	"PHP":    regexp.MustCompile(`^\d\.\d{1,2}$`),
+}
+
+// ErrUnsupportedRuntimeVersion is a runtime override that no image of the
+// detected language is published under. Its text is part of the hub
+// contract, so it is neither translated nor wrapped.
+var ErrUnsupportedRuntimeVersion = errors.New("unsupported runtime version")
+
+// ValidRuntimeOverride reports whether v has the shape some language's
+// override takes. It is the check an override passes before it is stored;
+// the builder still checks it against the detected language, because the
+// repository decides that and the record can be edited by hand.
+func ValidRuntimeOverride(v string) bool {
+	for _, re := range runtimeOverrideFormats {
+		if re.MatchString(v) {
+			return true
+		}
 	}
-)
+	return false
+}
 
 // packageSpec describes the final-image Dockerfile of a strategy.
 type packageSpec struct {
@@ -136,6 +216,7 @@ type buildStrategy struct {
 	custom          bool
 	image           string // resolved compiler image
 	runtime         string // resolved runtime image
+	source          string // what decided the version, one of RuntimeSources
 }
 
 var buildStrategies = map[string]buildStrategy{
@@ -277,10 +358,15 @@ type BuildContext struct {
 // caller-provided buildLog is never finalized here (App finalizes after
 // deployment completes).
 //
+// runtimeVersion is the operator's language version override, "" for none.
+// It applies only to a strategy with a version resolver and must have that
+// language's shape, or the build fails with ErrUnsupportedRuntimeVersion
+// before any image is pulled.
+//
 // The Runtime is returned on failure too whenever the strategy was detected,
 // so a failed build's summary can say what it tried to build on; the caller
 // decides whether it describes the running image.
-func (c *Client) Build(sourceDir, imageName, appName string, buildLog BuildLog) (Runtime, error) {
+func (c *Client) Build(sourceDir, imageName, appName, runtimeVersion string, buildLog BuildLog) (Runtime, error) {
 	if !c.available {
 		return Runtime{}, fmt.Errorf("Docker is not available")
 	}
@@ -310,11 +396,11 @@ func (c *Client) Build(sourceDir, imageName, appName string, buildLog BuildLog) 
 		name = filepath.Base(sourceDir)
 	}
 	bctx := BuildContext{InternalPath: sourceDir, HostPath: c.ResolveHostPath(sourceDir), AppName: name}
-	return c.builderRun(bctx, imageName, buildLog)
+	return c.builderRun(bctx, imageName, runtimeVersion, buildLog)
 }
 
 // builderRun is Builder.build.
-func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildLog) (Runtime, error) {
+func (c *Client) builderRun(bctx BuildContext, imageName, runtimeVersion string, buildLog BuildLog) (Runtime, error) {
 	// Self-created logger when the caller did not pass one (standalone
 	// builder path). Only this path finalizes the log.
 	var ownCtrl *applog.BuildControl
@@ -336,12 +422,22 @@ func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildL
 	if buildLog != nil {
 		buildLog.StartPhase("analysis")
 	}
-	strategy := detectStrategy(bctx.InternalPath)
+	strategy, verr := detectStrategy(bctx.InternalPath, runtimeVersion)
 	if buildLog != nil {
-		buildLog.EndPhase("analysis", true)
+		buildLog.EndPhase("analysis", verr == nil)
 		if strategy != nil {
 			fmt.Fprintf(buildLog, "[Builder] Detected project type: %s\n", strategy.name)
+			if verr == nil && strategy.image != "" {
+				fmt.Fprintf(buildLog, "[Builder] Runtime image: %s (version from %s)\n", strategy.runtimeImage(), strategy.source)
+			}
 		}
+	}
+	if verr != nil {
+		c.log.Error("Build failed: %s %q for %s", verr.Error(), runtimeVersion, strategy.name)
+		if ownCtrl != nil {
+			ownCtrl.Finalize(false)
+		}
+		return c.buildRuntime(strategy, bctx, imageName, false), verr
 	}
 	if strategy == nil {
 		err := fmt.Errorf("Could not detect project type (no package.json, requirements.txt, etc. found)")
@@ -399,11 +495,13 @@ func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildL
 }
 
 // detectStrategy ports Builder.#detect: custom Dockerfile first, then the
-// fixed priority order, resolving the compiler image tag from project
-// version files. Nil when nothing matches.
-func detectStrategy(internalPath string) *buildStrategy {
+// fixed priority order, resolving the compiler image tag from the override
+// or the project's version files. Nil when nothing matches. An override the
+// detected language cannot take returns the strategy with no images and
+// ErrUnsupportedRuntimeVersion.
+func detectStrategy(internalPath, override string) (*buildStrategy, error) {
 	if fileExists(filepath.Join(internalPath, "Dockerfile")) {
-		return &buildStrategy{name: "Custom Dockerfile", custom: true}
+		return &buildStrategy{name: "Custom Dockerfile", custom: true, source: "dockerfile"}, nil
 	}
 
 	order := []string{"PYTHON", "GO", "RUST", "BUN", "NODE_PNPM", "NODE_YARN", "NODE_NPM"}
@@ -429,10 +527,12 @@ func detectStrategy(internalPath string) *buildStrategy {
 		}
 	}
 	if chosen == nil {
-		return nil
+		return nil, nil
 	}
-	resolveImages(internalPath, chosen)
-	return chosen
+	if err := resolveImages(internalPath, chosen, override); err != nil {
+		return chosen, err
+	}
+	return chosen, nil
 }
 
 func strategyTriggered(internalPath string, s buildStrategy) bool {
@@ -449,10 +549,21 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// resolveImages picks the compiler and runtime images from the version the
-// project asks for, falling back to the strategy defaults.
-func resolveImages(internalPath string, s *buildStrategy) {
-	version := resolveVersion(internalPath, s.versionResolver)
+// resolveImages picks the compiler and runtime images from the override,
+// else the version the project asks for, else the strategy defaults, and
+// records which of them decided. The override is checked here, where it
+// turns into an image tag, whatever validated it before.
+func resolveImages(internalPath string, s *buildStrategy, override string) error {
+	version, source := "", "default"
+	if format, ok := runtimeOverrideFormats[s.versionResolver]; ok && override != "" {
+		if !format.MatchString(override) {
+			return ErrUnsupportedRuntimeVersion
+		}
+		version, source = override, "override"
+	} else if v, file := resolveVersion(internalPath, s.versionResolver); v != "" {
+		version, source = v, file
+	}
+	s.source = source
 	s.image = s.imageBase + ":" + s.imageDefault
 	if version != "" && s.versionTag != "" {
 		s.image = s.imageBase + ":" + fmt.Sprintf(s.versionTag, version)
@@ -466,29 +577,31 @@ func resolveImages(internalPath string, s *buildStrategy) {
 	default:
 		s.runtime = s.image
 	}
+	return nil
 }
 
-// resolveVersion reads the version a project's version file asks for, ""
-// when there is none.
-func resolveVersion(internalPath, resolverKey string) string {
-	resolver, ok := versionResolvers[resolverKey]
-	if !ok {
-		return ""
+// runtimeImage is the image that carries the language: the compiler for a
+// compiled language, whose runtime is a bare alpine, else the runtime.
+func (s *buildStrategy) runtimeImage() string {
+	if id, ok := runtimeIdentities[s.key]; ok && id.compiler {
+		return s.image
 	}
-	files := []string{resolver.file}
-	if resolver.fallbackFile != "" {
-		files = append(files, resolver.fallbackFile)
-	}
-	for _, file := range files {
-		content, err := readProjectFile(filepath.Join(internalPath, file))
+	return s.runtime
+}
+
+// resolveVersion reads the version the first of a project's version files
+// asks for, and that file's name. Both are "" when none names one.
+func resolveVersion(internalPath, resolverKey string) (string, string) {
+	for _, src := range versionResolvers[resolverKey] {
+		content, err := readProjectFile(filepath.Join(internalPath, src.file))
 		if err != nil {
 			continue
 		}
-		if v := resolver.parse(string(content), file); v != "" {
-			return v
+		if v := src.parse(string(content)); v != "" {
+			return v, src.file
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // readProjectFile reads a file the repository committed, refusing anything

@@ -391,13 +391,18 @@ func (m *Manager) inFlight(id float64, name string) bool {
 	return m.processing[id] || m.creating[name]
 }
 
-// RedeployPayload carries app.redeploy's named arguments.
+// RedeployPayload carries app.redeploy's named arguments. Runtime is the
+// payload's raw runtime member and HasRuntime whether it was sent at all,
+// because an absent member and a null one mean different things
+// (parseRuntimeOverride).
 type RedeployPayload struct {
-	Container string
-	URL       string
-	Token     string
-	Branch    string
-	CommitSha string
+	Container  string
+	URL        string
+	Token      string
+	Branch     string
+	CommitSha  string
+	Runtime    any
+	HasRuntime bool
 }
 
 // Redeploy ports App.redeploy: fetch + rebuild + (Blue-Green) restart.
@@ -407,10 +412,10 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		return res(false, __("Missing container name"))
 	}
 
-	var name, appBranch, appURL, appImage string
+	var name, appBranch, appURL, appImage, storedOverride string
 	var idNum float64
 	var typ string
-	var hasGitMeta bool
+	var hasGitMeta, storedOverrideOK bool
 	var gitMeta map[string]any
 	found := false
 	m.cfg.View(func() {
@@ -422,6 +427,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			appBranch, _ = app["branch"].(string)
 			appURL, _ = app["url"].(string)
 			appImage, _ = app["image"].(string)
+			storedOverride, storedOverrideOK = storedRuntimeOverride(app)
 			if g, _ := app["git"].(map[string]any); g != nil {
 				hasGitMeta = true
 				gitMeta = copyMap(g)
@@ -451,6 +457,16 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	if !validBranch(payload.Branch) {
 		return res(false, __("Invalid branch name format."))
 	}
+	override, overrideSet, err := parseRuntimeOverride(payload.Runtime, payload.HasRuntime)
+	if err != nil {
+		return res(false, err.Error())
+	}
+	if !overrideSet {
+		if !storedOverrideOK {
+			return res(false, docker.ErrUnsupportedRuntimeVersion.Error())
+		}
+		override = storedOverride
+	}
 	targetBranch := payload.Branch
 	if targetBranch == "" {
 		targetBranch = appBranch
@@ -463,6 +479,17 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		return res(false, __("App %s is already being processed.", name))
 	}
 	defer m.unlockProcessing(idNum)
+
+	// The override is the caller's standing choice, not this build's
+	// outcome, so it is stored before the build and stays when it fails.
+	if overrideSet {
+		m.cfg.Mutate(func() {
+			if app := m.getLocked(idNum); app != nil {
+				applyRuntimeOverrideLocked(app, override)
+				m.saveAppsLocked()
+			}
+		})
+	}
 
 	// Register the logger IMMEDIATELY to prevent races with Hub requests.
 	logger := m.getLoggerInstance(name)
@@ -494,6 +521,9 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			m.cleanupGreenArtifacts(greenName)
 		}
 		m.set(idNum, map[string]any{"status": "errored"})
+		if errors.Is(err, docker.ErrUnsupportedRuntimeVersion) {
+			return res(false, err.Error())
+		}
 		return res(false, __("Redeploy failed: %s", err.Error()))
 	}
 
@@ -525,7 +555,6 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 
 	buildID := generateRuntimeID("build")
-	var err error
 	logCtrl, err = logger.NewBuildStream(buildID, map[string]any{
 		"image":    imageName,
 		"strategy": "git-app",
@@ -558,6 +587,13 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		if head, err = m.deps.Docker.CloneRepo(targetURL, targetBranch, appDir, payload.Token, logCtrl); err != nil {
 			return fail(err)
 		}
+		// A clone checks out the branch head, so a pinned commit is fetched
+		// onto it, or the deploy would build a commit nobody asked for.
+		if payload.CommitSha != "" {
+			if head, err = m.deps.Docker.FetchRepo(targetURL, targetBranch, appDir, payload.Token, payload.CommitSha, logCtrl); err != nil {
+				return fail(err)
+			}
+		}
 	}
 	logCtrl.EndPhase(gitPhase, true)
 
@@ -567,7 +603,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 
 	// Step 2: rebuild the image (app still running on the old one).
 	m.set(idNum, map[string]any{"status": "building"})
-	built, err := m.deps.Docker.Build(appDir, imageName, name, logCtrl)
+	built, err := m.deps.Docker.Build(appDir, imageName, name, override, logCtrl)
 	recordBuildRuntime(logCtrl, built)
 	if err != nil {
 		return fail(err)
@@ -1672,6 +1708,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 		m.applyIdentity(cp, statusInfo)
 		delete(cp, imageChangeKey)
+		delete(cp, runtimeOverrideKey)
 
 		if detailed {
 			delete(cp, "pid")

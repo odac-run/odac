@@ -73,7 +73,7 @@ type Docker interface {
 	StatPathIsDir(name, containerPath string) (isDir bool, ok bool)
 	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) (string, error)
 	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) (string, error)
-	Build(sourceDir, imageName, appName string, buildLog docker.BuildLog) (docker.Runtime, error)
+	Build(sourceDir, imageName, appName, runtimeVersion string, buildLog docker.BuildLog) (docker.Runtime, error)
 	ImageDigest(imageID, ref string) string
 	RegisterBuildLogger(appName string, logger *applog.Logger)
 	UnregisterBuildLogger(appName string)

@@ -150,11 +150,11 @@ func TestBuildReportsInterpreterRuntime(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"package.json": `{"engines":{"node":">=20"}}`, "pnpm-lock.yaml": ""})
-	rt, err := c.Build(src, "odac-app-x", "x", nil)
+	rt, err := c.Build(src, "odac-app-x", "x", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Runtime{Strategy: "node-pnpm", Image: "node:20-alpine", Version: "20.11.1"}); rt != want {
+	if want := (Runtime{Strategy: "node-pnpm", Image: "node:20-alpine", Version: "20.11.1", Source: "package.json"}); rt != want {
 		t.Errorf("runtime = %+v, want %+v", rt, want)
 	}
 }
@@ -169,11 +169,11 @@ func TestBuildReportsCompilerRuntime(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"go.mod": "module x\n\ngo 1.22\n"})
-	rt, err := c.Build(src, "odac-app-x", "x", nil)
+	rt, err := c.Build(src, "odac-app-x", "x", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Runtime{Strategy: "go", Image: "golang:1.22-alpine", Version: "1.22.5"}); rt != want {
+	if want := (Runtime{Strategy: "go", Image: "golang:1.22-alpine", Version: "1.22.5", Source: "go.mod"}); rt != want {
 		t.Errorf("runtime = %+v, want %+v", rt, want)
 	}
 }
@@ -186,11 +186,11 @@ func TestBuildReportsVersionedRuntimeBase(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"composer.json": `{"require":{"php":"^8.3"}}`})
-	rt, err := c.Build(src, "odac-app-x", "x", nil)
+	rt, err := c.Build(src, "odac-app-x", "x", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Runtime{Strategy: "php", Image: "php:8.3-apache", Version: "8.3.14"}); rt != want {
+	if want := (Runtime{Strategy: "php", Image: "php:8.3-apache", Version: "8.3.14", Source: "composer.json"}); rt != want {
 		t.Errorf("runtime = %+v, want %+v", rt, want)
 	}
 }
@@ -202,11 +202,11 @@ func TestBuildFailureStillNamesRuntime(t *testing.T) {
 	f.waitCodes["ctr1"] = 2
 
 	src := writeFiles(t, map[string]string{"go.mod": "module x\n"})
-	rt, err := c.Build(src, "img", "x", nil)
+	rt, err := c.Build(src, "img", "x", "", nil)
 	if err == nil {
 		t.Fatal("compile failure not reported")
 	}
-	if want := (Runtime{Strategy: "go", Image: "golang:alpine", Version: "1.23.0"}); rt != want {
+	if want := (Runtime{Strategy: "go", Image: "golang:alpine", Version: "1.23.0", Source: "default"}); rt != want {
 		t.Errorf("runtime = %+v, want %+v", rt, want)
 	}
 }
@@ -219,11 +219,11 @@ func TestBuildReportsDockerfileRuntime(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM node:22-alpine AS base\nFROM base\n"})
-	rt, err := c.Build(src, "custom-img", "x", nil)
+	rt, err := c.Build(src, "custom-img", "x", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Runtime{Strategy: "dockerfile", Image: "node:22-alpine", Version: "22.1.0"}); rt != want {
+	if want := (Runtime{Strategy: "dockerfile", Image: "node:22-alpine", Version: "22.1.0", Source: "dockerfile"}); rt != want {
 		t.Errorf("runtime = %+v, want %+v", rt, want)
 	}
 }
@@ -239,11 +239,11 @@ func TestFailedDockerfileBuildReadsNoVersion(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM node:22-alpine\n"})
-	rt, err := c.Build(src, "custom-img", "x", nil)
+	rt, err := c.Build(src, "custom-img", "x", "", nil)
 	if err == nil {
 		t.Fatal("build failure not reported")
 	}
-	if want := (Runtime{Strategy: "dockerfile", Image: "node:22-alpine"}); rt != want {
+	if want := (Runtime{Strategy: "dockerfile", Image: "node:22-alpine", Source: "dockerfile"}); rt != want {
 		t.Errorf("runtime = %+v, want %+v", rt, want)
 	}
 }
@@ -251,7 +251,40 @@ func TestFailedDockerfileBuildReadsNoVersion(t *testing.T) {
 func TestBuildUndetectableHasNoRuntime(t *testing.T) {
 	c := newTestClient(t, newFakeAPI())
 	src := writeFiles(t, map[string]string{"README.md": "x"})
-	if rt, err := c.Build(src, "img", "x", nil); err == nil || rt != (Runtime{}) {
+	if rt, err := c.Build(src, "img", "x", "", nil); err == nil || rt != (Runtime{}) {
 		t.Errorf("rt = %+v, err = %v", rt, err)
+	}
+}
+
+func TestRuntimeSourceIsAClosedEnum(t *testing.T) {
+	for source := range RuntimeSources {
+		got := Runtime{Strategy: "node-npm", Source: source}.Map()
+		if got["source"] != source {
+			t.Errorf("source %q dropped: %v", source, got)
+		}
+	}
+	for _, bad := range []string{"", "Dockerfile", "../.nvmrc", "package.json5", "OVERRIDE"} {
+		if got := (Runtime{Strategy: "go", Source: bad}).Map(); !reflect.DeepEqual(got, map[string]any{"strategy": "go"}) {
+			t.Errorf("source %q kept: %v", bad, got)
+		}
+	}
+	stored := map[string]any{"strategy": "node-npm", "image": "node:22-alpine", "source": ".nvmrc"}
+	if got := RuntimeRow(stored); !reflect.DeepEqual(got, stored) {
+		t.Errorf("row = %v", got)
+	}
+	if got := RuntimeRow(map[string]any{"strategy": "go", "source": "go.sum"}); !reflect.DeepEqual(got, map[string]any{"strategy": "go"}) {
+		t.Errorf("hand-edited source relayed: %v", got)
+	}
+}
+
+// TestEveryResolverFileIsAWireSource keeps the enum and the resolver table
+// in one change: a file that can decide a version must be reportable.
+func TestEveryResolverFileIsAWireSource(t *testing.T) {
+	for key, sources := range versionResolvers {
+		for _, src := range sources {
+			if !RuntimeSources[src.file] {
+				t.Errorf("%s reads %s, which RuntimeSources does not list", key, src.file)
+			}
+		}
 	}
 }

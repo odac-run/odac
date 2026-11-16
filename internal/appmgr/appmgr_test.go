@@ -64,7 +64,11 @@ type fakeDocker struct {
 	cloneErr   error
 	fetchCalls [][2]string
 	buildCalls []string // image names
-	buildErr   error
+	// buildOverrides is the runtime version each Build call was given.
+	buildOverrides []string
+	// fetchCommits is the commit each FetchRepo call pinned ("" for the head).
+	fetchCommits []string
+	buildErr     error
 
 	head         string            // HEAD CloneRepo/FetchRepo report
 	buildRuntime docker.Runtime    // what Build reports, on failure too
@@ -328,9 +332,10 @@ func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) (str
 	return head, nil
 }
 
-func (f *fakeDocker) FetchRepo(url, branch, _, _, _ string, _ docker.BuildLog) (string, error) {
+func (f *fakeDocker) FetchRepo(url, branch, _, _, commitSha string, _ docker.BuildLog) (string, error) {
 	f.mu.Lock()
 	f.fetchCalls = append(f.fetchCalls, [2]string{url, branch})
+	f.fetchCommits = append(f.fetchCommits, commitSha)
 	hook := f.fetchHook
 	head := f.head
 	f.mu.Unlock()
@@ -340,9 +345,10 @@ func (f *fakeDocker) FetchRepo(url, branch, _, _, _ string, _ docker.BuildLog) (
 	return head, nil
 }
 
-func (f *fakeDocker) Build(_, imageName, _ string, _ docker.BuildLog) (docker.Runtime, error) {
+func (f *fakeDocker) Build(_, imageName, _, runtimeVersion string, _ docker.BuildLog) (docker.Runtime, error) {
 	f.mu.Lock()
 	f.buildCalls = append(f.buildCalls, imageName)
+	f.buildOverrides = append(f.buildOverrides, runtimeVersion)
 	hook := f.buildHook
 	err := f.buildErr
 	rt := f.buildRuntime

@@ -165,6 +165,7 @@ type fakeApp struct {
 
 	listResult  *api.Result
 	imageResult appmgr.ImageSetResult
+	redeploys   []appmgr.RedeployPayload
 
 	logCB    func(applog.Entry)
 	logUnsub func()
@@ -251,6 +252,9 @@ func (f *fakeApp) SetVolumes(id any, volumes []any, payloadOK bool) *api.Result 
 }
 func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	f.record("redeploy:" + payload.Container + ":" + payload.Branch)
+	f.mu.Lock()
+	f.redeploys = append(f.redeploys, payload)
+	f.mu.Unlock()
 	return ok("ok")
 }
 func (f *fakeApp) SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult {
@@ -1412,5 +1416,37 @@ func TestNormalizeResultShapes(t *testing.T) {
 	r = normalizeResult(map[string]any{"success": false, "message": "nope"})
 	if r.success != false || r.message != "nope" || r.hasData {
 		t.Errorf("map: %+v", r)
+	}
+}
+
+// TestRedeployForwardsRuntimePresence pins the one distinction the hub must
+// not flatten: an absent runtime member keeps the stored override, a null
+// one clears it.
+func TestRedeployForwardsRuntimePresence(t *testing.T) {
+	fx := newHubFixture(t)
+	fn := fx.h.commands["app.redeploy"].fn
+	for _, p := range []map[string]any{
+		{"container": "web", "commitSha": "abc1234"},
+		{"container": "web", "runtime": nil},
+		{"container": "web", "runtime": map[string]any{"version": "22"}},
+	} {
+		if _, err := fn(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.app.mu.Lock()
+	got := fx.app.redeploys
+	fx.app.mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("redeploys = %d", len(got))
+	}
+	if got[0].HasRuntime || got[0].CommitSha != "abc1234" {
+		t.Errorf("absent runtime = %+v", got[0])
+	}
+	if !got[1].HasRuntime || got[1].Runtime != nil {
+		t.Errorf("null runtime = %+v", got[1])
+	}
+	if v, _ := got[2].Runtime.(map[string]any); !got[2].HasRuntime || v["version"] != "22" {
+		t.Errorf("versioned runtime = %+v", got[2])
 	}
 }

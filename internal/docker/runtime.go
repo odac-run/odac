@@ -21,6 +21,10 @@ type Runtime struct {
 	// Version is the language's exact version from that image's Env, empty
 	// when the image does not declare one.
 	Version string
+	// Source names what decided the language version, one of
+	// RuntimeSources: the operator's override, the strategy default, the
+	// Dockerfile, or the project file that named it.
+	Source string
 }
 
 // RuntimeStrategies is the closed wire enum of Runtime.Strategy. The Cloud
@@ -62,6 +66,17 @@ var dockerfileVersionEnvs = []string{
 	"RUST_VERSION", "BUN_VERSION", "NGINX_VERSION",
 }
 
+// RuntimeSources is the closed wire enum of Runtime.Source. The Cloud keys
+// its "why this version" copy on it, so a new version file joins this set in
+// the same change that teaches a resolver to read it.
+var RuntimeSources = map[string]bool{
+	"override": true, "default": true, "dockerfile": true,
+	".nvmrc": true, ".node-version": true, "package.json": true,
+	".python-version": true, "pyproject.toml": true, "runtime.txt": true,
+	"go.mod": true, "composer.json": true,
+	"rust-toolchain.toml": true, "rust-toolchain": true,
+}
+
 var (
 	// runtimeVersionRe is the shape a reported version must have. The value
 	// comes from an image's Env, which whoever published the image wrote.
@@ -85,6 +100,9 @@ func (r Runtime) Map() map[string]any {
 	if runtimeVersionRe.MatchString(r.Version) {
 		out["version"] = r.Version
 	}
+	if RuntimeSources[r.Source] {
+		out["source"] = r.Source
+	}
 	return out
 }
 
@@ -99,7 +117,8 @@ func RuntimeRow(v any) map[string]any {
 	strategy, _ := m["strategy"].(string)
 	image, _ := m["image"].(string)
 	version, _ := m["version"].(string)
-	return Runtime{Strategy: strategy, Image: image, Version: version}.Map()
+	source, _ := m["source"].(string)
+	return Runtime{Strategy: strategy, Image: image, Version: version, Source: source}.Map()
 }
 
 // buildRuntime decides the Runtime of a build. built reports whether
@@ -110,7 +129,7 @@ func (c *Client) buildRuntime(strategy *buildStrategy, bctx BuildContext, imageN
 		return Runtime{}
 	}
 	if strategy.custom {
-		rt := Runtime{Strategy: "dockerfile"}
+		rt := Runtime{Strategy: "dockerfile", Source: strategy.source}
 		if content, err := readProjectFile(filepath.Join(bctx.InternalPath, "Dockerfile")); err == nil {
 			rt.Image = dockerfileRuntimeImage(string(content))
 		}
@@ -123,14 +142,12 @@ func (c *Client) buildRuntime(strategy *buildStrategy, bctx BuildContext, imageN
 	if !ok {
 		return Runtime{}
 	}
-	image := strategy.runtime
-	if identity.compiler {
-		image = strategy.image
-	}
+	image := strategy.runtimeImage()
 	return Runtime{
 		Strategy: identity.strategy,
 		Image:    image,
 		Version:  envVersion(c.imageEnv(image), identity.versionEnv),
+		Source:   strategy.source,
 	}
 }
 
