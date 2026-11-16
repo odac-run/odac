@@ -532,9 +532,10 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 	logCtrl.StartPhase(gitPhase)
 
+	var head string
 	if hasGit {
 		// Fast path: incremental fetch (delta download only).
-		if err := m.deps.Docker.FetchRepo(targetURL, targetBranch, appDir, payload.Token, payload.CommitSha, logCtrl); err != nil {
+		if head, err = m.deps.Docker.FetchRepo(targetURL, targetBranch, appDir, payload.Token, payload.CommitSha, logCtrl); err != nil {
 			return fail(err)
 		}
 	} else {
@@ -546,7 +547,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		if err := os.MkdirAll(appDir, 0o755); err != nil {
 			return fail(err)
 		}
-		if err := m.deps.Docker.CloneRepo(targetURL, targetBranch, appDir, payload.Token, logCtrl); err != nil {
+		if head, err = m.deps.Docker.CloneRepo(targetURL, targetBranch, appDir, payload.Token, logCtrl); err != nil {
 			return fail(err)
 		}
 	}
@@ -558,7 +559,9 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 
 	// Step 2: rebuild the image (app still running on the old one).
 	m.set(idNum, map[string]any{"status": "building"})
-	if err := m.deps.Docker.Build(appDir, imageName, name, logCtrl); err != nil {
+	built, err := m.deps.Docker.Build(appDir, imageName, name, logCtrl)
+	recordBuildRuntime(logCtrl, built)
+	if err != nil {
 		return fail(err)
 	}
 
@@ -610,10 +613,15 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		logCtrl.EndPhase("proxy_propagation", true)
 	}
 
-	// Persist updated metadata.
+	// Persist updated metadata. The runtime and the commit describe the
+	// image now running, so they are written only here, past every failure.
 	updates := map[string]any{}
-	if payload.CommitSha != "" {
-		updates["commitSha"] = payload.CommitSha
+	if rt := built.Map(); rt != nil {
+		updates["runtime"] = rt
+	}
+	commit := deployedCommit(head, payload.CommitSha)
+	if commit != "" {
+		updates["commitSha"] = commit
 	}
 	if payload.Branch != "" || payload.URL != "" {
 		if payload.Branch != "" {
@@ -630,9 +638,20 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			updates["git"] = gitMeta
 		}
 	}
-	if len(updates) > 0 {
-		m.set(idNum, updates)
-	}
+	m.cfg.Mutate(func() {
+		app := m.getLocked(idNum)
+		if app == nil {
+			return
+		}
+		if commit == "" {
+			// Unknown is better than the previous deploy's commit.
+			delete(app, "commitSha")
+		}
+		for k, v := range updates {
+			app[k] = v
+		}
+		m.saveAppsLocked()
+	})
 
 	// The rebuild retagged odac-app-<name> onto fresh layers, orphaning the
 	// previous image as an untagged (<none>) dangling entry. Sweep those now
@@ -1601,7 +1620,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 					phases[i] = 0
 				}
 			}
-			cp["build"] = map[string]any{
+			build := map[string]any{
 				"id":       lastBuild.ID,
 				"status":   lastBuild.Status,
 				"duration": lastBuild.Duration,
@@ -1609,6 +1628,10 @@ func (m *Manager) List(detailed bool) *api.Result {
 				"warnings": lastBuild.Warnings,
 				"phases":   phases,
 			}
+			if rt := docker.RuntimeRow(lastBuild.Metadata["runtime"]); rt != nil {
+				build["runtime"] = rt
+			}
+			cp["build"] = build
 		}
 		health := logger.GetHealth()
 		if health == nil {
@@ -1639,6 +1662,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 				cp["started"] = float64(t.UnixMilli())
 			}
 		}
+		m.applyIdentity(cp, statusInfo)
 
 		if detailed {
 			delete(cp, "pid")

@@ -341,6 +341,14 @@ func (h *Hub) processCommand(action string, payload any, requestID any) {
 	h.mu.Unlock()
 	if action == "" || cmd == nil {
 		h.log.Log("Invalid or unknown command received: %s", action)
+		// An answer instead of silence lets the Cloud tell an agent that
+		// predates an action apart from one that is slow or gone.
+		if jsTruthy(requestID) {
+			h.sendCommandResponse(requestID, cmdResult{
+				success: false, hasSuccess: true,
+				message: "unknown action", hasMessage: true,
+			})
+		}
 		return
 	}
 

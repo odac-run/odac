@@ -88,6 +88,8 @@ type fakeAPI struct {
 
 	removedImages []string
 	prunedImages  bool
+
+	imageInspects int
 }
 
 func newFakeAPI() *fakeAPI {
@@ -255,6 +257,7 @@ func (f *fakeAPI) ContainerExecResize(context.Context, string, container.ResizeO
 func (f *fakeAPI) ImageInspectWithRaw(_ context.Context, id string) (image.InspectResponse, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.imageInspects++
 	if resp, ok := f.images[id]; ok {
 		return resp, nil, nil
 	}
@@ -269,8 +272,9 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ image.PullOptions) 
 	if !ok {
 		body = `{"status":"Pulling from library"}` + "\n"
 	}
-	// The image becomes "local" after a pull that did not report an error.
-	if !strings.Contains(body, `"error"`) {
+	// The image becomes "local" after a pull that did not report an error;
+	// a seeded image keeps its config, as a re-pull of the same tag would.
+	if _, local := f.images[ref]; !local && !strings.Contains(body, `"error"`) {
 		f.images[ref] = image.InspectResponse{}
 	}
 	return io.NopCloser(bytes.NewReader([]byte(body))), nil

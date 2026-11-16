@@ -553,3 +553,33 @@ func TestDestroyRemovesTree(t *testing.T) {
 		t.Error("logs dir should be removed")
 	}
 }
+
+func TestBuildStreamSetMetadata(t *testing.T) {
+	l := newTestLogger(t)
+	b, err := l.NewBuildStream("build_2000_abc", map[string]any{"image": "img", "strategy": "git-app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetMetadata("runtime", map[string]any{"strategy": "go"})
+	b.SetMetadata("dropped", "x")
+	b.SetMetadata("dropped", nil)
+	if err := b.Finalize(false); err != nil {
+		t.Fatal(err)
+	}
+	b.SetMetadata("late", "x") // after the summary was written
+
+	last := l.GetLastBuild()
+	if last == nil {
+		t.Fatal("no build summary")
+	}
+	rt, _ := last.Metadata["runtime"].(map[string]any)
+	if rt["strategy"] != "go" || last.Metadata["image"] != "img" {
+		t.Errorf("metadata = %v", last.Metadata)
+	}
+	if _, ok := last.Metadata["dropped"]; ok {
+		t.Errorf("nil did not remove the key: %v", last.Metadata)
+	}
+	if _, ok := last.Metadata["late"]; ok {
+		t.Errorf("metadata written after Finalize: %v", last.Metadata)
+	}
+}

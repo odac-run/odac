@@ -143,6 +143,22 @@ func (b *BuildControl) Write(p []byte) (int, error) {
 	return len(p), err
 }
 
+// SetMetadata records a fact learned during the build in its summary, for
+// what is only known once the build has run (the runtime it built on). A
+// nil value removes the key. No-op after Finalize, which wrote the summary.
+func (b *BuildControl) SetMetadata(key string, value any) {
+	b.logger.mu.Lock()
+	defer b.logger.mu.Unlock()
+	if b.finalized {
+		return
+	}
+	if value == nil {
+		delete(b.stats.Metadata, key)
+		return
+	}
+	b.stats.Metadata[key] = value
+}
+
 // StartPhase records the start of a named phase.
 func (b *BuildControl) StartPhase(name string) {
 	b.logger.mu.Lock()

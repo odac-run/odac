@@ -806,14 +806,17 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 
 	m.clog.Log("createFromGit: Cloning repository...")
 	logCtrl.StartPhase("git_clone")
-	if err := m.deps.Docker.CloneRepo(url, branch, appDir, token, logCtrl); err != nil {
+	head, err := m.deps.Docker.CloneRepo(url, branch, appDir, token, logCtrl)
+	if err != nil {
 		return fail(err)
 	}
 	logCtrl.EndPhase("git_clone", true)
 	m.clog.Log("createFromGit: Clone successful")
 
 	m.clog.Log("createFromGit: Building image...")
-	if err := m.deps.Docker.Build(appDir, imageName, name, logCtrl); err != nil {
+	built, err := m.deps.Docker.Build(appDir, imageName, name, logCtrl)
+	recordBuildRuntime(logCtrl, built)
+	if err != nil {
 		return fail(err)
 	}
 	m.clog.Log("createFromGit: Build successful")
@@ -879,6 +882,13 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		}
 		if branch != "" {
 			app["branch"] = branch
+		}
+		// The image is built, so these describe what the record now runs.
+		if rt := built.Map(); rt != nil {
+			app["runtime"] = rt
+		}
+		if commit := deployedCommit(head, ""); commit != "" {
+			app["commitSha"] = commit
 		}
 		kernelSpec.Apply(app)
 		resourceSpec.Apply(app)

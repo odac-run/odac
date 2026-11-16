@@ -158,7 +158,7 @@ func TestBuildTwoStagePipeline(t *testing.T) {
 
 	src := writeFiles(t, map[string]string{"go.mod": "module x\n\ngo 1.22\n"})
 
-	if err := c.Build(src, "odac-app-x", "x", nil); err != nil {
+	if _, err := c.Build(src, "odac-app-x", "x", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,7 +220,7 @@ func TestBuildCustomDockerfile(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM scratch"})
-	if err := c.Build(src, "custom-img", "x", nil); err != nil {
+	if _, err := c.Build(src, "custom-img", "x", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.created) != 1 {
@@ -238,7 +238,7 @@ func TestBuildCustomDockerfileRefreshesBases(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM golang:1.26-alpine AS build\nFROM local-only:1\n"})
-	if err := c.Build(src, "custom-img", "x", nil); err != nil {
+	if _, err := c.Build(src, "custom-img", "x", nil); err != nil {
 		t.Fatalf("a base the registry refuses must be left to docker build: %v", err)
 	}
 	if want := []string{"golang:1.26-alpine", "local-only:1"}; !reflect.DeepEqual(f.pulled, want) {
@@ -256,7 +256,7 @@ func TestBuildFailureExitCode(t *testing.T) {
 	f.waitCodes["ctr1"] = 2 // compile container fails
 
 	src := writeFiles(t, map[string]string{"go.mod": "module x\n"})
-	err := c.Build(src, "img", "x", nil)
+	_, err := c.Build(src, "img", "x", nil)
 	if err == nil || err.Error() != "Compilation failed with exit code 2" {
 		t.Errorf("err = %v", err)
 	}
@@ -266,7 +266,7 @@ func TestBuildRejectsUndetectableProject(t *testing.T) {
 	f := newFakeAPI()
 	c := newTestClient(t, f)
 	src := writeFiles(t, map[string]string{"README.md": "x"})
-	err := c.Build(src, "img", "x", nil)
+	_, err := c.Build(src, "img", "x", nil)
 	if err == nil || !strings.Contains(err.Error(), "Could not detect project type") {
 		t.Errorf("err = %v", err)
 	}
@@ -280,7 +280,7 @@ func TestBuildRejectsParallelSameImage(t *testing.T) {
 	c.mu.Unlock()
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM scratch"})
-	err := c.Build(src, "img", "x", nil)
+	_, err := c.Build(src, "img", "x", nil)
 	if err == nil || err.Error() != "Build already in progress for img" {
 		t.Errorf("err = %v", err)
 	}
@@ -291,7 +291,7 @@ func TestBuildRejectsUnsafeImageName(t *testing.T) {
 	c := newTestClient(t, f)
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM scratch"})
-	err := c.Build(src, "img;touch /pwned", "x", nil)
+	_, err := c.Build(src, "img;touch /pwned", "x", nil)
 	if err == nil || !strings.Contains(err.Error(), "Invalid image name") {
 		t.Errorf("err = %v, want Invalid image name", err)
 	}
@@ -308,7 +308,7 @@ func TestBuildSelfCreatedLoggerFinalizes(t *testing.T) {
 	c := New(f, Options{LogsRoot: logsRoot})
 
 	src := writeFiles(t, map[string]string{"Dockerfile": "FROM scratch"})
-	if err := c.Build(src, "img", "myapp", nil); err != nil {
+	if _, err := c.Build(src, "img", "myapp", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -384,7 +384,7 @@ func TestBuildDoesNotWriteThroughPlantedSymlinks(t *testing.T) {
 		}
 	}
 
-	if err := c.Build(src, "img", "x", nil); err != nil {
+	if _, err := c.Build(src, "img", "x", nil); err != nil {
 		t.Fatal(err)
 	}
 	for name, target := range victims {

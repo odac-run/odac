@@ -184,6 +184,9 @@ type Client struct {
 	activeBuilds map[string]bool
 	buildLoggers map[string]*applog.Logger
 
+	// digests caches each image ID's RepoDigests for ImageDigest.
+	digests imageDigestCache
+
 	// appNames resolves managed app names for CreateTerminalSession
 	// (injected by main; see SetAppNames).
 	appNames func() []string
@@ -1134,6 +1137,9 @@ type Status struct {
 	StartTime string         `json:"startTime,omitempty"`
 	Networks  []string       `json:"networks,omitempty"`
 	GPU       *GPUAttachment `json:"gpu,omitempty"`
+	// ImageID is the image the container was created from (sha256:<hex>),
+	// read off the same inspect so List needs no second call to name it.
+	ImageID string `json:"imageId,omitempty"`
 }
 
 // GPUAttachment is the accelerator a container actually holds, read back from
@@ -1242,6 +1248,9 @@ func (c *Client) GetStatus(name string) Status {
 	}
 
 	st := Status{Restarts: data.RestartCount, Networks: networks, GPU: gpuAttachment(data.HostConfig)}
+	if imageIDRe.MatchString(data.Image) {
+		st.ImageID = data.Image
+	}
 	if data.State != nil {
 		st.Running = data.State.Running
 		st.StartTime = data.State.StartedAt

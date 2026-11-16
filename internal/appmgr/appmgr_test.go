@@ -66,6 +66,11 @@ type fakeDocker struct {
 	buildCalls []string // image names
 	buildErr   error
 
+	head         string            // HEAD CloneRepo/FetchRepo report
+	buildRuntime docker.Runtime    // what Build reports, on failure too
+	digests      map[string]string // ImageDigest answers, key imageID\x00ref
+	digestCalls  int
+
 	containers []docker.ContainerInfo
 
 	networksResult docker.SetNetworksResult
@@ -285,35 +290,48 @@ func (f *fakeDocker) StatPathIsDir(name, containerPath string) (bool, bool) {
 	return isDir, ok
 }
 
-func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) error {
+func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) (string, error) {
 	f.mu.Lock()
 	f.cloneCalls = append(f.cloneCalls, [2]string{url, branch})
 	err := f.cloneErr
+	head := f.head
 	f.mu.Unlock()
-	return err
+	if err != nil {
+		return "", err
+	}
+	return head, nil
 }
 
-func (f *fakeDocker) FetchRepo(url, branch, _, _, _ string, _ docker.BuildLog) error {
+func (f *fakeDocker) FetchRepo(url, branch, _, _, _ string, _ docker.BuildLog) (string, error) {
 	f.mu.Lock()
 	f.fetchCalls = append(f.fetchCalls, [2]string{url, branch})
 	hook := f.fetchHook
+	head := f.head
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
-	return nil
+	return head, nil
 }
 
-func (f *fakeDocker) Build(_, imageName, _ string, _ docker.BuildLog) error {
+func (f *fakeDocker) Build(_, imageName, _ string, _ docker.BuildLog) (docker.Runtime, error) {
 	f.mu.Lock()
 	f.buildCalls = append(f.buildCalls, imageName)
 	hook := f.buildHook
 	err := f.buildErr
+	rt := f.buildRuntime
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
-	return err
+	return rt, err
+}
+
+func (f *fakeDocker) ImageDigest(imageID, ref string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.digestCalls++
+	return f.digests[imageID+"\x00"+ref]
 }
 
 func (f *fakeDocker) RegisterBuildLogger(appName string, _ *applog.Logger) {
@@ -692,7 +710,7 @@ type blockingCloneDocker struct {
 	once    sync.Once
 }
 
-func (b *blockingCloneDocker) CloneRepo(url, branch, dir, token string, l docker.BuildLog) error {
+func (b *blockingCloneDocker) CloneRepo(url, branch, dir, token string, l docker.BuildLog) (string, error) {
 	b.once.Do(func() { close(b.started) })
 	<-b.block
 	return b.fakeDocker.CloneRepo(url, branch, dir, token, l)

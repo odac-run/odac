@@ -684,6 +684,39 @@ func TestCommandDispatchResponseAndTrigger(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandAnswersFailure(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	fx.cloud.send(t, jscanon.Obj{
+		{K: "id", V: "req-9"},
+		{K: "type", V: "command"},
+		{K: "data", V: map[string]any{"action": "app.image.switch", "payload": map[string]any{}}},
+		{K: "timestamp", V: time.Now().Unix()},
+	})
+
+	resp := fx.cloud.next(t)
+	if resp["type"] != "command.response" {
+		t.Fatalf("expected command.response, got %v", resp["type"])
+	}
+	data, _ := resp["data"].(map[string]any)
+	if data["id"] != "req-9" || data["success"] != false || data["message"] != "unknown action" {
+		t.Fatalf("bad response data: %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("unknown action carried data: %v", data)
+	}
+
+	// Without a request id there is nobody to answer.
+	fx.cloud.send(t, jscanon.Obj{
+		{K: "type", V: "command"},
+		{K: "data", V: map[string]any{"action": "app.image.switch", "payload": map[string]any{}}},
+		{K: "timestamp", V: time.Now().Unix()},
+	})
+	fx.cloud.expectNone(t, 150*time.Millisecond)
+}
+
 func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	fx := newHubFixture(t)
 	fx.connect()
@@ -713,20 +746,6 @@ func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	if !dispatched {
 		t.Fatalf("restart not dispatched: %v", fx.app.called())
 	}
-}
-
-func TestUnknownCommandIgnored(t *testing.T) {
-	fx := newHubFixture(t)
-	fx.connect()
-	fx.waitIdle()
-
-	fx.cloud.send(t, jscanon.Obj{
-		{K: "id", V: "req-9"},
-		{K: "type", V: "command"},
-		{K: "data", V: map[string]any{"action": "bogus.action"}},
-		{K: "timestamp", V: time.Now().Unix()},
-	})
-	fx.cloud.expectNone(t, 200*time.Millisecond)
 }
 
 func TestCommandErrorAnswersFailure(t *testing.T) {

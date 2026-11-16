@@ -276,22 +276,26 @@ type BuildContext struct {
 // builder creates (and finalizes) its own applog build stream; a
 // caller-provided buildLog is never finalized here (App finalizes after
 // deployment completes).
-func (c *Client) Build(sourceDir, imageName, appName string, buildLog BuildLog) error {
+//
+// The Runtime is returned on failure too whenever the strategy was detected,
+// so a failed build's summary can say what it tried to build on; the caller
+// decides whether it describes the running image.
+func (c *Client) Build(sourceDir, imageName, appName string, buildLog BuildLog) (Runtime, error) {
 	if !c.available {
-		return fmt.Errorf("Docker is not available")
+		return Runtime{}, fmt.Errorf("Docker is not available")
 	}
 	// Defense-in-depth: imageName is interpolated into the `docker build -t`
 	// shell command in packageImage/packageCustom, so reject any value
 	// carrying shell metacharacters or whitespace before it reaches the
 	// builder. Callers (appmgr) also validate app names at their source.
 	if !safeImageRef.MatchString(imageName) {
-		return fmt.Errorf("Invalid image name: %q", imageName)
+		return Runtime{}, fmt.Errorf("Invalid image name: %q", imageName)
 	}
 
 	c.mu.Lock()
 	if c.activeBuilds[imageName] {
 		c.mu.Unlock()
-		return fmt.Errorf("Build already in progress for %s", imageName)
+		return Runtime{}, fmt.Errorf("Build already in progress for %s", imageName)
 	}
 	c.activeBuilds[imageName] = true
 	c.mu.Unlock()
@@ -310,7 +314,7 @@ func (c *Client) Build(sourceDir, imageName, appName string, buildLog BuildLog) 
 }
 
 // builderRun is Builder.build.
-func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildLog) error {
+func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildLog) (Runtime, error) {
 	// Self-created logger when the caller did not pass one (standalone
 	// builder path). Only this path finalizes the log.
 	var ownCtrl *applog.BuildControl
@@ -344,7 +348,7 @@ func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildL
 		if ownCtrl != nil {
 			ownCtrl.Finalize(false)
 		}
-		return err
+		return Runtime{}, err
 	}
 
 	run := func() error {
@@ -385,13 +389,13 @@ func (c *Client) builderRun(bctx BuildContext, imageName string, buildLog BuildL
 		if ownCtrl != nil {
 			ownCtrl.Finalize(false)
 		}
-		return err
+		return c.buildRuntime(strategy, bctx, imageName, false), err
 	}
 	c.log.Log("Build completed successfully: %s", imageName)
 	if ownCtrl != nil {
 		ownCtrl.Finalize(true)
 	}
-	return nil
+	return c.buildRuntime(strategy, bctx, imageName, true), nil
 }
 
 // detectStrategy ports Builder.#detect: custom Dockerfile first, then the
