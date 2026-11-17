@@ -89,9 +89,9 @@ func TestImageDigestRefusesMalformedID(t *testing.T) {
 }
 
 func TestImageDigestCacheIsBounded(t *testing.T) {
-	var cache imageDigestCache
+	var cache imageInfoCache
 	for i := 0; i < maxCachedImages+10; i++ {
-		cache.put(strings.Repeat("x", i+1), nil)
+		cache.put(strings.Repeat("x", i+1), imageInfo{})
 	}
 	if n := len(cache.byID); n > maxCachedImages {
 		t.Errorf("cache holds %d entries, bound is %d", n, maxCachedImages)

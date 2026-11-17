@@ -40,15 +40,24 @@ func deployedCommit(head, requested string) string {
 
 // applyIdentity adds what app.list reports about an app's image and source
 // to a row copied from its record. Every member is present only when it is
-// known, since the Cloud diffs rows by serialization: imageId and
-// imageDigest come from the container, runtime and commitSha from the record
-// (re-validated, because the record can be edited by hand).
+// known, since the Cloud diffs rows by serialization: imageId, imageDigest
+// and imageMeta come from the container's image, runtime and commitSha from
+// the record (re-validated, because the record can be edited by hand).
+// imageMeta is reported for catalog and registry apps only: a git build's
+// image carries its language base's labels and env, which describe the
+// runtime (reported as runtime), not the app.
 func (m *Manager) applyIdentity(cp map[string]any, status docker.Status) {
+	delete(cp, "imageMeta")
 	if status.ImageID != "" {
 		cp["imageId"] = status.ImageID
 		ref, _ := cp["image"].(string)
 		if digest := m.deps.Docker.ImageDigest(status.ImageID, ref); digest != "" {
 			cp["imageDigest"] = digest
+		}
+		if cp["type"] == "container" {
+			if meta, ok := m.deps.Docker.ImageVersionMeta(status.ImageID); ok {
+				cp["imageMeta"] = meta.Row()
+			}
 		}
 	}
 

@@ -78,6 +78,8 @@ type Docker interface {
 	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) (string, error)
 	Build(sourceDir, imageName, appName, runtimeVersion string, buildLog docker.BuildLog) (docker.Runtime, error)
 	ImageDigest(imageID, ref string) string
+	ImageVersionMeta(imageID string) (docker.ImageVersionMeta, bool)
+	RetainImageInfo(inUse map[string]bool)
 	ObservedRuntime(sourceDir, imageID string) (docker.Runtime, error)
 	CheckoutHead(targetDir string) (string, error)
 	RegisterBuildLogger(appName string, logger *applog.Logger)

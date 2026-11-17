@@ -266,3 +266,60 @@ func TestCreateFromGitWithoutIdentityAddsNoKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestListReportsImageMetaForImageAppsOnly(t *testing.T) {
+	otherID := "sha256:" + strings.Repeat("e", 64)
+	unreadableID := "sha256:" + strings.Repeat("f", 64)
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(1), "name": "ch", "type": "container", "image": "clickhouse/clickhouse-server:latest",
+			"env": map[string]any{"manual": map[string]any{"CLICKHOUSE_PASSWORD": "hunter2"}}},
+		map[string]any{"id": float64(2), "name": "web", "type": "git", "image": "odac-app-web"},
+		map[string]any{"id": float64(3), "name": "devapp", "type": "git", "dev": true, "image": "odac-app-devapp"},
+		map[string]any{"id": float64(4), "name": "bare", "type": "container", "image": "grafana/grafana:latest"},
+		map[string]any{"id": float64(5), "name": "lost", "type": "container", "image": "redis:7",
+			"imageMeta": map[string]any{"labels": map[string]any{"stale.version": "1"}, "env": map[string]any{}}},
+		map[string]any{"id": float64(6), "name": "stopped", "type": "container", "image": "mongo:latest",
+			"imageMeta": map[string]any{"labels": map[string]any{}, "env": map[string]any{}}},
+	})
+	fx.dock.mu.Lock()
+	fx.dock.status["ch"] = docker.Status{Running: true, ImageID: imageID}
+	fx.dock.status["web"] = docker.Status{Running: true, ImageID: otherID}
+	fx.dock.status["devapp"] = docker.Status{Running: true, ImageID: otherID}
+	fx.dock.status["bare"] = docker.Status{Running: true, ImageID: otherID}
+	fx.dock.status["lost"] = docker.Status{Running: true, ImageID: unreadableID}
+	fx.dock.versionMeta = map[string]docker.ImageVersionMeta{
+		imageID: {
+			Labels: map[string]string{"com.clickhouse.build.version": "26.10.4.207", "org.opencontainers.image.version": "22.04"},
+			Env:    map[string]string{},
+		},
+		otherID: {Labels: map[string]string{}, Env: map[string]string{}},
+	}
+	fx.dock.mu.Unlock()
+
+	want := map[string]any{
+		"labels": map[string]any{"com.clickhouse.build.version": "26.10.4.207", "org.opencontainers.image.version": "22.04"},
+		"env":    map[string]any{},
+	}
+	if got := fx.listRow(t, "ch")["imageMeta"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("ch imageMeta = %v", got)
+	}
+	// Read, nothing declared: empty maps, which the Cloud reads as "clear".
+	empty := map[string]any{"labels": map[string]any{}, "env": map[string]any{}}
+	if got := fx.listRow(t, "bare")["imageMeta"]; !reflect.DeepEqual(got, empty) {
+		t.Errorf("bare imageMeta = %v", got)
+	}
+	// Git and dev apps never carry it; an unreadable image or no container
+	// leaves it out, a hand-edited record's copy included.
+	for _, name := range []string{"web", "devapp", "lost", "stopped"} {
+		if got, ok := fx.listRow(t, name)["imageMeta"]; ok {
+			t.Errorf("%s carries imageMeta = %v", name, got)
+		}
+	}
+
+	fx.dock.mu.Lock()
+	retained := fx.dock.retained
+	fx.dock.mu.Unlock()
+	if !reflect.DeepEqual(retained, map[string]bool{imageID: true, otherID: true, unreadableID: true}) {
+		t.Errorf("retained image IDs = %v", retained)
+	}
+}

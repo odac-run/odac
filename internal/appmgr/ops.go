@@ -1685,10 +1685,14 @@ func (m *Manager) List(detailed bool) *api.Result {
 	}
 
 	cleanApps := make([]any, 0, len(rows))
+	imagesInUse := make(map[string]bool, len(rows))
 	for _, r := range rows {
 		cp := r.app
 		statusInfo := m.deps.Docker.GetStatus(r.name)
 		isRunning := statusInfo.Running
+		if statusInfo.ImageID != "" {
+			imagesInUse[statusInfo.ImageID] = true
+		}
 
 		logger := applog.New(m.logsRoot, r.name)
 		if lastBuild := logger.GetLastBuild(); lastBuild != nil {
@@ -1806,6 +1810,9 @@ func (m *Manager) List(detailed bool) *api.Result {
 			})
 		}
 	}
+	// The image info cache keeps only what some app still runs, so a server
+	// that rebuilds and pulls for months does not hold every image it saw.
+	m.deps.Docker.RetainImageInfo(imagesInUse)
 
 	return res(true, cleanApps)
 }

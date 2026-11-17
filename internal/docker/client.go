@@ -186,8 +186,9 @@ type Client struct {
 	activeBuilds map[string]bool
 	buildLoggers map[string]*applog.Logger
 
-	// digests caches each image ID's RepoDigests for ImageDigest.
-	digests imageDigestCache
+	// images caches what app.list reports per image ID (ImageDigest,
+	// ImageVersionMeta), one inspect per ID.
+	images imageInfoCache
 
 	// dockerRoot is the engine's DockerRootDir once read (DataRootSpace);
 	// guarded by mu.

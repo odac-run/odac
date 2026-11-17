@@ -74,6 +74,9 @@ type fakeDocker struct {
 	buildRuntime docker.Runtime    // what Build reports, on failure too
 	digests      map[string]string // ImageDigest answers, key imageID\x00ref
 	digestCalls  int
+	// versionMeta answers ImageVersionMeta by image ID; absent = unreadable.
+	versionMeta map[string]docker.ImageVersionMeta
+	retained    map[string]bool // the last RetainImageInfo set
 
 	containers []docker.ContainerInfo
 
@@ -390,6 +393,19 @@ func (f *fakeDocker) ImageDigest(imageID, ref string) string {
 	defer f.mu.Unlock()
 	f.digestCalls++
 	return f.digests[imageID+"\x00"+ref]
+}
+
+func (f *fakeDocker) ImageVersionMeta(imageID string) (docker.ImageVersionMeta, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	meta, ok := f.versionMeta[imageID]
+	return meta, ok
+}
+
+func (f *fakeDocker) RetainImageInfo(inUse map[string]bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retained = inUse
 }
 
 func (f *fakeDocker) RegisterBuildLogger(appName string, _ *applog.Logger) {
