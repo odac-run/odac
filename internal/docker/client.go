@@ -96,6 +96,7 @@ type API interface {
 	ContainerExecResize(ctx context.Context, execID string, options container.ResizeOptions) error
 	ImageInspectWithRaw(ctx context.Context, imageID string) (image.InspectResponse, []byte, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
 	ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error)
 	ImageTag(ctx context.Context, source, target string) error
 	ImagesPrune(ctx context.Context, pruneFilter filters.Args) (image.PruneReport, error)
@@ -187,6 +188,10 @@ type Client struct {
 
 	// digests caches each image ID's RepoDigests for ImageDigest.
 	digests imageDigestCache
+
+	// dockerRoot is the engine's DockerRootDir once read (DataRootSpace);
+	// guarded by mu.
+	dockerRoot string
 
 	// appNames resolves managed app names for CreateTerminalSession
 	// (injected by main; see SetAppNames).

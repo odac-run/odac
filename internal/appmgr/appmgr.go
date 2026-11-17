@@ -69,6 +69,9 @@ type Docker interface {
 	PullImage(ctx context.Context, ref string, force bool) error
 	ImageMeta(ref string) (docker.ImageMeta, error)
 	TagImage(source, target string) error
+	ImageTags(pattern string) ([]docker.ImageTag, error)
+	UntagImage(ref string) error
+	DataRootSpace() (free, total uint64, ok bool)
 	InspectState(name string) (docker.ContainerState, error)
 	StatPathIsDir(name, containerPath string) (isDir bool, ok bool)
 	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) (string, error)

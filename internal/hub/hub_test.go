@@ -165,6 +165,7 @@ type fakeApp struct {
 
 	listResult  *api.Result
 	imageResult appmgr.ImageSetResult
+	rollback    appmgr.RollbackResult
 	redeploys   []appmgr.RedeployPayload
 
 	logCB    func(applog.Entry)
@@ -262,6 +263,12 @@ func (f *fakeApp) SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.imageResult
+}
+func (f *fakeApp) Rollback(payload appmgr.RollbackPayload) appmgr.RollbackResult {
+	f.record("rollback:" + payload.Container + ":" + payload.BuildID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rollback
 }
 func (f *fakeApp) Restart(id any) *api.Result { f.record("restart:" + str(id)); return ok("ok") }
 func (f *fakeApp) Start(id any) *api.Result   { f.record("start:" + str(id)); return ok("ok") }
@@ -788,6 +795,72 @@ func TestImageSetRepliesFlat(t *testing.T) {
 	}
 }
 
+func TestRollbackRepliesFlat(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	ask := func(reqID string, result appmgr.RollbackResult) map[string]any {
+		t.Helper()
+		fx.app.mu.Lock()
+		fx.app.rollback = result
+		fx.app.mu.Unlock()
+		fx.cloud.send(t, jscanon.Obj{
+			{K: "id", V: reqID},
+			{K: "type", V: "command"},
+			{K: "data", V: map[string]any{"action": "app.rollback", "payload": map[string]any{
+				"id": "res-1", "container": "web", "buildId": "build_1785879774117_52c29d07",
+			}}},
+			{K: "timestamp", V: time.Now().Unix()},
+		})
+		for {
+			resp := fx.cloud.next(t)
+			if resp["type"] == "command.response" {
+				data, _ := resp["data"].(map[string]any)
+				return data
+			}
+		}
+	}
+
+	data := ask("req-1", appmgr.RollbackResult{Reason: "missing", Message: "Build is gone."})
+	if data["id"] != "req-1" || data["success"] != false || data["reason"] != "missing" ||
+		data["rolledBack"] != false || data["message"] != "Build is gone." {
+		t.Fatalf("failure reply = %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("a flat reply must not nest data: %v", data)
+	}
+	fx.app.mu.Lock()
+	calls := strings.Join(fx.app.calls, " ")
+	fx.app.mu.Unlock()
+	if !strings.Contains(calls, "rollback:web:build_1785879774117_52c29d07") {
+		t.Fatalf("calls = %s", calls)
+	}
+
+	imageID := "sha256:" + strings.Repeat("a", 64)
+	sha := strings.Repeat("b", 40)
+	data = ask("req-2", appmgr.RollbackResult{
+		Success: true, Changed: true, BuildID: "build_2", Previous: "build_3", CommitSha: sha, ImageID: imageID,
+	})
+	want := map[string]any{
+		"id": "req-2", "success": true, "changed": true, "buildId": "build_2", "previous": "build_3",
+		"commitSha": sha, "imageId": imageID,
+	}
+	if len(data) != len(want) {
+		t.Fatalf("success reply = %v", data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v, want %v", k, data[k], v)
+		}
+	}
+
+	data = ask("req-3", appmgr.RollbackResult{Success: true})
+	if len(data) != 3 || data["success"] != true || data["changed"] != false {
+		t.Fatalf("unchanged reply = %v", data)
+	}
+}
+
 func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	fx := newHubFixture(t)
 	fx.connect()
@@ -1033,6 +1106,7 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.network.isolate", map[string]any{"name": "web"}) // absent → off
 	run("app.image.set", map[string]any{"id": "res-1", "container": "db", "image": "postgres:17.6", "pull": true})
 	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "pull": "yes"}) // only true forces
+	run("app.rollback", map[string]any{"id": "res-1", "container": "web", "buildId": "build_1_a"})
 
 	want := []string{
 		"delete:web:true",
@@ -1050,6 +1124,7 @@ func TestPayloadMappings(t *testing.T) {
 		"isolate:web:off",
 		"image:db:postgres:17.6:true",
 		"image:db:postgres:17.6:false",
+		"rollback:web:build_1_a",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {
@@ -1300,7 +1375,7 @@ func TestCommandTableOrder(t *testing.T) {
 		"terminal.open", "terminal.close", "mail.create", "mail.delete", "mail.list",
 		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
 		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
-		"domain.mtls.cert.import", "app.image.set",
+		"domain.mtls.cert.import", "app.image.set", "app.rollback",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)

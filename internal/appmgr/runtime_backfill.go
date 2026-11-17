@@ -35,8 +35,16 @@ type backfillJob struct {
 // non-dev git app with no valid runtime. A dev app runs its source from a
 // bind mount that is edited live, so its checkout says nothing about the
 // image. Caller holds cfg.View or cfg.Mutate.
+//
+// A record that names its build (buildIDKey) is never a candidate: it was
+// written by a build or a rollback that knew the runtime, so an absent one
+// is that build's answer, and after a rollback the checkout is ahead of the
+// running image, which is exactly what the backfill cannot tell.
 func needsRuntimeBackfill(app map[string]any) bool {
 	if app["type"] != "git" || app["dev"] == true || app["_deleted"] == true {
+		return false
+	}
+	if id, _ := app[buildIDKey].(string); id != "" {
 		return false
 	}
 	rt, _ := app["runtime"].(map[string]any)

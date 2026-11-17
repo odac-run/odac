@@ -58,6 +58,7 @@ type AppService interface {
 	SetVolumes(id any, volumes []any, payloadOK bool) *api.Result
 	Redeploy(payload appmgr.RedeployPayload) *api.Result
 	SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult
+	Rollback(payload appmgr.RollbackPayload) appmgr.RollbackResult
 	Restart(id any) *api.Result
 	Start(id any) *api.Result
 	Stop(id any) *api.Result
@@ -988,6 +989,16 @@ func (h *Hub) buildCommands() {
 				Container: str(m["container"]),
 				Image:     str(m["image"]),
 				Pull:      m["pull"] == true,
+			}), nil
+		}),
+		triggers: []string{"app.list", "app.stats"},
+	})
+	h.register("app.rollback", &command{
+		fn: withApp(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.App.Rollback(appmgr.RollbackPayload{
+				Container: str(m["container"]),
+				BuildID:   str(m["buildId"]),
 			}), nil
 		}),
 		triggers: []string{"app.list", "app.stats"},

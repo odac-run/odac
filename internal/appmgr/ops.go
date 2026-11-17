@@ -175,7 +175,9 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 		m.deps.Docker.Remove(name)
 		// Container.js left the built image behind; repeated create/delete
 		// then leaked one odac-app-<name> image per app until the disk filled.
-		m.deps.Docker.RemoveImage("odac-app-" + name)
+		// Its kept builds go first: each tag would otherwise hold its image.
+		m.removeBuildTags(name)
+		m.deps.Docker.RemoveImage(buildRepo(name))
 		// An interrupted image change would otherwise leave its hold tag,
 		// and the previous image with it, behind for good.
 		if hold != "" && hold == holdTag(idNum) {
@@ -543,7 +545,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 	imageName := appImage
 	if imageName == "" {
-		imageName = "odac-app-" + name
+		imageName = buildRepo(name)
 	}
 
 	// Step 1: fetch the latest code (app still running -> zero downtime).
@@ -658,15 +660,23 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		logCtrl.EndPhase("proxy_propagation", true)
 	}
 
+	// The build is live: keep its image for a rollback, and record what it
+	// deployed in its summary, which is where a rollback reads it back.
+	commit := deployedCommit(head, payload.CommitSha)
+	recordBuildCommit(logCtrl, commit)
+	tagged := m.tagBuild(name, imageName, buildID)
+
 	// Persist updated metadata. The runtime and the commit describe the
 	// image now running, so they are written only here, past every failure.
 	updates := map[string]any{}
 	if rt := built.Map(); rt != nil {
 		updates["runtime"] = rt
 	}
-	commit := deployedCommit(head, payload.CommitSha)
 	if commit != "" {
 		updates["commitSha"] = commit
+	}
+	if tagged {
+		updates[buildIDKey] = buildID
 	}
 	if payload.Branch != "" || payload.URL != "" {
 		if payload.Branch != "" {
@@ -692,11 +702,21 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			// Unknown is better than the previous deploy's commit.
 			delete(app, "commitSha")
 		}
+		if !tagged {
+			// The running build has no tag a rollback could name.
+			delete(app, buildIDKey)
+		}
 		for k, v := range updates {
 			app[k] = v
 		}
 		m.saveAppsLocked()
 	})
+
+	// Retention only now that the new build is live, and before the prune
+	// so the images it frees go in the same sweep.
+	if tagged {
+		m.retainBuilds(name, buildID, false)
+	}
 
 	// The rebuild retagged odac-app-<name> onto fresh layers, orphaning the
 	// previous image as an untagged (<none>) dangling entry. Sweep those now
@@ -1646,6 +1666,24 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 	})
 
+	// One image list for every git app's kept builds, never one per row.
+	// A failed list leaves localBuilds out, which the Cloud reads as "no
+	// report", not as "none".
+	var builds map[string][]localBuild
+	buildsKnown := false
+	for _, r := range rows {
+		if r.app["type"] == "git" {
+			if m.deps.Docker.Available() {
+				if tags, err := m.deps.Docker.ImageTags(buildRepoPrefix + "*"); err == nil {
+					builds, buildsKnown = groupBuildTags(tags), true
+				} else {
+					m.log.Error("Could not list the kept builds: %s", err.Error())
+				}
+			}
+			break
+		}
+	}
+
 	cleanApps := make([]any, 0, len(rows))
 	for _, r := range rows {
 		cp := r.app
@@ -1708,6 +1746,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 			}
 		}
 		m.applyIdentity(cp, statusInfo)
+		applyBuilds(cp, builds, buildsKnown, r.name, statusInfo.ImageID)
 		delete(cp, imageChangeKey)
 		delete(cp, runtimeOverrideKey)
 

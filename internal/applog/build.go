@@ -65,6 +65,11 @@ func (l *Logger) NewBuildStream(buildID string, metadata map[string]any) (*Build
 // Path returns the on-disk build log path.
 func (b *BuildControl) Path() string { return b.logPath }
 
+// ID returns the build id the stream was opened with, which is also the
+// name of its summary and, for a git build that went live, its image tag.
+// It is fixed at construction, so no lock is needed.
+func (b *BuildControl) ID() string { return b.stats.ID }
+
 // Write feeds build output through the line analyzer (error/warning
 // heuristics, phase attribution, subscriber broadcast) and appends the raw
 // bytes to the log file. Implements io.Writer.

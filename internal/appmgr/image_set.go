@@ -255,70 +255,12 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 
 	// Step 3: keep the previous image reachable, then record the change on
 	// disk before anything stops.
-	prevID := before.ImageID
-	hold := ""
-	if prevID != "" {
-		hold = holdTag(idNum)
-		if err := m.deps.Docker.TagImage(prevID, hold); err != nil {
-			m.log.Error("Could not hold the previous image of %s: %s", name, err.Error())
-			hold = ""
-		}
-	}
-	marker := map[string]any{"image": target, "previous": current}
-	if prevID != "" {
-		marker["previousId"] = prevID
-	}
-	if hold != "" {
-		marker["hold"] = hold
-	}
-	m.cfg.Mutate(func() {
-		if app := m.getLocked(idNum); app != nil {
-			app[imageChangeKey] = marker
-			m.saveAppsLocked()
-		}
+	sw := m.beginSwitch(name, idNum, current, before.ImageID, map[string]any{"image": target}, switchText{
+		op: "Image change", to: target, back: current, during: "the image change",
 	})
-	m.flushConfig()
-
-	settle := func() {
-		m.cfg.Mutate(func() {
-			if app := m.getLocked(idNum); app != nil {
-				delete(app, imageChangeKey)
-				m.saveAppsLocked()
-			}
-		})
-		m.flushConfig()
-		if hold != "" {
-			// Only the hold tag goes: an image that still has its own tag
-			// stays local for the next rollback, as the contract promises.
-			m.deps.Docker.RemoveImage(hold)
-		}
-	}
-
 	rollback := func(reason, cause string) ImageSetResult {
-		m.log.Error("Image change of %s to %s failed: %s Rolling back to %s.", name, target, cause, current)
-		if m.appDeleted(idNum) {
-			settle()
-			return imageFailure(reason, false, "%s The app was deleted during the image change.", cause)
-		}
-		m.endLogStream(name)
-		m.deps.Docker.Stop(name)
-		if prevID != "" {
-			source := prevID
-			if hold != "" {
-				source = hold
-			}
-			// Points the record's own reference back at what ran, which a
-			// re-pull of that tag moved.
-			if err := m.deps.Docker.TagImage(source, current); err != nil {
-				m.log.Error("Could not restore the tag %s for %s: %s", current, name, err.Error())
-			}
-		}
-		runErr := m.runHeldOn(idNum, nil, "")
-		settle()
-		if runErr != nil {
-			return imageFailure(ImageRollbackFailed, false, "%s Rolling back to %s also failed: %s. The app is not running.", cause, current, shortError(runErr))
-		}
-		return imageFailure(reason, true, "%s Rolled back to %s.", cause, current)
+		f := sw.rollback(reason, cause)
+		return imageFailure(f.reason, f.rolledBack, "%s", f.message)
 	}
 
 	// Step 4: recreate on the new image, same config. The record still
@@ -335,17 +277,7 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 	}
 
 	// Step 6: the record follows only now, and the marker goes with it.
-	m.cfg.Mutate(func() {
-		if app := m.getLocked(idNum); app != nil {
-			app["image"] = target
-			delete(app, imageChangeKey)
-			m.saveAppsLocked()
-		}
-	})
-	m.flushConfig()
-	if hold != "" {
-		m.deps.Docker.RemoveImage(hold)
-	}
+	sw.commit(func(app map[string]any) { app["image"] = target })
 
 	out := ImageSetResult{Success: true, Changed: true, Previous: current, Image: target, ImageID: meta.ID}
 	if st, err := m.deps.Docker.InspectState(name); err == nil && st.ImageID != "" {
@@ -354,6 +286,146 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 	out.ImageDigest = m.deps.Docker.ImageDigest(out.ImageID, target)
 	m.log.Log("Image of %s changed from %s to %s", name, current, target)
 	return out
+}
+
+// switchText names the two sides of a switch in its log lines and replies.
+type switchText struct {
+	op     string // log subject: "Image change", "Rollback"
+	to     string // what the app moves to
+	back   string // what a failure returns it to
+	during string // "the image change", for the deleted-meanwhile message
+}
+
+// imageSwitch is the part app.image.set and app.rollback share: a container
+// recreated on another image while the previous image stays reachable and
+// the record keeps naming what ran before, until commit.
+//
+// beginSwitch holds the previous image under holdTag (a re-pull or a retag
+// can leave it untagged, and any redeploy's PruneDanglingImages would delete
+// the one copy a rollback needs) and flushes the imageChangeKey marker to
+// disk before the caller stops anything, so recoverImageChange can finish an
+// interrupted switch the way a failed gate would. current is the record's
+// own reference; a failure points it back at prevID.
+type imageSwitch struct {
+	m       *Manager
+	name    string
+	id      float64
+	current string
+	prevID  string
+	hold    string
+	text    switchText
+}
+
+// switchFailure is a failed switch's outcome, which each caller maps onto
+// its own reply type.
+type switchFailure struct {
+	reason     string
+	rolledBack bool
+	message    string
+}
+
+// beginSwitch records the switch before the container is touched. marker
+// carries the caller's own members; previous, previousId and hold are
+// added here.
+func (m *Manager) beginSwitch(name string, id float64, current, prevID string, marker map[string]any, text switchText) *imageSwitch {
+	s := &imageSwitch{m: m, name: name, id: id, current: current, prevID: prevID, text: text}
+	if prevID != "" {
+		s.hold = holdTag(id)
+		if err := m.deps.Docker.TagImage(prevID, s.hold); err != nil {
+			m.log.Error("Could not hold the previous image of %s: %s", name, err.Error())
+			s.hold = ""
+		}
+	}
+	marker["previous"] = current
+	if prevID != "" {
+		marker["previousId"] = prevID
+	}
+	if s.hold != "" {
+		marker["hold"] = s.hold
+	}
+	m.cfg.Mutate(func() {
+		if app := m.getLocked(id); app != nil {
+			app[imageChangeKey] = marker
+			m.saveAppsLocked()
+		}
+	})
+	m.flushConfig()
+	return s
+}
+
+// settle ends a switch that did not commit: the marker goes and so does the
+// hold tag. Only the hold tag goes: an image that still has its own tag
+// stays local for the next rollback, as the contract promises.
+func (s *imageSwitch) settle() {
+	s.m.cfg.Mutate(func() {
+		if app := s.m.getLocked(s.id); app != nil {
+			delete(app, imageChangeKey)
+			s.m.saveAppsLocked()
+		}
+	})
+	s.m.flushConfig()
+	if s.hold != "" {
+		s.m.deps.Docker.RemoveImage(s.hold)
+	}
+}
+
+// restoreTag points the record's own reference back at what ran, which a
+// re-pull of that tag (or a rollback's retag) moved.
+func (s *imageSwitch) restoreTag() {
+	if s.prevID == "" {
+		return
+	}
+	source := s.prevID
+	if s.hold != "" {
+		source = s.hold
+	}
+	if err := s.m.deps.Docker.TagImage(source, s.current); err != nil {
+		s.m.log.Error("Could not restore the tag %s for %s: %s", s.current, s.name, err.Error())
+	}
+}
+
+// abort ends a switch whose container was never stopped: the reference
+// goes back and the marker with it, nothing is recreated.
+func (s *imageSwitch) abort() {
+	s.restoreTag()
+	s.settle()
+}
+
+// rollback returns a stopped or failing switch to what ran before. The
+// rollback itself is not gated: the previous container starting is enough.
+func (s *imageSwitch) rollback(reason, cause string) switchFailure {
+	m := s.m
+	m.log.Error("%s of %s to %s failed: %s Rolling back to %s.", s.text.op, s.name, s.text.to, cause, s.text.back)
+	if m.appDeleted(s.id) {
+		s.settle()
+		return switchFailure{reason, false, fmt.Sprintf("%s The app was deleted during %s.", cause, s.text.during)}
+	}
+	m.endLogStream(s.name)
+	m.deps.Docker.Stop(s.name)
+	s.restoreTag()
+	runErr := m.runHeldOn(s.id, nil, "")
+	s.settle()
+	if runErr != nil {
+		return switchFailure{ImageRollbackFailed, false, fmt.Sprintf("%s Rolling back to %s also failed: %s. The app is not running.", cause, s.text.back, shortError(runErr))}
+	}
+	return switchFailure{reason, true, fmt.Sprintf("%s Rolled back to %s.", cause, s.text.back)}
+}
+
+// commit makes the record follow a switch that passed: apply writes the
+// caller's fields in the same write that drops the marker, so the record is
+// never ahead of a passed gate and never behind it with a marker left over.
+func (s *imageSwitch) commit(apply func(app map[string]any)) {
+	s.m.cfg.Mutate(func() {
+		if app := s.m.getLocked(s.id); app != nil {
+			apply(app)
+			delete(app, imageChangeKey)
+			s.m.saveAppsLocked()
+		}
+	})
+	s.m.flushConfig()
+	if s.hold != "" {
+		s.m.deps.Docker.RemoveImage(s.hold)
+	}
 }
 
 // imageGate waits for a recreated container to prove itself: running without
@@ -468,9 +540,24 @@ func (m *Manager) recoverImageChange(id float64) {
 		m.deps.Docker.Stop(name)
 		m.deps.Docker.Remove(name)
 	}
+	// A Blue-Green rollback names its green container: it runs the build
+	// the record does not name, whether or not traffic reached it.
+	green, _ := marker["green"].(string)
+	if !strings.HasPrefix(green, name+"-green-") || !greenSuffix.MatchString(green) {
+		green = ""
+	}
+	if green != "" {
+		m.endLogStream(green)
+		m.deps.Docker.Stop(green)
+		m.deps.Docker.Remove(green)
+		m.cleanupGreenArtifacts(green)
+	}
 	m.cfg.Mutate(func() {
 		if app := m.getLocked(id); app != nil {
 			delete(app, imageChangeKey)
+			if green != "" && app["activeContainerId"] == green {
+				delete(app, "activeContainerId")
+			}
 			m.saveAppsLocked()
 		}
 	})

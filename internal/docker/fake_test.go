@@ -91,6 +91,9 @@ type fakeAPI struct {
 	tagged        [][2]string // ImageTag source, target
 	tagErr        error
 
+	imageListErr     error
+	imageListFilters []string
+
 	imageInspects int
 }
 
@@ -280,6 +283,34 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ image.PullOptions) 
 		f.images[ref] = image.InspectResponse{}
 	}
 	return io.NopCloser(bytes.NewReader([]byte(body))), nil
+}
+
+func (f *fakeAPI) ImageList(_ context.Context, opts image.ListOptions) ([]image.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.imageListErr != nil {
+		return nil, f.imageListErr
+	}
+	f.imageListFilters = append(f.imageListFilters, opts.Filters.Get("reference")...)
+	byID := map[string]*image.Summary{}
+	var order []string
+	for ref, img := range f.images {
+		if img.ID == "" || strings.HasPrefix(ref, "sha256:") {
+			continue
+		}
+		s := byID[img.ID]
+		if s == nil {
+			s = &image.Summary{ID: img.ID}
+			byID[img.ID] = s
+			order = append(order, img.ID)
+		}
+		s.RepoTags = append(s.RepoTags, ref)
+	}
+	out := make([]image.Summary, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
 }
 
 func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOptions) ([]image.DeleteResponse, error) {

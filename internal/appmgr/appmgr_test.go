@@ -102,6 +102,17 @@ type fakeDocker struct {
 	runImageErr    map[string]error // RunApp fails for this image reference
 	stateHook      func(name string, st docker.ContainerState) docker.ContainerState
 
+	// Build retention seams (rollback_test.go). buildImageID is the image a
+	// Build call leaves under its reference; untagged records UntagImage.
+	buildImageID string
+	untagged     []string
+	untagErr     map[string]error
+	tagListErr   error
+	tagLists     []string // ImageTags patterns
+	diskFree     uint64
+	diskTotal    uint64
+	diskKnown    bool
+
 	// Runtime backfill seams (runtime_backfill_test.go).
 	observed      docker.Runtime
 	observedErr   error
@@ -361,6 +372,12 @@ func (f *fakeDocker) Build(_, imageName, _, runtimeVersion string, _ docker.Buil
 	hook := f.buildHook
 	err := f.buildErr
 	rt := f.buildRuntime
+	if err == nil && f.buildImageID != "" {
+		if f.images == nil {
+			f.images = map[string]string{}
+		}
+		f.images[imageName] = f.buildImageID
+	}
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
