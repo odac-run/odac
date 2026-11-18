@@ -84,6 +84,7 @@ func (r *Resolver) UpdateConfig(cfg config.Config) {
 				zd.wildcards[name[2:]] = name
 			}
 		}
+		addDefaultNameservers(zd)
 
 		newZones[zd.domain] = zd
 	}
@@ -94,6 +95,41 @@ func (r *Resolver) UpdateConfig(cfg config.Config) {
 	r.mu.Unlock()
 
 	log.Printf("[DNS] Config updated: %d zones loaded", len(newZones))
+}
+
+// defaultNameservers are the in-zone hosts a zone is delegated to when its
+// records name none: ns1 is also the SOA primary the control plane writes.
+var defaultNameservers = [...]string{"ns1", "ns2"}
+
+// addDefaultNameservers makes a zone answer for the delegation its registrar
+// holds. Resolvers that check the child side (many ISP resolvers do) ask the
+// zone itself for ns1/ns2.<zone>; an NXDOMAIN there marks the server lame and
+// every name in the zone stops resolving through them. Operator NS records
+// win, and a host that already has an address or CNAME is left alone.
+func addDefaultNameservers(zd *zoneData) {
+	apex := recordKey{name: zd.domain, rtype: "NS"}
+	if len(zd.records[apex]) > 0 {
+		return
+	}
+	for _, label := range defaultNameservers {
+		host := label + "." + zd.domain
+		zd.records[apex] = append(zd.records[apex], config.Record{Name: zd.domain, Type: "NS", Value: host})
+		if zd.hasAddress(host) {
+			continue
+		}
+		zd.names[host] = struct{}{}
+		zd.records[recordKey{name: host, rtype: "A"}] = []config.Record{{Name: host, Type: "A"}}
+		zd.records[recordKey{name: host, rtype: "AAAA"}] = []config.Record{{Name: host, Type: "AAAA"}}
+	}
+}
+
+func (zd *zoneData) hasAddress(name string) bool {
+	for _, t := range [...]string{"A", "AAAA", "CNAME"} {
+		if len(zd.records[recordKey{name: name, rtype: t}]) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ServeDNS implements the miekg/dns.Handler interface.
@@ -177,13 +213,18 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	case dns.TypeTXT:
 		r.processTXT(msg, zone, matchName, fqdn)
 	case dns.TypeNS:
-		r.processNS(msg, zone, matchName, fqdn, domain)
+		r.processNS(msg, zone, matchName, fqdn, domain, ips)
 	case dns.TypeSOA:
 		r.processSOA(msg, zone, domain)
 	case dns.TypeCAA:
 		r.processCAA(msg, zone, matchName, fqdn)
 	default:
 		// Unknown type → NODATA (empty answer, no error)
+	}
+
+	// RFC 2308: a NODATA answer carries the SOA, or resolvers do not cache it.
+	if len(msg.Answer) == 0 && len(msg.Ns) == 0 {
+		r.addSOAAuthority(msg, zone, domain)
 	}
 
 	reply(w, req, msg)

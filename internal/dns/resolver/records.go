@@ -152,28 +152,43 @@ func (r *Resolver) processMX(msg *dns.Msg, zone *zoneData, qName, fqdn string) {
 	}
 }
 
-// processNS handles NS record queries. NS records are placed in the
-// Authority section with the Authoritative flag set per RFC 1035.
-func (r *Resolver) processNS(msg *dns.Msg, zone *zoneData, qName, fqdn, domain string) {
-	key := recordKey{name: qName, rtype: "NS"}
-	records, ok := zone.records[key]
-	if !ok {
+// processNS handles NS record queries. At the apex the zone's own NS set is
+// an authoritative answer; below it the records delegate a child zone, which
+// is a referral (Authority section, no AA). Addresses of in-zone targets go
+// in Additional so a resolver needs no second round trip for them.
+func (r *Resolver) processNS(msg *dns.Msg, zone *zoneData, qName, fqdn, domain string, ips config.IPConfig) {
+	records := zone.records[recordKey{name: qName, rtype: "NS"}]
+	if len(records) == 0 {
 		return
 	}
 
-	msg.Authoritative = true
+	apex := qName == domain
+	msg.Authoritative = apex
 
+	glue := new(dns.Msg)
 	for _, rec := range records {
 		ttl := uint32(rec.TTL)
 		if ttl == 0 {
 			ttl = 3600
 		}
 
-		msg.Ns = append(msg.Ns, &dns.NS{
+		rr := &dns.NS{
 			Hdr: dns.RR_Header{Name: fqdn, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
 			Ns:  dns.Fqdn(rec.Value),
-		})
+		}
+		if apex {
+			msg.Answer = append(msg.Answer, rr)
+		} else {
+			msg.Ns = append(msg.Ns, rr)
+		}
+
+		target := strings.ToLower(strings.TrimSuffix(rec.Value, "."))
+		if target == domain || strings.HasSuffix(target, "."+domain) {
+			r.processA(glue, zone, target, dns.Fqdn(target), ips)
+			r.processAAAA(glue, zone, target, dns.Fqdn(target), ips)
+		}
 	}
+	msg.Extra = append(msg.Extra, glue.Answer...)
 }
 
 // processSOA handles SOA record queries. Returns the zone's SOA from

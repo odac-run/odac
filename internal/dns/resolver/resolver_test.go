@@ -150,3 +150,118 @@ func TestUnknownEDNSVersionIsBadVers(t *testing.T) {
 		t.Fatalf("rcode=%d answers=%d, want BADVERS and no answer", resp.Rcode, len(resp.Answer))
 	}
 }
+
+func nsTestResolver(t *testing.T, records ...config.Record) *Resolver {
+	t.Helper()
+	r := NewResolver()
+	r.UpdateConfig(config.Config{
+		IPs: config.IPConfig{
+			Primary: "203.0.113.9",
+			IPv4:    []config.IPEntry{{Address: "203.0.113.9", Public: true}},
+			IPv6:    []config.IPEntry{{Address: "2001:db8::9", Public: true}},
+		},
+		Zones: map[string]config.Zone{"example.com": {
+			Records: append([]config.Record{{Name: "example.com", Type: "A"}}, records...),
+			SOA:     config.SOARecord{Primary: "ns1.example.com", Email: "hostmaster.example.com", Serial: 1},
+		}},
+	})
+	return r
+}
+
+func nsTargets(rrs []dns.RR) []string {
+	var out []string
+	for _, rr := range rrs {
+		if ns, ok := rr.(*dns.NS); ok {
+			out = append(out, ns.Ns)
+		}
+	}
+	return out
+}
+
+// TestZoneAnswersForItsDefaultDelegation: a registrar delegates to
+// ns1/ns2.<zone> with glue. A resolver that checks the child side must find
+// the same NS set and addresses there, or it treats the server as lame.
+func TestZoneAnswersForItsDefaultDelegation(t *testing.T) {
+	r := nsTestResolver(t)
+
+	resp, _ := ask(t, r, udpPeer, "example.com", dns.TypeNS, 1232)
+	got := nsTargets(resp.Answer)
+	if !resp.Authoritative || len(resp.Ns) != 0 || strings.Join(got, ",") != "ns1.example.com.,ns2.example.com." {
+		t.Fatalf("apex NS: aa=%v answer=%v authority=%d", resp.Authoritative, got, len(resp.Ns))
+	}
+	glue := map[string]bool{}
+	for _, rr := range resp.Extra {
+		switch v := rr.(type) {
+		case *dns.A:
+			glue[v.Hdr.Name+" "+v.A.String()] = true
+		case *dns.AAAA:
+			glue[v.Hdr.Name+" "+v.AAAA.String()] = true
+		}
+	}
+	for _, want := range []string{"ns1.example.com. 203.0.113.9", "ns2.example.com. 2001:db8::9"} {
+		if !glue[want] {
+			t.Fatalf("glue %q missing: %v", want, glue)
+		}
+	}
+
+	for _, host := range []string{"ns1.example.com", "NS2.Example.Com"} {
+		resp, _ = ask(t, r, udpPeer, host, dns.TypeA, 0)
+		if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 || resp.Answer[0].(*dns.A).A.String() != "203.0.113.9" {
+			t.Fatalf("%s A: rcode=%s answer=%v", host, dns.RcodeToString[resp.Rcode], resp.Answer)
+		}
+		resp, _ = ask(t, r, udpPeer, host, dns.TypeAAAA, 0)
+		if len(resp.Answer) != 1 || resp.Answer[0].(*dns.AAAA).AAAA.String() != "2001:db8::9" {
+			t.Fatalf("%s AAAA: %v", host, resp.Answer)
+		}
+	}
+}
+
+// TestOperatorNameserversWin: explicit apex NS records replace the default
+// set entirely, and an existing address for ns1 is never overwritten.
+func TestOperatorNameserversWin(t *testing.T) {
+	r := nsTestResolver(t,
+		config.Record{Name: "example.com", Type: "NS", Value: "dns1.provider.net"},
+		config.Record{Name: "example.com", Type: "NS", Value: "dns2.provider.net"},
+	)
+	resp, _ := ask(t, r, udpPeer, "example.com", dns.TypeNS, 0)
+	if got := strings.Join(nsTargets(resp.Answer), ","); got != "dns1.provider.net.,dns2.provider.net." || len(resp.Extra) != 0 {
+		t.Fatalf("explicit NS: answer=%s extra=%d", got, len(resp.Extra))
+	}
+	resp, _ = ask(t, r, udpPeer, "ns1.example.com", dns.TypeA, 0)
+	if resp.Rcode != dns.RcodeNameError {
+		t.Fatalf("ns1 with explicit NS: rcode=%s, want NXDOMAIN", dns.RcodeToString[resp.Rcode])
+	}
+
+	r = nsTestResolver(t, config.Record{Name: "ns1.example.com", Type: "A", Value: "198.51.100.53"})
+	resp, _ = ask(t, r, udpPeer, "ns1.example.com", dns.TypeA, 0)
+	if len(resp.Answer) != 1 || resp.Answer[0].(*dns.A).A.String() != "198.51.100.53" {
+		t.Fatalf("operator ns1 A replaced: %v", resp.Answer)
+	}
+	resp, _ = ask(t, r, udpPeer, "ns1.example.com", dns.TypeAAAA, 0)
+	if len(resp.Answer) != 0 {
+		t.Fatalf("operator ns1 gained a synthetic AAAA: %v", resp.Answer)
+	}
+}
+
+// TestChildDelegationIsAReferral: NS records below the apex delegate a child
+// zone, so the answer is a referral without AA, never an authoritative one.
+func TestChildDelegationIsAReferral(t *testing.T) {
+	r := nsTestResolver(t, config.Record{Name: "lab.example.com", Type: "NS", Value: "ns.lab.example.com"})
+	resp, _ := ask(t, r, udpPeer, "lab.example.com", dns.TypeNS, 0)
+	if resp.Authoritative || len(resp.Answer) != 0 || strings.Join(nsTargets(resp.Ns), ",") != "ns.lab.example.com." {
+		t.Fatalf("child NS: aa=%v answer=%d authority=%v", resp.Authoritative, len(resp.Answer), nsTargets(resp.Ns))
+	}
+}
+
+// TestNoDataCarriesSOA: RFC 2308 says a NODATA answer without the SOA must
+// not be cached, so every miss would come back to this server.
+func TestNoDataCarriesSOA(t *testing.T) {
+	r := nsTestResolver(t)
+	resp, _ := ask(t, r, udpPeer, "example.com", dns.TypeMX, 0)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 0 || len(resp.Ns) != 1 {
+		t.Fatalf("NODATA: rcode=%s answer=%d authority=%d", dns.RcodeToString[resp.Rcode], len(resp.Answer), len(resp.Ns))
+	}
+	if _, ok := resp.Ns[0].(*dns.SOA); !ok {
+		t.Fatalf("NODATA authority is %T, want SOA", resp.Ns[0])
+	}
+}
