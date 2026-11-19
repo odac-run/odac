@@ -30,6 +30,7 @@ import (
 	"odac/internal/domains"
 	"odac/internal/hub"
 	"odac/internal/logx"
+	"odac/internal/serverid"
 	"odac/internal/sysinfo"
 	"odac/internal/system"
 	"odac/internal/system/swap"
@@ -52,6 +53,12 @@ func main() {
 	cfg.AutoSave(500*time.Millisecond, func(err error) {
 		log.Error("Config autosave failed:", err.Error())
 	})
+
+	// Minted on the first start so the identity predates anything written
+	// under it. A failure is not fatal: only backups depend on the id.
+	if _, err := serverid.Ensure(baseDir); err != nil {
+		log.Error("Server identity unavailable:", err.Error())
+	}
 
 	// Docker client (Container.js port). Availability is probed once here,
 	// exactly like Node's constructor-time ping; a docker-less host keeps a

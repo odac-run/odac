@@ -6,7 +6,8 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 # Static binaries; -ldflags="-s -w" strips debug symbols to reduce size.
-# Builds all six: odac, odac-server, odac-watchdog, odac-proxy, odac-dns, odac-mail.
+# Builds all seven: odac, odac-server, odac-watchdog, odac-proxy, odac-dns,
+# odac-mail, odac-backup.
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/bin/ ./cmd/...
 
 # Stage 1: Production Image

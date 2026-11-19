@@ -9,7 +9,8 @@
 │   ├── odac-watchdog/    # Supervisor (restarts the server, log capture)
 │   ├── odac-proxy/       # HTTP/HTTPS/HTTP3 reverse proxy data plane
 │   ├── odac-dns/         # DNS server data plane
-│   └── odac-mail/        # SMTP/IMAP mail server data plane
+│   ├── odac-mail/        # SMTP/IMAP mail server data plane
+│   └── odac-backup/      # Per-job backup runner (helper container)
 ├── internal/             # All shared code (config, api, appmgr, docker, hub,
 │                         # domains, updater, dataplane, proxy, dns, mail, ...)
 │   └── lang/locale/      # Embedded i18n catalogs (go:embed)
@@ -22,7 +23,7 @@
 
 ## Architecture Patterns
 
-### Single Module, Six Binaries
+### Single Module, Seven Binaries
 
 - **Module**: one Go module named `odac`; every binary builds with `go build ./cmd/...`
 - **Wiring**: `cmd/odac-server/main.go` constructs the services and connects them
