@@ -119,6 +119,10 @@
         {
           "file": "05-spam-filtering.md",
           "title": "Spam Filtering"
+        },
+        {
+          "file": "06-winmail-attachments.md",
+          "title": "Outlook winmail.dat Attachments"
         }
       ]
     },

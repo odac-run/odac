@@ -43,6 +43,7 @@ import (
 	smtpserver "odac/internal/mail/smtp"
 	"odac/internal/mail/spam"
 	"odac/internal/mail/storage"
+	"odac/internal/mail/winmail"
 	"odac/internal/netutil"
 )
 
@@ -146,8 +147,15 @@ func main() {
 		}))
 	log.Printf("[Mail] Spam filter mode: %s", spamFilter.Mode())
 
+	// winmail.dat is expanded into ordinary MIME parts for local mailboxes.
+	var rewrite smtpserver.Rewrite
+	if winmail.EnabledFromEnv() {
+		rewrite = winmail.Expand
+	}
+	log.Printf("[Mail] winmail.dat conversion: %v", rewrite != nil)
+
 	// Start SMTP Server (ports 25 and 465)
-	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, queue, spamFilter)
+	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, queue, spamFilter, rewrite)
 	smtpSrv.Start()
 	defer smtpSrv.Stop()
 

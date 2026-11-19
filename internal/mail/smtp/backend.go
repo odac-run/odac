@@ -37,6 +37,7 @@ type Backend struct {
 	getConfig func() config.Config
 	limiter   *limits.Limiter
 	outbox    Outbox
+	rewrite   Rewrite  // nil stores local copies as received
 	screener  Screener // nil delivers unscreened
 	store     *storage.Store
 	tag       string // "inbound" or "submission" — included in log lines
@@ -47,6 +48,12 @@ type Backend struct {
 type Screener interface {
 	Check(ctx context.Context, env spam.Envelope, raw []byte) spam.Verdict
 }
+
+// Rewrite turns a received message into the copy local mailboxes keep;
+// winmail.Expand is the production one. It returns nil when the message is to
+// be kept as it is, and an error when it could not be rewritten, which still
+// delivers the message unchanged.
+type Rewrite func(raw []byte) ([]byte, error)
 
 // Outbox is told when a transaction has queued mail for remote recipients.
 type Outbox interface {
@@ -324,31 +331,44 @@ func (s *Session) Data(r io.Reader) error {
 		return errTryLater
 	}
 
+	// Recipients' mailboxes may keep a rewritten copy. The sender's Sent copy
+	// and the queue keep what the sender wrote.
+	local, localRef, originalRef := body, rawRef, ""
+	if len(plan.inbox) > 0 {
+		local, localRef, originalRef = s.rewriteLocal(body, rawRef)
+	}
+
 	// Parse RFC 2822 message into headers and body parts
-	parsed := message.Parse(body)
+	parsed := message.Parse(local)
 	log.Printf("[SMTP] DATA received: %d bytes sender=%s rcpts=%v ip=%s msg-id=%q subject=%q html=%dB text=%dB",
 		len(body), s.from, s.recipients, s.ip,
 		parsed.MessageID, parsed.Subject, len(parsed.HTML), len(parsed.Text))
 
 	rows := make([]*storage.MessageRow, 0, len(plan.inbox)+1)
 	for _, email := range plan.inbox {
-		rows = append(rows, &storage.MessageRow{
-			Email:   email,
-			Flags:   toNullString("[]"),
-			Mailbox: mailbox,
-			RawRef:  toNullString(rawRef),
-		})
+		row := &storage.MessageRow{
+			Email:       email,
+			Flags:       toNullString("[]"),
+			Mailbox:     mailbox,
+			OriginalRef: toNullString(originalRef),
+			RawRef:      toNullString(localRef),
+		}
+		parsed.Apply(row)
+		rows = append(rows, row)
 	}
 	if plan.sent {
-		rows = append(rows, &storage.MessageRow{
+		sentParsed := parsed
+		if originalRef != "" {
+			sentParsed = message.Parse(body)
+		}
+		row := &storage.MessageRow{
 			Email:   s.user,
 			Flags:   toNullString(`["seen"]`),
 			Mailbox: "Sent",
 			RawRef:  toNullString(rawRef),
-		})
-	}
-	for _, row := range rows {
-		parsed.Apply(row)
+		}
+		sentParsed.Apply(row)
+		rows = append(rows, row)
 	}
 
 	// One reply covers every recipient, so the rows commit together or not at
@@ -460,6 +480,30 @@ func (s *Session) screen(body []byte) spam.Verdict {
 	log.Printf("[SMTP %s] Spam check: action=%s score=%.1f tests=%v sender=%s helo=%q ip=%s",
 		s.backend.tag, v.Action, v.Score, v.Tests, s.from, s.helo, s.ip)
 	return v
+}
+
+// rewriteLocal returns the bytes, blob reference and original reference the
+// local mailbox rows store. A rewrite is used only once both copies are in
+// the blob store: the original is the record of what the sender transmitted,
+// and a rewrite with no original behind it would replace that record.
+func (s *Session) rewriteLocal(body []byte, rawRef string) ([]byte, string, string) {
+	if s.backend.rewrite == nil || rawRef == "" {
+		return body, rawRef, ""
+	}
+	out, err := s.backend.rewrite(body)
+	if err != nil {
+		log.Printf("[SMTP %s] Delivering unconverted, rewrite failed: sender=%s ip=%s: %v", s.backend.tag, s.from, s.ip, err)
+		return body, rawRef, ""
+	}
+	if out == nil {
+		return body, rawRef, ""
+	}
+	ref := s.storeRaw(out)
+	if ref == "" {
+		return body, rawRef, ""
+	}
+	log.Printf("[SMTP %s] Converted winmail.dat: %d -> %d bytes sender=%s ip=%s", s.backend.tag, len(body), len(out), s.from, s.ip)
+	return out, ref, rawRef
 }
 
 // storeRaw persists the verbatim message and returns its content address.

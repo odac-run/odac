@@ -38,12 +38,13 @@ type Server struct {
 //
 // outbox is woken when a submission queues mail for remote recipients.
 // screener places unauthenticated mail on both ports, since port 465 accepts
-// local delivery without a login too; nil delivers unscreened.
-func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, outbox Outbox, screener Screener) *Server {
+// local delivery without a login too; nil delivers unscreened. rewrite makes
+// the copy local mailboxes keep; nil keeps them as received.
+func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, outbox Outbox, screener Screener, rewrite Rewrite) *Server {
 	inbound := NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPInboundProfile()), outbox, "inbound")
 	submission := NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), outbox, "submission")
-	inbound.screener = screener
-	submission.screener = screener
+	inbound.screener, inbound.rewrite = screener, rewrite
+	submission.screener, submission.rewrite = screener, rewrite
 	return &Server{
 		inboundBackend:    inbound,
 		submissionBackend: submission,

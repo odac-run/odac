@@ -26,6 +26,7 @@ var tables = []string{
 		text        TEXT,
 		textAsHtml  TEXT,
 		rawRef      TEXT,
+		originalRef TEXT,
 		subject     TEXT,
 		date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		"to"        JSON,
@@ -88,6 +89,7 @@ var indexes = []string{
 
 	// rawRef is probed per candidate by the blob sweeper to find live references.
 	`CREATE INDEX IF NOT EXISTS idx_received_rawref ON mail_received (rawRef)`,
+	`CREATE INDEX IF NOT EXISTS idx_received_originalref ON mail_received (originalRef)`,
 
 	// Account lookups match COLLATE NOCASE (one mailbox per address regardless
 	// of case), and a binary-collated index cannot serve that comparison. Every
@@ -111,4 +113,8 @@ var addedColumns = []struct {
 	// Without it a message is only recoverable as the lossy html/text pair the
 	// parser extracted, which is how attachments used to disappear.
 	{"mail_received", "rawRef", "TEXT"},
+	// originalRef keeps the message as received when delivery rewrote it
+	// (winmail.dat expanded into MIME), so the conversion never costs the
+	// only copy of what the sender transmitted.
+	{"mail_received", "originalRef", "TEXT"},
 }

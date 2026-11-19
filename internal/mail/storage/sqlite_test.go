@@ -526,8 +526,44 @@ func TestMigrate_UpgradesLegacyDatabase(t *testing.T) {
 		t.Fatalf("idx_received_rawref missing after upgrade: %v", err)
 	}
 
+	err = store.db.QueryRowContext(ctx,
+		"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_received_originalref'").Scan(&indexName)
+	if err != nil {
+		t.Fatalf("idx_received_originalref missing after upgrade: %v", err)
+	}
+
 	if _, err := store.RawRefExists(ctx, "deadbeef"); err != nil {
 		t.Errorf("RawRefExists after upgrade: %v", err)
+	}
+}
+
+// The original of a rewritten message is read by nothing on the IMAP path,
+// so only the sweeper's lookup and every row copy keep it alive.
+func TestOriginalRefStaysReferenced(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	err := store.MessageStore(ctx, &MessageRow{
+		Email: "user@example.com", Mailbox: "INBOX", Flags: ns("[]"),
+		RawRef: ns("converted"), OriginalRef: ns("original"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"converted", "original"} {
+		if ok, err := store.RawRefExists(ctx, ref); err != nil || !ok {
+			t.Errorf("RawRefExists(%q) = %v, %v", ref, ok, err)
+		}
+	}
+
+	if err := store.MessageCopy(ctx, "user@example.com", 1, 1, "INBOX", "Archive"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM mail_received WHERE mailbox = 'Archive' AND originalRef = 'original'").Scan(&n); err != nil || n != 1 {
+		t.Errorf("copy carries originalRef: n=%d err=%v", n, err)
 	}
 }
 
