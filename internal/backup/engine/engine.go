@@ -86,6 +86,10 @@ type Config struct {
 	// CacheBytes bounds the content and metadata caches together; zero
 	// means 1 GiB.
 	CacheBytes int64
+	// ScratchDir holds the consistent copies of SQLite databases while a
+	// directory backup reads them, so it must be on a disk with room for
+	// the largest one; empty means a directory inside CacheDir.
+	ScratchDir string
 	// ReadOnly opens a repository for listing and restore only, which is
 	// how another server's data is read: nothing can be written into it.
 	ReadOnly bool
@@ -116,6 +120,9 @@ func (c *Config) validate() error {
 	}
 	if c.CacheDir == "" || !filepath.IsAbs(c.CacheDir) {
 		return errors.New("engine: cache directory must be an absolute path")
+	}
+	if c.ScratchDir != "" && !filepath.IsAbs(c.ScratchDir) {
+		return errors.New("engine: scratch directory must be an absolute path")
 	}
 	if c.CacheBytes < 0 {
 		return errors.New("engine: negative cache size")

@@ -24,11 +24,13 @@ import (
 const livePasses = 3
 
 // BackupResult is a stored snapshot plus the paths behind its Torn and
-// Stale counts, which only the run that made it knows.
+// Stale counts, which only the run that made it knows. SQLitePaths are the
+// databases stored as a consistent copy instead of as read.
 type BackupResult struct {
 	Snapshot
-	TornPaths  []string `json:"tornPaths,omitempty"`
-	StalePaths []string `json:"stalePaths,omitempty"`
+	TornPaths   []string `json:"tornPaths,omitempty"`
+	StalePaths  []string `json:"stalePaths,omitempty"`
+	SQLitePaths []string `json:"sqlitePaths,omitempty"`
 }
 
 // uploadPolicy is the policy for every ODAC upload, built from Kopia's
@@ -55,10 +57,12 @@ func (r *Repo) newUploader(w repo.RepositoryWriter, tags map[string]string, p *P
 	return u
 }
 
-// BackupDir snapshots a directory that may be in use. A file whose size or
-// mtime moves while it is read is read again on the next pass; one still
-// moving after livePasses is stored as its last intact copy from an
-// earlier snapshot (Stale), or, when there is none, as read (Torn).
+// BackupDir snapshots a directory that may be in use. SQLite databases in
+// it, found by their header, are stored as consistent copies made before
+// the first pass (SQLitePaths). Any other file whose size or mtime moves
+// while it is read is read again on the next pass; one still moving after
+// livePasses is stored as its last intact copy from an earlier snapshot
+// (Stale), or, when there is none, as read (Torn).
 func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta) (*BackupResult, error) {
 	if err := src.validate(); err != nil {
 		return nil, err
@@ -82,6 +86,12 @@ func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta)
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 
+	dbs, err := r.copySQLite(ctx, dir)
+	if err != nil {
+		return nil, fmt.Errorf("engine: sqlite: %w", err)
+	}
+	defer dbs.remove()
+
 	si := r.sourceInfo(src)
 	var res *BackupResult
 	err = repo.WriteSession(ctx, r.rep, repo.WriteSessionOptions{Purpose: "odac:backup"},
@@ -101,7 +111,7 @@ func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta)
 				changed []string
 			)
 			for pass := 0; pass < livePasses; pass++ {
-				run := newLiveRun(nil)
+				run := newLiveRun(nil, dbs)
 				m, err := r.upload(ctx, w, &liveDir{Directory: root, run: run}, si, draftTags, prev, meta.Progress)
 				if err != nil {
 					return err
@@ -118,7 +128,7 @@ func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta)
 			if keep := intactCopies(ctx, w, saved, changed); len(keep) > 0 {
 				// One more pass, with the intact copies standing in. What
 				// is read in it and still moves has nothing to fall back to.
-				run := newLiveRun(keep)
+				run := newLiveRun(keep, dbs)
 				m, err := r.upload(ctx, w, &liveDir{Directory: root, run: run}, si, draftTags, prev, meta.Progress)
 				if err != nil {
 					return err
@@ -135,7 +145,7 @@ func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta)
 				return err
 			}
 			s, _ := fromManifest(man)
-			res = &BackupResult{Snapshot: s, TornPaths: torn, StalePaths: stale}
+			res = &BackupResult{Snapshot: s, TornPaths: torn, StalePaths: stale, SQLitePaths: dbs.paths()}
 			return nil
 		})
 	if err != nil {

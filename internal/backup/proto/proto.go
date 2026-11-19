@@ -165,8 +165,9 @@ type Restore struct {
 	Dir string `json:"dir,omitempty"`
 }
 
-// Snapshot is one stored snapshot. TornPaths and StalePaths are only
-// known to the run that stored it.
+// Snapshot is one stored snapshot. TornPaths, StalePaths and SQLitePaths
+// (databases stored as a consistent copy) are only known to the run that
+// stored it.
 type Snapshot struct {
 	ID          string    `json:"id"`
 	Host        string    `json:"host"`
@@ -183,6 +184,7 @@ type Snapshot struct {
 	Stale       int       `json:"stale,omitempty"`
 	TornPaths   []string  `json:"tornPaths,omitempty"`
 	StalePaths  []string  `json:"stalePaths,omitempty"`
+	SQLitePaths []string  `json:"sqlitePaths,omitempty"`
 }
 
 // VerifyResult reports a verification; Errors lists damage found.

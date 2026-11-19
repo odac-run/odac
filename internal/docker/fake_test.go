@@ -40,6 +40,10 @@ type createCall struct {
 type fakeAPI struct {
 	mu sync.Mutex
 
+	// captureStdin records what is written to an attached stdin.
+	captureStdin bool
+	stdin        map[string][]byte
+
 	pingErr error
 
 	// createErr fails ContainerCreate (daemon refusals).
@@ -222,9 +226,26 @@ func (f *fakeAPI) ContainerStatsOneShot(context.Context, string) (container.Stat
 	}, nil
 }
 
-func (f *fakeAPI) ContainerAttach(context.Context, string, container.AttachOptions) (types.HijackedResponse, error) {
+func (f *fakeAPI) ContainerAttach(_ context.Context, id string, o container.AttachOptions) (types.HijackedResponse, error) {
 	server, client := net.Pipe()
-	server.Close()
+	f.mu.Lock()
+	capture := f.captureStdin && o.Stdin
+	f.mu.Unlock()
+	if !capture {
+		server.Close()
+		return types.NewHijackedResponse(client, ""), nil
+	}
+	go func() {
+		buf := make([]byte, 64<<10)
+		n, _ := server.Read(buf)
+		f.mu.Lock()
+		if f.stdin == nil {
+			f.stdin = map[string][]byte{}
+		}
+		f.stdin[id] = buf[:n]
+		f.mu.Unlock()
+		server.Close()
+	}()
 	return types.NewHijackedResponse(client, ""), nil
 }
 

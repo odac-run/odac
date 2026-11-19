@@ -258,6 +258,42 @@ func TestDumpContainment(t *testing.T) {
 	}
 }
 
+// A credential reaches the dump through stdin, which nothing the daemon
+// records about the container shows.
+func TestDumpSecretOnStdin(t *testing.T) {
+	f := newFakeAPI()
+	f.captureStdin = true
+	c := New(f, Options{})
+	d, err := c.StartDump(context.Background(), DumpSpec{
+		Image:  "postgres:17",
+		App:    "db",
+		Cmd:    []string{"sh", "-c", "cat >/tmp/s && exec \"$0\" \"$@\"", "pg_dumpall"},
+		Env:    []string{"PGPASSFILE=/tmp/s"},
+		Stdin:  []byte("*:*:*:postgres:hunter2\n"),
+		Limits: helperLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(d)
+	d.Close()
+	call := f.created[0]
+	if !call.Config.OpenStdin || !call.Config.StdinOnce || !call.Config.AttachStdin {
+		t.Errorf("stdin open %v once %v attach %v", call.Config.OpenStdin, call.Config.StdinOnce, call.Config.AttachStdin)
+	}
+	f.mu.Lock()
+	got := string(f.stdin[call.ID])
+	f.mu.Unlock()
+	if got != "*:*:*:postgres:hunter2\n" {
+		t.Errorf("stdin %q", got)
+	}
+	for _, v := range append(append([]string{}, call.Config.Env...), append(call.Config.Entrypoint, call.Config.Cmd...)...) {
+		if strings.Contains(v, "hunter2") {
+			t.Errorf("the secret reached the container config: %q", v)
+		}
+	}
+}
+
 // A dump that exits non-zero must never read as a complete stream.
 func TestDumpFailureIsNotEOF(t *testing.T) {
 	f := newFakeAPI()

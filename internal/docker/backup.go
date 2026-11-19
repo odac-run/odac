@@ -241,9 +241,13 @@ type DumpSpec struct {
 	// Cmd is the dump command; its first element replaces the image's
 	// entrypoint, so the image never starts a database of its own.
 	Cmd []string
-	// Env carries the database credentials. The app's own container
-	// already shows them to anyone who can inspect it.
-	Env    []string
+	// Env and Cmd are shown by `docker inspect`, and Cmd also by `ps` on
+	// the host, so neither may carry a secret.
+	Env []string
+	// Stdin is written to the command's stdin, which is then closed. It is
+	// how a credential reaches the dump: nothing the daemon records about
+	// the container holds it.
+	Stdin  []byte
 	User   string
 	Labels map[string]string
 	Limits Limits
@@ -433,6 +437,7 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 		return nil, err
 	}
 	grace := int(stopGrace / time.Second)
+	stdin := len(spec.Stdin) > 0
 	cfg := &container.Config{
 		Image:        spec.Image,
 		Entrypoint:   strslice.StrSlice(spec.Cmd[:1]),
@@ -440,8 +445,11 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 		Env:          spec.Env,
 		User:         spec.User,
 		Labels:       withLabels(spec.Labels, LabelBackupRole, RoleDump),
+		AttachStdin:  stdin,
 		AttachStdout: true,
 		AttachStderr: true,
+		OpenStdin:    stdin,
+		StdinOnce:    stdin,
 		StopTimeout:  &grace,
 		Healthcheck:  &container.HealthConfig{Test: []string{"NONE"}},
 	}
@@ -454,9 +462,19 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 		LogConfig:      container.LogConfig{Type: "none"},
 		Resources:      spec.Limits.resources(),
 	}
-	a, err := c.startAttached(ctx, cfg, host, randomName("odac-dump-"), false)
+	a, err := c.startAttached(ctx, cfg, host, randomName("odac-dump-"), stdin)
 	if err != nil {
 		return nil, fmt.Errorf("backup dump: %w", err)
+	}
+	if stdin {
+		_, err := a.hj.Conn.Write(spec.Stdin)
+		if err == nil {
+			err = a.hj.CloseWrite()
+		}
+		if err != nil {
+			a.Remove()
+			return nil, fmt.Errorf("backup dump: write stdin: %w", err)
+		}
 	}
 	return &Dump{attached: a}, nil
 }

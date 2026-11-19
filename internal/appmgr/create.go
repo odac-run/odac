@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"odac/internal/api"
+	"odac/internal/backup/consistency"
 	"odac/internal/docker"
 	"odac/internal/gpu"
 	"odac/internal/kernel"
@@ -74,6 +75,18 @@ func parseResourcesRequest(payload, recipe any) (*resources.Spec, error) {
 		return spec, err
 	}
 	return resources.Parse(recipe)
+}
+
+// parseBackupRequest validates the `backup` member (how the app's data is
+// backed up consistently), falling back to the recipe's declaration when
+// the payload carries none. A recipe knows its image runs Postgres under a
+// name ODAC does not recognize, or ships its own export command.
+func parseBackupRequest(payload, recipe any) (*consistency.Spec, error) {
+	spec, err := consistency.Parse(payload)
+	if err != nil || spec != nil {
+		return spec, err
+	}
+	return consistency.Parse(recipe)
 }
 
 // startFailureMessage words a failed start for the Cloud. The GPU case gets
@@ -273,6 +286,12 @@ func (m *Manager) createFromRecipe(caller api.Caller, cfg map[string]any) *api.R
 		return res(false, __("Invalid resource configuration: %s", err.Error()))
 	}
 
+	backupSpec, err := parseBackupRequest(cfg, recipe)
+	if err != nil {
+		m.clog.Log("createFromRecipe: %s", err.Error())
+		return res(false, __("Invalid backup configuration: %s", err.Error()))
+	}
+
 	// Template detection: multi-app stacks are delegated to the template
 	// handler.
 	recipeName, _ := recipe["name"].(string)
@@ -365,6 +384,7 @@ func (m *Manager) createFromRecipe(caller api.Caller, cfg map[string]any) *api.R
 		}
 		kernelSpec.Apply(app)
 		resourceSpec.Apply(app)
+		backupSpec.Apply(app)
 		appID = app["id"]
 		m.apps = append(m.apps, app)
 		m.saveAppsLocked()
@@ -492,6 +512,18 @@ func (m *Manager) createFromTemplate(caller api.Caller, baseName, recipeName str
 			return res(false, __("Invalid resource configuration for %s: %s", key, rerr.Error()))
 		}
 		resourceSpecs[key] = spec
+	}
+
+	// Phase 1e: backup declarations, for the same reason.
+	backupSpecs := map[string]*consistency.Spec{}
+	for _, key := range orderedKeys {
+		appDef, _ := templateApps[key].(map[string]any)
+		spec, berr := parseBackupRequest(appDef, nil)
+		if berr != nil {
+			m.clog.Log("createFromTemplate: %s (%s)", berr.Error(), key)
+			return res(false, __("Invalid backup configuration for %s: %s", key, berr.Error()))
+		}
+		backupSpecs[key] = spec
 	}
 
 	// Phase 2: container names — Cloud-provided or locally generated.
@@ -640,6 +672,7 @@ func (m *Manager) createFromTemplate(caller api.Caller, baseName, recipeName str
 				}
 				kernelSpecs[key].Apply(app)
 				resourceSpecs[key].Apply(app)
+				backupSpecs[key].Apply(app)
 				appID = app["id"]
 				m.apps = append(m.apps, app)
 				m.saveAppsLocked()
@@ -753,6 +786,12 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 	if rerr != nil {
 		m.clog.Log("createFromGit: %s", rerr.Error())
 		return res(false, __("Invalid resource configuration: %s", rerr.Error()))
+	}
+
+	backupSpec, berr := parseBackupRequest(cfg, nil)
+	if berr != nil {
+		m.clog.Log("createFromGit: %s", berr.Error())
+		return res(false, __("Invalid backup configuration: %s", berr.Error()))
 	}
 
 	exists := false
@@ -882,6 +921,7 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		}
 		kernelSpec.Apply(app)
 		resourceSpec.Apply(app)
+		backupSpec.Apply(app)
 		appID = app["id"]
 		m.apps = append(m.apps, app)
 		m.saveAppsLocked()

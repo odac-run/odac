@@ -22,10 +22,11 @@ type liveRun struct {
 	changed map[string]bool
 	keep    map[string]fs.Entry
 	kept    map[string]bool
+	sqlite  *sqliteSet
 }
 
-func newLiveRun(keep map[string]fs.Entry) *liveRun {
-	return &liveRun{changed: map[string]bool{}, keep: keep, kept: map[string]bool{}}
+func newLiveRun(keep map[string]fs.Entry, sqlite *sqliteSet) *liveRun {
+	return &liveRun{changed: map[string]bool{}, keep: keep, kept: map[string]bool{}, sqlite: sqlite}
 }
 
 func (l *liveRun) mark(rel string) {
@@ -54,7 +55,18 @@ func (l *liveRun) paths(set map[string]bool) []string {
 	return out
 }
 
+// wrap returns nil for an entry the snapshot leaves out.
 func (l *liveRun) wrap(rel string, e fs.Entry) fs.Entry {
+	if s := l.sqlite; s != nil {
+		if s.hidden[rel] {
+			return nil
+		}
+		if c, ok := s.copies[rel]; ok {
+			if _, isFile := e.(fs.File); isFile {
+				return &sqliteFile{File: c, orig: e}
+			}
+		}
+	}
 	switch v := e.(type) {
 	case fs.Directory:
 		return &liveDir{Directory: v, rel: rel, run: l}
@@ -81,7 +93,10 @@ func (d *liveDir) Child(ctx context.Context, name string) (fs.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return d.run.wrap(path.Join(d.rel, name), e), nil
+	if w := d.run.wrap(path.Join(d.rel, name), e); w != nil {
+		return w, nil
+	}
+	return nil, fs.ErrEntryNotFound
 }
 
 func (d *liveDir) Iterate(ctx context.Context) (fs.DirectoryIterator, error) {
@@ -98,11 +113,15 @@ type liveIterator struct {
 }
 
 func (it *liveIterator) Next(ctx context.Context) (fs.Entry, error) {
-	e, err := it.DirectoryIterator.Next(ctx)
-	if e == nil {
-		return nil, err
+	for {
+		e, err := it.DirectoryIterator.Next(ctx)
+		if e == nil {
+			return nil, err
+		}
+		if w := it.dir.run.wrap(path.Join(it.dir.rel, e.Name()), e); w != nil || err != nil {
+			return w, err
+		}
 	}
-	return it.dir.run.wrap(path.Join(it.dir.rel, e.Name()), e), err
 }
 
 type liveFile struct {
