@@ -62,22 +62,3 @@ type Account struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
-
-// SpamConfig holds cloud-synced anti-spam rules and DNSBL configuration.
-// Designed for future Hub integration where rules are pushed periodically.
-type SpamConfig struct {
-	Blacklists     []string          `json:"blacklists"`
-	CustomHeaders  map[string]string `json:"customHeaders"`
-	Rules          []SpamRule        `json:"rules"`
-	ScoreThreshold float64           `json:"scoreThreshold"`
-}
-
-// SpamRule represents a single cloud-synced spam detection rule.
-type SpamRule struct {
-	Action  string  `json:"action"`
-	Enabled bool    `json:"enabled"`
-	Name    string  `json:"name"`
-	Pattern string  `json:"pattern"`
-	Score   float64 `json:"score"`
-	Target  string  `json:"target"`
-}

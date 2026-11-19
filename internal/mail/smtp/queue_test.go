@@ -288,3 +288,23 @@ func TestEnqueueRejectsInvalidAddresses(t *testing.T) {
 type countingOutbox struct{ n int }
 
 func (c *countingOutbox) Wake() { c.n++ }
+
+// A local recipient of mail.send is stored directly. Queued, it went out
+// through this server's own MX and came back on port 25 with no login, where
+// a sender that is a local account reads as forged.
+func TestEnqueue_LocalRecipientStoredNotQueued(t *testing.T) {
+	f := newQueueFixture(t)
+	if err := f.q.Enqueue(context.Background(), "noreply@emre.red", []string{"ALI@emre.red", "ali@emre.red", "bob@remote.test"}, []byte(testBody)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.inbox(t)); n != 1 {
+		t.Errorf("INBOX holds %d rows, want 1", n)
+	}
+	rows := f.queued(t)
+	if len(rows) != 1 || rows[0].Recipient != "bob@remote.test" {
+		t.Fatalf("queued %+v, want only the remote recipient", rows)
+	}
+	if f.inbox(t)[0].RawRef.String != rows[0].RawRef {
+		t.Error("the local copy and the queued one should share the stored message")
+	}
+}

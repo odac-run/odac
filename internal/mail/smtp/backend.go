@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"odac/internal/mail/config"
 	"odac/internal/mail/limits"
 	"odac/internal/mail/message"
+	"odac/internal/mail/spam"
 	"odac/internal/mail/storage"
 )
 
@@ -35,8 +37,15 @@ type Backend struct {
 	getConfig func() config.Config
 	limiter   *limits.Limiter
 	outbox    Outbox
+	screener  Screener // nil delivers unscreened
 	store     *storage.Store
 	tag       string // "inbound" or "submission" — included in log lines
+}
+
+// Screener decides where an unauthenticated message goes; *spam.Filter is the
+// production one.
+type Screener interface {
+	Check(ctx context.Context, env spam.Envelope, raw []byte) spam.Verdict
 }
 
 // Outbox is told when a transaction has queued mail for remote recipients.
@@ -77,8 +86,10 @@ func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	total, ips, users := b.limiter.Snapshot()
 	log.Printf("[SMTP %s] Connection accepted: %s (total=%d ips=%d users=%d)", b.tag, ip, total, ips, users)
 
+	// go-smtp fills the HELO name before calling NewSession.
 	return &Session{
 		backend: b,
+		helo:    c.Hostname(),
 		ip:      ip,
 		limit:   handle,
 	}, nil
@@ -89,6 +100,7 @@ func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 type Session struct {
 	backend    *Backend
 	from       string
+	helo       string
 	ip         string
 	limit      *limits.Handle // released in Logout
 	recipients []string
@@ -173,6 +185,19 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 // When the session is authenticated, the sender address must match the
 // authenticated user to prevent impersonation of other accounts.
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	// The null reverse path (MAIL FROM:<>) is how every bounce and delivery
+	// report arrives (RFC 5321 4.5.5), so refusing it lost every DSN for mail
+	// a local user sent. A logged-in client has a sender of its own and never
+	// needs it.
+	if from == "" {
+		if s.user != "" {
+			log.Printf("[SMTP] Null sender refused for authenticated %s from %s", s.user, s.ip)
+			return errors.New("sender address does not match authenticated user")
+		}
+		s.from = ""
+		log.Printf("[SMTP] MAIL FROM <> accepted from %s", s.ip)
+		return nil
+	}
 	if !address.Valid(from) {
 		log.Printf("[SMTP] MAIL FROM rejected (invalid email %q) from %s", from, s.ip)
 		return errors.New("invalid email address")
@@ -264,6 +289,29 @@ func (s *Session) Data(r io.Reader) error {
 		return err
 	}
 
+	// Only a session with no login can carry mail from outside, and it can
+	// only deliver locally, so plan.inbox is all the screening has to place.
+	mailbox := "INBOX"
+	if s.user == "" && len(plan.inbox) > 0 {
+		verdict := s.screen(body)
+		switch verdict.Action {
+		case spam.Reject:
+			return &smtp.SMTPError{
+				Code:         550,
+				EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+				Message:      verdict.Reason,
+			}
+		case spam.Defer:
+			return &smtp.SMTPError{
+				Code:         451,
+				EnhancedCode: smtp.EnhancedCode{4, 7, 0},
+				Message:      verdict.Reason,
+			}
+		}
+		body = verdict.Stamp(body)
+		mailbox = verdict.Mailbox()
+	}
+
 	// The verbatim message is the source of truth: IMAP serves BODY[] and
 	// BODYSTRUCTURE from it, so attachments survive exactly as sent. The
 	// parsed fields below are derived display data, not the record itself.
@@ -287,7 +335,7 @@ func (s *Session) Data(r io.Reader) error {
 		rows = append(rows, &storage.MessageRow{
 			Email:   email,
 			Flags:   toNullString("[]"),
-			Mailbox: "INBOX",
+			Mailbox: mailbox,
 			RawRef:  toNullString(rawRef),
 		})
 	}
@@ -373,9 +421,11 @@ func (s *Session) planDelivery(ctx context.Context) (deliveryPlan, error) {
 			// while the row and its blob still consume disk. Creating the
 			// mailbox is what makes the mail readable.
 			log.Printf("[SMTP] Accepted and discarded (role address, no mailbox): rcpt=%s from=%s ip=%s", rcpt, s.from, s.ip)
-		case rcptIsLocal && strings.EqualFold(rcpt, s.from):
-			log.Printf("[SMTP] Skipped store (self-loop, rcpt==from): %s", rcpt)
 		case rcptIsLocal:
+			// Mail to oneself lands in INBOX too, as every major provider
+			// does. Local delivery never leaves the server, so there is no
+			// loop to break; a forged self-send from outside is the spam
+			// filter's to refuse.
 			// The account's stored spelling keys the row, so a message
 			// addressed to <Ali@x.com> lands in the same mailbox IMAP opens
 			// for <ali@x.com> instead of a set of rows nothing can reach.
@@ -396,6 +446,20 @@ func (s *Session) planDelivery(ctx context.Context) (deliveryPlan, error) {
 
 	plan.sent = senderIsLocal && len(s.recipients) > 0
 	return plan, nil
+}
+
+// screen runs the spam checks on an unauthenticated message. It has its own
+// deadline (inside Check) so a slow resolver cannot eat into the time the
+// store needs afterwards.
+func (s *Session) screen(body []byte) spam.Verdict {
+	if s.backend.screener == nil {
+		return spam.Verdict{}
+	}
+	env := spam.Envelope{IP: net.ParseIP(s.ip), Helo: s.helo, MailFrom: s.from}
+	v := s.backend.screener.Check(context.Background(), env, body)
+	log.Printf("[SMTP %s] Spam check: action=%s score=%.1f tests=%v sender=%s helo=%q ip=%s",
+		s.backend.tag, v.Action, v.Score, v.Tests, s.from, s.helo, s.ip)
+	return v
 }
 
 // storeRaw persists the verbatim message and returns its content address.

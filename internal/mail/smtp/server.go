@@ -37,10 +37,16 @@ type Server struct {
 // independent ceilings; a flood from one cannot starve the other.
 //
 // outbox is woken when a submission queues mail for remote recipients.
-func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, outbox Outbox) *Server {
+// screener places unauthenticated mail on both ports, since port 465 accepts
+// local delivery without a login too; nil delivers unscreened.
+func NewServer(store *storage.Store, blobs *blob.Store, fw *auth.Firewall, getConfig func() config.Config, outbox Outbox, screener Screener) *Server {
+	inbound := NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPInboundProfile()), outbox, "inbound")
+	submission := NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), outbox, "submission")
+	inbound.screener = screener
+	submission.screener = screener
 	return &Server{
-		inboundBackend:    NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPInboundProfile()), outbox, "inbound"),
-		submissionBackend: NewBackend(store, blobs, fw, getConfig, limits.New(limits.SMTPSubmissionProfile()), outbox, "submission"),
+		inboundBackend:    inbound,
+		submissionBackend: submission,
 		getConfig:         getConfig,
 	}
 }

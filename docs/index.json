@@ -115,6 +115,10 @@
         {
           "file": "04-change-account-password.md",
           "title": "Change Account Password"
+        },
+        {
+          "file": "05-spam-filtering.md",
+          "title": "Spam Filtering"
         }
       ]
     },

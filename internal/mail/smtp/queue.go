@@ -87,8 +87,14 @@ func NewQueue(store *storage.Store, blobs *blob.Store, sender Sender) *Queue {
 	return q
 }
 
-// Enqueue accepts one message for remote recipients: the message goes to the
-// blob store and one queue row per recipient is committed before it returns.
+// Enqueue accepts one message: it goes to the blob store, and a mailbox row
+// per local account and a queue row per remote recipient commit together
+// before it returns.
+//
+// A local recipient is stored here rather than queued. Queued, it would go out
+// through its MX, which is this server, and arrive on port 25 with no login, so
+// the spam filter would screen the server's own mail and refuse any sender
+// that is a local account as forged.
 func (q *Queue) Enqueue(ctx context.Context, from string, to []string, body []byte) error {
 	if !address.Valid(from) {
 		return fmt.Errorf("invalid sender address %q", from)
@@ -105,10 +111,44 @@ func (q *Queue) Enqueue(ctx context.Context, from string, to []string, body []by
 	if err != nil {
 		return fmt.Errorf("message store failed: %w", err)
 	}
-	if err := q.store.Deliver(ctx, nil, OutboundRows(from, to, ref, q.now())); err != nil {
+	var local []*storage.MessageRow
+	var remote []string
+	var parsed *message.Parsed
+	seen := map[string]bool{}
+	for _, rcpt := range to {
+		account, err := q.store.AccountExists(ctx, rcpt)
+		if err != nil {
+			return fmt.Errorf("recipient lookup failed: %w", err)
+		}
+		if account == nil {
+			remote = append(remote, rcpt)
+			continue
+		}
+		key := strings.ToLower(account.Email)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if parsed == nil {
+			p := message.Parse(body)
+			parsed = &p
+		}
+		row := &storage.MessageRow{
+			Email:   account.Email,
+			Flags:   toNullString("[]"),
+			Mailbox: "INBOX",
+			RawRef:  toNullString(ref),
+		}
+		parsed.Apply(row)
+		local = append(local, row)
+	}
+
+	if err := q.store.Deliver(ctx, local, OutboundRows(from, remote, ref, q.now())); err != nil {
 		return err
 	}
-	q.Wake()
+	if len(remote) > 0 {
+		q.Wake()
+	}
 	return nil
 }
 

@@ -3,6 +3,7 @@ module odac
 go 1.26.11
 
 require (
+	blitiri.com.ar/go/spf v1.6.0
 	github.com/andybalholm/brotli v1.2.0
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/errdefs v1.0.0
