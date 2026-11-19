@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,7 @@ const (
 	mib        = 1 << 20
 )
 
-var testMeta = Meta{Trigger: "schedule", Consistency: Consistent}
+var testMeta = Meta{Run: "r1", Trigger: "schedule", Consistency: Consistent}
 
 type fixture struct {
 	t        *testing.T
@@ -89,6 +90,15 @@ func randomBytes(t *testing.T, n int) []byte {
 	if _, err := rand.Read(b); err != nil {
 		t.Fatal(err)
 	}
+	return b
+}
+
+// seededBytes is reproducible data. Content-defined chunk boundaries move
+// with the data, so a size bound on fresh random bytes holds only most of
+// the time: one 1 MiB edit grew the repository by 1.3 to 6.8 MB.
+func seededBytes(seed uint64, n int) []byte {
+	b := make([]byte, n)
+	mrand.NewChaCha8([32]byte{byte(seed), byte(seed >> 8)}).Read(b)
 	return b
 }
 
@@ -173,6 +183,7 @@ func TestConfigValidation(t *testing.T) {
 		"two storages":       func(c *Config) { c.Storage.WebDAV = &WebDAVStorage{URL: "https://dav.example.com/"} },
 		"relative repo path": func(c *Config) { c.Storage.Filesystem.Path = "repo" },
 		"webdav not http":    func(c *Config) { c.Storage = Storage{WebDAV: &WebDAVStorage{URL: "ftp://x/"}} },
+		"webdav userinfo":    func(c *Config) { c.Storage = Storage{WebDAV: &WebDAVStorage{URL: "https://u:secret@dav.example.com/"}} },
 	} {
 		cfg := f.config(testServer)
 		mutate(&cfg)
@@ -184,8 +195,11 @@ func TestConfigValidation(t *testing.T) {
 	if _, err := r.BackupStream(f.ctx, Source{Job: "j", App: "../etc", Name: "db"}, "dump.sql", bytes.NewReader(nil), testMeta); err == nil {
 		t.Error("BackupStream accepted a source name with a path in it")
 	}
-	if _, err := r.BackupStream(f.ctx, Source{Job: "j", App: "a", Name: "db"}, "dump.sql", bytes.NewReader(nil), Meta{Trigger: "x", Consistency: "mostly"}); err == nil {
+	if _, err := r.BackupStream(f.ctx, Source{Job: "j", App: "a", Name: "db"}, "dump.sql", bytes.NewReader(nil), Meta{Run: "r1", Trigger: "x", Consistency: "mostly"}); err == nil {
 		t.Error("BackupStream accepted an unknown consistency level")
+	}
+	if _, err := r.BackupStream(f.ctx, Source{Job: "j", App: "a", Name: "db"}, "dump.sql", bytes.NewReader(nil), Meta{Trigger: "x", Consistency: Live}); err == nil {
+		t.Error("BackupStream accepted a snapshot without a run")
 	}
 }
 
@@ -195,7 +209,7 @@ func TestFileDedupAndRestore(t *testing.T) {
 	r := f.create()
 	src := Source{Job: "nightly", App: "web", Name: "files"}
 	dir := t.TempDir()
-	big := randomBytes(t, 32*mib)
+	big := seededBytes(1, 32*mib)
 	writeFile(t, filepath.Join(dir, "big.bin"), big)
 	writeFile(t, filepath.Join(dir, "sub", "small.txt"), []byte("hello"))
 
@@ -204,13 +218,21 @@ func TestFileDedupAndRestore(t *testing.T) {
 		t.Fatalf("first snapshot counts %d files, %d bytes", first.Files, first.Bytes)
 	}
 
+	// One edit's cost depends on where chunk boundaries fall, so the bound
+	// is on the mean of several: a 4 MiB average chunk rewrites about 8 MB
+	// around a 1 MiB edit, a 1 MiB one about 3 MB.
+	const edits = 6
 	before := size(t, r)
-	copy(big[12*mib:], randomBytes(t, mib))
-	writeFile(t, filepath.Join(dir, "big.bin"), big)
-	second := backupDir(t, r, src, dir)
-	// A 4 MiB average chunk rewrites about 8 MB around a 1 MiB edit.
-	if grew := size(t, r) - before; grew > 4*mib {
-		t.Fatalf("1 MiB change grew the repository by %d bytes", grew)
+	var second *BackupResult
+	for i := range edits {
+		copy(big[(3+5*i)*mib:], seededBytes(uint64(2+i), mib))
+		writeFile(t, filepath.Join(dir, "big.bin"), big)
+		if res := backupDir(t, r, src, dir); second == nil {
+			second = res
+		}
+	}
+	if mean := (size(t, r) - before) / edits; mean > 4*mib {
+		t.Fatalf("a 1 MiB change grew the repository by %d bytes on average", mean)
 	}
 
 	before = size(t, r)
@@ -297,7 +319,7 @@ func TestListByTags(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "a"), []byte("a"))
 	backupDir(t, r, Source{Job: "nightly", App: "web", Name: "files"}, dir)
 	backupDir(t, r, Source{Job: "hourly", App: "web", Name: "files"}, dir)
-	if _, err := r.BackupStream(f.ctx, Source{Job: "hourly", App: "db", Name: "postgres"}, "dump.sql", bytes.NewReader([]byte("x")), Meta{Trigger: "manual", Consistency: Live}); err != nil {
+	if _, err := r.BackupStream(f.ctx, Source{Job: "hourly", App: "db", Name: "postgres"}, "dump.sql", bytes.NewReader([]byte("x")), Meta{Run: "r2", Trigger: "manual", Consistency: Live}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -318,6 +340,9 @@ func TestListByTags(t *testing.T) {
 	}
 	if other, _ := r.List(f.ctx, Filter{Host: otherHost}); len(other) != 0 {
 		t.Fatalf("List for another host = %d", len(other))
+	}
+	if run, _ := r.List(f.ctx, Filter{Run: "r2"}); len(run) != 1 || run[0].Run != "r2" || run[0].Source.App != "db" {
+		t.Fatalf("List by run = %+v", run)
 	}
 }
 
@@ -605,5 +630,61 @@ func TestFromManifestSkipsCheckpointsAndForeignSnapshots(t *testing.T) {
 		if _, keep := fromManifest(m); keep {
 			t.Errorf("%s manifest was listed", name)
 		}
+	}
+}
+
+// endless is a dump that never ends; only cancellation can stop a backup
+// of it.
+type endless struct{ cancel func() }
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.cancel != nil {
+		e.cancel()
+		e.cancel = nil
+	}
+	clear(p)
+	return len(p), nil
+}
+
+func TestCanceledBackupStops(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	r := f.create()
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+	src := Source{Job: "nightly", App: "db", Name: "postgres"}
+	_, err := r.BackupStream(ctx, src, "dump.sql", &endless{cancel: cancel}, testMeta)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BackupStream after cancel = %v, want context.Canceled", err)
+	}
+	if got, _ := r.List(f.ctx, Filter{}); len(got) != 0 {
+		t.Fatalf("a canceled backup stored %d snapshots", len(got))
+	}
+}
+
+func TestProgressCountsWork(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	r := f.create()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a"), randomBytes(t, mib))
+	writeFile(t, filepath.Join(dir, "sub", "b"), randomBytes(t, mib/2))
+
+	var p Progress
+	meta := testMeta
+	meta.Progress = &p
+	if _, err := r.BackupDir(f.ctx, Source{Job: "j", App: "web", Name: "files"}, dir, meta); err != nil {
+		t.Fatal(err)
+	}
+	if p.Files() != 2 || p.Bytes() != mib+mib/2 {
+		t.Fatalf("progress after a read = %d files, %d bytes", p.Files(), p.Bytes())
+	}
+	var again Progress
+	meta.Progress = &again
+	if _, err := r.BackupDir(f.ctx, Source{Job: "j", App: "web", Name: "files"}, dir, meta); err != nil {
+		t.Fatal(err)
+	}
+	if again.Files() != 2 || again.Bytes() != mib+mib/2 {
+		t.Fatalf("unchanged files must count too: %d files, %d bytes", again.Files(), again.Bytes())
 	}
 }

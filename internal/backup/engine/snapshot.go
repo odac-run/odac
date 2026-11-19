@@ -39,8 +39,14 @@ const (
 // Meta is what the caller knows about a snapshot that the engine cannot
 // work out itself.
 type Meta struct {
-	Trigger     string `json:"trigger"`
-	Consistency string `json:"consistency"`
+	// Run names the job run the snapshot belongs to. A run is the unit
+	// thinning keeps or deletes, so an app and its linked database always
+	// come back from the same moment.
+	Run         string
+	Trigger     string
+	Consistency string
+	// Progress, when set, is advanced while the snapshot is read.
+	Progress *Progress
 }
 
 // Snapshot describes one stored snapshot.
@@ -49,6 +55,7 @@ type Snapshot struct {
 	Host        string    `json:"host"`
 	Source      Source    `json:"source"`
 	Kind        string    `json:"kind"`
+	Run         string    `json:"run"`
 	Trigger     string    `json:"trigger"`
 	Consistency string    `json:"consistency"`
 	Start       time.Time `json:"start"`
@@ -70,6 +77,7 @@ type Filter struct {
 	Job  string
 	App  string
 	Name string
+	Run  string
 }
 
 const (
@@ -77,6 +85,7 @@ const (
 	tagApp         = "tag:odac-app"
 	tagName        = "tag:odac-name"
 	tagKind        = "tag:odac-kind"
+	tagRun         = "tag:odac-run"
 	tagTrigger     = "tag:odac-trigger"
 	tagConsistency = "tag:odac-consistency"
 	tagTorn        = "tag:odac-torn"
@@ -103,6 +112,9 @@ func (s Source) validate() error {
 }
 
 func (m Meta) validate() error {
+	if err := validName("run", m.Run); err != nil {
+		return err
+	}
 	if err := validName("trigger", m.Trigger); err != nil {
 		return err
 	}
@@ -125,6 +137,7 @@ func tagsFor(s Source, kind string, m Meta, torn, stale int) map[string]string {
 		tagApp:         s.App,
 		tagName:        s.Name,
 		tagKind:        kind,
+		tagRun:         m.Run,
 		tagTrigger:     m.Trigger,
 		tagConsistency: m.Consistency,
 		tagTorn:        strconv.Itoa(torn),
@@ -148,6 +161,7 @@ func fromManifest(m *snapshot.Manifest) (Snapshot, bool) {
 			Name: m.Tags[tagName],
 		},
 		Kind:        m.Tags[tagKind],
+		Run:         m.Tags[tagRun],
 		Trigger:     m.Tags[tagTrigger],
 		Consistency: m.Tags[tagConsistency],
 		Start:       m.StartTime.ToTime(),
@@ -196,7 +210,7 @@ func (r *Repo) find(ctx context.Context, rep repo.Repository, f Filter) ([]*snap
 		snapshot.HostnameLabel: host,
 		snapshot.UsernameLabel: userName,
 	}
-	for k, v := range map[string]string{tagJob: f.Job, tagApp: f.App, tagName: f.Name} {
+	for k, v := range map[string]string{tagJob: f.Job, tagApp: f.App, tagName: f.Name, tagRun: f.Run} {
 		if v != "" {
 			labels[k] = v
 		}

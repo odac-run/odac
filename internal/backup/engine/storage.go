@@ -69,6 +69,11 @@ func (s Storage) validate() error {
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return errors.New("engine: webdav storage needs an http(s) url")
 		}
+		// Credentials go in their own fields, which are masked; inside the
+		// URL they would reach every log line that names the target.
+		if u.User != nil {
+			return errors.New("engine: webdav url must not carry credentials")
+		}
 	}
 	if n != 1 {
 		return errors.New("engine: exactly one storage kind must be set")

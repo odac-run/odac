@@ -43,9 +43,12 @@ func uploadPolicy() *policy.Tree {
 	return policy.BuildTree(nil, &p)
 }
 
-func (r *Repo) newUploader(w repo.RepositoryWriter, tags map[string]string) *upload.Uploader {
+func (r *Repo) newUploader(w repo.RepositoryWriter, tags map[string]string, p *Progress) *upload.Uploader {
 	u := upload.NewUploader(w)
 	u.DisableIgnoreRules = true
+	if p != nil {
+		u.Progress = &uploadProgress{p: p}
+	}
 	// Checkpoints let an interrupted first upload resume. They are saved as
 	// incomplete snapshots, which listing skips.
 	u.CheckpointLabels = tags
@@ -99,7 +102,7 @@ func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta)
 			)
 			for pass := 0; pass < livePasses; pass++ {
 				run := newLiveRun(nil)
-				m, err := r.upload(ctx, w, &liveDir{Directory: root, run: run}, si, draftTags, prev)
+				m, err := r.upload(ctx, w, &liveDir{Directory: root, run: run}, si, draftTags, prev, meta.Progress)
 				if err != nil {
 					return err
 				}
@@ -116,7 +119,7 @@ func (r *Repo) BackupDir(ctx context.Context, src Source, dir string, meta Meta)
 				// One more pass, with the intact copies standing in. What
 				// is read in it and still moves has nothing to fall back to.
 				run := newLiveRun(keep)
-				m, err := r.upload(ctx, w, &liveDir{Directory: root, run: run}, si, draftTags, prev)
+				m, err := r.upload(ctx, w, &liveDir{Directory: root, run: run}, si, draftTags, prev, meta.Progress)
 				if err != nil {
 					return err
 				}
@@ -167,7 +170,7 @@ func (r *Repo) BackupStream(ctx context.Context, src Source, fileName string, rd
 			tags := tagsFor(src, KindStream, meta, 0, 0)
 			file := virtualfs.StreamingFileWithModTimeFromReader(fileName, r.cfg.clock(), io.NopCloser(rd))
 			root := virtualfs.NewStaticDirectory(src.Name, []fs.Entry{file})
-			man, err := r.upload(ctx, w, root, si, tags, nil)
+			man, err := r.upload(ctx, w, root, si, tags, nil, meta.Progress)
 			if err != nil {
 				return err
 			}
@@ -189,8 +192,12 @@ func (r *Repo) BackupStream(ctx context.Context, src Source, fileName string, rd
 	return res, nil
 }
 
-func (r *Repo) upload(ctx context.Context, w repo.RepositoryWriter, root fs.Entry, si snapshot.SourceInfo, tags map[string]string, prev []*snapshot.Manifest) (*snapshot.Manifest, error) {
-	u := r.newUploader(w, tags)
+func (r *Repo) upload(ctx context.Context, w repo.RepositoryWriter, root fs.Entry, si snapshot.SourceInfo, tags map[string]string, prev []*snapshot.Manifest, p *Progress) (*snapshot.Manifest, error) {
+	u := r.newUploader(w, tags, p)
+	// The uploader stops only on Cancel. A canceled context alone surfaces
+	// later, as a failed entry once some storage write sees it.
+	stop := context.AfterFunc(ctx, u.Cancel)
+	defer stop()
 	m, err := u.Upload(ctx, root, uploadPolicy(), si, prev...)
 	if err != nil {
 		return nil, fmt.Errorf("engine: upload: %w", err)

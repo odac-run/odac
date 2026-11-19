@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -17,8 +18,10 @@ func TestBackupEngineStaysInOdacBackup(t *testing.T) {
 	if err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
-	for _, bin := range []string{"odac", "odac-server", "odac-watchdog", "odac-proxy", "odac-dns", "odac-mail"} {
-		cmd := exec.Command(goBin, "list", "-deps", "odac/cmd/"+bin)
+	// The server links proto and thin; checking them directly catches a
+	// slip before the server starts importing them.
+	for _, bin := range []string{"cmd/odac", "cmd/odac-server", "cmd/odac-watchdog", "cmd/odac-proxy", "cmd/odac-dns", "cmd/odac-mail", "internal/backup/proto", "internal/backup/thin"} {
+		cmd := exec.Command(goBin, "list", "-deps", "odac/"+bin)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -41,11 +44,12 @@ func TestBackupEngineStaysInOdacBackup(t *testing.T) {
 
 func TestRun(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := run([]string{"version"}, &out, &errOut); code != 0 || strings.TrimSpace(out.String()) == "" {
+	ctx := context.Background()
+	if code := run(ctx, []string{"version"}, nil, &out, &errOut); code != 0 || strings.TrimSpace(out.String()) == "" {
 		t.Fatalf("version: code %d, out %q", code, out.String())
 	}
 	out.Reset()
-	if code := run([]string{"bogus"}, &out, &errOut); code == 0 {
+	if code := run(ctx, []string{"bogus"}, nil, &out, &errOut); code == 0 {
 		t.Fatal("unknown command exited 0")
 	}
 }
