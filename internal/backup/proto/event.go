@@ -13,6 +13,7 @@ import (
 // Event types.
 const (
 	EventHello    = "hello"
+	EventReady    = "ready"
 	EventProgress = "progress"
 	EventSnapshot = "snapshot"
 	EventData     = "data"
@@ -95,6 +96,14 @@ func (e *Emitter) emit(ev *Event) error {
 // Hello announces the versions this build serves. It is the first line.
 func (e *Emitter) Hello(build string) error {
 	return e.emit(&Event{Type: EventHello, Protocol: Version, MinProtocol: MinVersion, Build: build})
+}
+
+// Ready asks for the stream: the repository is open and the stream item
+// is next. The server starts the dump only then, so a run that fails
+// earlier (a wrong password, an unreachable target) never holds a
+// transaction open in the database for nothing.
+func (e *Emitter) Ready() error {
+	return e.emit(&Event{Type: EventReady})
 }
 
 // Progress reports work done.

@@ -68,6 +68,7 @@ func start(t *testing.T, h helper) (io.WriteCloser, io.ReadCloser) {
 // storeStream is a helper that reads the whole stream and reports it as a
 // snapshot whose Bytes is the stream's length.
 func storeStream(req *Request, stdin io.Reader, em *Emitter) {
+	em.Ready()
 	sr := NewStreamReader(stdin)
 	n, err := io.Copy(io.Discard, sr)
 	if err != nil {
@@ -126,6 +127,7 @@ func TestCallDumpFailure(t *testing.T) {
 	var helperCode string
 	var mu sync.Mutex
 	stdin, stdout := start(t, helper{serve: func(req *Request, in io.Reader, em *Emitter) {
+		em.Ready()
 		sr := NewStreamReader(in)
 		io.Copy(io.Discard, sr)
 		mu.Lock()
@@ -324,5 +326,73 @@ func TestEmitterMasksSecrets(t *testing.T) {
 	em.Error(CodeFailed, fmt.Sprintf("dial s3: signature for %s rejected, abc", "supersecretvalue"))
 	if strings.Contains(out.String(), "supersecretvalue") || !strings.Contains(out.String(), "abc") {
 		t.Fatalf("masked output: %s", out.String())
+	}
+}
+
+// A run replayed from a helper's log: the follower never writes, and sees
+// the snapshots stored before the result.
+func TestFollow(t *testing.T) {
+	var out bytes.Buffer
+	em := NewEmitter(&out)
+	em.Hello("test")
+	em.Snapshot(Snapshot{ID: "k1", Run: "r1"})
+	em.Result(Result{Count: 1})
+	var snaps []Snapshot
+	res, err := Follow(context.Background(), io.NopCloser(&out), Handler{Snapshot: func(s Snapshot) { snaps = append(snaps, s) }})
+	if err != nil || res.Count != 1 || len(snaps) != 1 {
+		t.Fatalf("Follow = %+v, %v, snapshots %v", res, err, snaps)
+	}
+
+	out.Reset()
+	em.Hello("test")
+	em.Progress(Progress{})
+	if _, err := Follow(context.Background(), io.NopCloser(&out), Handler{}); !errors.Is(err, ErrNoResult) {
+		t.Fatalf("a log that ends early = %v, want ErrNoResult", err)
+	}
+	if _, err := Follow(context.Background(), io.NopCloser(&out), Handler{Output: io.Discard}); err == nil {
+		t.Fatal("a restore was followed")
+	}
+}
+
+type watchedDump struct {
+	endlessDump
+	mu   sync.Mutex
+	read bool
+}
+
+func (d *watchedDump) Read(p []byte) (int, error) {
+	d.mu.Lock()
+	d.read = true
+	d.mu.Unlock()
+	return d.endlessDump.Read(p)
+}
+
+// The stream is not touched before the helper asks for it: a dump that
+// starts on its first read never starts for a run that fails first.
+func TestCallStreamWaitsForReady(t *testing.T) {
+	stdin, stdout := start(t, helper{serve: func(_ *Request, _ io.Reader, em *Emitter) {
+		time.Sleep(50 * time.Millisecond)
+		em.Error(CodeWrongPassword, "wrong password")
+	}})
+	req := validRequest()
+	req.Backup.Items = req.Backup.Items[:1]
+	dump := &watchedDump{endlessDump: endlessDump{closed: make(chan struct{})}}
+	if _, err := Call(context.Background(), stdin, stdout, req, Handler{Stream: dump}); err == nil {
+		t.Fatal("Call succeeded")
+	}
+	dump.mu.Lock()
+	defer dump.mu.Unlock()
+	if dump.read {
+		t.Fatal("the stream was read before the helper was ready")
+	}
+	select {
+	case <-dump.closed:
+	default:
+		t.Fatal("the unused stream was not closed")
+	}
+
+	stdin, stdout = start(t, helper{serve: func(_ *Request, _ io.Reader, em *Emitter) { em.Ready() }})
+	if _, err := Call(context.Background(), stdin, stdout, validInit(), Handler{}); err == nil || !strings.Contains(err.Error(), "ready") {
+		t.Fatalf("a ready without a stream item = %v", err)
 	}
 }

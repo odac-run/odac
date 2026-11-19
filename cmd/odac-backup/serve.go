@@ -175,6 +175,10 @@ func backup(ctx context.Context, r *engine.Repo, b *proto.Backup, in io.Reader, 
 			err error
 		)
 		if it.Stream != "" {
+			if err := em.Ready(); err != nil {
+				stop()
+				return nil, err
+			}
 			sr := proto.NewStreamReader(in)
 			res, err = r.BackupStream(ctx, src, it.Stream, sr, meta)
 			// The engine reports a reader's failure as text only.

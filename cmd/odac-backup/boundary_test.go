@@ -18,9 +18,9 @@ func TestBackupEngineStaysInOdacBackup(t *testing.T) {
 	if err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
-	// The server links proto and thin; checking them directly catches a
+	// The server links proto, thin and runner; checking them directly catches a
 	// slip before the server starts importing them.
-	for _, bin := range []string{"cmd/odac", "cmd/odac-server", "cmd/odac-watchdog", "cmd/odac-proxy", "cmd/odac-dns", "cmd/odac-mail", "internal/backup/proto", "internal/backup/thin"} {
+	for _, bin := range []string{"cmd/odac", "cmd/odac-server", "cmd/odac-watchdog", "cmd/odac-proxy", "cmd/odac-dns", "cmd/odac-mail", "internal/backup/proto", "internal/backup/thin", "internal/backup/runner"} {
 		cmd := exec.Command(goBin, "list", "-deps", "odac/"+bin)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr

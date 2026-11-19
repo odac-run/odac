@@ -36,6 +36,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/api/types/system"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
@@ -102,6 +103,9 @@ type API interface {
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
+	VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
+	VolumeRemove(ctx context.Context, volumeID string, force bool) error
+	VolumeList(ctx context.Context, options volume.ListOptions) (volume.ListResponse, error)
 }
 
 // Mount is one volume mapping. Container may carry a ":ro" suffix.
@@ -187,6 +191,12 @@ type Client struct {
 	// appNames resolves managed app names for CreateTerminalSession
 	// (injected by main; see SetAppNames).
 	appNames func() []string
+
+	// selfImage caches SelfImage: a container's image never changes.
+	selfImage string
+	// noIOWeight is set once a backup container failed to start for want
+	// of I/O weight support (see startAttached).
+	noIOWeight bool
 }
 
 // Options configures New.

@@ -18,13 +18,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"odac/internal/api"
+	"odac/internal/docker"
 	"odac/internal/logx"
 	"odac/internal/rundir"
 )
@@ -361,47 +361,16 @@ func (u *Updater) getRemoteImageID() string {
 	return id
 }
 
-var (
-	shortIDPattern   = regexp.MustCompile(`^[0-9a-f]{12}$`)
-	mountinfoPattern = regexp.MustCompile(`/docker/containers/([0-9a-f]{64})`)
-	cgroupPattern    = regexp.MustCompile(`[-/]docker[-/]([0-9a-f]{64})`)
-)
-
 // resolveSelfName ports #resolveSelfName: best-effort resolution of the name
-// of the container we are running inside. Probe order (2189336): hostname
-// first — a bridge-network container's default hostname is its short id
-// (useless for the update container, which runs with NetworkMode host) —
-// then the id Docker injects into our mount table and cgroup, then
-// "whichever update-cycle container is running". Returns "" when every
-// probe fails (Node: null).
+// of the container we are running inside. The probes (hostname, then the id
+// Docker leaves in our mount table and cgroup) are docker.SelfCandidates;
+// the last resort is "whichever update-cycle container is running".
+// Returns "" when every probe fails (Node: null).
 func (u *Updater) resolveSelfName() string {
-	if hn := u.hostname(); shortIDPattern.MatchString(hn) {
-		if info, err := u.deps.Docker.Inspect(hn); err == nil {
+	for _, cand := range docker.SelfCandidates(u.hostname(), u.readFile) {
+		if info, err := u.deps.Docker.Inspect(cand); err == nil {
 			return strings.TrimPrefix(info.Name, "/")
 		}
-	}
-
-	probes := []struct {
-		file    string
-		pattern *regexp.Regexp
-	}{
-		{"/proc/self/mountinfo", mountinfoPattern},
-		{"/proc/self/cgroup", cgroupPattern},
-	}
-	for _, p := range probes {
-		content, err := u.readFile(p.file)
-		if err != nil {
-			continue // probe unavailable on this kernel/storage driver
-		}
-		m := p.pattern.FindSubmatch(content)
-		if m == nil {
-			continue
-		}
-		info, err := u.deps.Docker.Inspect(string(m[1]))
-		if err != nil {
-			continue
-		}
-		return strings.TrimPrefix(info.Name, "/")
 	}
 
 	// Fallback: the live ODAC process necessarily inhabits one of the

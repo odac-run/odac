@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/system"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -76,6 +77,12 @@ type fakeAPI struct {
 	inspects map[string]container.InspectResponse
 	list     []container.Summary // ContainerList result when set
 
+	// startErrs fail the next ContainerStart calls, in order.
+	startErrs []error
+
+	volumes        []volume.CreateOptions
+	removedVolumes []string
+
 	execCmds    []string
 	execOutputs map[string]string // command -> stdout
 	execCodes   map[string]int    // command -> exit code
@@ -127,6 +134,11 @@ func (f *fakeAPI) ContainerCreate(_ context.Context, cfg *container.Config, hc *
 func (f *fakeAPI) ContainerStart(_ context.Context, id string, _ container.StartOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		return err
+	}
 	f.started = append(f.started, id)
 	return nil
 }
@@ -336,4 +348,28 @@ func (f *fakeAPI) NetworkDisconnect(_ context.Context, networkID, containerID st
 	defer f.mu.Unlock()
 	f.netDisconnects = append(f.netDisconnects, [2]string{networkID, containerID})
 	return nil
+}
+
+func (f *fakeAPI) VolumeCreate(_ context.Context, opts volume.CreateOptions) (volume.Volume, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.volumes = append(f.volumes, opts)
+	return volume.Volume{Name: opts.Name, Driver: opts.Driver, Options: opts.DriverOpts, Labels: opts.Labels}, nil
+}
+
+func (f *fakeAPI) VolumeRemove(_ context.Context, id string, _ bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedVolumes = append(f.removedVolumes, id)
+	return nil
+}
+
+func (f *fakeAPI) VolumeList(context.Context, volume.ListOptions) (volume.ListResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out volume.ListResponse
+	for _, v := range f.volumes {
+		out.Volumes = append(out.Volumes, &volume.Volume{Name: v.Name, Labels: v.Labels})
+	}
+	return out, nil
 }

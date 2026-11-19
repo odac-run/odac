@@ -20,9 +20,11 @@ var ErrVersion = errors.New("proto: odac-backup does not speak this protocol ver
 
 // Handler receives what a run produces besides its result.
 type Handler struct {
-	// Stream is the dump of a backup whose first item is a stream. When
-	// the run ends before Stream is drained and Stream is an io.Closer, it
-	// is closed, so a dump blocked on its output gives up.
+	// Stream is the dump of a backup whose first item is a stream. It is
+	// first read once odac-backup sends its ready event, so a dump that
+	// starts on its first Read never starts for a run that fails before.
+	// When the run ends before Stream is drained and Stream is an
+	// io.Closer, it is closed, so a dump blocked on its output gives up.
 	Stream io.Reader
 	// Output receives a stream restore's bytes.
 	Output io.Writer
@@ -74,7 +76,13 @@ func Call(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser, req *
 		dump  *recordingReader
 		wrote int64
 	)
-	if h.Stream != nil {
+	ready := func() error {
+		if h.Stream == nil {
+			return errors.New("proto: ready event without a stream item")
+		}
+		if sent != nil {
+			return errors.New("proto: second ready event")
+		}
 		sent = make(chan error, 1)
 		dump = &recordingReader{r: h.Stream}
 		go func() {
@@ -88,11 +96,13 @@ func Call(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser, req *
 			stdin.Close()
 			sent <- err
 		}()
-	} else {
+		return nil
+	}
+	if h.Stream == nil {
 		stdin.Close()
 	}
 
-	res, runErr := readEvents(events, h, &wrote)
+	res, runErr := readEvents(events, h, &wrote, ready)
 	closeAll()
 	if sent != nil {
 		select {
@@ -104,6 +114,9 @@ func Call(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser, req *
 			}
 			<-sent
 		}
+	} else if c, ok := h.Stream.(io.Closer); ok {
+		// Never asked for: a dump that starts lazily never starts.
+		c.Close()
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -138,7 +151,7 @@ func hello(events *EventReader) error {
 	return nil
 }
 
-func readEvents(events *EventReader, h Handler, wrote *int64) (*Result, error) {
+func readEvents(events *EventReader, h Handler, wrote *int64, ready func() error) (*Result, error) {
 	for {
 		ev, err := events.Next()
 		if errors.Is(err, io.EOF) {
@@ -148,6 +161,13 @@ func readEvents(events *EventReader, h Handler, wrote *int64) (*Result, error) {
 			return nil, err
 		}
 		switch ev.Type {
+		case EventReady:
+			// A followed run replays the ready its first server answered.
+			if ready != nil {
+				if err := ready(); err != nil {
+					return nil, err
+				}
+			}
 		case EventProgress:
 			if h.Progress != nil && ev.Progress != nil {
 				h.Progress(*ev.Progress)

@@ -3,9 +3,11 @@
 // sides import it, so it must never import the backup engine: the server
 // would link Kopia through it (cmd/odac-backup/boundary_test.go).
 //
-// One run is one request. The server reads a hello event, writes the
-// request as a length-prefixed JSON header to stdin and, for a backup with
-// a stream item, the dump as framed chunks after it. odac-backup answers on
+// One run is one request. The server reads a hello event and writes the
+// request as a length-prefixed JSON header to stdin. For a backup with a
+// stream item, odac-backup sends a ready event once the repository is
+// open, and only then does the server start the dump and send it as
+// framed chunks after the header. odac-backup answers on
 // stdout with one JSON event per line and ends with exactly one result or
 // error event. Secrets travel in the header only, never in the
 // environment, because a container's environment is visible to anyone who
