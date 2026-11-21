@@ -1,6 +1,10 @@
 package runner
 
-import "odac/internal/docker"
+import (
+	"time"
+
+	"odac/internal/docker"
+)
 
 // DefaultLimits sizes helpers and dumps from the host. A helper gets a
 // quarter of memory within 512 MiB to 2 GiB (Kopia's index and upload
@@ -31,3 +35,9 @@ func DefaultLimits(memTotal int64, cores int) (helper, dump docker.Limits) {
 // DefaultDumpRate is how fast a dump is read unless configured: 64 MiB/s,
 // about 230 GB an hour, which leaves most disks room for the app.
 const DefaultDumpRate = 64 << 20
+
+// DefaultDumpIdle is how long a dump may deliver nothing before it is
+// ended as stalled: far longer than any lock wait the dump tools bound
+// themselves (30s), and short enough that a dump queued behind a lock its
+// tool cannot bound gives way long before the run's time limit.
+const DefaultDumpIdle = 5 * time.Minute

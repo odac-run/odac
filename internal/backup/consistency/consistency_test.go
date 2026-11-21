@@ -643,3 +643,13 @@ func TestVolumes(t *testing.T) {
 		names[n] = true
 	}
 }
+
+func TestFilesPlanReadsEveryVolume(t *testing.T) {
+	plan := FilesPlan(App{Name: "db", Volumes: []Volume{
+		{Host: "/srv/db", Container: "/var/lib/postgresql/data"},
+		{Host: "/srv/db/sub", Container: "/nested"},
+	}}, CrashConsistent)
+	if plan.Dump != nil || len(plan.Dirs) != 1 || plan.Dirs[0].Consistency != CrashConsistent || plan.Dirs[0].Name != dirName("/var/lib/postgresql/data") {
+		t.Fatalf("plan %+v", plan)
+	}
+}

@@ -814,3 +814,48 @@ func (t *tailBuffer) String() string {
 	defer t.mu.Unlock()
 	return string(t.buf)
 }
+
+// AppState is what a backup reads from an app's running container: the
+// image it runs, which a dump runs too so the tool matches the server's
+// version, and its environment with the image's defaults, which is where
+// a database's credentials are.
+type AppState struct {
+	Running     bool
+	ImageID     string
+	Cmd         []string
+	Env         map[string]string
+	MemoryLimit int64
+}
+
+// BackupAppState inspects an app's container for a backup. A container
+// that does not exist reads as not running, not as an error: a stopped
+// app is backed up from its files.
+func (c *Client) BackupAppState(ctx context.Context, name string) (AppState, error) {
+	if !c.available {
+		return AppState{}, errors.New("Docker is not available")
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	info, err := c.api.ContainerInspect(ctx, name)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return AppState{}, nil
+		}
+		return AppState{}, err
+	}
+	st := AppState{ImageID: info.Image, Env: map[string]string{}}
+	if info.State != nil {
+		st.Running = info.State.Running
+	}
+	if info.Config != nil {
+		st.Cmd = append([]string(nil), info.Config.Cmd...)
+		for _, kv := range info.Config.Env {
+			k, v, _ := strings.Cut(kv, "=")
+			st.Env[k] = v
+		}
+	}
+	if info.HostConfig != nil {
+		st.MemoryLimit = info.HostConfig.Memory
+	}
+	return st, nil
+}

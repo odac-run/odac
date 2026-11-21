@@ -432,3 +432,51 @@ func TestNodeVocabulary(t *testing.T) {
 // The StartupGate tests that lived here moved with the type: task 3.7
 // replaced the 3.1 gate with internal/updater, whose suite covers the
 // SWITCH_LOGS marker, socket handling and OnReady semantics.
+
+// handoverGate fires ready, then holds Init until the handover completes,
+// like the updater in update mode.
+type handoverGate struct {
+	testGate
+	tr       *trace
+	complete chan struct{}
+}
+
+func (g *handoverGate) Init() error {
+	g.testGate.Init()
+	g.tr.add("ready")
+	<-g.complete
+	g.tr.add("handover.complete")
+	return nil
+}
+
+// Backups adopt the helpers the outgoing server released, so they start
+// only once the handover is complete, never at ready, and stop first.
+func TestBackupStartsAfterTheHandover(t *testing.T) {
+	tr := &trace{}
+	cfg, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &handoverGate{tr: tr, complete: make(chan struct{})}
+	s := New(cfg, Services{Proxy: &fakeService{"proxy", tr}, Mail: &fakeService{"mail", tr}, Backup: &fakeService{"backup", tr}}, gate)
+	s.startupDelay, s.tickDelay, s.tickEvery = time.Millisecond, time.Millisecond, time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- s.Init() }()
+	tr.waitFor(t, "proxy.start")
+	if tr.count("backup.start") != 0 {
+		t.Fatal("backups started before the handover completed")
+	}
+	close(gate.complete)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	ev := tr.snapshot()
+	if hi, bi := indexOf(ev, "handover.complete"), indexOf(ev, "backup.start"); hi == -1 || bi < hi {
+		t.Fatalf("start order: %v", ev)
+	}
+	s.Stop(true)
+	ev = tr.snapshot()
+	if bi, mi := indexOf(ev, "backup.stop"), indexOf(ev, "mail.stop"); bi == -1 || mi < bi {
+		t.Fatalf("stop order: %v", ev)
+	}
+}

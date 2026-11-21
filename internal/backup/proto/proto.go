@@ -47,7 +47,8 @@ const (
 )
 
 // Request is the header of a run. Exactly the argument member that
-// belongs to Op is set; init and usage take none.
+// belongs to Op is set; init takes none, and usage takes Usage only when
+// it is asked for more than sizes.
 type Request struct {
 	Version  int       `json:"version"`
 	Op       string    `json:"op"`
@@ -58,6 +59,7 @@ type Request struct {
 	Maintain *Maintain `json:"maintain,omitempty"`
 	Verify   *Verify   `json:"verify,omitempty"`
 	Restore  *Restore  `json:"restore,omitempty"`
+	Usage    *Usage    `json:"usage,omitempty"`
 }
 
 // Repo says which repository the run opens and as whom.
@@ -186,6 +188,17 @@ type Verify struct {
 	Percent float64 `json:"percent"`
 }
 
+// Usage asks usage to walk every snapshot, which costs about what garbage
+// collection costs and is why it is optional: the answer then says how
+// much of the repository no snapshot references (garbage maintenance is
+// still returning), how much each job references, and what deleting the
+// runs in Order would free.
+type Usage struct {
+	// Order lists runs in the order the server would delete them, each as
+	// the IDs of its snapshots.
+	Order [][]string `json:"order,omitempty"`
+}
+
 // Restore writes a snapshot back. A directory snapshot needs Dir, an empty
 // or absent directory inside the helper; a stream snapshot leaves Dir
 // empty and comes back as data events.
@@ -228,7 +241,8 @@ type VerifyResult struct {
 // Result closes a successful run. Which members are set depends on the
 // operation: Created for init, Count for backup and list (snapshot events
 // sent), Bytes for maintain and usage (repository size) and for restore
-// (bytes written), Files for a directory restore, Verify for verify.
+// (bytes written), Files for a directory restore, Verify for verify,
+// Space for maintain and usage.
 // Seq is the number an owner claim wrote. SameDisk, for init on a
 // filesystem, says the repository shares a file system with the cache
 // directory, which the server keeps on its own data disk: such a target
@@ -241,6 +255,35 @@ type Result struct {
 	Verify   *VerifyResult `json:"verify,omitempty"`
 	Seq      int64         `json:"seq,omitempty"`
 	SameDisk bool          `json:"sameDisk,omitempty"`
+	Space    *Space        `json:"space,omitempty"`
+}
+
+// Space is what a repository's storage looks like. Free and Total
+// describe a filesystem target's disk and are -1 where storage has no
+// notion of free space (S3, WebDAV). The other members come only from a
+// usage run that asked for them (Detailed).
+type Space struct {
+	Free     int64 `json:"free"`
+	Total    int64 `json:"total"`
+	Detailed bool  `json:"detailed,omitempty"`
+	// Garbage is the packed size of the contents no snapshot references:
+	// space that maintenance returns over its next full runs.
+	Garbage int64 `json:"garbage,omitempty"`
+	// Jobs is the packed size each job's snapshots reference, which is
+	// what a job's budget caps.
+	Jobs map[string]int64 `json:"jobs,omitempty"`
+	// Freed has one entry per run of Usage.Order: what deleting it and
+	// every run before it would turn into garbage.
+	Freed []Freed `json:"freed,omitempty"`
+}
+
+// Freed is what deleting a prefix of an order frees. Repo counts the
+// contents no remaining snapshot references; Job counts, for the job of
+// the run at this position, the contents none of that job's remaining
+// snapshots reference, which is what lowers the job's referenced size.
+type Freed struct {
+	Repo int64 `json:"repo"`
+	Job  int64 `json:"job"`
 }
 
 // Progress reports the work done on one backup item or restore so far.
@@ -302,6 +345,9 @@ func (r *Request) Validate() error {
 	case OpInit, OpUsage, OpBackup, OpList, OpDelete, OpMaintain, OpVerify, OpRestore:
 	default:
 		return badRequest("unknown operation %q", r.Op)
+	}
+	if r.Usage != nil && r.Op != OpUsage {
+		return badRequest("%s carries usage arguments", r.Op)
 	}
 	if o := r.Repo.Owner; o != nil {
 		if r.Repo.ReadOnly {

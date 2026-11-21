@@ -138,6 +138,7 @@ func TestValidate(t *testing.T) {
 		"owner read-only":    {func(r *Request) { r.Repo.ReadOnly, r.Repo.Owner = true, &Owner{Seq: 1} }, CodeBadRequest},
 		"owner zero seq":     {func(r *Request) { r.Repo.Owner = &Owner{} }, CodeBadRequest},
 		"adopt on backup":    {func(r *Request) { r.Repo.Owner = &Owner{Seq: 1, Adopt: true} }, CodeBadRequest},
+		"usage on backup":    {func(r *Request) { r.Usage = &Usage{} }, CodeBadRequest},
 	} {
 		r := validRequest()
 		c.mutate(r)
@@ -152,6 +153,11 @@ func TestValidate(t *testing.T) {
 		if err := r.Validate(); err != nil {
 			t.Errorf("%s: %v", op, err)
 		}
+	}
+	r := validRequest()
+	r.Op, r.Backup, r.Usage = OpUsage, nil, &Usage{Order: [][]string{{"k1"}}}
+	if err := r.Validate(); err != nil {
+		t.Errorf("detailed usage: %v", err)
 	}
 }
 

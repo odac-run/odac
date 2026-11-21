@@ -293,6 +293,19 @@ func (p *Planner) Plan(ctx context.Context, app App, run string) (*Plan, error) 
 	return plan, nil
 }
 
+// FilesPlan reads every data volume of app as files at level, with no
+// dump. It is the plan for an app whose container is not running: no dump
+// or probe can join its network namespace, and with nothing writing its
+// files they read as the app left them, which is crash-consistent at
+// worst.
+func FilesPlan(app App, level string) *Plan {
+	plan := &Plan{App: app.Name}
+	for _, v := range dataVolumes(app.Volumes) {
+		plan.Dirs = append(plan.Dirs, Dir{Name: dirName(v.Container), Path: v.Host, Container: v.Container, Consistency: level})
+	}
+	return plan
+}
+
 // dataVolumes drops volumes nested in another one, which the outer one
 // already reads.
 func dataVolumes(in []Volume) []Volume {

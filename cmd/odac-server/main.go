@@ -24,6 +24,7 @@ import (
 
 	"odac/internal/api"
 	"odac/internal/appmgr"
+	"odac/internal/backup"
 	"odac/internal/config"
 	"odac/internal/dataplane"
 	"odac/internal/docker"
@@ -56,8 +57,9 @@ func main() {
 
 	// Minted on the first start so the identity predates anything written
 	// under it. A failure is not fatal: only backups depend on the id.
-	if _, err := serverid.Ensure(baseDir); err != nil {
-		log.Error("Server identity unavailable:", err.Error())
+	serverID, err := serverid.Ensure(baseDir)
+	if err != nil {
+		log.Error("Server identity unavailable, backups are disabled:", err.Error())
 	}
 
 	// Docker client (Container.js port). Availability is probed once here,
@@ -120,6 +122,14 @@ func main() {
 			GPUHost: sysInfo,
 		})
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
+	}
+
+	// Backups (internal/backup). They need the app manager and the server
+	// identity; the system starts them once an update's handover is
+	// complete and stops them first.
+	var backupMgr *backup.Manager
+	if appMgr != nil && serverID != "" {
+		backupMgr = newBackups(log, cfg, baseDir, serverID, containers, appMgr)
 	}
 
 	// Updater (task 3.7): zero-downtime self-update. It owns its own SDK
@@ -200,6 +210,9 @@ func main() {
 	}
 	if appMgr != nil {
 		svc.App = appMgr
+	}
+	if backupMgr != nil {
+		svc.Backup = backupMgr
 	}
 	sys := system.New(cfg, svc, upd)
 	upd.SetSystem(sys) // closes the System↔Updater cycle (rollback re-Init)

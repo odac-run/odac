@@ -116,6 +116,17 @@ type DomainDeleter interface {
 	HasClientAuthPolicy(appName string) bool
 }
 
+// DeployWatcher hears when an operation takes an app (a deploy, restart,
+// redeploy or a start by the check pulse) and when it lets go, since that
+// is when a new container, and a migration with it, can start. The backup
+// manager cancels a dump that would hold up that migration and runs it
+// again afterwards. Both calls must return at once: the check tick makes
+// them.
+type DeployWatcher interface {
+	DeployStarted(app string)
+	DeployEnded(app string)
+}
+
 // Deps carries the Manager's collaborators. Hub, Domains, Api and Proxy may
 // be nil until their tasks land; every use is nil-tolerant like the Node
 // registry, which never resolves a missing module.
@@ -156,6 +167,8 @@ type Manager struct {
 	logStreams map[string]*runtimeStream // app name -> live runtime log
 	loggers    map[string]*applog.Logger // app name -> logger instance
 	probeDown  bool                      // last pulse could not list containers
+	deploys    DeployWatcher             // set once by SetDeployWatcher
+	held       map[float64]string        // app id -> name reported to deploys
 
 	// Test hooks: cadences default to Node's literals; sleep defaults to
 	// time.Sleep. deploySwitchDelay is Deploy.js's NODE_ENV!=='test' 5s.

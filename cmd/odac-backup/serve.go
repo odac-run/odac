@@ -142,7 +142,7 @@ func operate(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Em
 		if err := r.Maintain(ctx, req.Maintain.Full); err != nil {
 			return nil, err
 		}
-		return usage(ctx, r)
+		return usage(ctx, r, nil)
 	case proto.OpVerify:
 		v, err := r.Verify(ctx, req.Verify.Percent)
 		if err != nil {
@@ -153,7 +153,7 @@ func operate(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Em
 	case proto.OpRestore:
 		return restore(ctx, r, req.Restore, em)
 	case proto.OpUsage:
-		return usage(ctx, r)
+		return usage(ctx, r, req.Usage)
 	}
 	return nil, fmt.Errorf("operation %q has no handler", req.Op)
 }
@@ -181,12 +181,21 @@ func initRepo(ctx context.Context, cfg engine.Config) (*proto.Result, error) {
 	return res, nil
 }
 
-func usage(ctx context.Context, r *engine.Repo) (*proto.Result, error) {
+// usage measures the repository. The walk of every snapshot behind a
+// detailed answer is only made when asked for.
+func usage(ctx context.Context, r *engine.Repo, u *proto.Usage) (*proto.Result, error) {
 	n, err := r.Size(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &proto.Result{Bytes: n}, nil
+	sp := r.FreeSpace()
+	if u != nil {
+		if sp, err = r.Space(ctx, u.Order); err != nil {
+			return nil, err
+		}
+	}
+	out := convert[proto.Space](sp)
+	return &proto.Result{Bytes: n, Space: &out}, nil
 }
 
 // backup stores the run's items in order and reports each snapshot as

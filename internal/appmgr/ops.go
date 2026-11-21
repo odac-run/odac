@@ -359,18 +359,60 @@ func (m *Manager) Restart(id any) *api.Result {
 
 func (m *Manager) tryLockProcessing(id float64) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.processing[id] {
+		m.mu.Unlock()
 		return false
 	}
 	m.processing[id] = true
+	w := m.deploys
+	m.mu.Unlock()
+	if w != nil {
+		// Read outside m.mu: the config lock is never taken under it.
+		name := m.nameOf(id)
+		m.mu.Lock()
+		if m.processing[id] && name != "" {
+			if m.held == nil {
+				m.held = map[float64]string{}
+			}
+			m.held[id] = name
+		} else {
+			name = ""
+		}
+		m.mu.Unlock()
+		if name != "" {
+			w.DeployStarted(name)
+		}
+	}
 	return true
 }
 
 func (m *Manager) unlockProcessing(id float64) {
 	m.mu.Lock()
 	delete(m.processing, id)
+	name := m.held[id]
+	delete(m.held, id)
+	w := m.deploys
 	m.mu.Unlock()
+	if w != nil && name != "" {
+		w.DeployEnded(name)
+	}
+}
+
+// SetDeployWatcher reports every later operation on an app to w.
+func (m *Manager) SetDeployWatcher(w DeployWatcher) {
+	m.mu.Lock()
+	m.deploys = w
+	m.mu.Unlock()
+}
+
+func (m *Manager) nameOf(id float64) string {
+	var name string
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			name, _ = app["name"].(string)
+		}
+	})
+	return name
 }
 
 // inFlight reports whether an operation currently holds this app, by id

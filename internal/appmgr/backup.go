@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"odac/internal/backup/consistency"
 	"odac/internal/backup/settings"
 )
 
@@ -54,4 +55,42 @@ func configFile(appsPath, host string) bool {
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	return len(parts) >= 3 && parts[1] == "configs"
+}
+
+// BackupApp returns what the app record says about one app for a backup:
+// its image, its data volumes and its recipe's backup declaration. The
+// container's own state (image id, environment) is the backup manager's to
+// read from the engine. ok is false for an app that does not exist. The
+// config files ODAC writes from the recipe are left out: the recipe makes
+// them again, and a file is not a directory a backup can read.
+func (m *Manager) BackupApp(name string) (consistency.App, bool) {
+	appsPath := m.appsPath()
+	var (
+		out consistency.App
+		ok  bool
+	)
+	m.cfg.View(func() {
+		for _, app := range m.apps {
+			if n, _ := app["name"].(string); n != name || app["_deleted"] == true {
+				continue
+			}
+			ok = true
+			out = consistency.App{Name: name, Container: name}
+			out.Image, _ = app["image"].(string)
+			for _, v := range toMounts(app["volumes"]) {
+				if v.Host != "" && v.Container != "" && !configFile(appsPath, v.Host) {
+					out.Volumes = append(out.Volumes, consistency.Volume{Host: v.Host, Container: v.Container})
+				}
+			}
+			if app["backup"] != nil {
+				if spec, err := consistency.Parse(app); err == nil {
+					out.Spec = spec
+				} else {
+					m.log.Error("Ignoring the backup declaration of %s: %s", name, err.Error())
+				}
+			}
+			return
+		}
+	})
+	return out, ok
 }

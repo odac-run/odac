@@ -455,7 +455,7 @@ func TestAdopt(t *testing.T) {
 
 func TestDumpStreamRate(t *testing.T) {
 	const size, rate = 2 << 20, 4 << 20
-	ds := newDumpStream(rate, func() (io.ReadCloser, error) {
+	ds := newDumpStream(rate, 0, func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(make([]byte, size))), nil
 	})
 	defer ds.Close()
@@ -479,5 +479,81 @@ func TestDefaultLimits(t *testing.T) {
 	h, d = DefaultLimits(1<<30, 1)
 	if h.Memory != 512<<20 || h.NanoCPUs != 1e9 || d.Memory != 256<<20 {
 		t.Errorf("small host: helper %+v dump %+v", h, d)
+	}
+}
+
+// hangingReader gives its first bytes, then blocks until it is closed.
+type hangingReader struct {
+	first []byte
+	once  sync.Once
+	done  chan struct{}
+}
+
+func (h *hangingReader) Read(p []byte) (int, error) {
+	if len(h.first) > 0 {
+		n := copy(p, h.first)
+		h.first = h.first[n:]
+		return n, nil
+	}
+	<-h.done
+	return 0, io.ErrClosedPipe
+}
+
+func (h *hangingReader) Close() error {
+	h.once.Do(func() { close(h.done) })
+	return nil
+}
+
+func TestRunStalledDumpFails(t *testing.T) {
+	hang := &hangingReader{first: []byte("partial"), done: make(chan struct{})}
+	d := &fakeDocker{proc: newFakeProc(storeAll), dump: func() io.ReadCloser { return hang }}
+	r := newRunner(t, d)
+	r.cfg.DumpIdle = 50 * time.Millisecond
+	start := time.Now()
+	_, err := r.Run(context.Background(), Invocation{Request: backupRequest(), Dump: &docker.DumpSpec{Image: "p", App: "db", Cmd: []string{"mariadb-dump"}}})
+	if !errors.Is(err, ErrStalled) {
+		t.Fatalf("stalled dump: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("a stalled dump took %v to end", took)
+	}
+}
+
+// A slow reader is not a stalled dump: only waiting inside the dump's Read
+// counts.
+func TestDumpIdleIgnoresASlowReader(t *testing.T) {
+	ds := newDumpStream(1<<30, 30*time.Millisecond, func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(make([]byte, 3*dumpBurst))), nil
+	})
+	defer ds.Close()
+	buf := make([]byte, dumpBurst)
+	for {
+		_, err := ds.Read(buf)
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(60 * time.Millisecond)
+	}
+}
+
+func TestRunReadsASource(t *testing.T) {
+	data := []byte("stored dump")
+	d := &fakeDocker{proc: newFakeProc(storeAll), dump: func() io.ReadCloser { t.Error("a dump was started"); return nil }}
+	src := &closeTracker{Reader: bytes.NewReader(data)}
+	var snaps []proto.Snapshot
+	_, err := newRunner(t, d).Run(context.Background(), Invocation{
+		Request: backupRequest(),
+		Source:  func(context.Context) (io.ReadCloser, error) { return src, nil },
+		Handler: proto.Handler{Snapshot: func(s proto.Snapshot) { snaps = append(snaps, s) }},
+	})
+	if err != nil || len(snaps) != 1 || snaps[0].Bytes != int64(len(data)) || !src.closed {
+		t.Fatalf("source run: %v %+v closed %v", err, snaps, src.closed)
+	}
+	_, err = newRunner(t, d).Run(context.Background(), Invocation{Request: backupRequest(), Dump: &docker.DumpSpec{}, Source: func(context.Context) (io.ReadCloser, error) { return src, nil }})
+	if err == nil {
+		t.Fatal("a dump and a source together were accepted")
 	}
 }

@@ -100,6 +100,11 @@ type Config struct {
 	// database slows down with its reader, which keeps a dump from
 	// competing with the app for the disk.
 	DumpRate int64
+	// DumpIdle ends a stream that delivers no byte for this long while it
+	// is being read, as ErrStalled; zero means no bound. It is what ends a
+	// dump queued behind a lock its tool cannot bound itself (MariaDB's
+	// metadata locks), whatever the engine.
+	DumpIdle time.Duration
 }
 
 // Runner starts runs. It is safe for concurrent use; deciding which runs
@@ -159,7 +164,13 @@ type Invocation struct {
 	// Handler receives events. Its Stream must be nil: Dump supplies it.
 	Handler proto.Handler
 	// Dump produces the stream of a backup whose first item is one.
-	Dump   *docker.DumpSpec
+	Dump *docker.DumpSpec
+	// Source produces that stream instead of a dump, such as a stored dump
+	// read back from another repository. It is opened once the helper asks
+	// for the stream; closing what it returns must end it, and a stream
+	// that did not reach its end must fail its last Read rather than
+	// return io.EOF.
+	Source func(ctx context.Context) (io.ReadCloser, error)
 	Target *Target
 	// Labels go on the run's containers, under docker.LabelBackupPrefix.
 	Labels map[string]string
@@ -175,7 +186,10 @@ func (r *Runner) Run(ctx context.Context, inv Invocation) (*proto.Result, error)
 	if inv.Handler.Stream != nil {
 		return nil, errors.New("runner: the stream comes from Dump")
 	}
-	if (inv.Dump != nil) != inv.Request.HasStream() {
+	if inv.Dump != nil && inv.Source != nil {
+		return nil, errors.New("runner: a stream comes from a dump or a source, not both")
+	}
+	if (inv.Dump != nil || inv.Source != nil) != inv.Request.HasStream() {
 		return nil, errors.New("runner: a stream item and a dump go together")
 	}
 	if inv.Dump != nil && r.cfg.Docker == nil {
@@ -194,13 +208,20 @@ func (r *Runner) Run(ctx context.Context, inv Invocation) (*proto.Result, error)
 
 	h := inv.Handler
 	var dump *dumpStream
-	if inv.Dump != nil {
+	switch {
+	case inv.Dump != nil:
 		spec := *inv.Dump
 		spec.Limits = r.cfg.DumpLimits
 		spec.Labels = r.labels(inv)
-		dump = newDumpStream(r.cfg.DumpRate, func() (io.ReadCloser, error) {
+		dump = newDumpStream(r.cfg.DumpRate, r.cfg.DumpIdle, func() (io.ReadCloser, error) {
 			return r.cfg.Docker.StartDump(runCtx, spec)
 		})
+	case inv.Source != nil:
+		dump = newDumpStream(r.cfg.DumpRate, r.cfg.DumpIdle, func() (io.ReadCloser, error) {
+			return inv.Source(runCtx)
+		})
+	}
+	if dump != nil {
 		defer dump.Close()
 		h.Stream = dump
 	}

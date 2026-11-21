@@ -141,8 +141,13 @@ func TestServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	if res := mustCall(t, tg.request(proto.OpUsage), proto.Handler{}); res.Bytes < int64(len(dump)) {
-		t.Fatalf("usage %d is below the dump alone", res.Bytes)
+	if res := mustCall(t, tg.request(proto.OpUsage), proto.Handler{}); res.Bytes < int64(len(dump)) || res.Space == nil || res.Space.Detailed || res.Space.Free <= 0 {
+		t.Fatalf("usage %+v", res)
+	}
+	u := tg.request(proto.OpUsage)
+	u.Usage = &proto.Usage{Order: [][]string{{stream.ID}}}
+	if res := mustCall(t, u, proto.Handler{}); res.Space == nil || !res.Space.Detailed || len(res.Space.Freed) != 1 || res.Space.Freed[0].Repo < int64(len(dump))*9/10 || res.Space.Jobs["nightly"] == 0 {
+		t.Fatalf("detailed usage %+v", res.Space)
 	}
 	m := tg.request(proto.OpMaintain)
 	m.Maintain = &proto.Maintain{}
@@ -329,6 +334,12 @@ func fill(v reflect.Value) {
 	case reflect.Slice:
 		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
 		fill(v.Index(0))
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+		k, e := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fill(k)
+		fill(e)
+		v.SetMapIndex(k, e)
 	case reflect.String:
 		v.SetString("x")
 	case reflect.Bool:
@@ -359,6 +370,8 @@ func TestWireTypesMatchEngine(t *testing.T) {
 	roundTrip[proto.Snapshot, engine.BackupResult](t)
 	roundTrip[engine.VerifyResult, proto.VerifyResult](t)
 	roundTrip[proto.VerifyResult, engine.VerifyResult](t)
+	roundTrip[engine.SpaceReport, proto.Space](t)
+	roundTrip[proto.Space, engine.SpaceReport](t)
 }
 
 func TestServeClaimsTheServerDirectory(t *testing.T) {
