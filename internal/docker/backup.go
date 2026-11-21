@@ -153,6 +153,14 @@ var (
 	versionPattern   = regexp.MustCompile(`^[0-9][0-9.]*$`)
 )
 
+// Validate refuses a share the daemon would be asked to mount with options
+// it did not mean, so a target can be refused when it is saved rather than
+// at its first run.
+func (s Share) Validate() error {
+	_, err := s.driverOpts()
+	return err
+}
+
 // driverOpts builds the local driver's options. Mount options are one
 // comma-separated string the kernel parses, so a comma or an equals sign
 // inside a value would add options of the caller's choosing (uid=, or a

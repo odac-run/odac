@@ -360,3 +360,45 @@ func TestWireTypesMatchEngine(t *testing.T) {
 	roundTrip[engine.VerifyResult, proto.VerifyResult](t)
 	roundTrip[proto.VerifyResult, engine.VerifyResult](t)
 }
+
+func TestServeClaimsTheServerDirectory(t *testing.T) {
+	t.Parallel()
+	if engine.RepositoryDir != proto.RepositoryDir || engine.OwnerFile != proto.OwnerFile {
+		t.Fatal("the layout names differ between the engine and the wire")
+	}
+	base := t.TempDir()
+	tg := target{repo: filepath.Join(base, testServer, proto.RepositoryDir), cache: filepath.Join(base, "cache")}
+	os.MkdirAll(tg.cache, 0o700)
+	owned := func(op string, seq int64, adopt bool) *proto.Request {
+		r := tg.request(op)
+		r.Repo.Owner = &proto.Owner{Name: "web-1", Seq: seq, Adopt: adopt}
+		return r
+	}
+
+	res := mustCall(t, owned(proto.OpInit, 1, false), proto.Handler{})
+	if !res.Created || res.Seq != 1 || !res.SameDisk {
+		t.Fatalf("init: %+v", res)
+	}
+	// A read claims nothing, so it neither conflicts nor advances.
+	if res := mustCall(t, owned(proto.OpUsage, 1, false), proto.Handler{}); res.Seq != 0 {
+		t.Fatalf("usage claimed: %+v", res)
+	}
+	m := owned(proto.OpMaintain, 1, false)
+	m.Maintain = &proto.Maintain{}
+	_, exit, err := call(t, m, proto.Handler{})
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.CodeOwnerConflict || exit != 1 {
+		t.Fatalf("number reused: exit %d, %v", exit, err)
+	}
+	m.Repo.Owner.Seq = 2
+	if res := mustCall(t, m, proto.Handler{}); res.Seq != 2 {
+		t.Fatalf("maintain: %+v", res)
+	}
+	if res := mustCall(t, owned(proto.OpInit, 1, true), proto.Handler{}); res.Created || res.Seq != 3 {
+		t.Fatalf("adopt: %+v", res)
+	}
+	rec, err := engine.ReadOwner(context.Background(), engine.Storage{Filesystem: &engine.FilesystemStorage{Path: tg.repo}}, testServer)
+	if err != nil || rec.Seq != 3 || rec.Name != "web-1" {
+		t.Fatalf("file: %+v, %v", rec, err)
+	}
+}

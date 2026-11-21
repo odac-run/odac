@@ -71,6 +71,35 @@ type Repo struct {
 	CacheBytes int64  `json:"cacheBytes,omitempty"`
 	// ReadOnly opens another server's repository for list and restore.
 	ReadOnly bool `json:"readOnly,omitempty"`
+	// Owner is the clone check of a target repository: the operations
+	// that write (init, backup, delete, maintain) claim the server
+	// directory before touching the repository. Nil skips the check,
+	// which only a repository no other machine can reach may do.
+	Owner *Owner `json:"owner,omitempty"`
+}
+
+// Layout of a server's directory on a target: the repository lives in
+// RepositoryDir and the ownership file next to it, so a target shared by
+// several servers holds one directory per server id. With an Owner the
+// storage must name <server id>/RepositoryDir (a filesystem path or a
+// WebDAV URL ending in it, an S3 prefix ending in it and a slash).
+const (
+	RepositoryDir = "repository"
+	OwnerFile     = "server.json"
+)
+
+// Owner claims a server directory. Seq is the number this run writes into
+// the ownership file; the server persists it before the run and never
+// sends a number twice. A file already holding Seq or more means another
+// machine writes under this server id (a cloned VM), and the run fails
+// with CodeOwnerConflict before writing anything. Adopt, for init only,
+// takes the directory over whatever it holds and writes the number after
+// the one found, which the result reports: the operator's answer once a
+// conflict is understood, such as a target added again.
+type Owner struct {
+	Name  string `json:"name"`
+	Seq   int64  `json:"seq"`
+	Adopt bool   `json:"adopt,omitempty"`
 }
 
 // Storage names where the repository lives, as the helper sees it: a
@@ -200,12 +229,18 @@ type VerifyResult struct {
 // operation: Created for init, Count for backup and list (snapshot events
 // sent), Bytes for maintain and usage (repository size) and for restore
 // (bytes written), Files for a directory restore, Verify for verify.
+// Seq is the number an owner claim wrote. SameDisk, for init on a
+// filesystem, says the repository shares a file system with the cache
+// directory, which the server keeps on its own data disk: such a target
+// only protects against deleting by mistake.
 type Result struct {
-	Created bool          `json:"created,omitempty"`
-	Count   int           `json:"count,omitempty"`
-	Bytes   int64         `json:"bytes,omitempty"`
-	Files   int64         `json:"files,omitempty"`
-	Verify  *VerifyResult `json:"verify,omitempty"`
+	Created  bool          `json:"created,omitempty"`
+	Count    int           `json:"count,omitempty"`
+	Bytes    int64         `json:"bytes,omitempty"`
+	Files    int64         `json:"files,omitempty"`
+	Verify   *VerifyResult `json:"verify,omitempty"`
+	Seq      int64         `json:"seq,omitempty"`
+	SameDisk bool          `json:"sameDisk,omitempty"`
 }
 
 // Progress reports the work done on one backup item or restore so far.
@@ -232,6 +267,9 @@ const (
 	CodeStream         = "stream"
 	CodeCanceled       = "canceled"
 	CodeFailed         = "failed"
+	// CodeOwnerConflict: the server directory's ownership file is ahead
+	// of the claim, or names another server.
+	CodeOwnerConflict = "owner_conflict"
 )
 
 // Error is a run that failed on the odac-backup side.
@@ -264,6 +302,17 @@ func (r *Request) Validate() error {
 	case OpInit, OpUsage, OpBackup, OpList, OpDelete, OpMaintain, OpVerify, OpRestore:
 	default:
 		return badRequest("unknown operation %q", r.Op)
+	}
+	if o := r.Repo.Owner; o != nil {
+		if r.Repo.ReadOnly {
+			return badRequest("a read-only run claims no owner")
+		}
+		if o.Seq < 1 {
+			return badRequest("owner sequence must be positive")
+		}
+		if o.Adopt && r.Op != OpInit {
+			return badRequest("only init adopts a server directory")
+		}
 	}
 	for op, set := range args {
 		if set != (op == r.Op) {
@@ -319,6 +368,16 @@ func (b *Backup) validate() error {
 // HasStream reports whether the run reads a stream from stdin.
 func (r *Request) HasStream() bool {
 	return r.Backup != nil && len(r.Backup.Items) > 0 && r.Backup.Items[0].Stream != ""
+}
+
+// Writes reports whether the operation writes the repository, which is
+// when an owner claim is checked and written.
+func (r *Request) Writes() bool {
+	switch r.Op {
+	case OpInit, OpBackup, OpDelete, OpMaintain:
+		return true
+	}
+	return false
 }
 
 // streamsOut reports whether the run answers with data events.

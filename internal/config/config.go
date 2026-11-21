@@ -23,6 +23,7 @@ import (
 var moduleKeys = map[string][]string{
 	"api":      {"api"},
 	"app":      {"apps", "app"},
+	"backup":   {"backup"},
 	"dns":      {"dns"},
 	"domain":   {"domains"},
 	"firewall": {"firewall"},

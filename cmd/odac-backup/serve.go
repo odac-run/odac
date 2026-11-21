@@ -68,6 +68,7 @@ var errorCodes = []struct {
 	{engine.ErrForeign, proto.CodeForeign},
 	{engine.ErrKind, proto.CodeKind},
 	{engine.ErrTargetNotEmpty, proto.CodeTargetNotEmpty},
+	{engine.ErrOwnerConflict, proto.CodeOwnerConflict},
 }
 
 func errorCode(err error) string {
@@ -79,7 +80,27 @@ func errorCode(err error) string {
 	return proto.CodeFailed
 }
 
+// handle claims the server directory before an operation that writes, so
+// a clone of this server stops before it touches the repository.
 func handle(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Emitter) (*proto.Result, error) {
+	var seq int64
+	if o := req.Repo.Owner; o != nil && req.Writes() {
+		var err error
+		seq, err = engine.ClaimOwner(ctx, convert[engine.Storage](req.Repo.Storage), engine.OwnerClaim{
+			ServerID: req.Repo.ServerID, Name: o.Name, Seq: o.Seq, Adopt: o.Adopt,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	res, err := operate(ctx, req, in, em)
+	if res != nil {
+		res.Seq = seq
+	}
+	return res, err
+}
+
+func operate(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Emitter) (*proto.Result, error) {
 	cfg := engine.Config{
 		Storage:    convert[engine.Storage](req.Repo.Storage),
 		Password:   req.Repo.Password,
@@ -151,7 +172,13 @@ func initRepo(ctx context.Context, cfg engine.Config) (*proto.Result, error) {
 		return nil, err
 	}
 	r.Close(context.WithoutCancel(ctx))
-	return &proto.Result{Created: created}, nil
+	res := &proto.Result{Created: created}
+	if fs := cfg.Storage.Filesystem; fs != nil {
+		// Unknown counts as another disk: the label is a warning, and a
+		// false one would be worse than a missing one.
+		res.SameDisk, _ = engine.SameFileSystem(fs.Path, cfg.CacheDir)
+	}
+	return res, nil
 }
 
 func usage(ctx context.Context, r *engine.Repo) (*proto.Result, error) {

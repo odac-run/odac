@@ -135,6 +135,9 @@ func TestValidate(t *testing.T) {
 		"verify percent":     {func(r *Request) { r.Op, r.Backup, r.Verify = OpVerify, nil, &Verify{Percent: 101} }, CodeBadRequest},
 		"restore without id": {func(r *Request) { r.Op, r.Backup, r.Restore = OpRestore, nil, &Restore{} }, CodeBadRequest},
 		"restore relative":   {func(r *Request) { r.Op, r.Backup, r.Restore = OpRestore, nil, &Restore{ID: "k1", Dir: "out"} }, CodeBadRequest},
+		"owner read-only":    {func(r *Request) { r.Repo.ReadOnly, r.Repo.Owner = true, &Owner{Seq: 1} }, CodeBadRequest},
+		"owner zero seq":     {func(r *Request) { r.Repo.Owner = &Owner{} }, CodeBadRequest},
+		"adopt on backup":    {func(r *Request) { r.Repo.Owner = &Owner{Seq: 1, Adopt: true} }, CodeBadRequest},
 	} {
 		r := validRequest()
 		c.mutate(r)
