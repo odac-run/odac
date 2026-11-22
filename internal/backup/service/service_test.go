@@ -52,7 +52,10 @@ type fakeManager struct {
 	servers []proto.ServerDir
 	snapReq backup.SnapshotRestoreRequest
 	taken   string
+	health  backup.Health
 }
+
+func (f *fakeManager) Health() backup.Health { return f.health }
 
 func (f *fakeManager) SnapshotStatus() backup.SnapshotStatus {
 	return backup.SnapshotStatus{Periodic: []backup.PeriodicSnapshot{}, Deploys: []backup.DeployMark{}, Warnings: []backup.SnapshotWarning{}}
@@ -310,6 +313,32 @@ func TestListsAreNeverNull(t *testing.T) {
 	// Coverage says only what there is to say.
 	if text := data(t, fx.svc.Coverage()); text != `{"unprotected":["db","web"],"noJobs":true}` {
 		t.Errorf("coverage = %s", text)
+	}
+}
+
+func TestCoverageCarriesWhatTheTargetsReport(t *testing.T) {
+	fx := newFixture(t)
+	id, _ := fx.addTarget(t)
+	if _, err := fx.set.CreateJob(settings.JobSpec{Name: "nightly", Target: id, AllApps: true}); err != nil {
+		t.Fatal(err)
+	}
+	other := strings.Repeat("c", 32)
+	fx.mgr.health = backup.Health{
+		Corrupt: []string{id},
+		Orphans: []backup.OrphanServer{{Target: id, ServerShare: backup.ServerShare{Server: other, Name: "gone", Used: 7}}},
+		Shared:  []string{id},
+	}
+	want := `{"corrupt":["` + id + `"],"orphans":[{"target":"` + id + `","server":"` + other + `","name":"gone","used":7}],"unbudgeted":["` + id + `"]}`
+	if text := data(t, fx.svc.Coverage()); !strings.HasSuffix(text, want[1:]) {
+		t.Fatalf("coverage = %s, want it to end with %s", text, want[1:])
+	}
+	// A budget on every job on the shared target answers the suggestion.
+	jobs, _ := fx.set.Jobs()
+	if _, err := fx.set.UpdateJob(jobs[0].ID, settings.JobSpec{Name: "nightly", Target: id, AllApps: true, Budget: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	if text := data(t, fx.svc.Coverage()); strings.Contains(text, "unbudgeted") {
+		t.Fatalf("coverage = %s", text)
 	}
 }
 

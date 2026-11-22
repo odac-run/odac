@@ -47,6 +47,7 @@ type Manager interface {
 	Restores() []backup.RestoreResult
 	StageServerRestore(ctx context.Context, req backup.ServerRestoreRequest) (*backup.ServerRestore, error)
 	SnapshotStatus() backup.SnapshotStatus
+	Health() backup.Health
 	SnapshotHistory(app string, limit int) []backup.SnapshotRecord
 	SnapshotPoints(app string) []backup.SnapshotPoint
 	TakeSnapshot(app string) (backup.SnapshotRunning, error)
@@ -525,13 +526,45 @@ func (s *Service) PurgeRetired(payload any) api.Result {
 	return api.Res(true, lang.T("The backups are deleted with the next maintenance of their target."))
 }
 
-// Coverage reports what the jobs leave unprotected.
+// Coverage is what the Hub warns about: the settings' gaps, then what
+// the targets themselves report. Members are absent when there is
+// nothing to say.
+type Coverage struct {
+	settings.Coverage
+	// Corrupt are targets whose last verification found damage, until
+	// one that reads every file finds none.
+	Corrupt []string `json:"corrupt,omitempty"`
+	// Orphans are other servers' directories on a shared filesystem
+	// target that stopped measuring themselves there. No server deletes
+	// them; the operator decides.
+	Orphans []backup.OrphanServer `json:"orphans,omitempty"`
+	// Unbudgeted are targets shared with other active servers on which a
+	// job of this server has no budget: the fair share keeps the floor,
+	// but a per-job budget is how the operator divides the space.
+	Unbudgeted []string `json:"unbudgeted,omitempty"`
+}
+
+// Coverage reports what the jobs leave unprotected and what the targets
+// warn about.
 func (s *Service) Coverage() api.Result {
 	c, err := s.cfg.Settings.Coverage()
 	if err != nil {
 		return fail(err)
 	}
-	return ok(nil, c)
+	h := s.cfg.Manager.Health()
+	out := Coverage{Coverage: c, Corrupt: h.Corrupt, Orphans: h.Orphans}
+	if len(h.Shared) > 0 {
+		jobs, err := s.cfg.Settings.Jobs()
+		if err != nil {
+			return fail(err)
+		}
+		for _, t := range h.Shared {
+			if slices.ContainsFunc(jobs, func(j settings.JobView) bool { return j.Target == t && j.Budget == 0 }) {
+				out.Unbudgeted = append(out.Unbudgeted, t)
+			}
+		}
+	}
+	return ok(nil, out)
 }
 
 // Status is where every job and target stands.

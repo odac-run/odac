@@ -234,7 +234,10 @@ func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Back
 	for i, id := range order {
 		groups[i] = runs[id].ids
 	}
-	res, err := m.usage(ctx, target, &proto.Usage{Order: groups})
+	res, err := m.call(ctx, target, m.sharesTarget(target), func(req *proto.Request) {
+		req.Op, req.Usage = proto.OpUsage, &proto.Usage{Order: groups}
+		req.Share = shares(req)
+	}, proto.Handler{})
 	if err != nil {
 		return 0, nil, nil, 0, err
 	}
@@ -245,7 +248,12 @@ func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Back
 
 	var notes []string
 	doomed := map[string]bool{}
-	excess := thin.Space{Used: res.Bytes, Garbage: sp.Garbage, Free: sp.Free, Total: sp.Total}.Excess()
+	space := thin.Space{Used: res.Bytes, Garbage: sp.Garbage, Free: sp.Free, Total: sp.Total, Peers: m.activePeers(sp.Peers, m.now())}
+	excess := space.Excess()
+	floorNote := "deleted %d backups to keep the target's free space floor"
+	if len(space.Peers) > 0 {
+		floorNote = "deleted %d backups to keep the target's free space floor: this server holds more than its fair share of the target"
+	}
 	if excess > 0 {
 		n := slices.IndexFunc(sp.Freed, func(f proto.Freed) bool { return f.Repo >= excess }) + 1
 		if n == 0 {
@@ -256,7 +264,7 @@ func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Back
 			doomed[id] = true
 		}
 		if n > 0 {
-			notes = append(notes, fmt.Sprintf("deleted %d backups to keep the target's free space floor", n))
+			notes = append(notes, fmt.Sprintf(floorNote, n))
 		}
 	}
 	for job, budget := range budgets {
@@ -307,11 +315,16 @@ func (m *Manager) checkFloor(ctx context.Context, target string) {
 		return
 	}
 	sp := res.Space
+	now := m.now()
 	m.state.update(func(d *stateData) {
 		t := d.target(target)
 		t.Used, t.Free, t.Total = res.Bytes, sp.Free, sp.Total
-		if belowFloor(sp) {
-			t.NextMaintain = ms(m.now())
+		// On a shared target, a server the last maintenance found within
+		// its share has nothing to give; another server's growth does not
+		// call for this one's maintenance after every backup.
+		within := t.Share > 0 && t.Used-t.Garbage <= t.Share && now.Sub(fromMs(t.LastMaintain)) < m.t.maintainSoon
+		if belowFloor(sp) && !within {
+			t.NextMaintain = ms(now)
 		}
 	})
 }
@@ -372,6 +385,11 @@ func (m *Manager) deleteRuns(ctx context.Context, target string, runs map[string
 // call runs one short request on a target. A write claims the next owner
 // sequence number.
 func (m *Manager) call(ctx context.Context, target string, write bool, shape func(*proto.Request), h proto.Handler) (*proto.Result, error) {
+	return m.callFor(ctx, target, write, tidyLimit, shape, h)
+}
+
+// callFor is call with its own time limit.
+func (m *Manager) callFor(ctx context.Context, target string, write bool, limit time.Duration, shape func(*proto.Request), h proto.Handler) (*proto.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -388,7 +406,7 @@ func (m *Manager) call(ctx context.Context, target string, write bool, shape fun
 		return nil, err
 	}
 	shape(req)
-	runCtx, cancel := runContext(m.now().Add(tidyLimit))
+	runCtx, cancel := m.runContext(m.now().Add(limit))
 	defer cancel()
 	res, err := r.Run(runCtx, runner.Invocation{Request: req, Target: a.Target, Handler: h, Labels: map[string]string{labelKind: req.Op, labelTarget: target}})
 	if err != nil && !errors.Is(err, runner.ErrReleased) {

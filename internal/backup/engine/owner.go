@@ -22,10 +22,11 @@ import (
 	"odac/internal/serverid"
 )
 
-// Layout of a server's directory on a target; proto mirrors both names.
+// Layout of a server's directory on a target; proto mirrors the names.
 const (
 	RepositoryDir = "repository"
 	OwnerFile     = "server.json"
+	UsageFile     = "usage.json"
 )
 
 const (
@@ -207,10 +208,15 @@ func (f fsOwner) read(context.Context) ([]byte, error) {
 // number or the new one and never a torn file, which would read as a
 // conflict.
 func (f fsOwner) write(_ context.Context, data []byte) error {
-	if err := os.MkdirAll(f.dir, 0o700); err != nil {
+	return replaceFile(f.dir, OwnerFile, data)
+}
+
+// replaceFile writes dir/name through a rename and syncs the directory.
+func replaceFile(dir, name string, data []byte) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(f.dir, "."+OwnerFile+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
 	if err != nil {
 		return err
 	}
@@ -226,10 +232,10 @@ func (f fsOwner) write(_ context.Context, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), filepath.Join(f.dir, OwnerFile)); err != nil {
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, name)); err != nil {
 		return err
 	}
-	if d, err := os.Open(f.dir); err == nil {
+	if d, err := os.Open(dir); err == nil {
 		d.Sync()
 		d.Close()
 	}

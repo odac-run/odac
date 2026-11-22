@@ -219,6 +219,12 @@ type repo struct {
 	free    int64
 	total   int64
 	maint   int
+	// peers are the other servers' usage files a shared request reads;
+	// shared counts the requests that wrote this server's; damage is what
+	// a verification finds.
+	peers  []proto.PeerUsage
+	shared int
+	damage []string
 }
 
 type call struct {
@@ -348,12 +354,26 @@ func (r *fakeRunner) Run(ctx context.Context, inv runner.Invocation) (*proto.Res
 		defer r.mu.Unlock()
 		rp := r.repo(t)
 		rp.maint++
-		return &proto.Result{Bytes: r.usedLocked(rp), Space: &proto.Space{Free: rp.free, Total: rp.total}}, nil
+		sp := &proto.Space{Free: rp.free, Total: rp.total}
+		if req.Share {
+			rp.shared++
+			sp.Peers = slices.Clone(rp.peers)
+		}
+		return &proto.Result{Bytes: r.usedLocked(rp), Space: sp}, nil
+	case proto.OpVerify:
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		rp := r.repo(t)
+		return &proto.Result{Verify: &proto.VerifyResult{Snapshots: len(rp.snaps), Objects: int64(len(rp.snaps)), Errors: slices.Clone(rp.damage)}}, nil
 	case proto.OpUsage:
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		rp := r.repo(t)
 		sp := &proto.Space{Free: rp.free, Total: rp.total}
+		if req.Share {
+			rp.shared++
+			sp.Peers = slices.Clone(rp.peers)
+		}
 		if u := req.Usage; u != nil {
 			sp.Detailed, sp.Garbage, sp.Jobs = true, rp.garbage, map[string]int64{}
 			for _, s := range rp.snaps {

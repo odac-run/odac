@@ -150,7 +150,8 @@ func operate(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Em
 		if err := r.Maintain(ctx, req.Maintain.Full); err != nil {
 			return nil, err
 		}
-		return usage(ctx, r, nil)
+		res, err := usage(ctx, r, nil)
+		return share(ctx, req, res, err)
 	case proto.OpVerify:
 		v, err := r.Verify(ctx, req.Verify.Percent)
 		if err != nil {
@@ -161,7 +162,8 @@ func operate(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Em
 	case proto.OpRestore:
 		return restore(ctx, r, req.Restore, em)
 	case proto.OpUsage:
-		return usage(ctx, r, req.Usage)
+		res, err := usage(ctx, r, req.Usage)
+		return share(ctx, req, res, err)
 	}
 	return nil, fmt.Errorf("operation %q has no handler", req.Op)
 }
@@ -204,6 +206,33 @@ func usage(ctx context.Context, r *engine.Repo, u *proto.Usage) (*proto.Result, 
 	}
 	out := convert[proto.Space](sp)
 	return &proto.Result{Bytes: n, Space: &out}, nil
+}
+
+// share writes this server's usage file from a measurement and adds what
+// the other servers' files say, when the request asks to share the target.
+// Garbage is known only from a detailed measurement; without one the file
+// says none, which only makes the others count less space as coming back.
+func share(ctx context.Context, req *proto.Request, res *proto.Result, err error) (*proto.Result, error) {
+	if err != nil || !req.Share {
+		return res, err
+	}
+	st := convert[engine.Storage](req.Repo.Storage)
+	rec := engine.UsageRecord{ServerID: req.Repo.ServerID, Name: req.Repo.Owner.Name, Bytes: res.Bytes, Updated: time.Now()}
+	if res.Space != nil && res.Space.Detailed {
+		rec.Garbage = res.Space.Garbage
+	}
+	if err := engine.WriteUsage(st, rec); err != nil {
+		return nil, err
+	}
+	peers, err := engine.ReadPeers(ctx, st, req.Repo.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	if res.Space == nil {
+		res.Space = &proto.Space{Free: -1, Total: -1}
+	}
+	res.Space.Peers = convert[[]proto.PeerUsage](peers)
+	return res, nil
 }
 
 // backup stores the run's items in order and reports each snapshot as

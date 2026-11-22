@@ -284,8 +284,8 @@ func TestBackupListsRender(t *testing.T) {
 	_, addr := newBackupServer(t, map[string]string{
 		"backup.target.list": reply(targetList),
 		"backup.job.list":    reply(`[]`),
-		"backup.coverage":    reply(`{"unprotected":["db"],"noJobs":true}`),
-		"backup.status":      reply(`{"jobs":[],"targets":[]}`),
+		"backup.coverage":    reply(`{"unprotected":["db"],"noJobs":true,"corrupt":["t9"],"orphans":[{"target":"t1","server":"abc","name":"old-box","used":1024}],"unbudgeted":["t1"]}`),
+		"backup.status":      reply(`{"jobs":[],"targets":[{"target":"t1","lastVerify":1,"corrupt":{"damaged":3},"share":2048,"servers":[{"server":"abc","active":true}]}]}`),
 	})
 	a, out, _ := testApp(t, addr)
 	for _, argv := range [][]string{{"backup", "target", "list"}, {"backup", "job", "list"}, {"backup", "coverage"}, {"backup", "status"}} {
@@ -293,7 +293,7 @@ func TestBackupListsRender(t *testing.T) {
 			t.Fatalf("%v: exit %d", argv, code)
 		}
 	}
-	for _, want := range []string{"s3://b/ (s3.example.com)", "No backup jobs.", "no job backs up: db"} {
+	for _, want := range []string{"s3://b/ (s3.example.com)", "No backup jobs.", "no job backs up: db", "damage on these targets", "old-box (abc)", "--budget", "3 damaged object(s)", "shared with 1 other server(s)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

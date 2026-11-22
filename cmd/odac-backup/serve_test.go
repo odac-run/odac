@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -374,6 +375,69 @@ func TestWireTypesMatchEngine(t *testing.T) {
 	roundTrip[proto.Space, engine.SpaceReport](t)
 	roundTrip[engine.ServerDir, proto.ServerDir](t)
 	roundTrip[proto.ServerDir, engine.ServerDir](t)
+	roundTrip[engine.PeerUsage, proto.PeerUsage](t)
+	roundTrip[proto.PeerUsage, engine.PeerUsage](t)
+}
+
+func TestServeSharesTheTarget(t *testing.T) {
+	t.Parallel()
+	if engine.UsageFile != proto.UsageFile {
+		t.Fatal("the usage file's name differs between the engine and the wire")
+	}
+	base := t.TempDir()
+	tg := target{repo: filepath.Join(base, testServer, proto.RepositoryDir), cache: filepath.Join(base, "cache")}
+	os.MkdirAll(tg.cache, 0o700)
+	owned := func(op string, seq int64) *proto.Request {
+		r := tg.request(op)
+		r.Repo.Owner = &proto.Owner{Name: "web-1", Seq: seq}
+		return r
+	}
+	mustCall(t, owned(proto.OpInit, 1), proto.Handler{})
+
+	// Another server's directory, written by that server.
+	const peer = "fedcba9876543210fedcba9876543210"
+	other := engine.Storage{Filesystem: &engine.FilesystemStorage{Path: filepath.Join(base, peer, proto.RepositoryDir)}}
+	if _, err := engine.ClaimOwner(context.Background(), other, engine.OwnerClaim{ServerID: peer, Name: "db-1", Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	if err := engine.WriteUsage(other, engine.UsageRecord{ServerID: peer, Bytes: 5 << 30, Garbage: 1 << 30, Updated: at}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := owned(proto.OpMaintain, 2)
+	m.Maintain, m.Share = &proto.Maintain{Full: true}, true
+	res := mustCall(t, m, proto.Handler{})
+	if res.Seq != 2 || res.Space == nil || len(res.Space.Peers) != 1 {
+		t.Fatalf("maintain: %+v", res)
+	}
+	p := res.Space.Peers[0]
+	if p.ID != peer || p.Name != "db-1" || p.Bytes != 5<<30 || p.Garbage != 1<<30 || !p.Updated.Equal(at) || p.Seen.IsZero() {
+		t.Fatalf("peer: %+v", p)
+	}
+	var mine engine.UsageRecord
+	raw, err := os.ReadFile(filepath.Join(base, testServer, proto.UsageFile))
+	if err != nil || json.Unmarshal(raw, &mine) != nil || mine.ServerID != testServer || mine.Name != "web-1" || mine.Bytes != res.Bytes || mine.Bytes == 0 {
+		t.Fatalf("usage file %s: %v", raw, err)
+	}
+
+	// Sharing writes, so it claims: a number already used conflicts.
+	u := owned(proto.OpUsage, 2)
+	u.Share = true
+	if _, _, err := call(t, u, proto.Handler{}); !errors.As(err, new(*proto.Error)) {
+		t.Fatalf("usage shared under a used number: %v", err)
+	}
+	u.Repo.Owner.Seq = 3
+	u.Usage = &proto.Usage{}
+	if res := mustCall(t, u, proto.Handler{}); res.Seq != 3 || !res.Space.Detailed || len(res.Space.Peers) != 1 {
+		t.Fatalf("usage: %+v", res)
+	}
+	// Without an owner nothing is shared.
+	bad := tg.request(proto.OpUsage)
+	bad.Share = true
+	if _, _, err := call(t, bad, proto.Handler{}); err == nil {
+		t.Fatal("shared without an owner claim")
+	}
 }
 
 func TestServeClaimsTheServerDirectory(t *testing.T) {

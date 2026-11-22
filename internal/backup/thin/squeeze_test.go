@@ -2,6 +2,7 @@ package thin
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"testing"
@@ -116,5 +117,69 @@ func TestExcess(t *testing.T) {
 	}
 	if Floor(0) != 5<<30 || Floor(1000<<30) != 100<<30 {
 		t.Fatal("floor is not max(10%, 5 GB)")
+	}
+}
+
+func TestFairShareOfTheFloor(t *testing.T) {
+	const gb = 1 << 30
+	disk := int64(1000 * gb) // floor 100 GB
+	for _, c := range []struct {
+		name  string
+		s     Space
+		want  int64
+		peers []Peer
+	}{
+		{"above the share with a twin", Space{Used: 400 * gb, Free: 90 * gb, Total: disk}, 5 * gb, []Peer{{Used: 50 * gb}, {Used: 400 * gb}}},
+		{"below the share deletes nothing", Space{Used: 50 * gb, Free: 90 * gb, Total: disk}, 0, []Peer{{Used: 400 * gb}, {Used: 400 * gb}}},
+		{"the peers' garbage is coming back", Space{Used: 400 * gb, Free: 90 * gb, Total: disk}, 0, []Peer{{Used: 400 * gb, Garbage: 10 * gb}}},
+		{"an orphan's space stays taken", Space{Used: 300 * gb, Free: 50 * gb, Total: disk}, 50 * gb, []Peer{{Used: 100 * gb}}},
+		{"own garbage counts as live data gone", Space{Used: 400 * gb, Garbage: 300 * gb, Free: 50 * gb, Total: disk}, 0, []Peer{{Used: 400 * gb}}},
+		{"no peers is the whole lack", Space{Used: 400 * gb, Free: 90 * gb, Total: disk}, 10 * gb, nil},
+	} {
+		c.s.Peers = c.peers
+		if got := c.s.Excess(); got != c.want {
+			t.Errorf("%s: excess %d GB, want %d GB", c.name, got/gb, c.want/gb)
+		}
+	}
+
+	// Every server deciding from its own view: the parts cover the lack,
+	// none exceeds what its server holds above the share, and a server
+	// at or below the share gives nothing.
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 2000; i++ {
+		n := 2 + rng.IntN(5)
+		used := make([]int64, n)
+		garbage := make([]int64, n)
+		var sum int64
+		for j := range used {
+			used[j] = rng.Int64N(300 * gb)
+			garbage[j] = rng.Int64N(used[j]/4 + 1)
+			sum += used[j]
+		}
+		free := rng.Int64N(150 * gb)
+		var returning int64
+		for _, g := range garbage {
+			returning += g
+		}
+		lack := Floor(disk) - free - returning
+		share := (float64(free) + float64(sum) - float64(Floor(disk))) / float64(n)
+		var parts int64
+		for j := range used {
+			var peers []Peer
+			for k := range used {
+				if k != j {
+					peers = append(peers, Peer{Used: used[k], Garbage: garbage[k]})
+				}
+			}
+			part := Space{Used: used[j], Garbage: garbage[j], Free: free, Total: disk, Peers: peers}.Excess()
+			live := float64(used[j] - garbage[j])
+			if live <= share && part != 0 || live > share && float64(part) > math.Ceil(live-share)+1 {
+				t.Fatalf("server %d of %+v: part %d, live %.0f, share %.0f", j, used, part, live, share)
+			}
+			parts += part
+		}
+		if lack > 0 && parts < lack || lack <= 0 && parts != 0 {
+			t.Fatalf("parts %d for a lack of %d (used %v, garbage %v, free %d)", parts, lack, used, garbage, free)
+		}
 	}
 }

@@ -243,8 +243,11 @@ func (a *app) snapshotHistory(args []string) int {
 	rows := make([]row, 0, len(list))
 	for _, r := range list {
 		what := r.Event + " " + r.App
-		if r.Kind == "maintain" {
+		switch r.Kind {
+		case "maintain":
 			what = __("maintenance")
+		case "verify":
+			what = __("verification")
 		}
 		rows = append(rows, row{when(r.Start), strings.TrimSpace(what), r.Run, r.Status, span(r.End - r.Start), size(r.Added), r.Error})
 	}

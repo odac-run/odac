@@ -155,6 +155,9 @@ type timing struct {
 	runMin        time.Duration
 	runMax        time.Duration
 	finishLimit   time.Duration
+	verifyEvery   time.Duration
+	verifyLimit   time.Duration
+	peerActive    time.Duration
 	snap          snapTiming
 }
 
@@ -173,6 +176,9 @@ func defaultTiming() timing {
 		runMin:        time.Hour,
 		runMax:        12 * time.Hour,
 		finishLimit:   time.Minute,
+		verifyEvery:   7 * 24 * time.Hour,
+		verifyLimit:   6 * time.Hour,
+		peerActive:    7 * 24 * time.Hour,
 		snap:          defaultSnapTiming(),
 	}
 }

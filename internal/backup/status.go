@@ -38,21 +38,30 @@ type JobStatus struct {
 	Manual int64 `json:"manual,omitempty"`
 }
 
-// TargetStatus is a target's last measurement and maintenance.
+// TargetStatus is a target's last measurement, maintenance and
+// verification. Share and Servers describe a filesystem target other
+// servers write to as well: this server's fair share of it and what each
+// other server directory there reports.
 type TargetStatus struct {
-	Target       string `json:"target"`
-	NextMaintain int64  `json:"nextMaintain,omitempty"`
-	LastMaintain int64  `json:"lastMaintain,omitempty"`
-	Used         int64  `json:"used,omitempty"`
-	Garbage      int64  `json:"garbage,omitempty"`
-	Free         int64  `json:"free,omitempty"`
-	Total        int64  `json:"total,omitempty"`
+	Target       string        `json:"target"`
+	NextMaintain int64         `json:"nextMaintain,omitempty"`
+	LastMaintain int64         `json:"lastMaintain,omitempty"`
+	Used         int64         `json:"used,omitempty"`
+	Garbage      int64         `json:"garbage,omitempty"`
+	Free         int64         `json:"free,omitempty"`
+	Total        int64         `json:"total,omitempty"`
+	NextVerify   int64         `json:"nextVerify,omitempty"`
+	LastVerify   int64         `json:"lastVerify,omitempty"`
+	Corrupt      *Corruption   `json:"corrupt,omitempty"`
+	Share        int64         `json:"share,omitempty"`
+	Servers      []ServerShare `json:"servers,omitempty"`
 }
 
 // Status reports the schedule, sorted by job and target id.
 func (m *Manager) Status() ([]JobStatus, []TargetStatus) {
 	var jobs []JobStatus
 	var targets []TargetStatus
+	now := m.now()
 	m.state.view(func(d *stateData) {
 		for id, js := range d.Jobs {
 			s := JobStatus{Job: id, Next: js.Next, Running: js.Running, Failures: js.Failures, PostponedSince: js.PostponedSince, Manual: js.Manual}
@@ -65,7 +74,14 @@ func (m *Manager) Status() ([]JobStatus, []TargetStatus) {
 			if id == SnapshotTarget {
 				continue
 			}
-			targets = append(targets, TargetStatus{Target: id, NextMaintain: t.NextMaintain, LastMaintain: t.LastMaintain, Used: t.Used, Garbage: t.Garbage, Free: t.Free, Total: t.Total})
+			ts := TargetStatus{Target: id, NextMaintain: t.NextMaintain, LastMaintain: t.LastMaintain, Used: t.Used, Garbage: t.Garbage, Free: t.Free, Total: t.Total,
+				NextVerify: t.NextVerify, LastVerify: t.LastVerify, Share: t.Share, Servers: m.serverShares(t.Peers, now)}
+			if c := t.Corrupt; c != nil {
+				cp := *c
+				cp.Errors = slices.Clone(c.Errors)
+				ts.Corrupt = &cp
+			}
+			targets = append(targets, ts)
 		}
 	})
 	slices.SortFunc(jobs, func(a, b JobStatus) int { return cmpString(a.Job, b.Job) })

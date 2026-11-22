@@ -62,8 +62,8 @@ type periodicState struct {
 	PostponedSince int64 `json:"postponedSince,omitempty"`
 }
 
-// SnapshotRecord is one snapshot taken or given up, or one maintenance of
-// the snapshot repository (Kind). Times are Unix milliseconds.
+// SnapshotRecord is one snapshot taken or given up, or one maintenance or
+// verification of the snapshot repository (Kind). Times are Unix milliseconds.
 type SnapshotRecord struct {
 	Kind string `json:"kind"`
 	Run  string `json:"run,omitempty"`
@@ -86,6 +86,8 @@ type SnapshotRecord struct {
 	Deleted int    `json:"deleted,omitempty"`
 	Error   string `json:"error,omitempty"`
 	Adopted bool   `json:"adopted,omitempty"`
+	// Verify is what a verification (Kind verify) checked and found.
+	Verify *VerifyReport `json:"verify,omitempty"`
 }
 
 // DeployMark is how an app's last deploy went for its snapshot: a deploy
@@ -147,8 +149,11 @@ func (m *Manager) recordSnapshot(rec SnapshotRecord) {
 		m.log.Error("Failed to save the backup state: %s", err.Error())
 	}
 	what := "Snapshot " + rec.Run + " (" + rec.Event + ") of " + rec.App
-	if rec.Kind == KindMaintain {
+	switch rec.Kind {
+	case KindMaintain:
 		what = "Maintenance of the snapshot repository"
+	case KindVerify:
+		what = "Verification of the snapshot repository"
 	}
 	switch rec.Status {
 	case StatusOK:

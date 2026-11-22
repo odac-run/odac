@@ -10,6 +10,7 @@ import (
 	"odac/internal/backup/proto"
 	"odac/internal/backup/runner"
 	"odac/internal/backup/settings"
+	"odac/internal/backup/thin"
 	"odac/internal/sysinfo"
 )
 
@@ -328,7 +329,7 @@ func (m *Manager) free(target, kind string) {
 	switch kind {
 	case KindBackup, KindRestore:
 		m.backupSlot = false
-	case KindMaintain:
+	case KindMaintain, KindVerify:
 		m.maintSlot = false
 	case KindSnapshot:
 		m.snapSlot = false
@@ -345,9 +346,10 @@ func (m *Manager) signalFreedLocked() {
 	m.freed = make(chan struct{})
 }
 
-// scheduleMaintenance starts the most overdue maintenance, one at a time
-// and never on a target a backup holds. A target that has deleted backups
-// waiting to be purged is due at once.
+// scheduleMaintenance starts the most overdue maintenance or verification,
+// one at a time in the maintenance slot and never on a target a backup
+// holds. A target that has deleted backups waiting to be purged is due at
+// once.
 func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobView, retired []settings.RetiredView, now time.Time, next *time.Time) {
 	m.mu.Lock()
 	busy := m.maintSlot
@@ -369,6 +371,7 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 	}
 	type due struct {
 		target string
+		kind   string
 		at     time.Time
 	}
 	var dues []due
@@ -391,19 +394,30 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 					at = soon
 				}
 			}
-			if at.IsZero() {
-				continue
-			}
-			if at.After(now) {
-				if at.Before(*next) {
-					*next = at
+			for _, c := range []due{{t, KindMaintain, at}, {t, KindVerify, verifyDue(ts)}} {
+				if c.at.IsZero() {
+					continue
 				}
-				continue
+				if c.at.After(now) {
+					if c.at.Before(*next) {
+						*next = c.at
+					}
+					continue
+				}
+				dues = append(dues, c)
 			}
-			dues = append(dues, due{t, at})
 		}
 	})
-	slices.SortFunc(dues, func(a, b due) int { return a.at.Compare(b.at) })
+	// Maintenance first when both are due: it is what space depends on.
+	rank := func(kind string) int {
+		if kind == KindMaintain {
+			return 0
+		}
+		return 1
+	}
+	slices.SortFunc(dues, func(a, b due) int {
+		return cmp.Or(a.at.Compare(b.at), cmp.Compare(rank(a.kind), rank(b.kind)))
+	})
 	for _, d := range dues {
 		m.mu.Lock()
 		if m.busy[d.target] != "" || m.restoreWait[d.target] > 0 || d.target == SnapshotTarget && m.snapSlot {
@@ -411,14 +425,18 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 			continue
 		}
 		m.maintSlot = true
-		m.busy[d.target] = KindMaintain
+		m.busy[d.target] = d.kind
 		m.workers.Add(1)
 		m.mu.Unlock()
-		go func(target string) {
+		go func(target, kind string) {
 			defer m.workers.Done()
-			defer m.free(target, KindMaintain)
+			defer m.free(target, kind)
+			if kind == KindVerify {
+				m.verify(ctx, target)
+				return
+			}
 			m.maintain(ctx, target)
-		}(d.target)
+		}(d.target, d.kind)
 		return
 	}
 }
@@ -433,6 +451,7 @@ func (m *Manager) maintain(ctx context.Context, target string) {
 	rec := RunRecord{Kind: KindMaintain, Target: target, Start: ms(start)}
 	res, err := m.call(ctx, target, true, func(req *proto.Request) {
 		req.Op, req.Maintain = proto.OpMaintain, &proto.Maintain{Full: true}
+		req.Share = shares(req)
 	}, proto.Handler{})
 	if errReleasedOr(err) || ctx.Err() != nil {
 		return
@@ -482,12 +501,22 @@ func (m *Manager) afterMaintain(target string, rec *RunRecord, res *proto.Result
 		if res != nil {
 			t.Used = res.Bytes
 			if sp := res.Space; sp != nil {
-				t.Free, t.Total = sp.Free, sp.Total
+				t.Free, t.Total, t.Peers = sp.Free, sp.Total, sp.Peers
 			}
 		}
 		if sp := tr.space; sp != nil {
 			t.Used, t.Garbage, t.Free, t.Total = tr.used, sp.Garbage, sp.Free, sp.Total
+			if sp.Peers != nil || len(t.Peers) == 0 {
+				t.Peers = sp.Peers
+			}
 			soon = soon || sp.Garbage > 0
+		}
+		t.Share = 0
+		if err == nil {
+			space := thin.Space{Used: t.Used, Garbage: t.Garbage, Free: t.Free, Total: t.Total, Peers: m.activePeers(t.Peers, now)}
+			if share, ok := space.Share(); ok {
+				t.Share = max(share, 1)
+			}
 		}
 		wait := m.t.maintainDue
 		if soon {

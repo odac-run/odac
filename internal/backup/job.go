@@ -62,8 +62,8 @@ type runSpec struct {
 
 // pieceContext is a helper run's context: the deadline, and the run's
 // abort when it has one.
-func (rs runSpec) pieceContext(deadline time.Time) (context.Context, context.CancelFunc) {
-	ctx, cancel := runContext(deadline)
+func (m *Manager) pieceContext(rs runSpec, deadline time.Time) (context.Context, context.CancelFunc) {
+	ctx, cancel := m.runContext(deadline)
 	if rs.abort == nil {
 		return ctx, cancel
 	}
@@ -91,9 +91,10 @@ func (m *Manager) runLimit(everyMinutes int) time.Duration {
 // runContext is the context a helper run gets: the deadline, and nothing
 // of the manager's own context. Stop releases the runner before it
 // cancels, and a run that saw the cancel first would stop the helper the
-// release meant to hand over.
-func runContext(deadline time.Time) (context.Context, context.CancelFunc) {
-	return context.WithDeadline(context.Background(), deadline)
+// release meant to hand over. The deadline is on the manager's clock, so
+// it becomes a timeout from now.
+func (m *Manager) runContext(deadline time.Time) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), deadline.Sub(m.now()))
 }
 
 // deferral is a piece that did not run for a reason that is not the
@@ -420,7 +421,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 	}
 
 	if p.plan == nil {
-		runCtx, cancel := rs.pieceContext(deadline)
+		runCtx, cancel := m.pieceContext(rs, deadline)
 		defer cancel()
 		run(runCtx, p.items, nil, nil)
 		return out
@@ -430,7 +431,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 	if rec := m.reusable(app, p.plan, rs); rec != nil {
 		items := slices.Clone(p.items)
 		items[0].Consistency, items[0].Stream = rec.Consistency, rec.File
-		runCtx, cancel := rs.pieceContext(deadline)
+		runCtx, cancel := m.pieceContext(rs, deadline)
 		run(runCtx, items, nil, m.storedDump(rec))
 		cancel()
 		if out.err == nil {
@@ -445,7 +446,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 		out = pieceResult{snaps: out.snaps}
 	}
 
-	runCtx, cancel := rs.pieceContext(deadline)
+	runCtx, cancel := m.pieceContext(rs, deadline)
 	defer cancel()
 	end := func() bool { return false }
 	if !rs.exempt {

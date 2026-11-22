@@ -34,6 +34,10 @@ type SnapshotStatus struct {
 	Periodic     []PeriodicSnapshot `json:"periodic"`
 	Deploys      []DeployMark       `json:"deploys"`
 	Warnings     []SnapshotWarning  `json:"warnings"`
+	// NextVerify and LastVerify schedule the repository's verification;
+	// damage it finds is the corrupt warning.
+	NextVerify int64 `json:"nextVerify,omitempty"`
+	LastVerify int64 `json:"lastVerify,omitempty"`
 }
 
 // PeriodicSnapshot is an app's periodic schedule; Every is in minutes.
@@ -70,6 +74,7 @@ func (m *Manager) SnapshotStatus() SnapshotStatus {
 	m.state.view(func(d *stateData) {
 		if t := d.Targets[SnapshotTarget]; t != nil {
 			out.NextMaintain, out.LastMaintain = t.NextMaintain, t.LastMaintain
+			out.NextVerify, out.LastVerify = t.NextVerify, t.LastVerify
 		}
 		for app, p := range d.Snap.Periodic {
 			out.Periodic = append(out.Periodic, PeriodicSnapshot{App: app, Next: p.Next, Every: int(p.Every / int64(time.Minute/time.Millisecond)), Failures: p.Failures, PostponedSince: p.PostponedSince})

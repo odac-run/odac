@@ -28,6 +28,9 @@ type SpaceReport struct {
 	Garbage int64            `json:"garbage,omitempty"`
 	Jobs    map[string]int64 `json:"jobs,omitempty"`
 	Freed   []Freed          `json:"freed,omitempty"`
+	// Peers are the other servers on a shared filesystem target (see
+	// ReadPeers), filled by the caller that wrote this server's usage file.
+	Peers []PeerUsage `json:"peers,omitempty"`
 }
 
 // Freed is what deleting a prefix of an order frees: Repo for the whole

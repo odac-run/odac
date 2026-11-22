@@ -65,6 +65,13 @@ type Request struct {
 	Verify   *Verify   `json:"verify,omitempty"`
 	Restore  *Restore  `json:"restore,omitempty"`
 	Usage    *Usage    `json:"usage,omitempty"`
+	// Share, for maintain and usage on a filesystem target, writes this
+	// server's usage file (UsageFile) next to its repository and answers
+	// with the usage files of the other servers on the target
+	// (Space.Peers): servers that share one disk without a protocol
+	// between them read each other's sizes there to split its space
+	// fairly. It writes, so it needs an owner claim.
+	Share bool `json:"share,omitempty"`
 }
 
 // Repo says which repository the run opens and as whom.
@@ -93,6 +100,9 @@ type Repo struct {
 const (
 	RepositoryDir = "repository"
 	OwnerFile     = "server.json"
+	// UsageFile, beside OwnerFile, is what the server last measured its
+	// repository at; see Request.Share.
+	UsageFile = "usage.json"
 )
 
 // Owner claims a server directory. Seq is the number this run writes into
@@ -294,6 +304,23 @@ type Space struct {
 	// Freed has one entry per run of Usage.Order: what deleting it and
 	// every run before it would turn into garbage.
 	Freed []Freed `json:"freed,omitempty"`
+	// Peers are the other server directories on the target, with what
+	// their usage files say, when the request asked to Share.
+	Peers []PeerUsage `json:"peers,omitempty"`
+}
+
+// PeerUsage is another server's directory on a shared filesystem target.
+// Updated is when its usage file was written (zero without one) and Seen
+// when its ownership file was, by that server's own clock. Error says the
+// usage file could not be read, which counts as no usage file.
+type PeerUsage struct {
+	ID      string    `json:"id"`
+	Name    string    `json:"name,omitempty"`
+	Bytes   int64     `json:"bytes,omitempty"`
+	Garbage int64     `json:"garbage,omitempty"`
+	Updated time.Time `json:"updated,omitempty"`
+	Seen    time.Time `json:"seen,omitempty"`
+	Error   string    `json:"error,omitempty"`
 }
 
 // Freed is what deleting a prefix of an order frees. Repo counts the
@@ -385,6 +412,14 @@ func (r *Request) Validate() error {
 			return badRequest("servers claims no owner")
 		}
 	}
+	if r.Share {
+		if r.Op != OpMaintain && r.Op != OpUsage {
+			return badRequest("only maintain and usage share a target")
+		}
+		if r.Repo.Owner == nil || r.Repo.Storage.Filesystem == nil {
+			return badRequest("sharing needs an owner claim on a filesystem target")
+		}
+	}
 	for op, set := range args {
 		if set != (op == r.Op) {
 			if set {
@@ -441,12 +476,15 @@ func (r *Request) HasStream() bool {
 	return r.Backup != nil && len(r.Backup.Items) > 0 && r.Backup.Items[0].Stream != ""
 }
 
-// Writes reports whether the operation writes the repository, which is
-// when an owner claim is checked and written.
+// Writes reports whether the operation writes the repository or the
+// server directory around it, which is when an owner claim is checked
+// and written.
 func (r *Request) Writes() bool {
 	switch r.Op {
 	case OpInit, OpBackup, OpDelete, OpMaintain:
 		return true
+	case OpUsage:
+		return r.Share
 	}
 	return false
 }

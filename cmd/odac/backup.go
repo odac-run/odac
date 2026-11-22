@@ -961,6 +961,14 @@ func (a *app) backupStatus(args []string) int {
 			Used         int64  `json:"used"`
 			Garbage      int64  `json:"garbage"`
 			Free         int64  `json:"free"`
+			LastVerify   int64  `json:"lastVerify"`
+			Corrupt      *struct {
+				Damaged int `json:"damaged"`
+			} `json:"corrupt"`
+			Share   int64 `json:"share"`
+			Servers []struct {
+				Active bool `json:"active"`
+			} `json:"servers"`
 		} `json:"targets"`
 	}
 	if !a.fetchInto("backup.status", nil, &st) {
@@ -1011,16 +1019,31 @@ func (a *app) backupStatus(args []string) int {
 	printRows(a, jrows, __("No backup jobs."))
 
 	type targetRow struct {
-		Target  string `json:"target"`
-		Used    string `json:"used"`
-		Garbage string `json:"garbage"`
-		Free    string `json:"free"`
-		Last    string `json:"last maintenance"`
-		Next    string `json:"next maintenance"`
+		Target   string `json:"target"`
+		Used     string `json:"used"`
+		Garbage  string `json:"garbage"`
+		Free     string `json:"free"`
+		Last     string `json:"last maintenance"`
+		Next     string `json:"next maintenance"`
+		Verified string `json:"verified"`
+		Note     string `json:"note"`
 	}
 	trows := []targetRow{}
 	for _, t := range st.Targets {
-		trows = append(trows, targetRow{Target: or(targetNames, t.Target), Used: size(t.Used), Garbage: size(t.Garbage), Free: size(t.Free), Last: when(t.LastMaintain), Next: when(t.NextMaintain)})
+		var notes []string
+		if t.Corrupt != nil {
+			notes = append(notes, __("%s damaged object(s) found", t.Corrupt.Damaged))
+		}
+		if t.Share > 0 {
+			others := 0
+			for _, s := range t.Servers {
+				if s.Active {
+					others++
+				}
+			}
+			notes = append(notes, __("shared with %s other server(s), fair share %s", others, size(t.Share)))
+		}
+		trows = append(trows, targetRow{Target: or(targetNames, t.Target), Used: size(t.Used), Garbage: size(t.Garbage), Free: size(t.Free), Last: when(t.LastMaintain), Next: when(t.NextMaintain), Verified: when(t.LastVerify), Note: strings.Join(notes, "; ")})
 	}
 	if len(trows) > 0 {
 		printRows(a, trows, "")
@@ -1049,6 +1072,11 @@ type backupRecord struct {
 	} `json:"apps"`
 	Deleted int    `json:"deleted"`
 	Error   string `json:"error"`
+	Verify  *struct {
+		Percent   float64 `json:"percent"`
+		FilesRead int64   `json:"filesRead"`
+		BytesRead int64   `json:"bytesRead"`
+	} `json:"verify"`
 }
 
 func (a *app) backupHistory(args []string) int {
@@ -1090,6 +1118,9 @@ func (a *app) backupHistory(args []string) int {
 	rows := make([]row, 0, len(list))
 	for _, r := range list {
 		what := __("maintenance of %s", r.Target)
+		if r.Kind == "verify" {
+			what = __("verification of %s", r.Target)
+		}
 		if r.Kind == "backup" {
 			what = names[r.Job]
 			if what == "" {
@@ -1115,6 +1146,9 @@ func (a *app) backupHistory(args []string) int {
 		if r.Snapshots > 0 {
 			stored = __("%s snapshot(s), %s read", r.Snapshots, size(r.Bytes))
 		}
+		if v := r.Verify; v != nil {
+			stored = __("%s file(s), %s read (%s%%)", v.FilesRead, size(v.BytesRead), strconv.FormatFloat(v.Percent, 'f', -1, 64))
+		}
 		rows = append(rows, row{when(r.Start), what, r.Status, span(r.End - r.Start), stored, strings.Join(notes, "; ")})
 	}
 	printRows(a, rows, __("No backup has run yet."))
@@ -1133,6 +1167,14 @@ func (a *app) backupCoverage(args []string) int {
 		OnlyLocal bool     `json:"onlyLocal"`
 		SameDisk  []string `json:"sameDisk"`
 		Conflicts []string `json:"conflicts"`
+		Corrupt   []string `json:"corrupt"`
+		Orphans   []struct {
+			Target string `json:"target"`
+			Server string `json:"server"`
+			Name   string `json:"name"`
+			Used   int64  `json:"used"`
+		} `json:"orphans"`
+		Unbudgeted []string `json:"unbudgeted"`
 	}
 	if !a.fetchInto("backup.coverage", nil, &c) {
 		return 1
@@ -1155,6 +1197,19 @@ func (a *app) backupCoverage(args []string) int {
 	}
 	if len(c.Conflicts) > 0 {
 		lines = append(lines, __("Writes to these targets are stopped, because another machine writes under this server's id there (see odac backup target adopt): %s.", strings.Join(c.Conflicts, ", ")))
+	}
+	if len(c.Corrupt) > 0 {
+		lines = append(lines, __("Verification found damage on these targets; restoring the backups that use it can fail (see odac backup history): %s.", strings.Join(c.Corrupt, ", ")))
+	}
+	for _, o := range c.Orphans {
+		name := o.Server
+		if o.Name != "" {
+			name = o.Name + " (" + o.Server + ")"
+		}
+		lines = append(lines, __("Server %s stopped measuring itself on target %s; its backups (%s) are kept until you remove its directory there.", name, o.Target, size(o.Used)))
+	}
+	if len(c.Unbudgeted) > 0 {
+		lines = append(lines, __("Other servers write to these targets too; give this server's jobs there a --budget to divide the space: %s.", strings.Join(c.Unbudgeted, ", ")))
 	}
 	if len(lines) == 0 {
 		fmt.Fprintln(a.out, __("Every app with data is backed up."))

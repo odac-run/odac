@@ -125,8 +125,11 @@ func (m *Manager) finishRun(ctx context.Context, rs runSpec, rec *RunRecord, app
 // report logs a record and hands it to the Hub's side.
 func (m *Manager) report(name string, rec *RunRecord) {
 	what := "Backup job " + name
-	if rec.Kind == KindMaintain {
+	switch rec.Kind {
+	case KindMaintain:
 		what = "Maintenance of backup target " + rec.Target
+	case KindVerify:
+		what = "Verification of backup target " + rec.Target
 	}
 	switch rec.Status {
 	case StatusOK:

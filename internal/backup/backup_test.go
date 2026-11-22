@@ -571,3 +571,180 @@ func code(err error) string {
 	}
 	return "error: " + err.Error()
 }
+
+func TestFairShareOnASharedTarget(t *testing.T) {
+	const gb = 1 << 30
+	seed := func(h *harness, size int64) {
+		now := h.clock.Now()
+		for i := 1; i <= 6; i++ {
+			h.run.seed("t1", "j1", "r"+itoa(i), now.Add(-time.Duration(i)*24*time.Hour), size)
+		}
+	}
+	fresh := func(h *harness, id string, used int64) proto.PeerUsage {
+		return proto.PeerUsage{ID: id, Bytes: used, Updated: h.clock.Now().Add(-time.Hour)}
+	}
+	peerA, peerB := strings.Repeat("a", 32), strings.Repeat("b", 32)
+
+	// 1000 GB disk, floor 100 GB, 90 GB free: 10 GB short. This server
+	// holds 6 GB next to a peer holding 800 GB: it is far below its share
+	// and deletes nothing for the peer's growth.
+	h := newHarness(t)
+	h.set.fs["t1"] = true
+	h.job("j1", "t1", 60, "web")
+	seed(h, gb)
+	rp := h.run.repo("t1")
+	rp.total, rp.free = 1000*gb, 90*gb
+	rp.peers = []proto.PeerUsage{fresh(h, peerA, 800*gb)}
+	h.m.maintain(context.Background(), "t1")
+	if rec := h.record(); rec.Status != StatusOK || rec.Deleted != 0 || len(h.run.runs("t1")) != 6 {
+		t.Fatalf("a server below its share deleted for another: %+v", rec)
+	}
+	if rp.shared == 0 {
+		t.Fatal("maintenance did not write the usage file")
+	}
+	_, targets := h.m.Status()
+	if len(targets) != 1 || targets[0].Share == 0 || len(targets[0].Servers) != 1 || !targets[0].Servers[0].Active {
+		t.Fatalf("status: %+v", targets)
+	}
+
+	// The same server above its share (600 GB beside 200 GB) deletes;
+	// an orphan's usage file (a month old) takes no part and is reported.
+	h = newHarness(t)
+	h.set.fs["t1"] = true
+	h.job("j1", "t1", 60, "web")
+	seed(h, 100*gb)
+	rp = h.run.repo("t1")
+	rp.total, rp.free = 1000*gb, 90*gb
+	old := fresh(h, peerB, 50*gb)
+	old.Updated = h.clock.Now().Add(-30 * 24 * time.Hour)
+	rp.peers = []proto.PeerUsage{fresh(h, peerA, 200*gb), old}
+	h.m.maintain(context.Background(), "t1")
+	rec := h.record()
+	if rec.Deleted != 1 || !strings.Contains(rec.Error, "fair share") {
+		t.Fatalf("a server above its share: %+v", rec)
+	}
+	health := h.m.Health()
+	if len(health.Orphans) != 1 || health.Orphans[0].Server != peerB || health.Orphans[0].Target != "t1" || len(health.Shared) != 1 {
+		t.Fatalf("health: %+v", health)
+	}
+}
+
+func TestVerificationReportsDamageUntilAFullOneIsClean(t *testing.T) {
+	h := newHarness(t)
+	h.job("j1", "t1", 60, "web")
+	h.run.seed("t1", "j1", "r1", h.clock.Now().Add(-time.Hour), 100)
+	verify := func() (RunRecord, float64) {
+		h.t.Helper()
+		h.m.verify(context.Background(), "t1")
+		rec := h.record()
+		calls := h.run.ops(proto.OpVerify)
+		return rec, calls[len(calls)-1].req.Verify.Percent
+	}
+
+	rec, pct := verify()
+	if rec.Kind != KindVerify || rec.Status != StatusOK || rec.Verify == nil || rec.Verify.Snapshots != 1 || pct != verifyRemote {
+		t.Fatalf("clean verification: %+v at %v%%", rec, pct)
+	}
+	h.m.state.view(func(d *stateData) {
+		if ts := d.Targets["t1"]; !fromMs(ts.NextVerify).Equal(h.clock.Now().Add(h.m.t.verifyEvery)) || ts.Verifying != nil {
+			t.Errorf("schedule: %+v", ts)
+		}
+	})
+
+	h.run.repo("t1").damage = []string{"object k123 is backed by missing blob p456"}
+	if rec, _ := verify(); rec.Status != StatusFailed || rec.Verify.Damaged != 1 || rec.Error == "" {
+		t.Fatalf("damage: %+v", rec)
+	}
+	if c := h.m.Health().Corrupt; len(c) != 1 || c[0] != "t1" {
+		t.Fatalf("corrupt: %v", c)
+	}
+	// Sampling could miss the damaged file, so only a full read clears it.
+	h.run.repo("t1").damage = nil
+	if rec, pct := verify(); rec.Status != StatusOK || pct != verifyFull {
+		t.Fatalf("after damage: %+v at %v%%", rec, pct)
+	}
+	if c := h.m.Health().Corrupt; len(c) != 0 {
+		t.Fatalf("still corrupt after a clean full verification: %v", c)
+	}
+	if _, pct := verify(); pct != verifyRemote {
+		t.Fatalf("back to sampling at %v%%", pct)
+	}
+}
+
+func TestAnAdoptedVerificationIsRecorded(t *testing.T) {
+	h := newHarness(t)
+	h.m.state.update(func(d *stateData) { d.target("t1").Verifying = &VerifyReport{Percent: verifyFull} })
+	h.m.follow(context.Background(), &verifyOrphan{})
+	rec := h.record()
+	if rec.Kind != KindVerify || !rec.Adopted || rec.Verify == nil || rec.Verify.Percent != verifyFull || rec.Verify.Damaged != 1 {
+		t.Fatalf("adopted verification: %+v", rec)
+	}
+	if c := h.m.Health().Corrupt; len(c) != 1 {
+		t.Fatalf("corrupt: %v", c)
+	}
+	h.m.mu.Lock()
+	slot := h.m.maintSlot
+	h.m.mu.Unlock()
+	if slot {
+		t.Fatal("the maintenance slot was not given back")
+	}
+}
+
+type verifyOrphan struct{}
+
+func (verifyOrphan) Labels() map[string]string {
+	return map[string]string{labelKind: KindVerify, labelTarget: "t1"}
+}
+func (verifyOrphan) Follow(context.Context, proto.Handler) (*proto.Result, error) {
+	return &proto.Result{Verify: &proto.VerifyResult{Snapshots: 2, Errors: []string{"damaged"}}}, nil
+}
+
+func TestSnapshotRepositoryVerification(t *testing.T) {
+	h := newHarness(t)
+	if err := h.m.ensureStore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.run.repo(h.snapRepo()).damage = []string{"damaged"}
+	h.m.verify(context.Background(), SnapshotTarget)
+	rec := h.snapshot()
+	if rec.Kind != KindVerify || rec.Status != StatusFailed || rec.Verify == nil {
+		t.Fatalf("record: %+v", rec)
+	}
+	if st := h.m.SnapshotStatus(); len(st.Warnings) != 1 || st.Warnings[0].Code != ReasonCorrupt || st.LastVerify == 0 {
+		t.Fatalf("status: %+v", st)
+	}
+	if c := h.m.Health().Corrupt; len(c) != 0 {
+		t.Fatalf("the snapshot repository is not a target: %v", c)
+	}
+	h.run.repo(h.snapRepo()).damage = nil
+	h.m.verify(context.Background(), SnapshotTarget)
+	h.snapshot()
+	if st := h.m.SnapshotStatus(); len(st.Warnings) != 0 {
+		t.Fatalf("warning not cleared: %+v", st.Warnings)
+	}
+}
+
+func TestVerificationIsScheduledInTheMaintenanceSlot(t *testing.T) {
+	h := newHarness(t)
+	h.job("j1", "t1", 60, "web")
+	now := h.clock.Now()
+	h.m.state.update(func(d *stateData) {
+		ts := d.target("t1")
+		ts.LastMaintain, ts.NextMaintain = ms(now.Add(-time.Hour)), ms(now.Add(time.Hour))
+	})
+	jobs, _ := h.set.Jobs()
+	next := now.Add(time.Hour)
+	h.m.mu.Lock()
+	h.m.busy["t1"] = KindBackup
+	h.m.mu.Unlock()
+	h.m.scheduleMaintenance(context.Background(), jobs, nil, now, &next)
+	if len(h.run.ops(proto.OpVerify)) != 0 {
+		t.Fatal("verified a target a backup holds")
+	}
+	h.m.free("t1", KindBackup)
+	h.m.scheduleMaintenance(context.Background(), jobs, nil, now, &next)
+	if rec := h.record(); rec.Kind != KindVerify {
+		t.Fatalf("record: %+v", rec)
+	}
+	h.m.workers.Wait()
+}

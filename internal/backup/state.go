@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"odac/internal/backup/consistency"
+	"odac/internal/backup/proto"
 )
 
 // historyMax bounds the run records kept, across jobs.
@@ -31,6 +32,10 @@ const (
 const (
 	KindBackup   = "backup"
 	KindMaintain = "maintain"
+	// KindVerify is a verification: every object of the repository's
+	// snapshots is looked up and a sample of the files is read in full,
+	// which checks their hashes. It runs in the maintenance slot.
+	KindVerify = "verify"
 )
 
 // RunRecord is one finished run or maintenance, as the history keeps it
@@ -57,6 +62,21 @@ type RunRecord struct {
 	// Adopted: the server before an update started the run and this one
 	// learned its result from the helper's log.
 	Adopted bool `json:"adopted,omitempty"`
+	// Verify is what a verification checked and found.
+	Verify *VerifyReport `json:"verify,omitempty"`
+}
+
+// VerifyReport is one verification. Percent is the share of files read in
+// full; Errors (at most verifyErrorsKept of them, Damaged counts all) is
+// the damage found, and a record with any is the corruption warning.
+type VerifyReport struct {
+	Percent   float64  `json:"percent"`
+	Snapshots int      `json:"snapshots"`
+	Objects   int64    `json:"objects"`
+	FilesRead int64    `json:"filesRead"`
+	BytesRead int64    `json:"bytesRead"`
+	Damaged   int      `json:"damaged,omitempty"`
+	Errors    []string `json:"errors,omitempty"`
 }
 
 // AppResult is one app's part of a run.
@@ -105,6 +125,26 @@ type targetState struct {
 	// out of thinning and go once a newer complete run of their job
 	// exists, so a partial restore point never outlives a complete one.
 	Partial []string `json:"partial,omitempty"`
+	// NextVerify and LastVerify schedule verification; Verifying is the
+	// one in flight, written before it starts so the server that adopts
+	// it in an update knows how much it read.
+	NextVerify int64             `json:"nextVerify,omitempty"`
+	LastVerify int64             `json:"lastVerify,omitempty"`
+	Verifying  *VerifyReport     `json:"verifying,omitempty"`
+	Corrupt    *Corruption       `json:"corrupt,omitempty"`
+	Peers      []proto.PeerUsage `json:"peers,omitempty"`
+	// Share is this server's fair share of a shared filesystem target at
+	// the last maintenance, when other servers write to it.
+	Share int64 `json:"share,omitempty"`
+}
+
+// Corruption is damage a verification found, which stays reported until a
+// verification that reads every file finds none: a sampled one could
+// miss the damaged file.
+type Corruption struct {
+	At      int64    `json:"at"`
+	Damaged int      `json:"damaged"`
+	Errors  []string `json:"errors,omitempty"`
 }
 
 // dumpRecord is the last dump stored for one app, which a run of another

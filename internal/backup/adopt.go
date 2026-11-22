@@ -47,7 +47,7 @@ func (m *Manager) adoptOrphans(ctx context.Context, logged *bool) bool {
 			// The backup before a restore, which the restore's own
 			// recovery reports.
 			m.backupSlot = true
-		case KindMaintain:
+		case KindMaintain, KindVerify:
 			m.maintSlot = true
 		case KindSnapshot:
 			m.snapSlot = true
@@ -132,6 +132,8 @@ func (m *Manager) follow(ctx context.Context, o Orphan) {
 			err = tr.err
 		}
 		m.afterMaintain(target, &rec, res, tr, err)
+	case KindVerify:
+		m.adoptedVerify(target, res, err)
 	}
 }
 

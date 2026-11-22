@@ -108,13 +108,19 @@ func (r *hubRelay) trigger(lists ...string) {
 	}
 }
 
-// record re-sends what a finished run or maintenance changed. A run that
-// did not go well may also have stopped writes to its target (an owner
-// conflict), which the target list and the coverage show.
+// record re-sends what a finished run, maintenance or verification
+// changed. A run that did not go well may also have stopped writes to its
+// target (an owner conflict) or found damage, which the target list and
+// the coverage show.
 func (r *hubRelay) record(rec backup.RunRecord) {
 	r.trigger("backup.status", "backup.history")
-	if rec.Status != backup.StatusOK && rec.Status != backup.StatusDeferred {
+	switch {
+	case rec.Status != backup.StatusOK && rec.Status != backup.StatusDeferred:
 		r.trigger("backup.target.list", "backup.coverage")
+	case rec.Kind == backup.KindVerify, rec.Kind == backup.KindMaintain:
+		// A clean verification can clear a corruption warning, and a
+		// maintenance can find another server's directory orphaned.
+		r.trigger("backup.coverage")
 	}
 }
 
