@@ -26,6 +26,8 @@ const (
 	triggerSchedule = "schedule"
 	// triggerDeploy is the rest of a run whose dumps a deploy cancelled.
 	triggerDeploy = "deploy"
+	// triggerManual is a run the operator asked for.
+	triggerManual = "manual"
 )
 
 // serverApp is the app name ODAC's own state is stored under.

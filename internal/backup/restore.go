@@ -20,6 +20,7 @@ import (
 	"odac/internal/backup/proto"
 	"odac/internal/backup/runner"
 	"odac/internal/backup/settings"
+	"odac/internal/lang"
 )
 
 // AppControl is the app manager's side of a restore; the composition root
@@ -389,8 +390,14 @@ func (m *Manager) PreviewRestore(ctx context.Context, req RestoreRequest) (*Rest
 	return p.result, nil
 }
 
+// restoreErr and refusal build a refusal in the operator's language:
+// format is the catalog key, with %s for every argument (see lang.T).
 func restoreErr(format string, a ...any) error {
-	return &settings.Error{Code: settings.CodeInvalid, Message: fmt.Sprintf(format, a...)}
+	return refusal(settings.CodeInvalid, format, a...)
+}
+
+func refusal(code, format string, a ...any) error {
+	return &settings.Error{Code: code, Message: lang.T(format, a...)}
 }
 
 // planRestore lists the run and decides what the restore does. work is a
@@ -416,7 +423,7 @@ func (m *Manager) planRestore(ctx context.Context, req RestoreRequest, work stri
 		return nil, err
 	}
 	if len(snaps) == 0 {
-		return nil, &settings.Error{Code: settings.CodeNotFound, Message: fmt.Sprintf("Run %s is not on this target.", req.Run)}
+		return nil, refusal(settings.CodeNotFound, "Run %s is not on this target.", req.Run)
 	}
 	byApp := map[string]*appPlan{}
 	var job string
@@ -480,7 +487,7 @@ func (m *Manager) planRestore(ctx context.Context, req RestoreRequest, work stri
 		ap := byApp[name]
 		if ap == nil {
 			if direct {
-				return &settings.Error{Code: settings.CodeNotFound, Message: fmt.Sprintf("Run %s holds no data of app %s.", req.Run, name)}
+				return refusal(settings.CodeNotFound, "Run %s holds no data of app %s.", req.Run, name)
 			}
 			return nil
 		}
@@ -665,13 +672,13 @@ func (m *Manager) StartRestore(ctx context.Context, req RestoreRequest) (*Restor
 	}
 	if m.restore != nil {
 		m.mu.Unlock()
-		return nil, &settings.Error{Code: settings.CodeInUse, Message: "Another restore is in progress."}
+		return nil, refusal(settings.CodeInUse, "Another restore is in progress.")
 	}
 	select {
 	case <-m.recoveredCh:
 	default:
 		m.mu.Unlock()
-		return nil, &settings.Error{Code: settings.CodeInUse, Message: "Backups are still starting; try the restore again in a moment."}
+		return nil, refusal(settings.CodeInUse, "Backups are still starting; try the restore again in a moment.")
 	}
 	m.restore = &activeRestore{result: &RestoreResult{Status: StatusPlanned}}
 	runCtx := m.ctx
@@ -803,7 +810,7 @@ func (m *Manager) checkRestore(p *restorePlan) error {
 		for _, n := range names {
 			if m.deploying[n] > 0 {
 				m.mu.Unlock()
-				return &settings.Error{Code: settings.CodeInUse, Message: fmt.Sprintf("App %s is being deployed; restore it once the deploy has ended.", n)}
+				return refusal(settings.CodeInUse, "App %s is being deployed; restore it once the deploy has ended.", n)
 			}
 		}
 		m.mu.Unlock()
@@ -830,7 +837,7 @@ func (m *Manager) checkRestore(p *restorePlan) error {
 	for key, n := range need {
 		free, ok := freeBytes(dirOf[key])
 		if ok && free < n+restoreReserve {
-			return &settings.Error{Code: settings.CodeInvalid, Message: fmt.Sprintf("The restore needs about %d bytes on the disk of %s, which has %d free.", n+restoreReserve, dirOf[key], free)}
+			return refusal(settings.CodeInvalid, "The restore needs about %s bytes on the disk of %s, which has %s free.", n+restoreReserve, dirOf[key], free)
 		}
 	}
 	return nil
@@ -1768,7 +1775,7 @@ func (m *Manager) recovered() error {
 	// previous server's helpers are adopted; a new restore must not
 	// replace it before that.
 	if _, err := os.Stat(journalFile(m.cfg.BaseDir)); err == nil {
-		return &settings.Error{Code: settings.CodeInUse, Message: "An interrupted restore is being rolled back; try again in a moment."}
+		return refusal(settings.CodeInUse, "An interrupted restore is being rolled back; try again in a moment.")
 	}
 	return nil
 }

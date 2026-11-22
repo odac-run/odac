@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -500,4 +501,73 @@ func TestInitUsesTheCache(t *testing.T) {
 	if len(c) != 1 || c[0].req.Repo.CacheDir == "" || c[0].req.Repo.Owner == nil {
 		t.Fatalf("init %+v", c)
 	}
+}
+
+func TestRunNowRunsBesideTheSchedule(t *testing.T) {
+	h := newHarness(t)
+	h.app("web")
+	j := h.job("j1", "t1", 60, "web")
+	h.m.schedule(context.Background())
+	h.m.workers.Wait()
+	h.record()
+	jobs, _ := h.m.Status()
+	regular := jobs[0].Next
+
+	if _, err := h.m.RunNow("nope"); code(err) != settings.CodeNotFound {
+		t.Fatalf("unknown job: %v", err)
+	}
+	h.clock.Add(10 * time.Minute)
+	st, err := h.m.RunNow(j.ID)
+	if err != nil || st.Manual == 0 {
+		t.Fatalf("run now: %+v %v", st, err)
+	}
+	// A busy host does not hold an operator's request back.
+	h.m.cfg.Load = func() sysinfo.Load { return sysinfo.Load{Cores: 2, Load1: 9} }
+	h.m.schedule(context.Background())
+	h.m.workers.Wait()
+	if rec := h.record(); rec.Trigger != triggerManual || rec.Status != StatusOK {
+		t.Fatalf("manual run: %+v", rec)
+	}
+	jobs, _ = h.m.Status()
+	if jobs[0].Next != regular || jobs[0].Manual != 0 {
+		t.Fatalf("after the manual run the schedule is %+v, want next %d", jobs[0], regular)
+	}
+}
+
+func TestRunNowRefusesARunningJob(t *testing.T) {
+	h := newHarness(t)
+	h.app("web")
+	j := h.job("j1", "t1", 60, "web")
+	block := make(chan struct{})
+	h.m.cfg.States = blockingStates{block}
+	h.m.schedule(context.Background())
+	defer func() {
+		close(block)
+		h.m.workers.Wait()
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		jobs, _ := h.m.Status()
+		if len(jobs) > 0 && jobs[0].Running != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := h.m.RunNow(j.ID); code(err) != settings.CodeInUse {
+		t.Fatalf("run now while running: %v", err)
+	}
+}
+
+func code(err error) string {
+	var e *settings.Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	if err == nil {
+		return ""
+	}
+	return "error: " + err.Error()
 }

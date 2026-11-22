@@ -88,6 +88,38 @@ type MTLSService interface {
 	Set(domainArg, modeArg, optsArg any) api.Result
 }
 
+// BackupService is the slice of the backup service (internal/backup/service)
+// the command table calls. Each method takes its command's payload. The hub
+// acts for the server's owner, so Key gets api.Operator. Staging a restore of
+// ODAC's own state is left out on purpose: it is for a freshly installed
+// server and stays on the local CLI.
+type BackupService interface {
+	Targets() api.Result
+	PrepareTarget(payload any) api.Result
+	ConfirmTarget(payload any) api.Result
+	CancelTarget(payload any) api.Result
+	UpdateTarget(payload any) api.Result
+	DeleteTarget(payload any) api.Result
+	AdoptTarget(payload any) api.Result
+	TargetServers(payload any) api.Result
+	Key(caller api.Caller, payload any) api.Result
+	Jobs() api.Result
+	CreateJob(payload any) api.Result
+	UpdateJob(payload any) api.Result
+	DeleteJob(payload any) api.Result
+	RunJob(payload any) api.Result
+	Retired() api.Result
+	PurgeRetired(payload any) api.Result
+	Coverage() api.Result
+	Status() api.Result
+	History(payload any) api.Result
+	Points(payload any) api.Result
+	PreviewRestore(payload any) api.Result
+	StartRestore(payload any) api.Result
+	CancelRestore(payload any) api.Result
+	Restores() api.Result
+}
+
 // ProxyService is the slice of dataplane.Proxy the command table calls.
 type ProxyService interface {
 	SetTunnels(tunnels []dataplane.Tunnel) int
@@ -127,6 +159,7 @@ type Deps struct {
 	DNS       DNSService
 	Domain    DomainService
 	MTLS      MTLSService
+	Backup    BackupService
 	Proxy     ProxyService
 	Mail      MailService
 	Container ContainerService
@@ -280,6 +313,20 @@ func (h *Hub) Check() {
 			h.spawn(func() { h.executeTask(task) }) // without blocking the loop
 		}
 	}
+}
+
+// Triggers returns the lists a command re-sends after it ran. The local API
+// sends the same backup actions, and re-sending the same lists after them
+// keeps the dashboard current whichever door a change came through.
+// It reports false for a command the table does not have.
+func (h *Hub) Triggers(name string) ([]string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cmd := h.commands[name]
+	if cmd == nil {
+		return nil, false
+	}
+	return append([]string(nil), cmd.triggers...), true
 }
 
 // Trigger re-runs (and re-sends) a task after an event; the appmgr Hub seam.
@@ -952,6 +999,128 @@ func (h *Hub) buildCommands() {
 			return h.deps.MTLS.Import(api.Operator, pmap(p)), nil
 		}),
 		triggers: []string{"domain.mtls.cert.list"},
+	})
+	h.registerBackup()
+}
+
+// registerBackup appends the backup.* commands, after everything else
+// because the table's order is pinned. Each takes the same object payload as
+// the local API action of the same name. Lists are periodic tasks; a change
+// re-sends the lists it touched. The finished runs and restores themselves
+// reach the Hub through those lists too, triggered by the backup manager.
+func (h *Hub) registerBackup() {
+	with := func(fn func(b BackupService, payload any) api.Result) func(payload any) (any, error) {
+		if h.deps.Backup == nil {
+			return func(any) (any, error) { return nil, errors.New("Backups are not available") }
+		}
+		return func(p any) (any, error) { return fn(h.deps.Backup, p), nil }
+	}
+	// A server without backups keeps the commands, so the table's order
+	// holds, but sends no lists that could only fail.
+	every := func(d time.Duration) time.Duration {
+		if h.deps.Backup == nil {
+			return 0
+		}
+		return d
+	}
+	const (
+		targets  = "backup.target.list"
+		jobs     = "backup.job.list"
+		retired  = "backup.retired.list"
+		coverage = "backup.coverage"
+		status   = "backup.status"
+		history  = "backup.history"
+		restores = "backup.restore.list"
+	)
+	h.register(targets, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.Targets() }),
+		interval: every(30 * time.Minute),
+	})
+	h.register("backup.target.prepare", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.PrepareTarget(p) }),
+	})
+	h.register("backup.target.confirm", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.ConfirmTarget(p) }),
+		triggers: []string{targets, coverage, status},
+	})
+	h.register("backup.target.cancel", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.CancelTarget(p) }),
+	})
+	h.register("backup.target.update", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.UpdateTarget(p) }),
+		triggers: []string{targets},
+	})
+	h.register("backup.target.delete", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.DeleteTarget(p) }),
+		triggers: []string{targets, retired, coverage, status},
+	})
+	h.register("backup.target.adopt", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.AdoptTarget(p) }),
+		triggers: []string{targets, coverage},
+	})
+	h.register("backup.target.servers", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.TargetServers(p) }),
+	})
+	h.register("backup.key", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.Key(api.Operator, p) }),
+	})
+	h.register(jobs, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.Jobs() }),
+		interval: every(30 * time.Minute),
+	})
+	h.register("backup.job.create", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.CreateJob(p) }),
+		triggers: []string{jobs, coverage, status},
+	})
+	h.register("backup.job.update", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.UpdateJob(p) }),
+		triggers: []string{jobs, coverage, status},
+	})
+	h.register("backup.job.delete", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.DeleteJob(p) }),
+		triggers: []string{jobs, retired, coverage, status},
+	})
+	h.register("backup.job.run", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.RunJob(p) }),
+		triggers: []string{status},
+	})
+	h.register(retired, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.Retired() }),
+		interval: every(30 * time.Minute),
+	})
+	h.register("backup.retired.purge", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.PurgeRetired(p) }),
+		triggers: []string{retired},
+	})
+	h.register(coverage, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.Coverage() }),
+		interval: every(30 * time.Minute),
+	})
+	h.register(status, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.Status() }),
+		interval: every(5 * time.Minute),
+	})
+	h.register(history, &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.History(p) }),
+		interval: every(30 * time.Minute),
+	})
+	h.register("backup.point.list", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.Points(p) }),
+	})
+	h.register("backup.restore.preview", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.PreviewRestore(p) }),
+	})
+	h.register("backup.restore", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.StartRestore(p) }),
+		triggers: []string{restores, status},
+	})
+	h.register("backup.restore.cancel", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.CancelRestore(p) }),
+		triggers: []string{restores},
+	})
+	h.register(restores, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.Restores() }),
+		interval: every(30 * time.Minute),
 	})
 }
 

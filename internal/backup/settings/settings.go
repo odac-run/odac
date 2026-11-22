@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"odac/internal/backup/proto"
+	"odac/internal/lang"
 	"odac/internal/logx"
 )
 
@@ -144,8 +145,10 @@ const (
 	CodeUnreachable = "unreachable"
 )
 
+// errorf builds a refusal in the operator's language: format is the
+// catalog key, with %s for every argument (see lang.T).
 func errorf(code, format string, a ...any) *Error {
-	return &Error{Code: code, Message: fmt.Sprintf(format, a...)}
+	return &Error{Code: code, Message: lang.T(format, a...)}
 }
 
 // module is the persisted shape of the config module.

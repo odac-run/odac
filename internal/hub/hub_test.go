@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -454,6 +455,7 @@ type hubFixture struct {
 	mail   *fakeMail
 	cont   *fakeContainer
 	mtls   *fakeMTLS
+	backup *fakeBackup
 	dials  chan string
 	noApp  bool
 	noMail bool
@@ -509,6 +511,9 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 	}
 	if !fx.noMail {
 		deps.Mail = fx.mail
+	}
+	if fx.backup != nil {
+		deps.Backup = fx.backup
 	}
 
 	fx.h = New(cfg, fx.cloud.srv.URL, deps)
@@ -1207,6 +1212,14 @@ func TestCommandTableOrder(t *testing.T) {
 		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
 		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
 		"domain.mtls.cert.import",
+		"backup.target.list", "backup.target.prepare", "backup.target.confirm",
+		"backup.target.cancel", "backup.target.update", "backup.target.delete",
+		"backup.target.adopt", "backup.target.servers", "backup.key",
+		"backup.job.list", "backup.job.create", "backup.job.update", "backup.job.delete",
+		"backup.job.run", "backup.retired.list", "backup.retired.purge",
+		"backup.coverage", "backup.status", "backup.history", "backup.point.list",
+		"backup.restore.preview", "backup.restore", "backup.restore.cancel",
+		"backup.restore.list",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1322,5 +1335,109 @@ func TestNormalizeResultShapes(t *testing.T) {
 	r = normalizeResult(map[string]any{"success": false, "message": "nope"})
 	if r.success != false || r.message != "nope" || r.hasData {
 		t.Errorf("map: %+v", r)
+	}
+}
+
+// fakeBackup records which backup methods ran, with the caller where one is
+// asked.
+type fakeBackup struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeBackup) rec(call string, payload any) api.Result {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, _ := payload.(map[string]any); m != nil && m["id"] != nil {
+		call += " " + fmt.Sprint(m["id"])
+	}
+	f.calls = append(f.calls, call)
+	return api.Res(true, nil, []any{})
+}
+
+func (f *fakeBackup) Targets() api.Result             { return f.rec("targets", nil) }
+func (f *fakeBackup) PrepareTarget(p any) api.Result  { return f.rec("prepare", p) }
+func (f *fakeBackup) ConfirmTarget(p any) api.Result  { return f.rec("confirm", p) }
+func (f *fakeBackup) CancelTarget(p any) api.Result   { return f.rec("cancel", p) }
+func (f *fakeBackup) UpdateTarget(p any) api.Result   { return f.rec("update", p) }
+func (f *fakeBackup) DeleteTarget(p any) api.Result   { return f.rec("delete", p) }
+func (f *fakeBackup) AdoptTarget(p any) api.Result    { return f.rec("adopt", p) }
+func (f *fakeBackup) TargetServers(p any) api.Result  { return f.rec("servers", p) }
+func (f *fakeBackup) Jobs() api.Result                { return f.rec("jobs", nil) }
+func (f *fakeBackup) CreateJob(p any) api.Result      { return f.rec("job.create", p) }
+func (f *fakeBackup) UpdateJob(p any) api.Result      { return f.rec("job.update", p) }
+func (f *fakeBackup) DeleteJob(p any) api.Result      { return f.rec("job.delete", p) }
+func (f *fakeBackup) RunJob(p any) api.Result         { return f.rec("job.run", p) }
+func (f *fakeBackup) Retired() api.Result             { return f.rec("retired", nil) }
+func (f *fakeBackup) PurgeRetired(p any) api.Result   { return f.rec("purge", p) }
+func (f *fakeBackup) Coverage() api.Result            { return f.rec("coverage", nil) }
+func (f *fakeBackup) Status() api.Result              { return f.rec("status", nil) }
+func (f *fakeBackup) History(p any) api.Result        { return f.rec("history", p) }
+func (f *fakeBackup) Points(p any) api.Result         { return f.rec("points", p) }
+func (f *fakeBackup) PreviewRestore(p any) api.Result { return f.rec("preview", p) }
+func (f *fakeBackup) StartRestore(p any) api.Result   { return f.rec("restore", p) }
+func (f *fakeBackup) CancelRestore(p any) api.Result  { return f.rec("restore.cancel", p) }
+func (f *fakeBackup) Restores() api.Result            { return f.rec("restores", nil) }
+func (f *fakeBackup) Key(c api.Caller, p any) api.Result {
+	if c != api.Operator {
+		return api.Res(false, "denied")
+	}
+	return f.rec("key (operator)", p)
+}
+
+func TestBackupCommandsReachTheService(t *testing.T) {
+	fb := &fakeBackup{}
+	fx := newHubFixture(t, func(f *hubFixture) { f.backup = fb })
+	for _, name := range []string{"backup.key", "backup.job.run", "backup.restore"} {
+		res, err := fx.h.commands[name].fn(map[string]any{"id": "x1"})
+		if err != nil || !res.(api.Result).Status {
+			t.Fatalf("%s: %v %v", name, res, err)
+		}
+	}
+	if want := []string{"key (operator) x1", "job.run x1", "restore x1"}; !reflect.DeepEqual(fb.calls, want) {
+		t.Fatalf("calls = %v, want %v", fb.calls, want)
+	}
+	// Lists are tasks; a change re-sends the lists it touched.
+	for name, want := range map[string]time.Duration{
+		"backup.target.list": 30 * time.Minute, "backup.job.list": 30 * time.Minute,
+		"backup.retired.list": 30 * time.Minute, "backup.coverage": 30 * time.Minute,
+		"backup.status": 5 * time.Minute, "backup.history": 30 * time.Minute,
+		"backup.restore.list": 30 * time.Minute,
+	} {
+		if got := fx.h.commands[name].interval; got != want {
+			t.Errorf("%s interval = %v, want %v", name, got, want)
+		}
+	}
+	if got, _ := fx.h.Triggers("backup.job.create"); !reflect.DeepEqual(got, []string{"backup.job.list", "backup.coverage", "backup.status"}) {
+		t.Errorf("job.create triggers = %v", got)
+	}
+	for _, name := range []string{"backup.target.prepare", "backup.key", "backup.point.list", "backup.restore.preview"} {
+		if got, ok := fx.h.Triggers(name); !ok || len(got) != 0 {
+			t.Errorf("%s changes nothing but triggers %v", name, got)
+		}
+	}
+}
+
+// ODAC's own state is restored on a freshly installed server, from its CLI;
+// the hub has no door to it.
+func TestHubCannotStageAServerRestore(t *testing.T) {
+	fx := newHubFixture(t, func(f *hubFixture) { f.backup = &fakeBackup{} })
+	for name := range fx.h.commands {
+		if strings.HasPrefix(name, "backup.server.") {
+			t.Fatalf("the hub offers %s", name)
+		}
+	}
+}
+
+// Without backups the commands keep their place but no list is sent.
+func TestBackupListsAreNotTasksWithoutBackups(t *testing.T) {
+	fx := newHubFixture(t)
+	for _, name := range fx.h.order {
+		if strings.HasPrefix(name, "backup.") && fx.h.commands[name].hasInterval {
+			t.Errorf("%s is a task on a server without backups", name)
+		}
+	}
+	if _, err := fx.h.commands["backup.job.list"].fn(nil); err == nil {
+		t.Fatal("backup.job.list answered without backups")
 	}
 }

@@ -241,19 +241,39 @@ var appDeniedActions = map[string]bool{
 	"domain.mtls.ca.remove":  true,
 }
 
+// appDeniedNamespaces close every action under a prefix, the ones that exist
+// and the ones a later change adds. Backups are closed whole: a target
+// bind-mounts a host path into a helper (host root), a restore overwrites
+// another app's data, a key opens every backup on its target, and a snapshot
+// is the same data and the same restore. No handler there narrows by caller,
+// so none of it is safe to grant.
+var appDeniedNamespaces = []string{"backup.", "snapshot."}
+
 // AppMayCall reports whether an app token is ever allowed to call an action.
 // Grant-time validation uses it too, but the authoritative check is the one
 // on the request path: a hand-edited config never passes through validation.
 func AppMayCall(action string) bool {
-	return !appDeniedActions[action]
+	if appDeniedActions[action] {
+		return false
+	}
+	for _, prefix := range appDeniedNamespaces {
+		if strings.HasPrefix(action, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 // AppDeniedActions lists, in a stable order, the actions no app grant can
-// ever include. Callers use it to explain a refusal.
+// ever include, a closed namespace as "<prefix>*". Callers use it to explain
+// a refusal.
 func AppDeniedActions() []string {
-	out := make([]string, 0, len(appDeniedActions))
+	out := make([]string, 0, len(appDeniedActions)+len(appDeniedNamespaces))
 	for action := range appDeniedActions {
 		out = append(out, action)
+	}
+	for _, prefix := range appDeniedNamespaces {
+		out = append(out, prefix+"*")
 	}
 	sort.Strings(out)
 	return out

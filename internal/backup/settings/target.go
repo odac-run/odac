@@ -245,7 +245,7 @@ func subPath(p string) (string, error) {
 	clean := path.Clean("/" + p)
 	for _, seg := range strings.Split(strings.Trim(clean, "/"), "/") {
 		if seg != "" && (!segmentPattern.MatchString(seg) || seg == "..") {
-			return "", invalid("Invalid directory %q inside the share.", p)
+			return "", invalid("Invalid directory \"%s\" inside the share.", p)
 		}
 	}
 	return clean, nil

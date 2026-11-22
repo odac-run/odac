@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -162,6 +163,7 @@ func loaded(l sysinfo.Load) bool {
 type candidate struct {
 	job    settings.JobView
 	follow *followUp
+	manual bool
 	due    time.Time
 }
 
@@ -188,6 +190,9 @@ func (m *Manager) scheduleBackup(ctx context.Context, jobs []settings.JobView, n
 			if js == nil {
 				continue
 			}
+			if js.Manual > 0 && js.Running == "" {
+				cands = append(cands, candidate{job: j, manual: true, due: fromMs(js.Manual)})
+			}
 			if js.Next <= ms(now) {
 				cands = append(cands, candidate{job: j, due: fromMs(js.Next)})
 				if js.PostponedSince > 0 && (postponed.IsZero() || fromMs(js.PostponedSince).Before(postponed)) {
@@ -198,14 +203,20 @@ func (m *Manager) scheduleBackup(ctx context.Context, jobs []settings.JobView, n
 			}
 		}
 	})
-	slices.SortStableFunc(cands, func(a, b candidate) int {
-		if (a.follow != nil) != (b.follow != nil) {
-			if a.follow != nil {
-				return -1
-			}
+	// The rest of a cut-short run first, then what the operator asked for
+	// (a busy host would otherwise hold it behind an overdue run), then the
+	// most overdue.
+	rank := func(c candidate) int {
+		switch {
+		case c.follow != nil:
+			return 0
+		case c.manual:
 			return 1
 		}
-		return a.due.Compare(b.due)
+		return 2
+	}
+	slices.SortStableFunc(cands, func(a, b candidate) int {
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), a.due.Compare(b.due))
 	})
 
 	var pick *candidate
@@ -235,7 +246,9 @@ func (m *Manager) scheduleBackup(ctx context.Context, jobs []settings.JobView, n
 	if pick == nil {
 		return
 	}
-	if m.cfg.Load != nil && loaded(m.cfg.Load()) {
+	// The operator asked for this run, so a busy host does not hold it
+	// back; it still runs at the helper's low priority.
+	if !pick.manual && m.cfg.Load != nil && loaded(m.cfg.Load()) {
 		if postponed.IsZero() || now.Sub(postponed) < m.t.maxPostpone {
 			m.postpone(pick.job, now, postponed.IsZero())
 			if t := now.Add(m.t.loadRetry); t.Before(*next) {
@@ -270,15 +283,24 @@ func (m *Manager) targetBusy(target string) bool {
 // over in an update is not started again by the next server.
 func (m *Manager) startBackup(ctx context.Context, c candidate, now time.Time) {
 	rs := runSpec{job: c.job, run: newRunID(now), trigger: triggerSchedule, scheduled: c.due}
-	if c.follow != nil {
+	switch {
+	case c.follow != nil:
 		rs.run, rs.trigger, rs.apps = c.follow.Run, triggerDeploy, c.follow.Apps
+	case c.manual:
+		rs.trigger = triggerManual
 	}
 	err := m.state.update(func(d *stateData) {
 		js := d.job(c.job.ID)
 		js.PostponedSince = 0
 		js.Running = rs.run
-		if c.follow == nil {
-			js.Next = ms(nextAfter(c.due, time.Duration(c.job.Every)*time.Minute, now))
+		if c.follow != nil {
+			return
+		}
+		// A whole run answers a manual request, and a regular slot that is
+		// due as well, so neither runs again right after.
+		js.Manual = 0
+		if js.Next <= ms(now) {
+			js.Next = ms(nextAfter(fromMs(js.Next), time.Duration(c.job.Every)*time.Minute, now))
 		}
 	})
 	if err != nil {

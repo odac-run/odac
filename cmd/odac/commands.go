@@ -314,6 +314,7 @@ func init() {
 				}},
 			},
 		}},
+		{"backup", backupCommand()},
 	}
 }
 

@@ -110,7 +110,7 @@ func (s *Settings) normalizeJob(spec JobSpec, m *module, known map[string]bool) 
 	seen := map[string]bool{}
 	for _, app := range spec.Apps {
 		if !appPattern.MatchString(app) {
-			return nil, invalid("Invalid app name %q.", app)
+			return nil, invalid("Invalid app name \"%s\".", app)
 		}
 		if !known[app] {
 			return nil, errorf(CodeNotFound, "App %s not found.", app)
@@ -124,13 +124,13 @@ func (s *Settings) normalizeJob(spec JobSpec, m *module, known map[string]bool) 
 		return nil, invalid("A job backs up at least one app or the server's own state.")
 	}
 	if j.Every < MinEvery || j.Every > MaxEvery {
-		return nil, invalid("A job runs every %d minutes to every %d days.", MinEvery, MaxEvery/(24*60))
+		return nil, invalid("A job runs every %s minutes to every %s days.", MinEvery, MaxEvery/(24*60))
 	}
 	if err := j.Policy().Validate(); err != nil {
 		return nil, invalid("Invalid density.")
 	}
 	if j.MaxAgeDays < 0 || j.MaxAgeDays > maxAgeDays {
-		return nil, invalid("A maximum age is 0 to %d days.", maxAgeDays)
+		return nil, invalid("A maximum age is 0 to %s days.", maxAgeDays)
 	}
 	if j.Budget < 0 {
 		return nil, invalid("A budget cannot be negative.")

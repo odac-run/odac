@@ -33,6 +33,9 @@ type JobStatus struct {
 	PostponedSince int64 `json:"postponedSince,omitempty"`
 	// Waiting are apps whose dump a deploy cancelled, stored once it ends.
 	Waiting []string `json:"waiting,omitempty"`
+	// Manual is when a run the operator asked for was requested, while it
+	// waits for its turn.
+	Manual int64 `json:"manual,omitempty"`
 }
 
 // TargetStatus is a target's last measurement and maintenance.
@@ -52,7 +55,7 @@ func (m *Manager) Status() ([]JobStatus, []TargetStatus) {
 	var targets []TargetStatus
 	m.state.view(func(d *stateData) {
 		for id, js := range d.Jobs {
-			s := JobStatus{Job: id, Next: js.Next, Running: js.Running, Failures: js.Failures, PostponedSince: js.PostponedSince}
+			s := JobStatus{Job: id, Next: js.Next, Running: js.Running, Failures: js.Failures, PostponedSince: js.PostponedSince, Manual: js.Manual}
 			if f := d.FollowUps[id]; f != nil {
 				s.Waiting = slices.Clone(f.Apps)
 			}

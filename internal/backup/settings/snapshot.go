@@ -41,7 +41,7 @@ func (s *Settings) Snapshots() (Snapshots, error) {
 // SetSnapshots changes the snapshot settings.
 func (s *Settings) SetSnapshots(p SnapshotsPatch) (Snapshots, error) {
 	if p.MaxDiskPct != nil && (*p.MaxDiskPct < 1 || *p.MaxDiskPct > MaxMaxDiskPct) {
-		return Snapshots{}, invalid("Snapshots may take 1%% to %d%% of the disk.", MaxMaxDiskPct)
+		return Snapshots{}, invalid("Snapshots may take 1 to %s percent of the disk.", MaxMaxDiskPct)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

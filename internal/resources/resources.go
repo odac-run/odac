@@ -111,6 +111,7 @@ func parseSize(text string) (float64, bool) {
 		{"kib", 1 << 10}, {"kb", 1 << 10}, {"k", 1 << 10},
 		{"mib", 1 << 20}, {"mb", 1 << 20}, {"m", 1 << 20},
 		{"gib", 1 << 30}, {"gb", 1 << 30}, {"g", 1 << 30},
+		{"tib", 1 << 40}, {"tb", 1 << 40}, {"t", 1 << 40},
 		{"b", 1},
 	} {
 		if strings.HasSuffix(lower, suffix.name) {
@@ -124,6 +125,17 @@ func parseSize(text string) (float64, bool) {
 		return 0, false
 	}
 	return number * float64(unit), true
+}
+
+// ParseBytes reads a byte count written as a number or as a size like
+// "512m" or "2t", in the same powers of 1024 as shmSize, for the other
+// places an operator writes a size (a backup job's budget).
+func ParseBytes(text string) (int64, error) {
+	bytes, ok := parseSize(strings.TrimSpace(text))
+	if !ok || bytes < 0 || bytes != float64(int64(bytes)) {
+		return 0, fmt.Errorf("invalid size %q: expected a byte count or a size like \"50g\"", text)
+	}
+	return int64(bytes), nil
 }
 
 // validShmSize bounds a parsed size. It rejects a fractional byte count for

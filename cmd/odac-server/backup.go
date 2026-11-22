@@ -3,14 +3,18 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
+	"odac/internal/api"
 	"odac/internal/appmgr"
 	"odac/internal/backup"
 	"odac/internal/backup/consistency"
 	"odac/internal/backup/runner"
+	"odac/internal/backup/service"
 	"odac/internal/backup/settings"
 	"odac/internal/config"
 	"odac/internal/docker"
+	"odac/internal/hub"
 	"odac/internal/logx"
 	"odac/internal/sysinfo"
 )
@@ -20,7 +24,7 @@ import (
 // helper container, or a child process when the server is not in a
 // container (development). Nothing here talks to Docker; the manager
 // waits for it in the background once started.
-func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, containers *docker.Client, apps *appmgr.Manager) *backup.Manager {
+func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, containers *docker.Client, apps *appmgr.Manager, relay *hubRelay) (*backup.Manager, *service.Service) {
 	host := sysinfo.HostLoad()
 	helperLimits, dumpLimits := runner.DefaultLimits(host.MemTotal, host.Cores)
 	dockerSide := runner.FromClient(containers)
@@ -32,7 +36,7 @@ func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, c
 	})
 	if err != nil {
 		log.Error("Backups are disabled:", err.Error())
-		return nil
+		return nil, nil
 	}
 	local := !runner.InContainer()
 	binary := filepath.Join(moduleBinDir(), "odac-backup")
@@ -51,14 +55,16 @@ func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, c
 			}
 			return backup.FromRunner(r), nil
 		},
-		Load:    sysinfo.HostLoad,
-		BaseDir: baseDir,
-		Control: appControl{apps},
-		Loader:  planner,
+		Load:      sysinfo.HostLoad,
+		BaseDir:   baseDir,
+		Control:   appControl{apps},
+		Loader:    planner,
+		OnRecord:  relay.record,
+		OnRestore: relay.restore,
 	})
 	if err != nil {
 		log.Error("Backups are disabled:", err.Error())
-		return nil
+		return nil, nil
 	}
 	set, err := settings.New(settings.Config{
 		Store:      cfg,
@@ -70,11 +76,109 @@ func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, c
 	})
 	if err != nil {
 		log.Error("Backups are disabled:", err.Error())
-		return nil
+		return nil, nil
 	}
 	mgr.SetSettings(set)
 	apps.SetDeployWatcher(mgr)
-	return mgr
+	svc, err := service.New(service.Config{Manager: mgr, Settings: set, ServerID: serverID, BaseDir: baseDir})
+	if err != nil {
+		log.Error("Backups are disabled:", err.Error())
+		return nil, nil
+	}
+	return mgr, svc
+}
+
+// hubRelay hands the backup manager's events to the Hub, which is built
+// after the backups (its command table calls them). Events before the Hub
+// exists go nowhere: the first connection sends every list anyway.
+type hubRelay struct{ h atomic.Pointer[hub.Hub] }
+
+func (r *hubRelay) set(h *hub.Hub) { r.h.Store(h) }
+
+func (r *hubRelay) trigger(lists ...string) {
+	h := r.h.Load()
+	if h == nil {
+		return
+	}
+	for _, l := range lists {
+		h.Trigger(l)
+	}
+}
+
+// record re-sends what a finished run or maintenance changed. A run that
+// did not go well may also have stopped writes to its target (an owner
+// conflict), which the target list and the coverage show.
+func (r *hubRelay) record(rec backup.RunRecord) {
+	r.trigger("backup.status", "backup.history")
+	if rec.Status != backup.StatusOK && rec.Status != backup.StatusDeferred {
+		r.trigger("backup.target.list", "backup.coverage")
+	}
+}
+
+// restore re-sends the restores and the apps a finished restore changed.
+func (r *hubRelay) restore(backup.RestoreResult) {
+	r.trigger("backup.restore.list", "backup.status", "app.list")
+}
+
+// appHub is the app manager's Hub seam. Whenever the apps change, the
+// coverage may too: a new app with data and no job is the warning the
+// dashboard shows.
+type appHub struct {
+	*hub.Hub
+	backups bool
+}
+
+func (a appHub) Trigger(event string) {
+	a.Hub.Trigger(event)
+	if a.backups && event == "app.list" {
+		a.Hub.Trigger("backup.coverage")
+	}
+}
+
+// registerBackupActions adds the backup.* actions to the local API. Each
+// takes one object argument, the payload of the Hub command of the same
+// name, and a change re-sends the Hub lists that command would. Every one is
+// closed to app tokens (api.AppMayCall). The staging of ODAC's own state is
+// here and not on the Hub: it is for a freshly installed server and the CLI.
+func registerBackupActions(apiSrv *api.Server, svc *service.Service, hubSvc *hub.Hub) {
+	reg := func(action string, fn func(a api.Args) api.Result) {
+		apiSrv.Register(action, func(a api.Args, _ api.Progress) (*api.Result, error) {
+			r := fn(a)
+			if lists, _ := hubSvc.Triggers(action); r.Status {
+				for _, l := range lists {
+					hubSvc.Trigger(l)
+				}
+			}
+			return &r, nil
+		})
+	}
+	reg("backup.target.list", func(api.Args) api.Result { return svc.Targets() })
+	reg("backup.target.prepare", func(a api.Args) api.Result { return svc.PrepareTarget(a.At(0)) })
+	reg("backup.target.confirm", func(a api.Args) api.Result { return svc.ConfirmTarget(a.At(0)) })
+	reg("backup.target.cancel", func(a api.Args) api.Result { return svc.CancelTarget(a.At(0)) })
+	reg("backup.target.update", func(a api.Args) api.Result { return svc.UpdateTarget(a.At(0)) })
+	reg("backup.target.delete", func(a api.Args) api.Result { return svc.DeleteTarget(a.At(0)) })
+	reg("backup.target.adopt", func(a api.Args) api.Result { return svc.AdoptTarget(a.At(0)) })
+	reg("backup.target.servers", func(a api.Args) api.Result { return svc.TargetServers(a.At(0)) })
+	reg("backup.key", func(a api.Args) api.Result { return svc.Key(a.Caller(), a.At(0)) })
+	reg("backup.job.list", func(api.Args) api.Result { return svc.Jobs() })
+	reg("backup.job.create", func(a api.Args) api.Result { return svc.CreateJob(a.At(0)) })
+	reg("backup.job.update", func(a api.Args) api.Result { return svc.UpdateJob(a.At(0)) })
+	reg("backup.job.delete", func(a api.Args) api.Result { return svc.DeleteJob(a.At(0)) })
+	reg("backup.job.run", func(a api.Args) api.Result { return svc.RunJob(a.At(0)) })
+	reg("backup.retired.list", func(api.Args) api.Result { return svc.Retired() })
+	reg("backup.retired.purge", func(a api.Args) api.Result { return svc.PurgeRetired(a.At(0)) })
+	reg("backup.coverage", func(api.Args) api.Result { return svc.Coverage() })
+	reg("backup.status", func(api.Args) api.Result { return svc.Status() })
+	reg("backup.history", func(a api.Args) api.Result { return svc.History(a.At(0)) })
+	reg("backup.point.list", func(a api.Args) api.Result { return svc.Points(a.At(0)) })
+	reg("backup.restore.preview", func(a api.Args) api.Result { return svc.PreviewRestore(a.At(0)) })
+	reg("backup.restore", func(a api.Args) api.Result { return svc.StartRestore(a.At(0)) })
+	reg("backup.restore.cancel", func(a api.Args) api.Result { return svc.CancelRestore(a.At(0)) })
+	reg("backup.restore.list", func(api.Args) api.Result { return svc.Restores() })
+	reg("backup.server.restore", func(a api.Args) api.Result { return svc.StageServerRestore(a.Caller(), a.At(0)) })
+	reg("backup.server.pending", func(a api.Args) api.Result { return svc.PendingServerRestore(a.Caller()) })
+	reg("backup.server.cancel", func(a api.Args) api.Result { return svc.CancelServerRestore(a.Caller()) })
 }
 
 // serverName labels this server's directory on a target for a person

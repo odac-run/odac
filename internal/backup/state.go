@@ -87,6 +87,9 @@ type jobState struct {
 	Failures int    `json:"failures,omitempty"`
 	// PostponedSince is when the server's load first held the job back.
 	PostponedSince int64 `json:"postponedSince,omitempty"`
+	// Manual is when the operator asked for a run that has not started
+	// yet; it runs beside the schedule, which keeps its own clock.
+	Manual int64 `json:"manual,omitempty"`
 }
 
 type targetState struct {

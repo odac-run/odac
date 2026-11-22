@@ -26,6 +26,7 @@ import (
 	"odac/internal/api"
 	"odac/internal/appmgr"
 	"odac/internal/backup"
+	"odac/internal/backup/service"
 	"odac/internal/config"
 	"odac/internal/dataplane"
 	"odac/internal/docker"
@@ -136,8 +137,10 @@ func main() {
 	// identity; the system starts them once an update's handover is
 	// complete and stops them first.
 	var backupMgr *backup.Manager
+	var backupSvc *service.Service
+	relay := &hubRelay{}
 	if appMgr != nil && serverID != "" {
-		backupMgr = newBackups(log, cfg, baseDir, serverID, containers, appMgr)
+		backupMgr, backupSvc = newBackups(log, cfg, baseDir, serverID, containers, appMgr, relay)
 	}
 
 	// Updater (task 3.7): zero-downtime self-update. It owns its own SDK
@@ -179,6 +182,9 @@ func main() {
 	if appMgr != nil {
 		hubDeps.App = appMgr
 	}
+	if backupSvc != nil {
+		hubDeps.Backup = backupSvc
+	}
 	if containers != nil {
 		hubDeps.Container = hubContainers{containers}
 		// Terminal sessions validate the target against the managed-app
@@ -199,8 +205,9 @@ func main() {
 		})
 	}
 	hubSvc := hub.New(cfg, hubURL, hubDeps)
+	relay.set(hubSvc)
 	if appMgr != nil {
-		appMgr.SetHub(hubSvc) // closes the 3.4e seam (triggers + recipe fetch)
+		appMgr.SetHub(appHub{Hub: hubSvc, backups: backupSvc != nil}) // closes the 3.4e seam (triggers + recipe fetch)
 	}
 	mailSvc.SetHub(hubSvc)
 	// A GPU that becomes schedulable mid-flight (driver loaded, toolkit
@@ -226,6 +233,9 @@ func main() {
 	upd.SetSystem(sys) // closes the System↔Updater cycle (rollback re-Init)
 
 	registerActions(apiSrv, sys, upd, dnsSvc, mailSvc, appMgr, domainSvc, mtlsSvc, sslSvc, hubSvc)
+	if backupSvc != nil {
+		registerBackupActions(apiSrv, backupSvc, hubSvc)
+	}
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())

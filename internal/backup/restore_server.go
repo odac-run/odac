@@ -85,7 +85,7 @@ func (m *Manager) StageServerRestore(ctx context.Context, req ServerRestoreReque
 		}
 	}
 	if len(dirs) == 0 {
-		return nil, &settings.Error{Code: settings.CodeNotFound, Message: fmt.Sprintf("Run %s holds no copy of ODAC's own state.", req.Run)}
+		return nil, refusal(settings.CodeNotFound, "Run %s holds no copy of ODAC's own state.", req.Run)
 	}
 	if err := m.acquireRestore(ctx, req.Target); err != nil {
 		return nil, err

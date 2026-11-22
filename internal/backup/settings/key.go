@@ -47,10 +47,10 @@ func generateKey() string {
 // what a paste adds or drops without anyone seeing it.
 func checkKey(k string) error {
 	if utf8.RuneCountInString(k) < MinKeyLength {
-		return invalid("A key is at least %d characters.", MinKeyLength)
+		return invalid("A key is at least %s characters.", MinKeyLength)
 	}
 	if len(k) > maxKeyBytes || !utf8.ValidString(k) {
-		return invalid("A key is at most %d bytes of text.", maxKeyBytes)
+		return invalid("A key is at most %s bytes of text.", maxKeyBytes)
 	}
 	if strings.TrimSpace(k) != k {
 		return invalid("A key cannot start or end with a space.")
