@@ -54,9 +54,34 @@ func (m *Manager) HoldApp(name string) (*AppHold, error) {
 	if m.isCreating(name) || !m.tryLockProcessing(id) {
 		return nil, fmt.Errorf("%s: %w", name, ErrAppBusy)
 	}
+	m.mu.Lock()
+	if m.restoring == nil {
+		m.restoring = map[float64]bool{}
+	}
+	m.restoring[id] = true
+	m.mu.Unlock()
 	h := &AppHold{m: m, id: id, name: name, wasActive: active}
 	h.Stop()
 	return h, nil
+}
+
+// heldForRestore reports an app a restore holds. Port discovery leaves it
+// alone: a database started for its dump to be loaded, or one that does
+// not come up, is not the app as it runs, and the record a rollback gives
+// back must be the one it had.
+func (m *Manager) heldForRestore(app map[string]any) bool {
+	id, _ := app["id"].(float64)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.restoring[id]
+}
+
+// endHold ends the hold's claim on the app.
+func (h *AppHold) endHold() {
+	h.released = true
+	h.m.mu.Lock()
+	delete(h.m.restoring, h.id)
+	h.m.mu.Unlock()
 }
 
 // WasActive reports whether the app was meant to run before the hold.
@@ -91,7 +116,7 @@ func (h *AppHold) Release(active bool) error {
 	if h.released {
 		return nil
 	}
-	h.released = true
+	h.endHold()
 	defer h.m.unlockProcessing(h.id)
 	if !active {
 		h.Stop()
@@ -113,7 +138,7 @@ func (h *AppHold) Abandon() {
 	if h.released {
 		return
 	}
-	h.released = true
+	h.endHold()
 	h.m.unlockProcessing(h.id)
 }
 

@@ -139,8 +139,8 @@ func (m *Manager) pollForPort(id any, containerName string, expectedPort int) {
 		adopted := false
 		m.cfg.Mutate(func() {
 			app := m.getLocked(id)
-			if app == nil {
-				return // deleted mid-poll
+			if app == nil || m.heldForRestore(app) {
+				return // deleted mid-poll, or not running as itself
 			}
 			portList, _ := app["ports"].([]any)
 			if primary := ports.Primary(portList); primary != nil {
@@ -285,7 +285,7 @@ func (m *Manager) scanAndSaveHTTPStatus(id any) error {
 	changed := false
 	m.cfg.Mutate(func() {
 		app := m.getLocked(id)
-		if app == nil {
+		if app == nil || m.heldForRestore(app) {
 			return
 		}
 		if app["http"] != newHTTP {

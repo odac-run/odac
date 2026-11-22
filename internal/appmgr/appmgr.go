@@ -170,6 +170,9 @@ type Manager struct {
 	deploys    DeployWatcher             // set once by SetDeployWatcher
 	snapshots  Snapshotter               // set once by SetSnapshotter
 	held       map[float64]string        // app id -> name reported to deploys
+	restoring  map[float64]bool          // app ids a restore holds
+	opSeq      uint64                    // processing locks released so far
+	opEnded    map[float64]uint64        // app id -> opSeq at its last release
 
 	// Test hooks: cadences default to Node's literals; sleep defaults to
 	// time.Sleep. deploySwitchDelay is Deploy.js's NODE_ENV!=='test' 5s.
@@ -325,6 +328,11 @@ func (m *Manager) Check() {
 	}
 
 	var running map[string]bool
+	// A list is only as new as its start: an app whose operation ends
+	// while it is taken may be running and missing from it.
+	m.mu.Lock()
+	listed := m.opSeq
+	m.mu.Unlock()
 	useDocker := m.deps.Docker.Available()
 	needDocker := useDocker
 	for _, p := range pulses {
@@ -388,7 +396,7 @@ func (m *Manager) Check() {
 		} else if !isRunning && p.status != "stopped" && p.status != "errored" && p.status != "starting" && p.status != "installing" {
 			shouldRun = true
 		}
-		if shouldRun && m.tryLockProcessing(p.id) {
+		if shouldRun && m.claimProcessing(p.id, listed) {
 			id := p.id
 			m.spawn(func() {
 				defer m.unlockProcessing(id)

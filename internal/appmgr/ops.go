@@ -2,6 +2,7 @@ package appmgr
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -367,8 +368,16 @@ func (m *Manager) Restart(id any) *api.Result {
 }
 
 func (m *Manager) tryLockProcessing(id float64) bool {
+	return m.claimProcessing(id, math.MaxUint64)
+}
+
+// claimProcessing is tryLockProcessing for a decision made on what Docker
+// reported once opSeq was listed: an operation on the app that ended
+// since may have started what the report says is missing, so the app is
+// left to a later decision.
+func (m *Manager) claimProcessing(id float64, listed uint64) bool {
 	m.mu.Lock()
-	if m.processing[id] {
+	if m.processing[id] || m.opEnded[id] > listed {
 		m.mu.Unlock()
 		return false
 	}
@@ -398,6 +407,11 @@ func (m *Manager) tryLockProcessing(id float64) bool {
 func (m *Manager) unlockProcessing(id float64) {
 	m.mu.Lock()
 	delete(m.processing, id)
+	m.opSeq++
+	if m.opEnded == nil {
+		m.opEnded = map[float64]uint64{}
+	}
+	m.opEnded[id] = m.opSeq
 	name := m.held[id]
 	delete(m.held, id)
 	w := m.deploys

@@ -126,9 +126,10 @@ func parseProcNetTCP(output string) []int {
 		}
 		port := int(port64)
 
-		// 0100007F = 127.0.0.1 (IPv4 loopback, little endian);
-		// ...01000000 = ::1 (IPv6 loopback).
-		isLoopback := ipHex == "0100007F" || ipHex == "00000000000000000000000001000000"
+		// IPv4 is little endian, so 127.0.0.0/8 ends in 7F: 127.0.0.11
+		// is Docker's embedded DNS, which every container on a user
+		// network listens on. ...01000000 is ::1.
+		isLoopback := (len(ipHex) == 8 && strings.HasSuffix(ipHex, "7F")) || ipHex == "00000000000000000000000001000000"
 		if !isLoopback && port > 0 && port < 60000 {
 			out = append(out, port)
 		}
