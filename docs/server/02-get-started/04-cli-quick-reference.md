@@ -54,6 +54,32 @@ odac mail list [-d|--domain] <domain>                             # List account
 odac mail password [-e|--email] <email> [-p|--password] <password> # Change password
 ```
 
+### Backups
+```bash
+odac backup target add --name <n> (--disk <path>|--smb //h/s|--nfs h:/e|--s3 <bucket> --endpoint <host>|--webdav <url>) # Add target, shows its key
+odac backup target list|update|delete|adopt|servers [-t|--target] <target> # Manage targets
+odac backup key [-t|--target] <target> [--out <file>]           # Show a target's key again
+odac backup job create --name <n> --target <t> (--apps a,b|--all) [--server] [--every 6h] [--density low|normal|high] [--max-age <days>] [--budget 50g]
+odac backup job list|update|delete|run|retired|purge [-j|--job] <job> # Manage jobs
+odac backup status                                              # Schedule, targets, verification
+odac backup history [-j|--job] <job> [--limit <n>]             # Finished runs
+odac backup coverage                                           # What is unprotected or damaged
+odac backup points [-t|--target] <t> [--app <app>] [--server <id>] # Restore points
+odac backup restore apps [-t] <t> --run <run> [--apps a,b] [--in-place|--new-app] [--name old=new] # Restore apps
+odac backup restore list|cancel|state                          # Restores, ODAC's own state
+```
+
+### Snapshots
+```bash
+odac snapshot list [--app <app>]                 # Restore points
+odac snapshot status                             # Disk share and warnings
+odac snapshot history [--app <app>]              # Snapshots taken and given up
+odac snapshot take --app <app>                   # Take one now
+odac snapshot restore [--run <run>] [--in-place|--new-app] # Restore (in place by default)
+odac snapshot delete --run <run>                 # Delete one
+odac snapshot settings [--on|--off] [--max-disk <percent>] # Settings
+```
+
 ### Common Prefixes
 | Prefix | Long Form | Description |
 |--------|-----------|-------------|

@@ -312,6 +312,108 @@ odac mail password -e user@example.com -p newpassword
 odac mail password --email user@example.com --password newpassword
 ```
 
+### Backup Management
+
+Backups go to targets you add and run on the schedule of jobs you create. A target or job is named by its id or its name with `-t`/`--target` and `-j`/`--job`; when there is only one, it is chosen for you. See [Backups and Snapshots](../08-backup/01-overview.md).
+
+#### `odac backup target add`
+Add a target: `--disk <host path>`, `--smb //<host>/<share>`, `--nfs <host>:<export>`, `--s3 <bucket> --endpoint <host>` or `--webdav <url>`. Shows the target's key once and saves the target only after you type `yes`.
+
+```bash
+odac backup target add --name usb --disk /mnt/usb-backup
+odac backup target add --name nas --smb //nas.lan/backups --path odac --username odac
+odac backup target add --name offsite --s3 my-bucket --endpoint s3.eu-central-1.amazonaws.com --access-key AKIA... --recovery-file ./offsite.json
+```
+
+Options: `--path`, `--username`, `--password`, `--domain`, `--version` (SMB, NFS), `--region`, `--prefix`, `--access-key`, `--secret-key`, `--no-tls` (S3), `--key` (your own key, at least 16 characters), `--adopt` (take over this server's old directory), `--recovery-file <file>`, `--yes`.
+
+#### `odac backup target list` / `update` / `delete` / `adopt` / `servers`
+```bash
+odac backup target list
+odac backup target update -t nas --name nas-2 --password
+odac backup target delete -t usb            # its backups stay on the storage
+odac backup target adopt -t nas             # write again after an owner conflict
+odac backup target servers -t offsite       # server directories on the target
+```
+
+#### `odac backup key`
+Show a target's key again, with what a new server needs to open its backups.
+
+```bash
+odac backup key -t offsite
+odac backup key -t offsite --out ./offsite-recovery.json
+```
+
+#### `odac backup job create` / `update` / `delete` / `run` / `list`
+```bash
+odac backup job create --name nightly --target offsite --all --server --every 6h
+odac backup job create --name db --target usb --apps postgres,api --every 1h --density high --max-age 30 --budget 50g
+odac backup job update -j nightly --every 12h --no-server
+odac backup job run -j nightly
+odac backup job list
+odac backup job delete -j db                # keeps its backups
+odac backup job delete -j db --purge        # deletes them too
+```
+
+#### `odac backup job retired` / `purge`
+List deleted jobs whose backups are kept, and delete those backups.
+
+```bash
+odac backup job retired
+odac backup job purge -j db
+```
+
+#### `odac backup status` / `history` / `coverage`
+```bash
+odac backup status                      # jobs' next runs; targets' size, maintenance, verification and fair share
+odac backup history -j nightly --limit 50
+odac backup coverage                    # unprotected apps, damage, conflicts, orphaned servers
+```
+
+#### `odac backup points`
+List the runs a restore can return to.
+
+```bash
+odac backup points -t offsite --app blog
+odac backup points -t offsite --server <other server id> --key <key>
+```
+
+#### `odac backup restore apps`
+Restore apps from a run, as new apps (default) or `--in-place`. Shows the plan, and for an in-place restore the data that would be lost, before asking.
+
+```bash
+odac backup restore apps -t offsite --run <run> --apps blog
+odac backup restore apps -t offsite --run <run> --apps blog --in-place
+odac backup restore apps -t offsite --run <run> --apps blog --name blog=blog-copy
+odac backup restore apps -t offsite --server <old server id> --run <run> --apps blog
+```
+
+Options: `--skip-safety` (no safety snapshot first), `--yes`, `--no-wait`.
+
+#### `odac backup restore list` / `cancel` / `state`
+```bash
+odac backup restore list
+odac backup restore cancel --id <id>
+odac backup restore state -t offsite       # ODAC's own state onto a fresh server
+odac backup restore state --cancel
+```
+
+### Snapshot Management
+
+Snapshots are taken by ODAC itself before deploys, deletes and updates, and periodically. See [Snapshots](../08-backup/05-snapshots.md).
+
+```bash
+odac snapshot list --app blog
+odac snapshot status
+odac snapshot history --app blog --limit 20
+odac snapshot take --app blog
+odac snapshot restore --run <run>                  # in place by default
+odac snapshot restore --run <run> --new-app --name blog=blog-copy
+odac snapshot delete --run <run>
+odac snapshot settings --max-disk 15
+odac snapshot settings --off
+```
+
 ### Usage Tips
 
 #### Automation and Scripting
