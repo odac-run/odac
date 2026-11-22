@@ -3,6 +3,8 @@ package backup
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +43,10 @@ func (m *Manager) adoptOrphans(ctx context.Context, logged *bool) bool {
 		case KindBackup:
 			m.backupSlot = true
 			running[l[labelJob]] = true
+		case KindRestore:
+			// The backup before a restore, which the restore's own
+			// recovery reports.
+			m.backupSlot = true
 		case KindMaintain:
 			m.maintSlot = true
 		}
@@ -64,6 +70,11 @@ func (m *Manager) adoptOrphans(ctx context.Context, logged *bool) bool {
 	if len(orphans) > 0 {
 		m.log.Log("Took over %s backup runs the previous server left running", len(orphans))
 	}
+	keep := map[string]bool{}
+	for _, o := range orphans {
+		keep[o.Labels()[runner.LabelRun]] = true
+	}
+	m.sweepDefinitions(keep)
 	for _, o := range orphans {
 		m.others.Add(1)
 		go func(o Orphan) {
@@ -100,6 +111,9 @@ func (m *Manager) follow(ctx context.Context, o Orphan) {
 	mu.Unlock()
 	switch kind {
 	case KindBackup:
+		if run := l[runner.LabelRun]; run != "" {
+			os.RemoveAll(filepath.Join(m.cfg.BaseDir, "backup", "definitions", filepath.Base(run)))
+		}
 		m.adoptedBackup(ctx, l, got, err)
 	case KindMaintain:
 		rec := RunRecord{Kind: KindMaintain, Target: target, Start: ms(m.now()), Adopted: true}
@@ -188,5 +202,20 @@ func (m *Manager) finishAdopted(ctx context.Context, app, run string) {
 	defer cancel()
 	if err := plan.Finish(fctx); err != nil {
 		m.log.Error("Failed to clean up after backing up %s: %s", app, err.Error())
+	}
+}
+
+// sweepDefinitions removes the definition directories of runs that no
+// helper reads any more: a run cut short by a crash leaves its own.
+func (m *Manager) sweepDefinitions(keep map[string]bool) {
+	root := filepath.Join(m.cfg.BaseDir, "backup", "definitions")
+	list, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range list {
+		if !keep[e.Name()] {
+			os.RemoveAll(filepath.Join(root, e.Name()))
+		}
 	}
 }

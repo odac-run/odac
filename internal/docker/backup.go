@@ -255,10 +255,20 @@ type DumpSpec struct {
 	// Stdin is written to the command's stdin, which is then closed. It is
 	// how a credential reaches the dump: nothing the daemon records about
 	// the container holds it.
-	Stdin  []byte
-	User   string
-	Labels map[string]string
-	Limits Limits
+	Stdin []byte
+	// Input follows Stdin on the command's stdin: the stream a restore
+	// loads into the database. Stdin is closed only once Input has ended
+	// with io.EOF; any other end kills the container, so a cut stream can
+	// never look like a complete one to the tool reading it. Close closes
+	// Input when it is an io.Closer.
+	Input io.Reader
+	// StderrTail is how much of stderr the error and Stderr keep; zero is
+	// 4 KiB. A load reads more of it, to judge the errors a tool reports
+	// without failing.
+	StderrTail int
+	User       string
+	Labels     map[string]string
+	Limits     Limits
 }
 
 // ExitStatus is how a backup container ended.
@@ -445,7 +455,7 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 		return nil, err
 	}
 	grace := int(stopGrace / time.Second)
-	stdin := len(spec.Stdin) > 0
+	stdin := len(spec.Stdin) > 0 || spec.Input != nil
 	cfg := &container.Config{
 		Image:        spec.Image,
 		Entrypoint:   strslice.StrSlice(spec.Cmd[:1]),
@@ -474,9 +484,13 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backup dump: %w", err)
 	}
-	if stdin {
+	if spec.StderrTail > 0 {
+		a.stderr.setMax(spec.StderrTail)
+	}
+	d := &Dump{attached: a}
+	if len(spec.Stdin) > 0 {
 		_, err := a.hj.Conn.Write(spec.Stdin)
-		if err == nil {
+		if err == nil && spec.Input == nil {
 			err = a.hj.CloseWrite()
 		}
 		if err != nil {
@@ -484,7 +498,34 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 			return nil, fmt.Errorf("backup dump: write stdin: %w", err)
 		}
 	}
-	return &Dump{attached: a}, nil
+	if spec.Input != nil {
+		d.input = spec.Input
+		d.fed = make(chan struct{})
+		go d.feed()
+	}
+	return d, nil
+}
+
+// feed copies Input to stdin. Only a stream that ended with io.EOF closes
+// stdin; a failed one kills the container, which then exits non-zero.
+func (d *Dump) feed() {
+	defer close(d.fed)
+	_, err := io.Copy(d.hj.Conn, d.input)
+	if err == nil {
+		err = d.hj.CloseWrite()
+		if err == nil {
+			return
+		}
+	}
+	d.mu.Lock()
+	d.inputErr = err
+	d.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	now := 0
+	if kerr := d.c.api.ContainerStop(ctx, d.id, container.StopOptions{Timeout: &now}); kerr != nil && !cerrdefs.IsNotFound(kerr) {
+		d.c.log.Error("Failed to kill backup container %s: %s", d.id, kerr.Error())
+	}
 }
 
 // startAttached attaches before starting, so no output is missed, and
@@ -667,6 +708,11 @@ type Dump struct {
 	*attached
 	once sync.Once
 	err  error
+
+	input    io.Reader
+	fed      chan struct{}
+	mu       sync.Mutex
+	inputErr error
 }
 
 func (d *Dump) Read(p []byte) (int, error) {
@@ -687,6 +733,15 @@ func (d *Dump) finish() error {
 	if err != nil {
 		return fmt.Errorf("dump: wait: %w", err)
 	}
+	if d.fed != nil {
+		<-d.fed
+		d.mu.Lock()
+		ierr := d.inputErr
+		d.mu.Unlock()
+		if ierr != nil {
+			return fmt.Errorf("load: the stream failed: %w", ierr)
+		}
+	}
 	if st.Code != 0 || st.OOMKilled {
 		msg := strings.TrimSpace(d.Stderr())
 		if msg == "" {
@@ -698,9 +753,16 @@ func (d *Dump) finish() error {
 }
 
 // Close stops reading and removes the container, which ends a dump that
-// is blocked on its output.
+// is blocked on its output, and with Input it closes Input and waits for
+// the copy to stop.
 func (d *Dump) Close() error {
 	d.Remove()
+	if d.fed != nil {
+		if c, ok := d.input.(io.Closer); ok {
+			c.Close()
+		}
+		<-d.fed
+	}
 	return nil
 }
 
@@ -807,6 +869,12 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 		t.buf = bytes.Clone(t.buf[over:])
 	}
 	return len(p), nil
+}
+
+func (t *tailBuffer) setMax(n int) {
+	t.mu.Lock()
+	t.max = n
+	t.mu.Unlock()
 }
 
 func (t *tailBuffer) String() string {

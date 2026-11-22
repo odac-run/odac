@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,6 +149,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/")
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
+		if r.URL.Query().Get("list-type") == "2" {
+			f.list(w, key, r.URL.Query().Get("prefix"), r.URL.Query().Get("delimiter"))
+			return
+		}
 		b, ok := f.objects[key]
 		if !ok {
 			w.Header().Set("Content-Type", "application/xml")
@@ -168,6 +174,43 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
 	}
+}
+
+// list answers ListObjectsV2 for one bucket, with common prefixes when a
+// delimiter is given.
+func (f *fakeS3) list(w http.ResponseWriter, bucket, prefix, delim string) {
+	bucket = strings.TrimSuffix(bucket, "/")
+	var keys, prefixes []string
+	seen := map[string]bool{}
+	for k := range f.objects {
+		k, ok := strings.CutPrefix(k, bucket+"/")
+		if !ok || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		rest := k[len(prefix):]
+		if i := strings.Index(rest, delim); delim != "" && i >= 0 {
+			p := prefix + rest[:i+1]
+			if !seen[p] {
+				seen[p] = true
+				prefixes = append(prefixes, p)
+			}
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	sort.Strings(prefixes)
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>` + bucket + `</Name><Prefix>` + prefix + `</Prefix><KeyCount>` + strconv.Itoa(len(keys)+len(prefixes)) + `</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>`)
+	for _, k := range keys {
+		b.WriteString(`<Contents><Key>` + k + `</Key><Size>` + strconv.Itoa(len(f.objects[bucket+"/"+k])) + `</Size><LastModified>2006-01-02T15:04:05.000Z</LastModified><ETag>"x"</ETag></Contents>`)
+	}
+	for _, p := range prefixes {
+		b.WriteString(`<CommonPrefixes><Prefix>` + p + `</Prefix></CommonPrefixes>`)
+	}
+	b.WriteString(`</ListBucketResult>`)
+	w.Header().Set("Content-Type", "application/xml")
+	io.WriteString(w, b.String())
 }
 
 // unchunk decodes an aws-chunked body: "<hex size>[;ext]\r\n<data>\r\n"
@@ -219,4 +262,98 @@ func TestSameFileSystem(t *testing.T) {
 	if _, err := SameFileSystem(a, filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("missing path reported a file system")
 	}
+}
+
+const otherID = "fedcba9876543210fedcba9876543210"
+
+// checkServerList writes two servers' ownership files, a directory that
+// is no server's and an unreadable file, and lists them from self.
+func checkServerList(t *testing.T, self, other Storage, write func(name string, data []byte)) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := ClaimOwner(ctx, self, OwnerClaim{ServerID: ownerID, Name: "web-1", Seq: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimOwner(ctx, other, OwnerClaim{ServerID: otherID, Name: "old", Seq: 9}); err != nil {
+		t.Fatal(err)
+	}
+	write("notes/readme.txt", []byte("x"))
+	write("ffffffffffffffffffffffffffffffff/"+OwnerFile, []byte("not json"))
+	got, err := ListServers(ctx, self, ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("servers: %+v", got)
+	}
+	if got[0].ID != ownerID || got[0].Name != "web-1" || got[0].Seq != 4 || !got[0].Repository {
+		t.Fatalf("self: %+v", got[0])
+	}
+	if got[1].ID != otherID || got[1].Name != "old" || got[1].Seq != 9 || !got[1].Repository {
+		t.Fatalf("other: %+v", got[1])
+	}
+	if got[2].ID != "ffffffffffffffffffffffffffffffff" || got[2].Error == "" || got[2].Repository {
+		t.Fatalf("unreadable: %+v", got[2])
+	}
+}
+
+func TestListServersFilesystem(t *testing.T) {
+	root := t.TempDir()
+	fsAt := func(id string) Storage {
+		return Storage{Filesystem: &FilesystemStorage{Path: filepath.Join(root, id, RepositoryDir)}}
+	}
+	checkServerList(t, fsAt(ownerID), fsAt(otherID), func(name string, data []byte) {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		os.MkdirAll(filepath.Dir(p), 0o700)
+		os.WriteFile(p, data, 0o600)
+	})
+	if _, err := ListServers(context.Background(), Storage{Filesystem: &FilesystemStorage{Path: filepath.Join(root, "x", RepositoryDir)}}, ownerID); err == nil {
+		t.Fatal("a storage outside the layout was listed")
+	}
+}
+
+func TestListServersWebDAV(t *testing.T) {
+	h := &webdav.Handler{FileSystem: webdav.NewMemFS(), LockSystem: webdav.NewMemLS()}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	ctx := context.Background()
+	h.FileSystem.Mkdir(ctx, "/b", 0o700)
+	davAt := func(id string) Storage {
+		return Storage{WebDAV: &WebDAVStorage{URL: srv.URL + "/b/" + id + "/" + RepositoryDir}}
+	}
+	checkServerList(t, davAt(ownerID), davAt(otherID), func(name string, data []byte) {
+		dir, _ := path.Split("/b/" + name)
+		for p := "/b"; ; {
+			rest := strings.TrimPrefix(dir, p+"/")
+			first, _, _ := strings.Cut(rest, "/")
+			if first == "" {
+				break
+			}
+			p += "/" + first
+			h.FileSystem.Mkdir(ctx, p, 0o700)
+		}
+		f, err := h.FileSystem.OpenFile(ctx, "/b/"+name, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Write(data)
+		f.Close()
+	})
+}
+
+func TestListServersS3(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{}}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	s3At := func(id string) Storage {
+		return Storage{S3: &S3Storage{
+			Endpoint: strings.TrimPrefix(srv.URL, "http://"), Region: "us-east-1", Bucket: "bucket",
+			Prefix: "odac/" + id + "/" + RepositoryDir + "/", AccessKeyID: "id", SecretAccessKey: "secret", DisableTLS: true,
+		}}
+	}
+	checkServerList(t, s3At(ownerID), s3At(otherID), func(name string, data []byte) {
+		fake.mu.Lock()
+		fake.objects["bucket/odac/"+name] = data
+		fake.mu.Unlock()
+	})
 }

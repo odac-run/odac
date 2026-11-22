@@ -141,6 +141,14 @@ func (m *Manager) runJob(ctx context.Context, rs runSpec) {
 	}
 
 	pieces := m.pieces(job.ID, apps, all, serverDirs)
+	cleanup := m.addDefinitions(rs.run, job.ID, pieces)
+	defer func() {
+		// A helper handed over still reads its definition directory; the
+		// server that follows it removes the directory after its result.
+		if !m.isReleased() {
+			cleanup()
+		}
+	}()
 	var snaps []proto.Snapshot
 	failed := false
 	for i, p := range pieces {

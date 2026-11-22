@@ -372,6 +372,8 @@ func TestWireTypesMatchEngine(t *testing.T) {
 	roundTrip[proto.VerifyResult, engine.VerifyResult](t)
 	roundTrip[engine.SpaceReport, proto.Space](t)
 	roundTrip[proto.Space, engine.SpaceReport](t)
+	roundTrip[engine.ServerDir, proto.ServerDir](t)
+	roundTrip[proto.ServerDir, engine.ServerDir](t)
 }
 
 func TestServeClaimsTheServerDirectory(t *testing.T) {
@@ -413,5 +415,27 @@ func TestServeClaimsTheServerDirectory(t *testing.T) {
 	rec, err := engine.ReadOwner(context.Background(), engine.Storage{Filesystem: &engine.FilesystemStorage{Path: tg.repo}}, testServer)
 	if err != nil || rec.Seq != 3 || rec.Name != "web-1" {
 		t.Fatalf("file: %+v, %v", rec, err)
+	}
+}
+
+func TestServeListsServerDirectories(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	tg := target{repo: filepath.Join(base, testServer, proto.RepositoryDir), cache: filepath.Join(base, "cache")}
+	os.MkdirAll(tg.cache, 0o700)
+	init := tg.request(proto.OpInit)
+	init.Repo.Owner = &proto.Owner{Name: "web-1", Seq: 1}
+	mustCall(t, init, proto.Handler{})
+
+	other := "fedcba9876543210fedcba9876543210"
+	os.MkdirAll(filepath.Join(base, other), 0o700)
+	os.WriteFile(filepath.Join(base, other, proto.OwnerFile), []byte(`{"format":1,"serverId":"`+other+`","name":"old","seq":7}`), 0o600)
+
+	req := tg.request(proto.OpServers)
+	req.Repo.Password = ""
+	res := mustCall(t, req, proto.Handler{})
+	if len(res.Servers) != 2 || res.Servers[0].ID != testServer || res.Servers[0].Name != "web-1" ||
+		res.Servers[1].ID != other || res.Servers[1].Seq != 7 || !res.Servers[1].Repository {
+		t.Fatalf("servers: %+v", res.Servers)
 	}
 }

@@ -77,6 +77,7 @@ func (m *Manager) BackupApp(name string) (consistency.App, bool) {
 			ok = true
 			out = consistency.App{Name: name, Container: name}
 			out.Image, _ = app["image"].(string)
+			out.Cmd = toCmd(app["cmd"])
 			for _, v := range toMounts(app["volumes"]) {
 				if v.Host != "" && v.Container != "" && !configFile(appsPath, v.Host) {
 					out.Volumes = append(out.Volumes, consistency.Volume{Host: v.Host, Container: v.Container})

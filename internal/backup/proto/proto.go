@@ -44,11 +44,16 @@ const (
 	OpVerify   = "verify"
 	OpRestore  = "restore"
 	OpUsage    = "usage"
+	// OpServers lists the server directories on the target of the
+	// request's storage, which names this server's repository: what a
+	// restore from another server (a migration) chooses from. It opens no
+	// repository, so it needs no password.
+	OpServers = "servers"
 )
 
 // Request is the header of a run. Exactly the argument member that
-// belongs to Op is set; init takes none, and usage takes Usage only when
-// it is asked for more than sizes.
+// belongs to Op is set; init and servers take none, and usage takes Usage
+// only when it is asked for more than sizes.
 type Request struct {
 	Version  int       `json:"version"`
 	Op       string    `json:"op"`
@@ -242,7 +247,7 @@ type VerifyResult struct {
 // operation: Created for init, Count for backup and list (snapshot events
 // sent), Bytes for maintain and usage (repository size) and for restore
 // (bytes written), Files for a directory restore, Verify for verify,
-// Space for maintain and usage.
+// Space for maintain and usage, Servers for servers.
 // Seq is the number an owner claim wrote. SameDisk, for init on a
 // filesystem, says the repository shares a file system with the cache
 // directory, which the server keeps on its own data disk: such a target
@@ -256,6 +261,20 @@ type Result struct {
 	Seq      int64         `json:"seq,omitempty"`
 	SameDisk bool          `json:"sameDisk,omitempty"`
 	Space    *Space        `json:"space,omitempty"`
+	Servers  []ServerDir   `json:"servers,omitempty"`
+}
+
+// ServerDir is one server's directory on a target, as its ownership file
+// describes it. Repository says a repository lives in it; a directory
+// whose ownership file is unreadable is listed with Error and nothing
+// else, so the operator sees it rather than a gap.
+type ServerDir struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name,omitempty"`
+	Seq        int64     `json:"seq,omitempty"`
+	Updated    time.Time `json:"updated,omitempty"`
+	Repository bool      `json:"repository,omitempty"`
+	Error      string    `json:"error,omitempty"`
 }
 
 // Space is what a repository's storage looks like. Free and Total
@@ -313,6 +332,9 @@ const (
 	// CodeOwnerConflict: the server directory's ownership file is ahead
 	// of the claim, or names another server.
 	CodeOwnerConflict = "owner_conflict"
+	// CodeUnsafeEntry: a snapshot names an entry outside the restore
+	// target, which a repository written by this server never does.
+	CodeUnsafeEntry = "unsafe_entry"
 )
 
 // Error is a run that failed on the odac-backup side.
@@ -342,7 +364,7 @@ func (r *Request) Validate() error {
 		OpRestore:  r.Restore != nil,
 	}
 	switch r.Op {
-	case OpInit, OpUsage, OpBackup, OpList, OpDelete, OpMaintain, OpVerify, OpRestore:
+	case OpInit, OpUsage, OpServers, OpBackup, OpList, OpDelete, OpMaintain, OpVerify, OpRestore:
 	default:
 		return badRequest("unknown operation %q", r.Op)
 	}
@@ -358,6 +380,9 @@ func (r *Request) Validate() error {
 		}
 		if o.Adopt && r.Op != OpInit {
 			return badRequest("only init adopts a server directory")
+		}
+		if r.Op == OpServers {
+			return badRequest("servers claims no owner")
 		}
 	}
 	for op, set := range args {

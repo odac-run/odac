@@ -22,6 +22,10 @@ func (m *Manager) loop(ctx context.Context) {
 			return
 		}
 	}
+	m.recoverRestore()
+	m.mu.Lock()
+	close(m.recoveredCh)
+	m.mu.Unlock()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -167,7 +171,7 @@ type candidate struct {
 // that is always busy still gets its backups.
 func (m *Manager) scheduleBackup(ctx context.Context, jobs []settings.JobView, now time.Time, next *time.Time) {
 	m.mu.Lock()
-	busy := m.backupSlot
+	busy := m.backupSlot || len(m.restoreWait) > 0
 	m.mu.Unlock()
 	if busy {
 		return
@@ -299,13 +303,20 @@ func (m *Manager) free(target, kind string) {
 		delete(m.busy, target)
 	}
 	switch kind {
-	case KindBackup:
+	case KindBackup, KindRestore:
 		m.backupSlot = false
 	case KindMaintain:
 		m.maintSlot = false
 	}
+	m.signalFreedLocked()
 	m.mu.Unlock()
 	m.poke()
+}
+
+// signalFreedLocked wakes whoever waits for a slot. Caller holds m.mu.
+func (m *Manager) signalFreedLocked() {
+	close(m.freed)
+	m.freed = make(chan struct{})
 }
 
 // scheduleMaintenance starts the most overdue maintenance, one at a time
@@ -366,7 +377,7 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 	slices.SortFunc(dues, func(a, b due) int { return a.at.Compare(b.at) })
 	for _, d := range dues {
 		m.mu.Lock()
-		if m.busy[d.target] != "" {
+		if m.busy[d.target] != "" || m.restoreWait[d.target] > 0 {
 			m.mu.Unlock()
 			continue
 		}

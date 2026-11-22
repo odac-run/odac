@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,6 +43,13 @@ func main() {
 	log := logx.New("Server")
 
 	baseDir := config.DefaultBaseDir()
+	// A restore of ODAC's own state staged on the last run is swapped in
+	// before anything reads the config, certificates or databases.
+	if sr, err := backup.ApplyServerRestore(baseDir); err != nil {
+		log.Error("Applying the staged restore of ODAC's state failed, starting with the state as it is:", err.Error())
+	} else if sr != nil {
+		log.Log("Applied the restore of ODAC's state from run %s (%s); the state it replaced is in %s and every app is stopped until its data is restored", sr.Run, strings.Join(sr.Dirs, ", "), sr.Previous)
+	}
 	cfg, err := config.Open(baseDir)
 	if err != nil {
 		log.Error("Config initialization failed:", err.Error())

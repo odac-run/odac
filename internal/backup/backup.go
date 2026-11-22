@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -71,6 +72,8 @@ type Planner interface {
 // final, which is why the manager makes a new one on every Start.
 type Runner interface {
 	Run(ctx context.Context, inv runner.Invocation) (*proto.Result, error)
+	// Load runs a restore's load: a dump container reading input.
+	Load(ctx context.Context, spec docker.DumpSpec, input io.Reader, labels map[string]string) (string, error)
 	Release()
 	Adopt() ([]Orphan, error)
 }
@@ -115,8 +118,16 @@ type Config struct {
 	CacheBytes int64
 	// OnRecord sees every finished run and maintenance, for the Hub.
 	OnRecord func(RunRecord)
-	Log      *logx.Logger
-	Now      func() time.Time
+	// Control and Loader make restores possible: the app manager's side
+	// (stopping, starting and creating apps) and the planner's (loading
+	// dumps). Without them a run stores no app definitions and every
+	// restore is refused.
+	Control AppControl
+	Loader  Loader
+	// OnRestore sees every finished restore, for the Hub.
+	OnRestore func(RestoreResult)
+	Log       *logx.Logger
+	Now       func() time.Time
 }
 
 // timing holds the manager's intervals; tests shrink them.
@@ -180,6 +191,20 @@ type Manager struct {
 	deploying   map[string]int
 	deployEnded map[string]time.Time
 	dump        *activeDump
+	// freed is closed and replaced whenever a slot is given back, which
+	// wakes a restore waiting for one.
+	freed chan struct{}
+	// restore is the restore in flight; restoreWait counts the restores
+	// waiting per target, which no backup or maintenance overtakes.
+	restore     *activeRestore
+	restoreWait map[string]int
+	// recoverErr is a restore journal this server could not roll back.
+	recoverErr error
+	// recoveredCh is closed once this start has adopted what the previous
+	// server left and resolved its restore journal; no restore starts
+	// before, or recovery would take the new restore's journal for the
+	// old one.
+	recoveredCh chan struct{}
 }
 
 // New checks cfg, fills its defaults and loads the state.
@@ -217,6 +242,8 @@ func New(cfg Config) (*Manager, error) {
 		busy:        map[string]string{},
 		deploying:   map[string]int{},
 		deployEnded: map[string]time.Time{},
+		freed:       make(chan struct{}),
+		restoreWait: map[string]int{},
 	}, nil
 }
 
@@ -253,6 +280,7 @@ func (m *Manager) Start() {
 		m.log.Error("%s", err.Error())
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
+	m.recoveredCh = make(chan struct{})
 	if m.released {
 		m.runner = nil
 		m.released = false

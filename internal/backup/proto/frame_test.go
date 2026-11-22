@@ -139,6 +139,8 @@ func TestValidate(t *testing.T) {
 		"owner zero seq":     {func(r *Request) { r.Repo.Owner = &Owner{} }, CodeBadRequest},
 		"adopt on backup":    {func(r *Request) { r.Repo.Owner = &Owner{Seq: 1, Adopt: true} }, CodeBadRequest},
 		"usage on backup":    {func(r *Request) { r.Usage = &Usage{} }, CodeBadRequest},
+		"servers with owner": {func(r *Request) { r.Op, r.Backup, r.Repo.Owner = OpServers, nil, &Owner{Seq: 1} }, CodeBadRequest},
+		"servers with args":  {func(r *Request) { r.Op = OpServers }, CodeBadRequest},
 	} {
 		r := validRequest()
 		c.mutate(r)
@@ -147,7 +149,7 @@ func TestValidate(t *testing.T) {
 			t.Errorf("%s: %v, want code %s", name, err, c.code)
 		}
 	}
-	for _, op := range []string{OpInit, OpUsage} {
+	for _, op := range []string{OpInit, OpUsage, OpServers} {
 		r := validRequest()
 		r.Op, r.Backup = op, nil
 		if err := r.Validate(); err != nil {

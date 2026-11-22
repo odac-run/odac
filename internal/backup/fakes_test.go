@@ -142,6 +142,11 @@ func (fakePlanner) Plan(_ context.Context, app consistency.App, run string) (*co
 	if strings.Contains(app.Name, "db") {
 		plan.Engine = consistency.Postgres
 		plan.Dump = &consistency.Dump{Name: "postgres", File: "dump.sql", Consistency: consistency.Consistent, Spec: docker.DumpSpec{Image: app.Image, App: app.Container, Cmd: []string{"pg_dumpall"}}}
+		covered := consistency.DataVolumes(app, consistency.Postgres)
+		plan.Covered = covered
+		plan.Dirs = slices.DeleteFunc(plan.Dirs, func(d consistency.Dir) bool {
+			return slices.ContainsFunc(covered, func(v consistency.Volume) bool { return v.Host == d.Path })
+		})
 	}
 	return plan, nil
 }
@@ -149,8 +154,12 @@ func (fakePlanner) Plan(_ context.Context, app consistency.App, run string) (*co
 // repo is a target's repository in memory. Every snapshot holds bytes of
 // its own, so what deleting a run frees is its size.
 type repo struct {
-	snaps   []proto.Snapshot
-	size    map[string]int64
+	snaps []proto.Snapshot
+	size  map[string]int64
+	// files and data are what each snapshot stored: a directory's files
+	// by relative path, a stream's bytes.
+	files   map[string]map[string][]byte
+	data    map[string][]byte
 	garbage int64
 	free    int64
 	total   int64
@@ -180,6 +189,29 @@ type fakeRunner struct {
 	relOnce  sync.Once
 	orphans  []Orphan
 	adoptErr error
+	// loads are the loads run, with the bytes each read; loadErr fails
+	// them.
+	loads   []fakeLoad
+	loadErr error
+	// failOp fails every request of that operation.
+	failOp string
+}
+
+type fakeLoad struct {
+	spec docker.DumpSpec
+	data []byte
+}
+
+func (r *fakeRunner) Load(ctx context.Context, spec docker.DumpSpec, input io.Reader, labels map[string]string) (string, error) {
+	data, err := io.ReadAll(input)
+	r.mu.Lock()
+	r.loads = append(r.loads, fakeLoad{spec: spec, data: data})
+	lerr := r.loadErr
+	r.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	return "", lerr
 }
 
 func newFakeRunner(c *clock) *fakeRunner {
@@ -196,7 +228,7 @@ func (r *fakeRunner) target(req *proto.Request) string {
 
 func (r *fakeRunner) repo(t string) *repo {
 	if r.repos[t] == nil {
-		r.repos[t] = &repo{size: map[string]int64{}, free: -1, total: -1}
+		r.repos[t] = &repo{size: map[string]int64{}, files: map[string]map[string][]byte{}, data: map[string][]byte{}, free: -1, total: -1}
 	}
 	return r.repos[t]
 }
@@ -215,7 +247,11 @@ func (r *fakeRunner) Run(ctx context.Context, inv runner.Invocation) (*proto.Res
 	t := r.target(req)
 	r.mu.Lock()
 	r.calls = append(r.calls, call{op: req.Op, target: t, labels: inv.Labels, req: req, source: inv.Source != nil, dump: inv.Dump != nil})
+	failOp := r.failOp
 	r.mu.Unlock()
+	if failOp == req.Op {
+		return nil, &proto.Error{Code: proto.CodeFailed, Message: "the fake fails " + failOp}
+	}
 	select {
 	case <-r.released:
 		return nil, runner.ErrReleased
@@ -228,10 +264,18 @@ func (r *fakeRunner) Run(ctx context.Context, inv runner.Invocation) (*proto.Res
 		r.mu.Lock()
 		snaps := slices.Clone(r.repo(t).snaps)
 		r.mu.Unlock()
+		f := req.List
+		n := 0
 		for _, s := range snaps {
+			if f.Run != "" && s.Run != f.Run || f.App != "" && s.Source.App != f.App || f.Job != "" && s.Source.Job != f.Job {
+				continue
+			}
 			inv.Handler.Snapshot(s)
+			n++
 		}
-		return &proto.Result{Count: len(snaps)}, nil
+		return &proto.Result{Count: n}, nil
+	case proto.OpServers:
+		return &proto.Result{Servers: []proto.ServerDir{{ID: req.Repo.ServerID, Name: "srv", Seq: 1, Repository: true}}}, nil
 	case proto.OpDelete:
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -280,10 +324,13 @@ func (r *fakeRunner) Run(ctx context.Context, inv runner.Invocation) (*proto.Res
 	case proto.OpRestore:
 		r.mu.Lock()
 		var found *proto.Snapshot
+		var files map[string][]byte
+		var stored []byte
 		for _, rp := range r.repos {
 			for i := range rp.snaps {
 				if rp.snaps[i].ID == req.Restore.ID {
 					found = &rp.snaps[i]
+					files, stored = rp.files[found.ID], rp.data[found.ID]
 				}
 			}
 		}
@@ -291,7 +338,26 @@ func (r *fakeRunner) Run(ctx context.Context, inv runner.Invocation) (*proto.Res
 		if found == nil {
 			return nil, &proto.Error{Code: proto.CodeNotFound, Message: "no such snapshot"}
 		}
+		if d := req.Restore.Dir; d != "" {
+			if found.Kind != "dir" {
+				return nil, &proto.Error{Code: proto.CodeKind, Message: "not a directory snapshot"}
+			}
+			if names, _ := os.ReadDir(d); len(names) > 0 {
+				return nil, &proto.Error{Code: proto.CodeTargetNotEmpty, Message: d}
+			}
+			for rel, b := range files {
+				p := filepath.Join(d, rel)
+				os.MkdirAll(filepath.Dir(p), 0o755)
+				if err := os.WriteFile(p, b, 0o644); err != nil {
+					return nil, err
+				}
+			}
+			return &proto.Result{Files: int64(len(files))}, nil
+		}
 		data := []byte("stored dump " + found.ID)
+		if stored != nil {
+			data = stored
+		}
 		if _, err := inv.Handler.Output.Write(data); err != nil {
 			return nil, err
 		}
@@ -315,6 +381,7 @@ func (r *fakeRunner) backup(ctx context.Context, t string, inv runner.Invocation
 	for i, it := range b.Items {
 		size := r.itemSize
 		kind := "dir"
+		var streamData []byte
 		if it.Stream != "" {
 			kind = "stream"
 			var data []byte
@@ -346,6 +413,11 @@ func (r *fakeRunner) backup(ctx context.Context, t string, inv runner.Invocation
 				return nil, &proto.Error{Code: proto.CodeStream, Message: fmt.Sprintf("item %d: %v", i, err)}
 			}
 			size = int64(len(data))
+			streamData = data
+		}
+		var files map[string][]byte
+		if it.Dir != "" {
+			files = readTree(it.Dir)
 		}
 		now := r.clock.Now()
 		r.mu.Lock()
@@ -354,6 +426,10 @@ func (r *fakeRunner) backup(ctx context.Context, t string, inv runner.Invocation
 		rp := r.repo(t)
 		rp.snaps = append(rp.snaps, s)
 		rp.size[s.ID] = size
+		rp.files[s.ID] = files
+		if streamData != nil {
+			rp.data[s.ID] = streamData
+		}
 		if rp.free >= 0 {
 			rp.free -= size
 		}
@@ -485,3 +561,20 @@ func (h *harness) runNow(j settings.JobView) RunRecord {
 }
 
 var errDocker = errors.New("Cannot connect to the Docker daemon")
+
+// readTree reads every regular file under dir.
+func readTree(dir string) map[string][]byte {
+	out := map[string][]byte{}
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err == nil {
+			rel, _ := filepath.Rel(dir, p)
+			out[filepath.ToSlash(rel)] = b
+		}
+		return nil
+	})
+	return out
+}

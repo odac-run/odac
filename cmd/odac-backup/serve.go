@@ -69,6 +69,7 @@ var errorCodes = []struct {
 	{engine.ErrKind, proto.CodeKind},
 	{engine.ErrTargetNotEmpty, proto.CodeTargetNotEmpty},
 	{engine.ErrOwnerConflict, proto.CodeOwnerConflict},
+	{engine.ErrUnsafeEntry, proto.CodeUnsafeEntry},
 }
 
 func errorCode(err error) string {
@@ -109,8 +110,15 @@ func operate(ctx context.Context, req *proto.Request, in io.Reader, em *proto.Em
 		CacheBytes: req.Repo.CacheBytes,
 		ReadOnly:   req.Repo.ReadOnly,
 	}
-	if req.Op == proto.OpInit {
+	switch req.Op {
+	case proto.OpInit:
 		return initRepo(ctx, cfg)
+	case proto.OpServers:
+		dirs, err := engine.ListServers(ctx, cfg.Storage, cfg.ServerID)
+		if err != nil {
+			return nil, err
+		}
+		return &proto.Result{Servers: convert[[]proto.ServerDir](dirs)}, nil
 	}
 	r, err := engine.Open(ctx, cfg)
 	if err != nil {

@@ -99,3 +99,22 @@ func firstLine(b []byte) string {
 	}
 	return s
 }
+
+// RDBTrailerSize is how many bytes to cut from the end of a stored Redis
+// dump. redis-cli --rdb - passes through the end mark of a diskless
+// transfer, 40 hex characters after the RDB's own end (an EOF opcode and
+// an 8-byte checksum). Redis ignores it in dump.rdb but reads it as a
+// broken command when the RDB stands in for an append-only file. tail is
+// the dump's last bytes, at least 49 of them.
+func RDBTrailerSize(tail []byte) int {
+	const mark, end = 40, 9
+	if len(tail) < mark+end || tail[len(tail)-mark-end] != 0xFF {
+		return 0
+	}
+	for _, c := range tail[len(tail)-mark:] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return 0
+		}
+	}
+	return mark
+}

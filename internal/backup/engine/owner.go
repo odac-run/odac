@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -301,4 +302,148 @@ func (d davOwner) write(_ context.Context, data []byte) error {
 		return err
 	}
 	return d.cli.Write(d.dir+OwnerFile, data, 0o600)
+}
+
+// ServerDir is one server directory found on a target.
+type ServerDir struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name,omitempty"`
+	Seq        int64     `json:"seq,omitempty"`
+	Updated    time.Time `json:"updated,omitempty"`
+	Repository bool      `json:"repository,omitempty"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// maxServerDirs bounds a listing: a target holds one directory per server
+// that ever wrote there.
+const maxServerDirs = 4096
+
+// ListServers lists the server directories on the target that holds the
+// repository at st, which must name <self>/repository: the choices of a
+// restore from another server. Only directories named like a server id
+// are looked at, and only their ownership files are read, so the listing
+// costs one request per server and never a walk of a repository.
+func ListServers(ctx context.Context, st Storage, self string) ([]ServerDir, error) {
+	if err := st.validate(); err != nil {
+		return nil, err
+	}
+	if !serverid.Valid(self) {
+		return nil, errors.New("engine: invalid server id")
+	}
+	if _, err := ownerFileOf(ctx, st, self); err != nil {
+		return nil, err
+	}
+	ids, err := serverIDsAt(ctx, st, self)
+	if err != nil {
+		return nil, fmt.Errorf("engine: list server directories: %w", err)
+	}
+	sort.Strings(ids)
+	out := make([]ServerDir, 0, len(ids))
+	for _, id := range ids {
+		d := ServerDir{ID: id}
+		rec, err := ReadOwner(ctx, withServer(st, self, id), id)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			d.Error = err.Error()
+		case rec.ServerID != id:
+			d.Error = fmt.Sprintf("the ownership file names server %s", rec.ServerID)
+		default:
+			d.Name, d.Seq, d.Updated, d.Repository = rec.Name, rec.Seq, rec.Updated, true
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// withServer is st with its repository moved from self's directory to
+// id's, which the layout makes a sibling.
+func withServer(st Storage, self, id string) Storage {
+	from, to := self+"/"+RepositoryDir, id+"/"+RepositoryDir
+	switch {
+	case st.Filesystem != nil:
+		c := *st.Filesystem
+		c.Path = filepath.Join(filepath.Dir(filepath.Dir(filepath.Clean(c.Path))), id, RepositoryDir)
+		return Storage{Filesystem: &c}
+	case st.S3 != nil:
+		c := *st.S3
+		c.Prefix = strings.TrimSuffix(c.Prefix, from+"/") + to + "/"
+		return Storage{S3: &c}
+	case st.WebDAV != nil:
+		c := *st.WebDAV
+		c.URL = strings.TrimSuffix(strings.TrimSuffix(c.URL, "/"), from) + to
+		return Storage{WebDAV: &c}
+	}
+	return st
+}
+
+// serverIDsAt names the entries of the target's root that look like a
+// server directory.
+func serverIDsAt(ctx context.Context, st Storage, self string) ([]string, error) {
+	var names []string
+	switch {
+	case st.Filesystem != nil:
+		root := filepath.Dir(filepath.Dir(filepath.Clean(st.Filesystem.Path)))
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				names = append(names, e.Name())
+			}
+		}
+	case st.S3 != nil:
+		o := *st.S3
+		o.Prefix = strings.TrimSuffix(o.Prefix, self+"/"+RepositoryDir+"/")
+		bs, err := s3.New(ctx, &s3.Options{
+			Endpoint: o.Endpoint, Region: o.Region, BucketName: o.Bucket, Prefix: o.Prefix,
+			AccessKeyID: o.AccessKeyID, SecretAccessKey: o.SecretAccessKey, SessionToken: o.SessionToken,
+			DoNotUseTLS: o.DisableTLS,
+		}, false)
+		if err != nil {
+			return nil, err
+		}
+		defer bs.Close(ctx)
+		// Without recursion, S3 reports each directory once, as a
+		// common prefix ending in a slash.
+		err = bs.ListBlobs(ctx, "", func(m blob.Metadata) error {
+			if name, ok := strings.CutSuffix(string(m.BlobID), "/"); ok {
+				names = append(names, name)
+			}
+			if len(names) > maxServerDirs {
+				return errors.New("too many directories")
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	case st.WebDAV != nil:
+		f, err := ownerFileOf(ctx, st, self)
+		if err != nil {
+			return nil, err
+		}
+		dav := f.(davOwner)
+		entries, err := dav.cli.ReadDir("/")
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				names = append(names, e.Name())
+			}
+		}
+	}
+	out := names[:0]
+	for _, n := range names {
+		if serverid.Valid(n) {
+			out = append(out, n)
+		}
+	}
+	if len(out) > maxServerDirs {
+		return nil, errors.New("too many server directories")
+	}
+	return out, nil
 }

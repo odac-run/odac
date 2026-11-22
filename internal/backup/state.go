@@ -133,6 +133,7 @@ type stateData struct {
 	Dumps     map[string]*dumpRecord  `json:"dumps,omitempty"`
 	FollowUps map[string]*followUp    `json:"followUps,omitempty"`
 	History   []RunRecord             `json:"history,omitempty"`
+	Restores  []RestoreResult         `json:"restores,omitempty"`
 }
 
 // store keeps the manager's state in <base>/backup/state.json, beside the

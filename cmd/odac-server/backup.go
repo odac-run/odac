@@ -53,6 +53,8 @@ func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, c
 		},
 		Load:    sysinfo.HostLoad,
 		BaseDir: baseDir,
+		Control: appControl{apps},
+		Loader:  planner,
 	})
 	if err != nil {
 		log.Error("Backups are disabled:", err.Error())
@@ -85,3 +87,34 @@ func serverName() string {
 	h, _ := os.Hostname()
 	return h
 }
+
+// appControl adapts the app manager to the restore's narrow interface.
+type appControl struct{ m *appmgr.Manager }
+
+func (a appControl) HoldApp(name string) (backup.AppHold, error) {
+	h, err := a.m.HoldApp(name)
+	if err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func (a appControl) SetAppActive(name string, active bool) bool {
+	return a.m.SetAppActive(name, active)
+}
+
+func (a appControl) AppDefinition(name string) (map[string]any, bool) { return a.m.AppDefinition(name) }
+
+func (a appControl) UniqueAppName(base string) string { return a.m.UniqueAppName(base) }
+
+func (a appControl) AppsDir() string { return a.m.AppsDir() }
+
+func (a appControl) CreateRestoredApp(def map[string]any, name string, renames map[string]string, group string) ([]string, error) {
+	r, err := a.m.CreateRestoredApp(def, name, renames, group)
+	if err != nil {
+		return nil, err
+	}
+	return r.Dropped, nil
+}
+
+func (a appControl) DeleteRestoredApp(name string) error { return a.m.DeleteRestoredApp(name) }

@@ -28,26 +28,7 @@ func TestDockerManager(t *testing.T) {
 	if os.Getenv("ODAC_DOCKER_TESTS") != "1" {
 		t.Skip("set ODAC_DOCKER_TESTS=1 to run against a Docker daemon")
 	}
-	c, err := docker.Connect(docker.Options{})
-	if err != nil || !c.Available() {
-		t.Fatalf("Docker: %v", err)
-	}
-	arch := runtime.GOARCH
-	if out, err := exec.Command("docker", "version", "--format", "{{.Server.Arch}}").Output(); err == nil {
-		arch = strings.TrimSpace(string(out))
-	}
-	dir := t.TempDir()
-	build := exec.Command("go", "build", "-o", filepath.Join(dir, "odac-backup"), "odac/cmd/odac-backup")
-	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build odac-backup: %v\n%s", err, out)
-	}
-	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine:3.22\nCOPY odac-backup /app/bin/odac-backup\n"), 0o644)
-	tag := fmt.Sprintf("odac-backup-test:%d", time.Now().UnixNano())
-	if out, err := exec.Command("docker", "build", "-q", "-t", tag, dir).CombinedOutput(); err != nil {
-		t.Fatalf("docker build: %v\n%s", err, out)
-	}
-	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", tag).Run() })
+	c, tag := dockerHelperImage(t)
 	app := fmt.Sprintf("odac-backup-test-db-%d", time.Now().UnixNano())
 	if out, err := exec.Command("docker", "run", "-d", "--name", app, "alpine:3.22", "sleep", "600").CombinedOutput(); err != nil {
 		t.Fatalf("start app: %v\n%s", err, out)
@@ -127,6 +108,33 @@ func TestDockerManager(t *testing.T) {
 	for _, b := range list {
 		t.Errorf("left behind: %s (%s)", b.Name, b.Role)
 	}
+}
+
+// dockerHelperImage connects to the daemon and builds a throwaway image
+// holding this tree's odac-backup, which helpers run from.
+func dockerHelperImage(t *testing.T) (*docker.Client, string) {
+	t.Helper()
+	c, err := docker.Connect(docker.Options{})
+	if err != nil || !c.Available() {
+		t.Fatalf("Docker: %v", err)
+	}
+	arch := runtime.GOARCH
+	if out, err := exec.Command("docker", "version", "--format", "{{.Server.Arch}}").Output(); err == nil {
+		arch = strings.TrimSpace(string(out))
+	}
+	dir := t.TempDir()
+	build := exec.Command("go", "build", "-o", filepath.Join(dir, "odac-backup"), "odac/cmd/odac-backup")
+	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build odac-backup: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine:3.22\nCOPY odac-backup /app/bin/odac-backup\n"), 0o644)
+	tag := fmt.Sprintf("odac-backup-test:%d", time.Now().UnixNano())
+	if out, err := exec.Command("docker", "build", "-q", "-t", tag, dir).CombinedOutput(); err != nil {
+		t.Fatalf("docker build: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", tag).Run() })
+	return c, tag
 }
 
 // seqPlanner dumps the stand-in database with seq.

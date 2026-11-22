@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"odac/internal/docker"
 )
 
 // ErrStalled is a stream that delivered nothing for Config.DumpIdle while
@@ -117,4 +119,37 @@ func (d *dumpStream) Close() error {
 		return rc.Close()
 	}
 	return nil
+}
+
+// Load runs a load: spec's tool reads input on stdin, after spec.Stdin,
+// inside a dump container with the dump limits. It returns the end of
+// the tool's stderr, which on success can still hold errors the tool
+// reported and moved past. input reaches the tool only when it ends with
+// io.EOF; any other end kills the container and fails the load.
+func (r *Runner) Load(ctx context.Context, spec docker.DumpSpec, input io.Reader, labels map[string]string) (string, error) {
+	if r.cfg.Docker == nil {
+		return "", errors.New("runner: a load needs Docker")
+	}
+	if r.isReleased() {
+		return "", ErrReleased
+	}
+	spec.Limits = r.cfg.DumpLimits
+	spec.Input = input
+	spec.Labels = labels
+	rc, err := r.cfg.Docker.StartDump(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	stop := context.AfterFunc(ctx, func() { rc.Close() })
+	defer stop()
+	defer rc.Close()
+	_, err = io.Copy(io.Discard, rc)
+	var stderr string
+	if s, ok := rc.(interface{ Stderr() string }); ok {
+		stderr = s.Stderr()
+	}
+	if ctx.Err() != nil {
+		return stderr, ctx.Err()
+	}
+	return stderr, err
 }

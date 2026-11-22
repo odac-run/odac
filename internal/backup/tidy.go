@@ -311,8 +311,19 @@ func (m *Manager) usage(ctx context.Context, target string, u *proto.Usage) (*pr
 	return m.call(ctx, target, false, func(req *proto.Request) { req.Op, req.Usage = proto.OpUsage, u }, proto.Handler{})
 }
 
-// deleteRuns deletes every snapshot of the doomed runs in one request.
+// deleteRuns deletes every snapshot of the doomed runs in one request,
+// except a run a restore waits for or reads: thinning between a restore's
+// plan and its turn would leave it nothing to restore.
 func (m *Manager) deleteRuns(ctx context.Context, target string, runs map[string]*runInfo, doomed map[string]bool) error {
+	m.mu.Lock()
+	if r := m.restore; r != nil {
+		r.mu.Lock()
+		if r.result.Target == target {
+			delete(doomed, r.result.Run)
+		}
+		r.mu.Unlock()
+	}
+	m.mu.Unlock()
 	var ids []string
 	for id := range doomed {
 		if r := runs[id]; r != nil {
