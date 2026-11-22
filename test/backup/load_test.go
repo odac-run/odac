@@ -26,7 +26,7 @@ func (e *env) load(t *testing.T, p *consistency.Planner, a consistency.App, name
 	if err != nil {
 		t.Fatalf("load plan: %v", err)
 	}
-	if err := l.WaitReady(ctx); err != nil {
+	if err := l.WaitReady(ctx, nil); err != nil {
 		t.Fatalf("ready: %v", err)
 	}
 	r, err := runner.New(runner.Config{Docker: e.dumper, Binary: "/unused", DumpRate: 1 << 30, DumpLimits: e.limits})

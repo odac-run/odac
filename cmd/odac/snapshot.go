@@ -268,6 +268,10 @@ func (a *app) snapshotDelete(args []string) int {
 		}
 		a.printSnapshots(list)
 		run = a.question(__("Enter the run to delete: "))
+		if run == "" {
+			fmt.Fprintln(a.errOut, __("No run given."))
+			return 1
+		}
 	}
 	if !confirmed(a, args, __(`Type "yes" to delete snapshot %s: `, run)) {
 		fmt.Fprintln(a.out, __("Aborted."))
@@ -289,6 +293,10 @@ func (a *app) snapshotRestore(args []string) int {
 		}
 		a.printSnapshots(list[:min(len(list), 10)])
 		run = a.question(__("Enter the run to restore: "))
+		if run == "" {
+			fmt.Fprintln(a.errOut, __("No run given."))
+			return 1
+		}
 	}
 	req := map[string]any{"run": run}
 	if v := parseArg(args, "--apps"); v != "" {

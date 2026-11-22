@@ -8,7 +8,10 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func helperLimits() Limits { return Limits{Memory: 512 << 20, PidsLimit: 64} }
@@ -364,5 +367,19 @@ func TestIOWeightFallsBack(t *testing.T) {
 	f.startErrs = []error{errors.New("image not found")}
 	if _, err := New(f, Options{}).StartHelper(context.Background(), spec); err == nil || len(f.created) != 1 {
 		t.Fatalf("an unrelated failure was retried: %v, %d creates", err, len(f.created))
+	}
+}
+
+func TestBackupContainersDropComposeLabels(t *testing.T) {
+	f := newFakeAPI()
+	f.images["sha256:abc"] = image.InspectResponse{Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
+		Labels: map[string]string{"com.docker.compose.project": "odac", "com.docker.compose.service": "odac", "org.opencontainers.image.title": "odac"}}}}
+	call := startHelper(t, f, validHelper())
+	labels := call.Config.Labels
+	if v, ok := labels["com.docker.compose.project"]; !ok || v != "" || labels["com.docker.compose.service"] != "" {
+		t.Fatalf("a helper keeps the image's Compose project: %v", labels)
+	}
+	if _, ok := labels["org.opencontainers.image.title"]; ok {
+		t.Fatalf("labels other than Compose's were touched: %v", labels)
 	}
 }

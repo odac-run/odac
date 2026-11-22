@@ -175,8 +175,9 @@ func (a *fakeApps) BackupApp(name string) (consistency.App, bool) {
 }
 
 type fakeStates struct {
-	mu  sync.Mutex
-	err error
+	mu       sync.Mutex
+	err      error
+	restarts int
 }
 
 func (s *fakeStates) BackupAppState(context.Context, string) (docker.AppState, error) {
@@ -185,7 +186,7 @@ func (s *fakeStates) BackupAppState(context.Context, string) (docker.AppState, e
 	if s.err != nil {
 		return docker.AppState{}, s.err
 	}
-	return docker.AppState{Running: true, ImageID: "sha256:img"}, nil
+	return docker.AppState{Running: true, ImageID: "sha256:img", Restarts: s.restarts, ExitCode: 1}, nil
 }
 
 // fakePlanner gives an app with "db" in its name a dump, every app its

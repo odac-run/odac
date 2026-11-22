@@ -330,6 +330,13 @@ type restoreJournal struct {
 	// to run, and the ones it created.
 	Apps    []journalApp `json:"apps,omitempty"`
 	Volumes []*volumeJob `json:"volumes,omitempty"`
+	// Planned is what the restore set out to do, so the record a later
+	// server writes for it names the same apps.
+	Planned   []AppRestore `json:"planned,omitempty"`
+	Restarted []string     `json:"restarted,omitempty"`
+	Server    string       `json:"server,omitempty"`
+	Job       string       `json:"job,omitempty"`
+	Point     int64        `json:"point,omitempty"`
 	// Temp are directories on ODAC's own disk the restore works in.
 	Temp []string `json:"temp,omitempty"`
 }

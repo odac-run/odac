@@ -341,10 +341,18 @@ func (a *app) backupTargetID(args []string) (string, int) {
 		return "", 1
 	}
 	if ref == "" {
-		if len(list) == 1 {
+		switch len(list) {
+		case 0:
+			fmt.Fprintln(a.errOut, __("No backup targets. Add one with: odac backup target add"))
+			return "", 1
+		case 1:
 			return list[0].ID, 0
 		}
 		ref = a.question(__("Enter the backup target (id or name): "))
+		if ref == "" {
+			fmt.Fprintln(a.errOut, __("No backup target given."))
+			return "", 1
+		}
 	}
 	for _, t := range list {
 		if t.ID == ref || strings.EqualFold(t.Name, ref) {
@@ -762,6 +770,10 @@ func (a *app) backupJobID(args []string) (string, int) {
 			return jobs[0].ID, 0
 		}
 		ref = a.question(__("Enter the backup job (id or name): "))
+		if ref == "" {
+			fmt.Fprintln(a.errOut, __("No backup job given."))
+			return "", 1
+		}
 	}
 	for _, j := range jobs {
 		if j.ID == ref || strings.EqualFold(j.Name, ref) {
@@ -1179,6 +1191,22 @@ func (a *app) backupCoverage(args []string) int {
 	if !a.fetchInto("backup.coverage", nil, &c) {
 		return 1
 	}
+	// Coverage names targets by id, for the dashboard; a person reads names.
+	targets, _ := a.backupTargets()
+	byID := make(map[string]string, len(targets))
+	for _, t := range targets {
+		byID[t.ID] = t.Name
+	}
+	names := func(ids []string) string {
+		out := make([]string, len(ids))
+		for i, id := range ids {
+			out[i] = id
+			if n := byID[id]; n != "" {
+				out[i] = n
+			}
+		}
+		return strings.Join(out, ", ")
+	}
 	var lines []string
 	if c.NoJobs {
 		lines = append(lines, __("There is no backup job: the only copies are snapshots, which are lost with the server."))
@@ -1193,23 +1221,23 @@ func (a *app) backupCoverage(args []string) int {
 		lines = append(lines, __("Every backup target is on this server. That does not survive the loss of the server, the account or ransomware; add a remote target."))
 	}
 	if len(c.SameDisk) > 0 {
-		lines = append(lines, __("These targets are on the disk that holds the data itself, which only protects against deleting by mistake: %s.", strings.Join(c.SameDisk, ", ")))
+		lines = append(lines, __("These targets are on the disk that holds the data itself, which only protects against deleting by mistake: %s.", names(c.SameDisk)))
 	}
 	if len(c.Conflicts) > 0 {
-		lines = append(lines, __("Writes to these targets are stopped, because another machine writes under this server's id there (see odac backup target adopt): %s.", strings.Join(c.Conflicts, ", ")))
+		lines = append(lines, __("Writes to these targets are stopped, because another machine writes under this server's id there (see odac backup target adopt): %s.", names(c.Conflicts)))
 	}
 	if len(c.Corrupt) > 0 {
-		lines = append(lines, __("Verification found damage on these targets; restoring the backups that use it can fail (see odac backup history): %s.", strings.Join(c.Corrupt, ", ")))
+		lines = append(lines, __("Verification found damage on these targets; restoring the backups that use it can fail (see odac backup history): %s.", names(c.Corrupt)))
 	}
 	for _, o := range c.Orphans {
 		name := o.Server
 		if o.Name != "" {
 			name = o.Name + " (" + o.Server + ")"
 		}
-		lines = append(lines, __("Server %s stopped measuring itself on target %s; its backups (%s) are kept until you remove its directory there.", name, o.Target, size(o.Used)))
+		lines = append(lines, __("Server %s stopped measuring itself on target %s; its backups (%s) are kept until you remove its directory there.", name, names([]string{o.Target}), size(o.Used)))
 	}
 	if len(c.Unbudgeted) > 0 {
-		lines = append(lines, __("Other servers write to these targets too; give this server's jobs there a --budget to divide the space: %s.", strings.Join(c.Unbudgeted, ", ")))
+		lines = append(lines, __("Other servers write to these targets too; give this server's jobs there a --budget to divide the space: %s.", names(c.Unbudgeted)))
 	}
 	if len(lines) == 0 {
 		fmt.Fprintln(a.out, __("Every app with data is backed up."))
@@ -1379,6 +1407,10 @@ func (a *app) backupRestoreApps(args []string) int {
 		}
 		a.printPoints(points[:min(len(points), 10)])
 		run = a.question(__("Enter the run to restore: "))
+		if run == "" {
+			fmt.Fprintln(a.errOut, __("No run given."))
+			return 1
+		}
 	}
 	req["run"] = run
 	if v := parseArg(args, "--apps"); v != "" {

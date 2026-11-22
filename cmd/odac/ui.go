@@ -83,7 +83,7 @@ func (r *renderer) final(resp *apiproto.Response) {
 			msg = "Unknown error"
 		}
 		fmt.Fprintln(r.errOut, msg)
-		if len(resp.Data) > 0 && !bytes.Equal(resp.Data, []byte("null")) {
+		if len(resp.Data) > 0 && !bytes.Equal(resp.Data, []byte("null")) && !onlyCode(resp.Data) {
 			var pretty bytes.Buffer
 			if json.Indent(&pretty, resp.Data, "", "  ") == nil {
 				fmt.Fprintln(r.errOut, pretty.String())
@@ -98,6 +98,17 @@ func (r *renderer) final(resp *apiproto.Response) {
 	if !r.messageOnly {
 		renderData(r.out, resp.Data, r.detail)
 	}
+}
+
+// onlyCode reports a refusal whose data is just its machine-readable code,
+// which says nothing the message does not.
+func onlyCode(data json.RawMessage) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil || len(m) != 1 {
+		return false
+	}
+	_, ok := m["code"]
+	return ok
 }
 
 // renderData prints the final response payload: non-empty arrays of rows as a

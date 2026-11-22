@@ -279,11 +279,15 @@ func TestRestoreInPlaceReturnsTheGroup(t *testing.T) {
 	// The image initializes only an empty data directory (postgres with
 	// PGDATA at the mount point), so the kept data must not be in it.
 	var atStart []string
+	var planned []AppRestore
 	s.ctl.onStart = func(name string) {
 		if name == "db" {
 			atStart, _ = entries(s.pg)
 			if atStart == nil {
 				atStart = []string{}
+			}
+			if j, err := readJournal(s.base); err == nil && j != nil {
+				planned = j.Planned
 			}
 		}
 	}
@@ -308,6 +312,10 @@ func TestRestoreInPlaceReturnsTheGroup(t *testing.T) {
 	// the dump is loaded into it.
 	if atStart == nil || len(atStart) != 0 {
 		t.Fatalf("the database started on %v", atStart)
+	}
+	// A server taking over mid-restore names the apps from the journal.
+	if len(planned) != 2 {
+		t.Fatalf("the journal plans %+v", planned)
 	}
 	if names, _ := entries(s.pg); len(names) != 0 {
 		t.Fatalf("database volume holds %v", names)
@@ -459,7 +467,8 @@ func TestRestoreRecoversAnInterruptedSwap(t *testing.T) {
 	os.WriteFile(filepath.Join(vol, "a.txt"), []byte("restored"), 0o644)
 	j := &restoreJournal{ID: "rx", Mode: RestoreInPlace, Target: "t1", Run: "r", Phase: phaseSwap,
 		Apps:    []journalApp{{Name: "web", WasActive: true, Held: true}},
-		Volumes: []*volumeJob{{App: "web", Path: vol, Mode: modeReplace, Phase: volIn, Staging: tag, Keep: tag + "-keep"}}}
+		Volumes: []*volumeJob{{App: "web", Path: vol, Mode: modeReplace, Phase: volIn, Staging: tag, Keep: tag + "-keep"}},
+		Planned: []AppRestore{{App: "web", As: "web", Method: "files"}}, Point: 7}
 	if err := writeJSON(journalFile(h.base), j); err != nil {
 		t.Fatal(err)
 	}
@@ -474,6 +483,9 @@ func TestRestoreRecoversAnInterruptedSwap(t *testing.T) {
 	}
 	if !ctl.has("release web true") || got.Status != StatusFailed || !got.RolledBack {
 		t.Fatalf("recovery: %v, %+v", ctl.events, got)
+	}
+	if len(got.Apps) != 1 || got.Apps[0].App != "web" || got.Point != 7 || strings.Contains(got.Error, "rolled back") {
+		t.Fatalf("the record of the recovered restore: %+v", got)
 	}
 	if _, err := os.Stat(journalFile(h.base)); !os.IsNotExist(err) {
 		t.Fatal("the journal stayed")
@@ -674,5 +686,26 @@ func TestCheckPathRefusesSymlinks(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(other, "y")); !os.IsNotExist(err) {
 		t.Fatal("a directory was made through the symlink")
+	}
+}
+
+func TestCrashCheckCountsRestartsSinceTheStart(t *testing.T) {
+	h := newHarness(t)
+	h.states.restarts = 5
+	check := h.m.crashCheck("db", 5)
+	if err := check(context.Background()); err != nil {
+		t.Fatalf("restarts before the start counted: %v", err)
+	}
+	h.states.mu.Lock()
+	h.states.restarts = 5 + crashRestarts
+	h.states.mu.Unlock()
+	if err := check(context.Background()); err == nil || !strings.Contains(err.Error(), "keeps restarting") {
+		t.Fatalf("a crash loop passed: %v", err)
+	}
+	h.states.mu.Lock()
+	h.states.err = errors.New("daemon stalled")
+	h.states.mu.Unlock()
+	if err := check(context.Background()); err != nil {
+		t.Fatalf("a failed inspect read as a crash: %v", err)
 	}
 }

@@ -313,6 +313,31 @@ func withLabels(labels map[string]string, extra ...string) map[string]string {
 	return out
 }
 
+// composeLabelPrefix marks a container Compose manages. An image Compose
+// built carries these labels, and a container inherits its image's labels.
+const composeLabelPrefix = "com.docker.compose."
+
+// maskComposeLabels blanks the Compose labels a backup container would
+// inherit from its image: with ODAC's image built by Compose (a
+// development setup), a helper would carry ODAC's project and service, and
+// Compose would count it as one more container of ODAC's service, which
+// it may stop or remove. A label cannot be deleted from what the image
+// gives, only overridden, and an empty project matches no project. An
+// image that cannot be inspected is left to the create, which reports it.
+func (c *Client) maskComposeLabels(ctx context.Context, image string, labels map[string]string) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	info, _, err := c.api.ImageInspectWithRaw(ctx, image)
+	if err != nil || info.Config == nil {
+		return
+	}
+	for k := range info.Config.Labels {
+		if strings.HasPrefix(k, composeLabelPrefix) {
+			labels[k] = ""
+		}
+	}
+}
+
 func randomName(prefix string) string {
 	var b [6]byte
 	rand.Read(b[:])
@@ -364,6 +389,7 @@ func (c *Client) StartHelper(ctx context.Context, spec HelperSpec) (*Helper, err
 	}
 
 	labels := withLabels(spec.Labels, LabelBackupRole, RoleHelper)
+	c.maskComposeLabels(ctx, spec.Image, labels)
 	if spec.Follow {
 		labels[LabelBackupFollow] = "true"
 	}
@@ -456,13 +482,15 @@ func (c *Client) StartDump(ctx context.Context, spec DumpSpec) (*Dump, error) {
 	}
 	grace := int(stopGrace / time.Second)
 	stdin := len(spec.Stdin) > 0 || spec.Input != nil
+	labels := withLabels(spec.Labels, LabelBackupRole, RoleDump)
+	c.maskComposeLabels(ctx, spec.Image, labels)
 	cfg := &container.Config{
 		Image:        spec.Image,
 		Entrypoint:   strslice.StrSlice(spec.Cmd[:1]),
 		Cmd:          strslice.StrSlice(spec.Cmd[1:]),
 		Env:          spec.Env,
 		User:         spec.User,
-		Labels:       withLabels(spec.Labels, LabelBackupRole, RoleDump),
+		Labels:       labels,
 		AttachStdin:  stdin,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -888,7 +916,11 @@ func (t *tailBuffer) String() string {
 // version, and its environment with the image's defaults, which is where
 // a database's credentials are.
 type AppState struct {
-	Running     bool
+	Running bool
+	// Restarts is how often the engine has restarted the container by its
+	// restart policy; ExitCode is the last exit's.
+	Restarts    int
+	ExitCode    int
 	ImageID     string
 	Cmd         []string
 	Env         map[string]string
@@ -911,9 +943,9 @@ func (c *Client) BackupAppState(ctx context.Context, name string) (AppState, err
 		}
 		return AppState{}, err
 	}
-	st := AppState{ImageID: info.Image, Env: map[string]string{}}
+	st := AppState{ImageID: info.Image, Env: map[string]string{}, Restarts: info.RestartCount}
 	if info.State != nil {
-		st.Running = info.State.Running
+		st.Running, st.ExitCode = info.State.Running, info.State.ExitCode
 	}
 	if info.Config != nil {
 		st.Cmd = append([]string(nil), info.Config.Cmd...)

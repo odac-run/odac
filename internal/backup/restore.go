@@ -20,6 +20,7 @@ import (
 	"odac/internal/backup/proto"
 	"odac/internal/backup/runner"
 	"odac/internal/backup/settings"
+	"odac/internal/docker"
 	"odac/internal/lang"
 )
 
@@ -972,6 +973,10 @@ func (m *Manager) finishRestore(res *RestoreResult) {
 func (m *Manager) restoreApps(ctx context.Context, p *restorePlan, work string) (err error) {
 	ctl := m.cfg.Control
 	j := &restoreJournal{ID: p.result.ID, Mode: p.req.Mode, Target: p.req.Target, Run: p.req.Run, Phase: phasePrepare, Started: ms(m.now())}
+	p.update(m, func(r *RestoreResult) {
+		j.Planned, j.Restarted = slices.Clone(r.Apps), slices.Clone(r.Restarted)
+		j.Server, j.Job, j.Point = r.Server, r.Job, r.Point
+	})
 	save := func() error {
 		if err := writeJSON(journalFile(m.cfg.BaseDir), j); err != nil {
 			return fmt.Errorf("backup: write the restore journal: %w", err)
@@ -1275,7 +1280,7 @@ func (m *Manager) planVolumes(ctx context.Context, p *restorePlan, ap *appPlan, 
 	if ap.dump != nil {
 		// The container is stopped, not removed, so it still says how it
 		// was started; a new app has none and keeps its record's values.
-		if err := m.describeRunning(ctx, ap); err != nil {
+		if _, err := m.describeRunning(ctx, ap); err != nil {
 			return err
 		}
 		load, err := consistency.Shape(ap.app, ap.dump.Source.Name)
@@ -1344,19 +1349,19 @@ func (ap *appPlan) hasDir(name string) bool {
 
 // describeRunning fills in what the app's container says about itself:
 // the image it runs and its environment, where the credentials are.
-func (m *Manager) describeRunning(ctx context.Context, ap *appPlan) error {
+func (m *Manager) describeRunning(ctx context.Context, ap *appPlan) (docker.AppState, error) {
 	st, err := m.cfg.States.BackupAppState(ctx, ap.app.Container)
 	if err != nil {
-		return fmt.Errorf("backup: inspect %s: %w", ap.name, err)
+		return st, fmt.Errorf("backup: inspect %s: %w", ap.name, err)
 	}
 	if st.ImageID == "" {
-		return nil
+		return st, nil
 	}
 	ap.app.ImageID, ap.app.Env, ap.app.MemoryLimit = st.ImageID, st.Env, st.MemoryLimit
 	if len(st.Cmd) > 0 {
 		ap.app.Cmd = st.Cmd
 	}
-	return nil
+	return st, nil
 }
 
 // placeExtras puts what goes into an emptied data volume before its
@@ -1515,7 +1520,8 @@ func (m *Manager) loadDump(ctx context.Context, p *restorePlan, ap *appPlan) err
 	}
 	ap.started = true
 	// The container is new: a load reads its image and environment again.
-	if err := m.describeRunning(ctx, ap); err != nil {
+	st, err := m.describeRunning(ctx, ap)
+	if err != nil {
 		return err
 	}
 	load, err := m.cfg.Loader.Load(ctx, ap.app, ap.dump.Source.Name, ap.dump.Consistency)
@@ -1523,7 +1529,7 @@ func (m *Manager) loadDump(ctx context.Context, p *restorePlan, ap *appPlan) err
 		return fmt.Errorf("backup: %s: %w", ap.name, err)
 	}
 	rctx, cancel := context.WithTimeout(ctx, readyLimit)
-	err = load.WaitReady(rctx)
+	err = load.WaitReady(rctx, m.crashCheck(ap.app.Container, st.Restarts))
 	cancel()
 	if err != nil {
 		return fmt.Errorf("backup: %s: %w", ap.name, err)
@@ -1557,8 +1563,25 @@ func (m *Manager) loadDump(ctx context.Context, p *restorePlan, ap *appPlan) err
 }
 
 // readyLimit bounds the wait for a database's first start, which runs its
-// image's init.
-const readyLimit = 10 * time.Minute
+// image's init. crashRestarts is how many restarts by the engine since the
+// start make a database crash-looping rather than slow.
+const (
+	readyLimit    = 10 * time.Minute
+	crashRestarts = 3
+)
+
+// crashCheck reports a container the engine keeps restarting, so a
+// database that cannot start on the restored data fails the restore at
+// once instead of after readyLimit. A failed inspect is no verdict.
+func (m *Manager) crashCheck(container string, base int) func(context.Context) error {
+	return func(ctx context.Context) error {
+		st, err := m.cfg.States.BackupAppState(ctx, container)
+		if err != nil || st.Restarts-base < crashRestarts {
+			return nil
+		}
+		return fmt.Errorf("the container keeps restarting (%d restarts, last exit code %d)", st.Restarts-base, st.ExitCode)
+	}
+}
 
 // attachParts moves each frozen part into its table's detached directory
 // and attaches it. The tables were made again with their UUIDs, so a part
@@ -1684,7 +1707,11 @@ func (m *Manager) recoverRestore() {
 	if j == nil || m.cfg.Control == nil {
 		return
 	}
-	res := RestoreResult{ID: j.ID, Mode: j.Mode, Target: j.Target, Run: j.Run, Start: j.Started, Phase: j.Phase}
+	res := RestoreResult{ID: j.ID, Mode: j.Mode, Target: j.Target, Server: j.Server, Run: j.Run, Job: j.Job,
+		Point: j.Point, Apps: j.Planned, Restarted: j.Restarted, Start: j.Started, Phase: j.Phase}
+	if res.Apps == nil {
+		res.Apps = []AppRestore{}
+	}
 	if j.Phase == phaseCommitted {
 		for _, v := range j.Volumes {
 			if err := v.commit(); err != nil {
@@ -1710,7 +1737,7 @@ func (m *Manager) recoverRestore() {
 			return
 		}
 		res.Status, res.RolledBack = StatusFailed, true
-		res.Error = "the server stopped during the restore, which was rolled back"
+		res.Error = "the server stopped during the restore"
 	}
 	os.Remove(journalFile(m.cfg.BaseDir))
 	res.End = ms(m.now())

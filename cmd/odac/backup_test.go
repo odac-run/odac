@@ -284,7 +284,7 @@ func TestBackupListsRender(t *testing.T) {
 	_, addr := newBackupServer(t, map[string]string{
 		"backup.target.list": reply(targetList),
 		"backup.job.list":    reply(`[]`),
-		"backup.coverage":    reply(`{"unprotected":["db"],"noJobs":true,"corrupt":["t9"],"orphans":[{"target":"t1","server":"abc","name":"old-box","used":1024}],"unbudgeted":["t1"]}`),
+		"backup.coverage":    reply(`{"unprotected":["db"],"noJobs":true,"sameDisk":["aaaaaaaaaaaaaaaa"],"corrupt":["t9"],"orphans":[{"target":"t1","server":"abc","name":"old-box","used":1024}],"unbudgeted":["t1"]}`),
 		"backup.status":      reply(`{"jobs":[],"targets":[{"target":"t1","lastVerify":1,"corrupt":{"damaged":3},"share":2048,"servers":[{"server":"abc","active":true}]}]}`),
 	})
 	a, out, _ := testApp(t, addr)
@@ -293,9 +293,51 @@ func TestBackupListsRender(t *testing.T) {
 			t.Fatalf("%v: exit %d", argv, code)
 		}
 	}
-	for _, want := range []string{"s3://b/ (s3.example.com)", "No backup jobs.", "no job backs up: db", "damage on these targets", "old-box (abc)", "--budget", "3 damaged object(s)", "shared with 1 other server(s)"} {
+	for _, want := range []string{"s3://b/ (s3.example.com)", "No backup jobs.", "no job backs up: db", "deleting by mistake: Offsite.", "backup history): t9.", "old-box (abc)", "--budget", "3 damaged object(s)", "shared with 1 other server(s)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestRestoreWithoutAnAnswerStopsBeforeTheServer(t *testing.T) {
+	srv, addr := newBackupServer(t, map[string]string{
+		"backup.target.list": reply(targetList),
+		"backup.point.list":  reply(`[{"run":"r3","job":"j","time":3,"apps":[]}]`),
+	})
+	a, _, errOut := testApp(t, addr)
+	a.in = strings.NewReader("")
+	if code := a.dispatch([]string{"backup", "restore", "apps"}); code == 0 {
+		t.Fatal("a restore with no run went on")
+	}
+	if !strings.Contains(errOut.String(), "No run given.") {
+		t.Fatalf("stderr: %s", errOut.String())
+	}
+	for _, req := range srv.got {
+		if req.Action == "backup.restore.preview" {
+			t.Fatal("an empty run reached the server")
+		}
+	}
+}
+
+func TestARefusalPrintsItsMessageWithoutTheCode(t *testing.T) {
+	_, addr := newBackupServer(t, map[string]string{
+		"backup.coverage": `{"id":"r","result":false,"message":"Nope.","data":{"code":"invalid"}}`,
+	})
+	a, _, errOut := testApp(t, addr)
+	if code := a.dispatch([]string{"backup", "coverage"}); code == 0 {
+		t.Fatal("a refusal exited 0")
+	}
+	if got := strings.TrimSpace(errOut.String()); got != "Nope." {
+		t.Fatalf("stderr: %q", got)
+	}
+}
+
+func TestRestoreWithoutTargetsSaysSo(t *testing.T) {
+	_, addr := newBackupServer(t, map[string]string{"backup.target.list": reply(`[]`)})
+	a, _, errOut := testApp(t, addr)
+	a.in = strings.NewReader("")
+	if code := a.dispatch([]string{"backup", "restore", "apps"}); code == 0 || !strings.Contains(errOut.String(), "odac backup target add") {
+		t.Fatalf("exit %d, stderr: %s", code, errOut.String())
 	}
 }

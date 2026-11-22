@@ -330,8 +330,11 @@ const (
 	readyStable = 10 * time.Second
 )
 
-// WaitReady blocks until the database answers steadily, or ctx ends.
-func (l *Load) WaitReady(ctx context.Context) error {
+// WaitReady blocks until the database answers steadily, or ctx ends. alive,
+// when given, is asked after every probe that fails and ends the wait with
+// its error: a database that crashes on start never answers, and waiting
+// out ctx for it only stretches the restore's downtime.
+func (l *Load) WaitReady(ctx context.Context, alive func(context.Context) error) error {
 	if l.ready == nil {
 		return nil
 	}
@@ -346,6 +349,11 @@ func (l *Load) WaitReady(ctx context.Context) error {
 			return nil
 		case err != nil:
 			since, last = time.Time{}, err
+			if alive != nil {
+				if aerr := alive(ctx); aerr != nil {
+					return fmt.Errorf("consistency: %s did not become ready: %w (last probe: %s)", l.Engine, aerr, err.Error())
+				}
+			}
 		}
 		select {
 		case <-ctx.Done():

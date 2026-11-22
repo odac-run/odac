@@ -2,6 +2,7 @@ package consistency
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // noSecretIn fails when a credential shows in what the daemon records.
@@ -147,5 +149,39 @@ func TestRDBTrailerSize(t *testing.T) {
 	bad := append(slices.Clone(rdb), []byte(strings.Repeat("Z", 40))...)
 	if n := RDBTrailerSize(bad); n != 0 {
 		t.Fatalf("not a mark: %d", n)
+	}
+}
+
+func TestWaitReadyEndsWhenTheContainerCrashes(t *testing.T) {
+	f := &fakeProber{answer: func(tool string, args []string, stdin string) (string, error) {
+		if len(args) == 1 && args[0] == "--version" {
+			return "psql 1.0", nil
+		}
+		return "", &CommandError{Msg: "connection refused"}
+	}}
+	p := newPlanner(t, f, 8<<30)
+	app := App{Name: "db", Container: "db", Image: "postgres:16", Env: map[string]string{"POSTGRES_PASSWORD": "pw"},
+		Volumes: []Volume{{Host: "/srv/db", Container: "/var/lib/postgresql/data"}}}
+	l, err := p.Load(context.Background(), app, "postgres", Consistent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := 0
+	alive := func(context.Context) error {
+		if asked++; asked < 2 {
+			return nil
+		}
+		return errors.New("restarting")
+	}
+	// Without the crash the wait would last until the context ends.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	start := time.Now()
+	err = l.WaitReady(ctx, alive)
+	if err == nil || !strings.Contains(err.Error(), "restarting") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("wait: %v", err)
+	}
+	if time.Since(start) > 3*readyEvery {
+		t.Fatalf("the wait took %s", time.Since(start))
 	}
 }
