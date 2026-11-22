@@ -29,6 +29,8 @@ type fakeControl struct {
 	defs    map[string]map[string]any
 	created []string
 	deleted []string
+	// onStart sees each held app start, as its database would.
+	onStart func(name string)
 }
 
 func newControl(h *harness) *fakeControl {
@@ -139,8 +141,14 @@ type fakeHold struct {
 }
 
 func (h *fakeHold) WasActive() bool { return h.was }
-func (h *fakeHold) Start() error    { h.c.event("start %s", h.name); return nil }
-func (h *fakeHold) Stop()           { h.c.event("stop %s", h.name) }
+func (h *fakeHold) Start() error {
+	if h.c.onStart != nil {
+		h.c.onStart(h.name)
+	}
+	h.c.event("start %s", h.name)
+	return nil
+}
+func (h *fakeHold) Stop() { h.c.event("stop %s", h.name) }
 func (h *fakeHold) Abandon() {
 	h.c.mu.Lock()
 	delete(h.c.busy, h.name)
@@ -268,6 +276,17 @@ func noLeftovers(t *testing.T, dirs ...string) {
 
 func TestRestoreInPlaceReturnsTheGroup(t *testing.T) {
 	s := newRestoreSetup(t)
+	// The image initializes only an empty data directory (postgres with
+	// PGDATA at the mount point), so the kept data must not be in it.
+	var atStart []string
+	s.ctl.onStart = func(name string) {
+		if name == "db" {
+			atStart, _ = entries(s.pg)
+			if atStart == nil {
+				atStart = []string{}
+			}
+		}
+	}
 	got, err := s.m.StartRestore(context.Background(), RestoreRequest{Target: "t1", Run: s.runID, Apps: []string{"web"}, Mode: RestoreInPlace})
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +306,9 @@ func TestRestoreInPlaceReturnsTheGroup(t *testing.T) {
 	}
 	// The database volume is emptied for its image to initialize, and
 	// the dump is loaded into it.
+	if atStart == nil || len(atStart) != 0 {
+		t.Fatalf("the database started on %v", atStart)
+	}
 	if names, _ := entries(s.pg); len(names) != 0 {
 		t.Fatalf("database volume holds %v", names)
 	}
@@ -296,7 +318,7 @@ func TestRestoreInPlaceReturnsTheGroup(t *testing.T) {
 	if len(loads) != 1 || string(loads[0].data) != "dump of db" {
 		t.Fatalf("loads %+v", loads)
 	}
-	noLeftovers(t, s.web, s.pg)
+	noLeftovers(t, s.web, s.pg, filepath.Dir(s.pg))
 	// The state before the restore is a snapshot, filed under the app
 	// asked for, not a run on the target.
 	var safety []proto.Snapshot
@@ -455,6 +477,66 @@ func TestRestoreRecoversAnInterruptedSwap(t *testing.T) {
 	}
 	if _, err := os.Stat(journalFile(h.base)); !os.IsNotExist(err) {
 		t.Fatal("the journal stayed")
+	}
+}
+
+func TestRestoreRecoversAnInterruptedEmptying(t *testing.T) {
+	h := newHarness(t)
+	ctl := newControl(h)
+	h.app("db")
+	vol := filepath.Join(h.base, "apps", "db", "pg")
+	keep := ".odac-restore-x-keep-pg"
+	// The crash came half way through moving the originals beside the
+	// volume, and the image had started writing into it.
+	os.MkdirAll(filepath.Join(h.base, "apps", "db", keep), 0o700)
+	os.WriteFile(filepath.Join(h.base, "apps", "db", keep, "PG_VERSION"), []byte("16-live"), 0o644)
+	os.MkdirAll(vol, 0o755)
+	os.WriteFile(filepath.Join(vol, "base"), []byte("live"), 0o644)
+	j := &restoreJournal{ID: "rx", Mode: RestoreInPlace, Target: "t1", Run: "r", Phase: phaseSwap,
+		Apps:    []journalApp{{Name: "db", WasActive: true, Held: true}},
+		Volumes: []*volumeJob{{App: "db", Path: vol, Root: filepath.Join(h.base, "apps"), Mode: modeEmpty, Phase: volOut, Keep: keep, Beside: true}}}
+	if err := writeJSON(journalFile(h.base), j); err != nil {
+		t.Fatal(err)
+	}
+	h.m.recoverRestore()
+	if read(t, filepath.Join(vol, "PG_VERSION")) != "16-live" || read(t, filepath.Join(vol, "base")) != "live" {
+		t.Fatal("the originals did not come back")
+	}
+	noLeftovers(t, vol, filepath.Dir(vol))
+	if !ctl.has("release db true") {
+		t.Fatalf("recovery: %v", ctl.events)
+	}
+}
+
+func TestKeepBesideOnlyWhereARenameStaysSafe(t *testing.T) {
+	root := t.TempDir()
+	vol := func(p string) *volumeJob {
+		return &volumeJob{Path: filepath.Join(root, p), Root: root, Keep: ".odac-restore-x-keep"}
+	}
+	for _, p := range []string{"db/pg", "db/data", "db/data/sub", "top"} {
+		os.MkdirAll(filepath.Join(root, p), 0o755)
+	}
+	pg := vol("db/pg")
+	pg.keepBeside([]*volumeJob{pg})
+	if !pg.Beside || pg.keep() != filepath.Join(root, "db", ".odac-restore-x-keep-pg") {
+		t.Fatalf("an app's volume keeps its data at %s", pg.keep())
+	}
+	// A volume right below the root would put the keep directory among
+	// the apps; one without a trusted root has no parent to trust.
+	top, loose := vol("top"), vol("db/data")
+	loose.Root = ""
+	for _, v := range []*volumeJob{top, loose} {
+		v.keepBeside([]*volumeJob{v})
+		if v.Beside || v.keep() != filepath.Join(v.Path, ".odac-restore-x-keep") {
+			t.Fatalf("%s keeps its data at %s", v.Path, v.keep())
+		}
+	}
+	// Beside a volume nested in another one, the outer volume's swap
+	// would move the keep directory with its own entries.
+	outer, inner := vol("db/data"), vol("db/data/sub")
+	inner.keepBeside([]*volumeJob{outer, inner})
+	if inner.Beside {
+		t.Fatal("a nested volume kept its data in the outer one")
 	}
 }
 

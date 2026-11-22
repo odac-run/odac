@@ -25,6 +25,7 @@ func (m *Manager) DeployStarted(app string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deploying[app]++
+	m.changed[app] = m.now()
 	for d := range m.dumps {
 		if d.group[app] && !d.byDeploy {
 			d.byDeploy = true
@@ -44,6 +45,7 @@ func (m *Manager) DeployEnded(app string) {
 		delete(m.deploying, app)
 	}
 	m.deployEnded[app] = m.now()
+	m.changed[app] = m.now()
 	m.mu.Unlock()
 	m.poke()
 }

@@ -38,3 +38,13 @@ func ownerOf(fi os.FileInfo) (uid, gid int, ok bool) {
 	}
 	return int(st.Uid), int(st.Gid), true
 }
+
+// sameDevice reports whether a and b are on one file system, so that a
+// rename between them works.
+func sameDevice(a, b string) bool {
+	var sa, sb unix.Stat_t
+	if unix.Stat(a, &sa) != nil || unix.Stat(b, &sb) != nil {
+		return false
+	}
+	return sa.Dev == sb.Dev
+}

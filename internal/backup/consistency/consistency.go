@@ -119,6 +119,9 @@ type Dir struct {
 	// Container is where the app sees it, which is where a restore puts it.
 	Container   string
 	Consistency string
+	// Prepared is a directory the plan's Prepare makes (ClickHouse's
+	// frozen parts), so it can exist only after Prepare has run.
+	Prepared bool
 }
 
 // Warning is a condition the Hub shows next to a backup. Code is stable;
@@ -178,6 +181,16 @@ func (p *Plan) Prepare(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// AddPrepare adds a step to Prepare, and undo, when not nil, to Finish:
+// a step that makes something for the run, such as frozen parts, is
+// undone after it.
+func (p *Plan) AddPrepare(step, undo func(context.Context) error) {
+	p.prepare = append(p.prepare, step)
+	if undo != nil {
+		p.finish = append(p.finish, undo)
+	}
 }
 
 // Finish undoes what Prepare left; it tries every step and reports the

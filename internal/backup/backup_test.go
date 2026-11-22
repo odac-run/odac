@@ -66,6 +66,43 @@ func TestRunStoresEveryPiece(t *testing.T) {
 	}
 }
 
+func TestRunReadsWhatPrepareMakes(t *testing.T) {
+	h := newHarness(t)
+	h.app("frozen")
+	rec := h.runNow(h.job("j1", "t1", 60, "frozen"))
+	if rec.Status != StatusOK || len(rec.Apps) != 1 || len(rec.Apps[0].Warnings) != 0 {
+		t.Fatalf("record %+v", rec)
+	}
+	backups := h.run.ops(proto.OpBackup)
+	if len(backups) != 1 {
+		t.Fatalf("%d helper runs", len(backups))
+	}
+	var names []string
+	for _, it := range backups[0].req.Backup.Items {
+		names = append(names, it.Source.Name)
+	}
+	// The parts exist only once Prepare has frozen them; a disk whose
+	// tables had none to freeze has nothing to read.
+	if !slices.Contains(names, "parts") || slices.Contains(names, "parts-cold") {
+		t.Fatalf("items %v", names)
+	}
+	rp := h.run.repo("t1")
+	found := false
+	for _, sn := range rp.snaps {
+		if sn.Source.Name == "parts" {
+			found = string(rp.files[sn.ID]["part.bin"]) == "rows"
+		}
+	}
+	if !found {
+		t.Fatal("the frozen parts were not stored")
+	}
+	if _, err := os.Stat(filepath.Join(h.base, "apps", "frozen", "shadow")); err == nil {
+		if names, _ := entries(filepath.Join(h.base, "apps", "frozen", "shadow")); len(names) != 0 {
+			t.Fatalf("Finish left %v", names)
+		}
+	}
+}
+
 func TestDockerDownDefersWithoutFailing(t *testing.T) {
 	h := newHarness(t)
 	h.app("db")
@@ -202,6 +239,43 @@ func TestADumpIsReusedByTheNextJob(t *testing.T) {
 	calls = h.run.ops(proto.OpBackup)
 	if last := calls[len(calls)-1]; !last.dump {
 		t.Fatal("an old dump was reused")
+	}
+}
+
+// A dump taken before a deploy of its group holds what the migration
+// replaced, and one taken before an in-place restore (whose holds report
+// as deploys) what the restore replaced: either read back as a newer
+// backup stores data that no longer exists.
+func TestADumpIsNotReusedAcrossAChange(t *testing.T) {
+	h := newHarness(t)
+	h.app("db")
+	h.app("web", "db")
+	a := h.job("a", "t1", 24*60, "db")
+	b := h.job("b", "t2", 24*60, "db")
+	if rec := h.runNow(a); rec.Status != StatusOK {
+		t.Fatalf("first job %+v", rec)
+	}
+	h.clock.Add(time.Minute)
+	h.m.DeployStarted("web")
+	h.clock.Add(time.Minute)
+	h.m.DeployEnded("web")
+	h.clock.Add(5 * time.Minute)
+	rec := h.runNow(b)
+	if rec.Status != StatusOK || rec.Apps[0].Method == MethodReused {
+		t.Fatalf("a dump from before a deploy of its group was reused: %+v", rec)
+	}
+	// What the second job dumped after the deploy is reusable again.
+	h.clock.Add(time.Minute)
+	if rec := h.runNow(a); rec.Apps[0].Method != MethodReused {
+		t.Fatalf("a fresh dump was not reused: %+v", rec)
+	}
+	// A server knows nothing of what happened before it started.
+	h.m.mu.Lock()
+	h.m.started = h.clock.Now().Add(time.Second)
+	h.m.mu.Unlock()
+	h.clock.Add(time.Minute)
+	if rec := h.runNow(b); rec.Apps[0].Method == MethodReused {
+		t.Fatalf("a dump from before the server started was reused: %+v", rec)
 	}
 }
 

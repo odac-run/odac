@@ -189,11 +189,26 @@ func (s *fakeStates) BackupAppState(context.Context, string) (docker.AppState, e
 }
 
 // fakePlanner gives an app with "db" in its name a dump, every app its
-// volumes as directories.
+// volumes as directories, and an app with "frozen" in its name parts that
+// its Prepare makes the way ClickHouse's freeze does (and a second disk's
+// that it never makes).
 type fakePlanner struct{}
 
 func (fakePlanner) Plan(_ context.Context, app consistency.App, run string) (*consistency.Plan, error) {
 	plan := consistency.FilesPlan(app, consistency.Live)
+	if strings.Contains(app.Name, "frozen") {
+		root := filepath.Dir(app.Volumes[0].Host)
+		parts := filepath.Join(root, "shadow", run)
+		plan.Dirs = append(plan.Dirs,
+			consistency.Dir{Name: "parts", Path: parts, Container: "/shadow", Consistency: consistency.Consistent, Prepared: true},
+			consistency.Dir{Name: "parts-cold", Path: filepath.Join(root, "cold", run), Container: "/cold", Consistency: consistency.Consistent, Prepared: true})
+		plan.AddPrepare(func(context.Context) error {
+			if err := os.MkdirAll(parts, 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(parts, "part.bin"), []byte("rows"), 0o644)
+		}, func(context.Context) error { return os.RemoveAll(parts) })
+	}
 	if strings.Contains(app.Name, "db") {
 		plan.Engine = consistency.Postgres
 		plan.Dump = &consistency.Dump{Name: "postgres", File: "dump.sql", Consistency: consistency.Consistent, Spec: docker.DumpSpec{Image: app.Image, App: app.Container, Cmd: []string{"pg_dumpall"}}}

@@ -1125,6 +1125,7 @@ func (m *Manager) restoreApps(ctx context.Context, p *restorePlan, work string) 
 			}
 			if v.Mode == modeEmpty {
 				v.Staging = ""
+				v.keepBeside(j.Volumes)
 			}
 			v.Phase = volOut
 			if err := save(); err != nil {

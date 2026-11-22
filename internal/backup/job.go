@@ -129,7 +129,8 @@ func (m *Manager) runJob(ctx context.Context, rs runSpec) {
 	job := rs.job
 	start := m.now()
 	deadline := start.Add(m.runLimit(job.Every))
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	// A timeout, not a deadline: the deadline is on the manager's clock.
+	ctx, cancel := context.WithTimeout(ctx, deadline.Sub(start))
 	defer cancel()
 
 	all := m.cfg.Apps.BackupApps()
@@ -284,7 +285,7 @@ func (m *Manager) plan(ctx context.Context, name, run string) (*consistency.Plan
 	}
 	dirs := plan.Dirs[:0]
 	for _, d := range plan.Dirs {
-		if isDir(d.Path) {
+		if d.Prepared || isDir(d.Path) {
 			dirs = append(dirs, d)
 			continue
 		}
@@ -344,6 +345,24 @@ func (m *Manager) pieces(job string, apps []*appRun, all []settings.App, serverD
 		a.res.Consistency = weakest(a.levels)
 	}
 	return out
+}
+
+// preparedItems drops the directories Prepare was to make and did not:
+// ClickHouse makes no shadow directory for tables without parts, and
+// there is nothing of theirs to read.
+func preparedItems(items []proto.Item, plans []*consistency.Plan) []proto.Item {
+	missing := map[string]bool{}
+	for _, pl := range plans {
+		for _, d := range pl.Dirs {
+			if d.Prepared && !isDir(d.Path) {
+				missing[d.Path] = true
+			}
+		}
+	}
+	if len(missing) == 0 {
+		return items
+	}
+	return slices.DeleteFunc(slices.Clone(items), func(it proto.Item) bool { return it.Dir != "" && missing[it.Dir] })
 }
 
 func dirItem(job, app string, d consistency.Dir) proto.Item {
@@ -415,6 +434,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 			return out
 		}
 	}
+	p.items = preparedItems(p.items, p.plans)
 	run := func(runCtx context.Context, items []proto.Item, dump *docker.DumpSpec, source func(context.Context) (io.ReadCloser, error)) {
 		out.snaps, out.err = m.invoke(runCtx, rs, items, dump, source, labels)
 		out.handedOver = errors.Is(out.err, runner.ErrReleased)
@@ -428,7 +448,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 	}
 
 	app := p.apps[0]
-	if rec := m.reusable(app, p.plan, rs); rec != nil {
+	if rec := m.reusable(app, p.plan, rs, p.group); rec != nil {
 		items := slices.Clone(p.items)
 		items[0].Consistency, items[0].Stream = rec.Consistency, rec.File
 		runCtx, cancel := m.pieceContext(rs, deadline)

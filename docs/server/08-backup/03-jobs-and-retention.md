@@ -30,7 +30,7 @@ odac backup job create --name media --target nas --apps photos --every 1d --max-
 
 **Deploys come first.** A dump holds a transaction open, and a migration waiting behind it would queue every query behind it. When an app, or an app linked to it, starts deploying, its dump is cancelled; the rest of the run goes on, and that app is backed up under the same run once the deploy has been idle for two minutes. `odac backup status` shows such apps as waiting.
 
-**A database is not dumped twice.** When another job, or a snapshot, dumped the same app within the last 15 minutes (or a quarter of the job's interval, if shorter), the stored dump is read back instead, and the backup carries the same consistency label. ClickHouse is always read afresh.
+**A database is not dumped twice.** When another job, or a snapshot, dumped the same app within the last 15 minutes (or a quarter of the job's interval, if shorter), the stored dump is read back instead, and the backup carries the same consistency label. A dump taken before the app, or an app linked to it, was last deployed or restored in place, or before ODAC last started, is never read back, since a migration or a restore may have replaced its data. ClickHouse is always read afresh.
 
 ### Thinning
 Old backups are not deleted oldest first; they are thinned, so the recent past stays dense and the far past stays reachable, only sparser. The rule is continuous: the gap between a kept backup and its neighbour grows with its age (gap about age / k, where k is the density).

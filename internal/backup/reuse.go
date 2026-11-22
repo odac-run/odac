@@ -30,8 +30,10 @@ func (m *Manager) rememberDump(app, target string, d *consistency.Dump, snaps []
 // new one: within the reuse window and a quarter of the job's interval, so
 // a frequent job is never handed a dump older than its schedule promises.
 // ClickHouse is never reused: its parts are frozen by this run, and an
-// older stream of definitions would not match them.
-func (m *Manager) reusable(app string, plan *consistency.Plan, rs runSpec) *dumpRecord {
+// older stream of definitions would not match them. Nor is a dump taken
+// before an app of its group was last deployed or held (a migration, an
+// in-place restore), or before this server started, which cannot know.
+func (m *Manager) reusable(app string, plan *consistency.Plan, rs runSpec, group map[string]bool) *dumpRecord {
 	if plan.Dump == nil || plan.Engine == consistency.ClickHouse || rs.noReuse {
 		return nil
 	}
@@ -46,8 +48,19 @@ func (m *Manager) reusable(app string, plan *consistency.Plan, rs runSpec) *dump
 		return nil
 	}
 	window := min(m.t.reuseWindow, time.Duration(rs.job.Every)*time.Minute/4)
-	if age := m.now().Sub(fromMs(rec.At)); age < 0 || age > window {
+	at := fromMs(rec.At)
+	if age := m.now().Sub(at); age < 0 || age > window {
 		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if at.Before(m.started) {
+		return nil
+	}
+	for a := range group {
+		if c, ok := m.changed[a]; ok && !c.Before(at) {
+			return nil
+		}
 	}
 	return rec
 }

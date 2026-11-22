@@ -157,7 +157,7 @@ func (p *Planner) planClickHouse(ctx context.Context, app App, vols []Volume, ru
 		if d.Name != "default" {
 			name += "-" + shortHash(d.Name)
 		}
-		dirs = append(dirs, Dir{Name: name, Path: shadow, Container: path.Join(d.Path, "shadow"), Consistency: Consistent})
+		dirs = append(dirs, Dir{Name: name, Path: shadow, Container: path.Join(d.Path, "shadow"), Consistency: Consistent, Prepared: true})
 		shadows = append(shadows, shadow)
 	}
 	if defaultPath == "" {
@@ -203,13 +203,12 @@ func (p *Planner) planClickHouse(ctx context.Context, app App, vols []Volume, ru
 	if freeze.Len() > 0 {
 		f := client("--query=" + freeze.String())
 		u := client("--ignore-error", "--query="+unfreeze.String())
-		plan.prepare = append(plan.prepare, func(ctx context.Context) error {
+		plan.AddPrepare(func(ctx context.Context) error {
 			if _, err := p.cfg.Prober.Run(ctx, f.spec(app)); err != nil {
 				return fmt.Errorf("consistency: freeze ClickHouse tables: %s", mask(err.Error(), []string{pw}))
 			}
 			return nil
-		})
-		plan.finish = append(plan.finish, func(ctx context.Context) error {
+		}, func(ctx context.Context) error {
 			_, err := p.cfg.Prober.Run(ctx, u.spec(app))
 			for _, s := range shadows {
 				if rerr := p.cfg.RemoveAll(s); rerr != nil && err == nil {

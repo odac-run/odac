@@ -208,6 +208,11 @@ type Manager struct {
 	maintSlot   bool
 	deploying   map[string]int
 	deployEnded map[string]time.Time
+	// changed is when each app's last deploy or hold began or ended, and
+	// started when this manager started: a stored dump older than either
+	// may hold data a migration or a restore has replaced since.
+	changed map[string]time.Time
+	started time.Time
 	// dumps are the dumps in flight that a deploy cancels: a backup's and
 	// a periodic snapshot's can run side by side.
 	dumps map[*activeDump]bool
@@ -280,6 +285,7 @@ func New(cfg Config) (*Manager, error) {
 		busy:        map[string]string{},
 		deploying:   map[string]int{},
 		deployEnded: map[string]time.Time{},
+		changed:     map[string]time.Time{},
 		dumps:       map[*activeDump]bool{},
 		freed:       make(chan struct{}),
 		restoreWait: map[string]int{},
@@ -319,6 +325,7 @@ func (m *Manager) Start() {
 		m.log.Error("%s", err.Error())
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
+	m.started = m.now()
 	m.recoveredCh = make(chan struct{})
 	m.snapReady, m.snapListed = false, false
 	if m.released {

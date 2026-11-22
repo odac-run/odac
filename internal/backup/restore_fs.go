@@ -17,6 +17,11 @@ import (
 // by moving entries; the data it replaces is kept until the whole restore
 // has succeeded, so any failure, a crash included, puts the volume back
 // as it was. The journal (restoreJournal) says how far each volume got.
+//
+// A volume emptied for a dump keeps its data next to it instead whenever
+// it can (keepBeside): its database starts on it before the commit, and
+// an image that initializes only an empty directory (postgres with PGDATA
+// at the mount point) refuses one holding the keep directory.
 
 // Volume modes.
 const (
@@ -55,9 +60,11 @@ type volumeJob struct {
 	Root  string `json:"root,omitempty"`
 	Mode  string `json:"mode"`
 	Phase string `json:"phase,omitempty"`
-	// Staging and Keep are entry names inside Path.
+	// Staging and Keep are entry names inside Path, or Keep one in
+	// Path's parent when Beside is set.
 	Staging string `json:"staging,omitempty"`
 	Keep    string `json:"keep,omitempty"`
+	Beside  bool   `json:"beside,omitempty"`
 
 	// source is the snapshot that fills the volume.
 	source string
@@ -129,7 +136,32 @@ func ensureDir(root, p string, perm os.FileMode) error {
 }
 
 func (v *volumeJob) staging() string { return filepath.Join(v.Path, v.Staging) }
-func (v *volumeJob) keep() string    { return filepath.Join(v.Path, v.Keep) }
+func (v *volumeJob) keep() string {
+	if v.Beside {
+		return filepath.Join(filepath.Dir(v.Path), v.Keep)
+	}
+	return filepath.Join(v.Path, v.Keep)
+}
+
+// keepBeside moves v's keep directory next to the volume when a rename
+// still works there: the parent is below the trusted root, on the same
+// file system, and inside no other volume of the restore, whose own swap
+// would carry the directory away.
+func (v *volumeJob) keepBeside(all []*volumeJob) {
+	parent := filepath.Dir(v.Path)
+	if v.Root == "" || parent == v.Root || !within(parent, v.Root) {
+		return
+	}
+	for _, o := range all {
+		if o != v && within(parent, o.Path) {
+			return
+		}
+	}
+	if !sameDevice(v.Path, parent) {
+		return
+	}
+	v.Beside, v.Keep = true, v.Keep+"-"+filepath.Base(v.Path)
+}
 
 // entries lists dir without the given names.
 func entries(dir string, except ...string) ([]string, error) {
@@ -184,6 +216,9 @@ func (v *volumeJob) moveOut() error {
 		return err
 	}
 	if err := os.Mkdir(v.keep(), 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if err := checkPath(v.Root, v.keep()); err != nil {
 		return err
 	}
 	names, err := entries(v.Path, v.Staging, v.Keep)
@@ -270,11 +305,11 @@ func (v *volumeJob) commit() error {
 		return err
 	}
 	var first error
-	for _, name := range []string{v.Keep, v.Staging} {
-		if name == "" {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(v.Path, name)); err != nil && first == nil {
+	if v.Keep != "" {
+		first = os.RemoveAll(v.keep())
+	}
+	if v.Staging != "" {
+		if err := os.RemoveAll(v.staging()); err != nil && first == nil {
 			first = err
 		}
 	}

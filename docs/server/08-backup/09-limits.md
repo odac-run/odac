@@ -19,6 +19,7 @@ Things to know before relying on backups.
 
 ### Restores
 - An in-place restore is downtime for the restored apps and the apps linked to them, and needs free space as large as the restored data plus 1 GiB.
+- A database whose data volume is a mount point of its own (another disk mounted at the app's volume) keeps the data it replaces inside the volume until the restore commits. An image that initializes only an empty directory, such as PostgreSQL with `PGDATA` at the mount point, then refuses to start, and the restore is rolled back. A volume that is an ordinary directory (the default) is not affected.
 - Redis restored in place gets its AOF only when `appendonly yes` is on the command line; an `appendonly` set in a config file is not seen (a warning says so).
 - Git and script apps can only be restored in place.
 - A new app does not get the original's domains, published ports, host networking, devices or API grant.
