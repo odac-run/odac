@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -1336,5 +1337,20 @@ func TestGetBackendReadsSocketDirFromTheMount(t *testing.T) {
 	used, err := c.ProxySocketDirs()
 	if err != nil || len(used) != 2 || !used["web-green-ab12"] || !used["other"] {
 		t.Fatalf("ProxySocketDirs = %v, %v", used, err)
+	}
+}
+
+func TestStreamLogsStartsWhereTheLogLeftOff(t *testing.T) {
+	f := newFakeAPI()
+	c := New(f, Options{})
+	var out, errOut bytes.Buffer
+	stop, _ := c.StreamLogs("web", time.Time{}, &out, &errOut)
+	stop()
+	stop, _ = c.StreamLogs("web", time.Unix(1700000000, 5), &out, &errOut)
+	stop()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.logOpts) != 2 || f.logOpts[0].Since != "" || f.logOpts[1].Since != "1700000000.000000005" {
+		t.Fatalf("logs asked with %+v", f.logOpts)
 	}
 }

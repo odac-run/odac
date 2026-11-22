@@ -54,7 +54,7 @@ type Docker interface {
 	RemoveImage(imageName string)
 	PruneDanglingImages()
 	Rename(oldName, newName string) error
-	StreamLogs(name string, stdout, stderr io.Writer) (stop func(), err error)
+	StreamLogs(name string, since time.Time, stdout, stderr io.Writer) (stop func(), err error)
 	IsRunning(name string) bool
 	RunningNames() (map[string]bool, error)
 	List() []docker.ContainerInfo

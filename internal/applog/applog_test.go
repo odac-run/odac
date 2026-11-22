@@ -553,3 +553,30 @@ func TestDestroyRemovesTree(t *testing.T) {
 		t.Error("logs dir should be removed")
 	}
 }
+
+func TestRuntimeStreamKnowsTheLastWrite(t *testing.T) {
+	l := newTestLogger(t)
+	r, err := l.NewRuntimeStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.LastWrite().IsZero() {
+		t.Fatalf("a new app's log was written at %v", r.LastWrite())
+	}
+	r.Write([]byte("line\n"))
+	r.End()
+	at := time.Date(2026, 1, 2, 3, 4, 5, 6000, time.UTC)
+	os.Chtimes(r.Path(), at, at)
+	// A day-old rotated file is older and does not count.
+	old := filepath.Join(l.runtimeDir, "2026-01-01.log")
+	os.WriteFile(old, []byte("x"), 0o644)
+	os.Chtimes(old, at.Add(-time.Hour), at.Add(-time.Hour))
+	next, err := l.NewRuntimeStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.End()
+	if !next.LastWrite().Equal(at) {
+		t.Fatalf("last write %v, want %v", next.LastWrite(), at)
+	}
+}

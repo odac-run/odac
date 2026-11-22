@@ -77,6 +77,7 @@ type fakeAPI struct {
 	waitCodes map[string]int64
 	// log output per container ID (mux'd on read).
 	logOutputs map[string]string
+	logOpts    []container.LogsOptions
 
 	inspects map[string]container.InspectResponse
 	list     []container.Summary // ContainerList result when set
@@ -193,9 +194,10 @@ func muxBytes(stdout string) []byte {
 	return buf.Bytes()
 }
 
-func (f *fakeAPI) ContainerLogs(_ context.Context, id string, _ container.LogsOptions) (io.ReadCloser, error) {
+func (f *fakeAPI) ContainerLogs(_ context.Context, id string, opts container.LogsOptions) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.logOpts = append(f.logOpts, opts)
 	out, ok := f.logOutputs[id]
 	if !ok {
 		out = ""

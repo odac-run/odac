@@ -888,16 +888,19 @@ func (c *Client) Rename(oldName, newName string) error {
 }
 
 // StreamLogs follows the container's stdout/stderr, demuxing into the two
-// writers, until the stream ends or stop() is called. Returns nil when the
-// container does not exist (Node returns a nil stream on 404).
-func (c *Client) StreamLogs(name string, stdout, stderr io.Writer) (stop func(), err error) {
+// writers, until the stream ends or stop() is called. A non-zero since
+// starts at that moment instead of the container's first line. Returns nil
+// when the container does not exist (Node returns a nil stream on 404).
+func (c *Client) StreamLogs(name string, since time.Time, stdout, stderr io.Writer) (stop func(), err error) {
 	if !c.available {
 		return nil, nil
 	}
+	opts := container.LogsOptions{ShowStdout: true, ShowStderr: true, Follow: true}
+	if !since.IsZero() {
+		opts.Since = fmt.Sprintf("%d.%09d", since.Unix(), since.Nanosecond())
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	rc, err := c.api.ContainerLogs(ctx, name, container.LogsOptions{
-		ShowStdout: true, ShowStderr: true, Follow: true,
-	})
+	rc, err := c.api.ContainerLogs(ctx, name, opts)
 	if err != nil {
 		cancel()
 		if !client.IsErrNotFound(err) {

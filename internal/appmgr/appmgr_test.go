@@ -176,7 +176,7 @@ func (f *fakeDocker) Rename(oldName, newName string) error {
 	return nil
 }
 
-func (f *fakeDocker) StreamLogs(string, io.Writer, io.Writer) (func(), error) {
+func (f *fakeDocker) StreamLogs(string, time.Time, io.Writer, io.Writer) (func(), error) {
 	return func() {}, nil
 }
 

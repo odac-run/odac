@@ -832,7 +832,7 @@ func (m *Manager) attachLogger(name string) error {
 	}
 	stream := &runtimeStream{ctrl: ctrl}
 
-	stop, err := m.deps.Docker.StreamLogs(name, writerFunc(ctrl.Write), writerFunc(ctrl.Error))
+	stop, err := m.deps.Docker.StreamLogs(name, ctrl.LastWrite(), writerFunc(ctrl.Write), writerFunc(ctrl.Error))
 	if err == nil {
 		stream.stopStream = stop
 	}

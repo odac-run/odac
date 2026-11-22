@@ -88,7 +88,8 @@ ODAC is a single Go module (`odac`) producing seven binaries, shipped as one Doc
 
 ### B. Engineering Standards
 - **Toolchain Gates**: after ANY code modification run `gofmt -l .` (must print nothing), `go vet ./...` and `go test ./...` — all clean before you are done.
-- **Structured Logging**: use the project's log helpers (module-prefixed lines; the watchdog adds timestamps). No stray `fmt.Println` in services.
+- **Structured Logging**: use the project's log helpers (module-prefixed lines; the watchdog adds timestamps). No stray `fmt.Println` in services. `logx` is not `fmt`: it substitutes `%s`, `%d` and `%v` alike, in order, on already rendered values, and any other verb is printed as is.
+- **App runtime logs resume, never replay**: `attachLogger` asks Docker only for output since the app's runtime log was last written (`RuntimeControl.LastWrite`, `StreamLogs`'s `since`). Reading from the container's first line appended its whole log again at every ODAC start (a postgres log reached 1.8 GB).
 - **Configuration**: NO HARDCODING. Use environment variables or the config store (`internal/config`). Ensure the system is "Zero-Config" where possible by inferring defaults.
 
 ### C. Security

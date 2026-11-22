@@ -1,6 +1,7 @@
 // Package logx is the Go port of core/Log.js for the server binary: module-
 // prefixed log lines on stdout (Log) and stderr (Warn/Error), with the same
-// %s substitution and sensitive-field redaction as Node.
+// %s substitution (%d and %v read the same) and sensitive-field redaction
+// as Node.
 //
 // Line format matches Node byte-for-byte for string arguments: the module
 // prefix "[A][B] " keeps its trailing space and arguments are joined with a
@@ -70,20 +71,47 @@ func (l *Logger) Error(args ...any) {
 	l.write(Stderr, substitute(renderAll(args)))
 }
 
+// markers are the verbs the first argument may hold. Every argument is
+// already rendered to a string, so %d and %v read exactly like %s; Go
+// call sites write them out of habit, and without them a line kept the
+// literal marker and trailed its values.
+var markers = []string{"%s", "%d", "%v"}
+
+// nextMarker returns the index of the first marker in msg, or -1.
+func nextMarker(msg string) int {
+	at := -1
+	for _, m := range markers {
+		if i := strings.Index(msg, m); i >= 0 && (at < 0 || i < at) {
+			at = i
+		}
+	}
+	return at
+}
+
 // substitute applies Log.js's %s rule: the first argument, when it contains
-// %s, consumes following arguments one per marker; leftover markers are
-// stripped and unconsumed arguments still trail the line.
+// markers, consumes following arguments one per marker in order; leftover
+// markers are stripped and unconsumed arguments still trail the line. A
+// value is never scanned again, so one containing a marker stays as is.
 func substitute(rendered []string) []string {
-	if len(rendered) == 0 || !strings.Contains(rendered[0], "%s") {
+	if len(rendered) == 0 || nextMarker(rendered[0]) < 0 {
 		return rendered
 	}
 	msg, rest := rendered[0], rendered[1:]
-	for strings.Contains(msg, "%s") && len(rest) > 0 {
-		msg = strings.Replace(msg, "%s", rest[0], 1)
-		rest = rest[1:]
+	var b strings.Builder
+	for {
+		i := nextMarker(msg)
+		if i < 0 {
+			break
+		}
+		b.WriteString(msg[:i])
+		if len(rest) > 0 {
+			b.WriteString(rest[0])
+			rest = rest[1:]
+		}
+		msg = msg[i+2:]
 	}
-	msg = strings.ReplaceAll(msg, "%s", "")
-	return append([]string{msg}, rest...)
+	b.WriteString(msg)
+	return append([]string{b.String()}, rest...)
 }
 
 func (l *Logger) write(w io.Writer, rendered []string) {
