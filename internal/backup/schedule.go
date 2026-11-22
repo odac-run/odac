@@ -83,6 +83,7 @@ func (m *Manager) schedule(ctx context.Context) time.Time {
 	m.reconcile(jobs, retired, now)
 	m.scheduleMaintenance(ctx, jobs, retired, now, &next)
 	m.scheduleBackup(ctx, jobs, now, &next)
+	m.scheduleSnapshots(ctx, now, &next)
 	return next
 }
 
@@ -90,7 +91,7 @@ func (m *Manager) schedule(ctx context.Context) time.Time {
 // and targets that are gone.
 func (m *Manager) reconcile(jobs []settings.JobView, retired []settings.RetiredView, now time.Time) {
 	known := map[string]bool{}
-	targets := map[string]bool{}
+	targets := map[string]bool{SnapshotTarget: true}
 	for _, j := range jobs {
 		known[j.ID] = true
 		targets[j.Target] = true
@@ -329,6 +330,9 @@ func (m *Manager) free(target, kind string) {
 		m.backupSlot = false
 	case KindMaintain:
 		m.maintSlot = false
+	case KindSnapshot:
+		m.snapSlot = false
+		m.snapRunning = nil
 	}
 	m.signalFreedLocked()
 	m.mu.Unlock()
@@ -359,6 +363,9 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 	for _, r := range retired {
 		targets[r.Target] = true
 		purge[r.Target] = purge[r.Target] || r.Purge
+	}
+	if m.snapshotStoreExists() {
+		targets[SnapshotTarget] = true
 	}
 	type due struct {
 		target string
@@ -399,7 +406,7 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 	slices.SortFunc(dues, func(a, b due) int { return a.at.Compare(b.at) })
 	for _, d := range dues {
 		m.mu.Lock()
-		if m.busy[d.target] != "" || m.restoreWait[d.target] > 0 {
+		if m.busy[d.target] != "" || m.restoreWait[d.target] > 0 || d.target == SnapshotTarget && m.snapSlot {
 			m.mu.Unlock()
 			continue
 		}
@@ -487,10 +494,16 @@ func (m *Manager) afterMaintain(target string, rec *RunRecord, res *proto.Result
 			wait = m.t.maintainSoon
 		}
 		t.NextMaintain = ms(now.Add(wait))
-		d.History = append(d.History, *rec)
+		if target != SnapshotTarget {
+			d.History = append(d.History, *rec)
+		}
 	})
 	if serr != nil {
 		m.log.Error("Failed to save the backup state: %s", serr.Error())
+	}
+	if target == SnapshotTarget {
+		m.recordSnapshot(SnapshotRecord{Kind: KindMaintain, Status: rec.Status, Start: rec.Start, End: rec.End, Deleted: rec.Deleted, Error: rec.Error, Adopted: rec.Adopted})
+		return
 	}
 	m.report("", rec)
 }

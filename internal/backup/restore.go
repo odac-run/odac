@@ -92,10 +92,9 @@ const (
 // KindRestore is a restore's record and what holds its target.
 const KindRestore = "restore"
 
-// safetyJob is the job id the backup before an in-place restore is stored
-// under, with the trigger of the same name. Thinning never deletes a
-// job it has no policy for, so these stay until the snapshot store (a
-// later phase) takes them over; see AGENTS.md.
+// safetyJob is the job id the backup before an in-place restore was
+// stored under on the restore's target, before the snapshot repository
+// took that over; legacySafety thins what is left of them.
 const safetyJob = "pre-restore"
 
 // definitionSource is the snapshot that holds an app's definition beside
@@ -305,7 +304,7 @@ func hostOf(a settings.Access, server string) string {
 }
 
 func (m *Manager) accessFor(target, server, key string) (settings.Access, error) {
-	a, err := m.settings().Access(target, settings.AccessOptions{Server: server})
+	a, err := m.access(target, settings.AccessOptions{Server: server})
 	if err != nil {
 		return a, err
 	}
@@ -1613,51 +1612,6 @@ func (m *Manager) attachParts(ctx context.Context, p *restorePlan, ap *appPlan, 
 		return err
 	}
 	return os.RemoveAll(staging)
-}
-
-// safetyBackup backs up the restore's apps as they are now, into this
-// server's directory on the same target, before anything changes: the
-// way back from a restore that was a mistake.
-func (m *Manager) safetyBackup(ctx context.Context, p *restorePlan) (string, error) {
-	rs := runSpec{
-		job:     settings.JobView{ID: safetyJob, Job: settings.Job{Name: safetyJob, Target: p.req.Target, Every: 60}},
-		run:     newRunID(m.now()),
-		trigger: safetyJob,
-	}
-	deadline := m.now().Add(m.runLimit(rs.job.Every))
-	ctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	all := m.cfg.Apps.BackupApps()
-	var apps []*appRun
-	for _, ap := range p.apps {
-		a := &appRun{res: AppResult{App: ap.name}}
-		plan, d, err := m.plan(ctx, ap.name, rs.run)
-		switch {
-		case d != nil:
-			return "", errors.New(d.reason)
-		case err != nil:
-			return "", err
-		case plan == nil:
-			continue
-		}
-		a.plan = plan
-		apps = append(apps, a)
-	}
-	pieces := m.pieces(rs.job.ID, apps, all, nil)
-	cleanup := m.addDefinitions(rs.run, rs.job.ID, pieces)
-	defer cleanup()
-	for _, pc := range pieces {
-		labels := map[string]string{labelKind: KindRestore, labelJob: rs.job.ID, labelTarget: rs.job.Target, labelTrigger: rs.trigger}
-		pr := m.runPiece(ctx, rs, pc, deadline, labels)
-		if pr.deferred != nil {
-			return "", errors.New(pr.deferred.reason)
-		}
-		if pr.err != nil {
-			return "", pr.err
-		}
-	}
-	m.log.Log("Backed up %s as run %s before restoring them", strings.Join(p.names(), ", "), rs.run)
-	return rs.run, nil
 }
 
 // rollback undoes a restore from its journal: volumes back in reverse

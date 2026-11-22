@@ -51,7 +51,62 @@ type fakeSettings struct {
 	// roots puts a target on a host directory, the way a disk target is:
 	// the runner mounts it and the repository lives inside it.
 	roots map[string]string
+	// snapshots are the snapshot settings; nil is the default.
+	snapshots *settings.Snapshots
 }
+
+func (s *fakeSettings) Snapshots() (settings.Snapshots, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.snapshots != nil {
+		return *s.snapshots, nil
+	}
+	return settings.Snapshots{Enabled: true, MaxDiskPct: settings.DefaultMaxDiskPct}, nil
+}
+
+// fakeDisk is ODAC's data disk: free is what it has without the snapshot
+// repository, which takes what the fake runner holds for it, garbage
+// included, so deleting gives nothing back until maintenance would.
+type fakeDisk struct {
+	mu    sync.Mutex
+	free  int64
+	total int64
+	run   *fakeRunner
+	base  string
+}
+
+func (d *fakeDisk) repoUsed() int64 {
+	d.run.mu.Lock()
+	defer d.run.mu.Unlock()
+	rp := d.run.repos[strings.TrimPrefix(snapshotRepo(d.base), "/")]
+	if rp == nil {
+		return 0
+	}
+	return d.run.usedLocked(rp)
+}
+
+func (d *fakeDisk) Space(string) (int64, int64, bool) {
+	used := d.repoUsed()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.free - used, d.total, d.total > 0
+}
+
+func (d *fakeDisk) Size(dir string) int64 {
+	if dir != snapshotRepo(d.base) {
+		return 0
+	}
+	return d.repoUsed()
+}
+
+func (d *fakeDisk) set(free, total int64) {
+	d.mu.Lock()
+	d.free, d.total = free, total
+	d.mu.Unlock()
+}
+
+// testServerID is the server id of the harness's manager.
+const testServerID = "0123456789abcdef0123456789abcdef"
 
 func (s *fakeSettings) Jobs() ([]settings.JobView, error) {
 	s.mu.Lock()
@@ -68,7 +123,7 @@ func (s *fakeSettings) Retired() ([]settings.RetiredView, error) {
 func (s *fakeSettings) Access(id string, opts settings.AccessOptions) (settings.Access, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a := settings.Access{Repo: proto.Repo{Password: "correct horse battery staple", ServerID: "0123456789abcdef0123456789abcdef"}}
+	a := settings.Access{Repo: proto.Repo{Password: "correct horse battery staple", ServerID: testServerID}}
 	switch {
 	case s.roots[id] != "":
 		a.Target = &runner.Target{Root: s.roots[id]}
@@ -462,6 +517,17 @@ func (r *fakeRunner) seed(target, job, run string, at time.Time, size int64) {
 	rp.size[s.ID] = size
 }
 
+// seedSnapshot stores a snapshot run of series, taken by event at time at.
+func (r *fakeRunner) seedSnapshot(repoKey, series, event, run string, at time.Time, size int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.n++
+	s := proto.Snapshot{ID: fmt.Sprintf("s%d", r.n), Source: proto.Source{Job: series, App: series, Name: "files"}, Kind: "dir", Run: run, Trigger: event, Consistency: consistency.Live, Start: at, End: at, Bytes: size}
+	rp := r.repo(repoKey)
+	rp.snaps = append(rp.snaps, s)
+	rp.size[s.ID] = size
+}
+
 func (r *fakeRunner) runs(target string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -485,6 +551,8 @@ type harness struct {
 	clock  *clock
 	base   string
 	recs   chan RunRecord
+	disk   *fakeDisk
+	snaps  chan SnapshotRecord
 }
 
 func newHarness(t *testing.T) *harness {
@@ -497,8 +565,10 @@ func newHarness(t *testing.T) *harness {
 		clock:  &clock{t: time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)},
 		base:   t.TempDir(),
 		recs:   make(chan RunRecord, 64),
+		snaps:  make(chan SnapshotRecord, 64),
 	}
 	h.run = newFakeRunner(h.clock)
+	h.disk = &fakeDisk{free: 1 << 40, total: 2 << 40, run: h.run, base: h.base}
 	h.m = h.manager()
 	return h
 }
@@ -511,9 +581,12 @@ func (h *harness) manager() *Manager {
 		Apps: h.apps, States: h.states, Planner: fakePlanner{},
 		NewRunner: func() (Runner, error) { return h.run, nil },
 		BaseDir:   h.base, ServerDirs: []string{server},
-		OnRecord: func(r RunRecord) { h.recs <- r },
-		Log:      logx.New("Backup", "Test"),
-		Now:      h.clock.Now,
+		OnRecord:   func(r RunRecord) { h.recs <- r },
+		OnSnapshot: func(r SnapshotRecord) { h.snaps <- r },
+		ServerID:   testServerID,
+		Disk:       h.disk,
+		Log:        logx.New("Backup", "Test"),
+		Now:        h.clock.Now,
 	})
 	if err != nil {
 		h.t.Fatal(err)
@@ -553,6 +626,21 @@ func (h *harness) record() RunRecord {
 	}
 	return RunRecord{}
 }
+
+// snapshot waits for the next snapshot record.
+func (h *harness) snapshot() SnapshotRecord {
+	h.t.Helper()
+	select {
+	case r := <-h.snaps:
+		return r
+	case <-time.After(5 * time.Second):
+		h.t.Fatal("no snapshot was recorded")
+	}
+	return SnapshotRecord{}
+}
+
+// snapRepo is the key of the snapshot repository in the fake runner.
+func (h *harness) snapRepo() string { return strings.TrimPrefix(snapshotRepo(h.base), "/") }
 
 func (h *harness) runNow(j settings.JobView) RunRecord {
 	h.t.Helper()

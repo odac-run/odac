@@ -1220,6 +1220,9 @@ func TestCommandTableOrder(t *testing.T) {
 		"backup.coverage", "backup.status", "backup.history", "backup.point.list",
 		"backup.restore.preview", "backup.restore", "backup.restore.cancel",
 		"backup.restore.list",
+		"snapshot.status", "snapshot.list", "snapshot.history", "snapshot.settings",
+		"snapshot.settings.update", "snapshot.take", "snapshot.delete",
+		"snapshot.restore.preview", "snapshot.restore",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1378,6 +1381,23 @@ func (f *fakeBackup) PreviewRestore(p any) api.Result { return f.rec("preview", 
 func (f *fakeBackup) StartRestore(p any) api.Result   { return f.rec("restore", p) }
 func (f *fakeBackup) CancelRestore(p any) api.Result  { return f.rec("restore.cancel", p) }
 func (f *fakeBackup) Restores() api.Result            { return f.rec("restores", nil) }
+func (f *fakeBackup) SnapshotStatus() api.Result      { return f.rec("snapshot.status", nil) }
+func (f *fakeBackup) SnapshotPoints(p any) api.Result { return f.rec("snapshot.list", p) }
+func (f *fakeBackup) SnapshotHistory(p any) api.Result {
+	return f.rec("snapshot.history", p)
+}
+func (f *fakeBackup) SnapshotSettings() api.Result { return f.rec("snapshot.settings", nil) }
+func (f *fakeBackup) UpdateSnapshotSettings(p any) api.Result {
+	return f.rec("snapshot.settings.update", p)
+}
+func (f *fakeBackup) TakeSnapshot(p any) api.Result   { return f.rec("snapshot.take", p) }
+func (f *fakeBackup) DeleteSnapshot(p any) api.Result { return f.rec("snapshot.delete", p) }
+func (f *fakeBackup) PreviewSnapshotRestore(p any) api.Result {
+	return f.rec("snapshot.restore.preview", p)
+}
+func (f *fakeBackup) StartSnapshotRestore(p any) api.Result {
+	return f.rec("snapshot.restore", p)
+}
 func (f *fakeBackup) Key(c api.Caller, p any) api.Result {
 	if c != api.Operator {
 		return api.Res(false, "denied")
@@ -1418,6 +1438,34 @@ func TestBackupCommandsReachTheService(t *testing.T) {
 	}
 }
 
+func TestSnapshotCommandsReachTheService(t *testing.T) {
+	fb := &fakeBackup{}
+	fx := newHubFixture(t, func(f *hubFixture) { f.backup = fb })
+	for _, name := range []string{"snapshot.take", "snapshot.restore", "snapshot.settings.update"} {
+		res, err := fx.h.commands[name].fn(map[string]any{"id": "x1"})
+		if err != nil || !res.(api.Result).Status {
+			t.Fatalf("%s: %v %v", name, res, err)
+		}
+	}
+	if want := []string{"snapshot.take x1", "snapshot.restore x1", "snapshot.settings.update x1"}; !reflect.DeepEqual(fb.calls, want) {
+		t.Fatalf("calls = %v, want %v", fb.calls, want)
+	}
+	for name, want := range map[string]time.Duration{
+		"snapshot.status": 5 * time.Minute, "snapshot.list": 30 * time.Minute,
+		"snapshot.history": 30 * time.Minute, "snapshot.settings": 30 * time.Minute,
+	} {
+		if got := fx.h.commands[name].interval; got != want {
+			t.Errorf("%s interval = %v, want %v", name, got, want)
+		}
+	}
+	if got, _ := fx.h.Triggers("snapshot.restore"); !reflect.DeepEqual(got, []string{"backup.restore.list", "snapshot.status"}) {
+		t.Errorf("snapshot.restore triggers = %v", got)
+	}
+	if got, _ := fx.h.Triggers("snapshot.delete"); !reflect.DeepEqual(got, []string{"snapshot.list", "snapshot.status"}) {
+		t.Errorf("snapshot.delete triggers = %v", got)
+	}
+}
+
 // ODAC's own state is restored on a freshly installed server, from its CLI;
 // the hub has no door to it.
 func TestHubCannotStageAServerRestore(t *testing.T) {
@@ -1433,7 +1481,7 @@ func TestHubCannotStageAServerRestore(t *testing.T) {
 func TestBackupListsAreNotTasksWithoutBackups(t *testing.T) {
 	fx := newHubFixture(t)
 	for _, name := range fx.h.order {
-		if strings.HasPrefix(name, "backup.") && fx.h.commands[name].hasInterval {
+		if (strings.HasPrefix(name, "backup.") || strings.HasPrefix(name, "snapshot.")) && fx.h.commands[name].hasInterval {
 			t.Errorf("%s is a task on a server without backups", name)
 		}
 	}

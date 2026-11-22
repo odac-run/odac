@@ -32,7 +32,7 @@ func (m *Manager) rememberDump(app, target string, d *consistency.Dump, snaps []
 // ClickHouse is never reused: its parts are frozen by this run, and an
 // older stream of definitions would not match them.
 func (m *Manager) reusable(app string, plan *consistency.Plan, rs runSpec) *dumpRecord {
-	if plan.Dump == nil || plan.Engine == consistency.ClickHouse {
+	if plan.Dump == nil || plan.Engine == consistency.ClickHouse || rs.noReuse {
 		return nil
 	}
 	var rec *dumpRecord
@@ -62,7 +62,7 @@ func (m *Manager) storedDump(rec *dumpRecord) func(context.Context) (io.ReadClos
 		if err != nil {
 			return nil, err
 		}
-		a, err := m.settings().Access(rec.Target, settings.AccessOptions{})
+		a, err := m.access(rec.Target, settings.AccessOptions{})
 		if err != nil {
 			return nil, err
 		}

@@ -137,6 +137,7 @@ type stateData struct {
 	FollowUps map[string]*followUp    `json:"followUps,omitempty"`
 	History   []RunRecord             `json:"history,omitempty"`
 	Restores  []RestoreResult         `json:"restores,omitempty"`
+	Snap      *snapState              `json:"snapshots,omitempty"`
 }
 
 // store keeps the manager's state in <base>/backup/state.json, beside the
@@ -197,6 +198,10 @@ func (d *stateData) init() {
 	if d.FollowUps == nil {
 		d.FollowUps = map[string]*followUp{}
 	}
+	if d.Snap == nil {
+		d.Snap = &snapState{}
+	}
+	d.Snap.init()
 }
 
 // update changes the state under its lock and writes it.
@@ -217,6 +222,9 @@ func (s *store) view(fn func(d *stateData)) {
 func (s *store) saveLocked() error {
 	if len(s.d.History) > historyMax {
 		s.d.History = slices.Clone(s.d.History[len(s.d.History)-historyMax:])
+	}
+	if h := s.d.Snap.History; len(h) > historyMax {
+		s.d.Snap.History = slices.Clone(h[len(h)-historyMax:])
 	}
 	raw, err := json.Marshal(&s.d)
 	if err != nil {

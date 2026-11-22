@@ -49,6 +49,8 @@ func (m *Manager) adoptOrphans(ctx context.Context, logged *bool) bool {
 			m.backupSlot = true
 		case KindMaintain:
 			m.maintSlot = true
+		case KindSnapshot:
+			m.snapSlot = true
 		}
 	}
 	m.mu.Unlock()
@@ -104,15 +106,19 @@ func (m *Manager) follow(ctx context.Context, o Orphan) {
 		return
 	}
 	if err != nil {
-		m.settings().Observe(target, err)
+		m.observe(target, err)
 	}
 	mu.Lock()
 	got := snaps
 	mu.Unlock()
 	switch kind {
-	case KindBackup:
+	case KindBackup, KindSnapshot:
 		if run := l[runner.LabelRun]; run != "" {
 			os.RemoveAll(filepath.Join(m.cfg.BaseDir, "backup", "definitions", filepath.Base(run)))
+		}
+		if kind == KindSnapshot {
+			m.adoptedSnapshot(ctx, l, got, err)
+			return
 		}
 		m.adoptedBackup(ctx, l, got, err)
 	case KindMaintain:

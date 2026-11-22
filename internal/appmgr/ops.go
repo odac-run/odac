@@ -124,8 +124,13 @@ func (m *Manager) StopAll() {
 
 // Delete ports App.delete: force-cleanup regardless of in-flight state.
 // An app caller may not delete an app whose domains carry a client certificate
-// policy, since the cascade removes them (see Domain.Delete).
+// policy, since the cascade removes them (see Domain.Delete). A snapshot of the
+// app is taken first, which is how a deleted app comes back.
 func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
+	return m.deleteApp(caller, id, purge, true)
+}
+
+func (m *Manager) deleteApp(caller api.Caller, id any, purge, snapshot bool) *api.Result {
 	var name string
 	var idNum float64
 	var activeContainerID string
@@ -143,6 +148,10 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 	}
 	if !caller.Root && m.deps.Domains != nil && m.deps.Domains.HasClientAuthPolicy(name) {
 		return res(false, __("App %s has a domain with a client certificate policy, so only the server operator can delete it.", name))
+	}
+
+	if snapshot {
+		m.deleteSnapshot(name)
 	}
 
 	m.log.Log("Deleting app %s (force-cleanup any in-flight blue/green containers)", name)
@@ -498,6 +507,13 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 	defer m.unlockProcessing(idNum)
 
+	// The snapshot runs beside the fetch and the build; the deploy waits
+	// for it only before the new container starts.
+	snap := m.startDeploySnapshot(name)
+	if snap != nil {
+		defer snap.Cancel()
+	}
+
 	// Register the logger IMMEDIATELY to prevent races with Hub requests.
 	logger := m.getLoggerInstance(name)
 	m.deps.Docker.RegisterBuildLogger(name, logger)
@@ -607,6 +623,10 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	if m.appDeleted(idNum) {
 		return res(false, "App was deleted during build phase.")
 	}
+
+	// A migration runs as the new container starts, so the snapshot must
+	// be done or given up by then.
+	m.awaitDeploySnapshot(name, snap, logCtrl)
 
 	if m.zddEligible(name, idNum) {
 		// Zero-Downtime Deployment (Blue-Green).

@@ -155,3 +155,92 @@ func seqOutput(n int) string {
 	}
 	return b.String()
 }
+
+// roomyDisk measures the repository for real and reports a disk with
+// room, since the machine running the test may be fuller than the floor.
+type roomyDisk struct{}
+
+func (roomyDisk) Space(string) (int64, int64, bool) { return 500 << 30, 1000 << 30, true }
+func (roomyDisk) Size(dir string) int64             { return hostDisk{}.Size(dir) }
+
+// TestDockerSnapshot takes a snapshot against a real daemon: the snapshot
+// repository is made in the data directory with its own key, the dump is
+// stored there, a backup job right after reads that dump back instead of
+// dumping again, and the repository is maintained. Off unless
+// ODAC_DOCKER_TESTS=1.
+func TestDockerSnapshot(t *testing.T) {
+	if os.Getenv("ODAC_DOCKER_TESTS") != "1" {
+		t.Skip("set ODAC_DOCKER_TESTS=1 to run against a Docker daemon")
+	}
+	c, tag := dockerHelperImage(t)
+	app := fmt.Sprintf("odac-backup-test-db-%d", time.Now().UnixNano())
+	if out, err := exec.Command("docker", "run", "-d", "--name", app, "alpine:3.22", "sleep", "600").CombinedOutput(); err != nil {
+		t.Fatalf("start app: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", app).Run() })
+
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	h := newHarness(t)
+	h.base = base
+	data := filepath.Join(base, "apps", "db", "data")
+	os.MkdirAll(data, 0o755)
+	os.WriteFile(filepath.Join(data, "table"), []byte(strings.Repeat("row\n", 10000)), 0o644)
+	h.apps.list = []settings.App{{Name: "db", Stateful: true}}
+	h.apps.apps = map[string]consistency.App{"db": {Name: "db", Container: app, Image: "alpine:3.22", Volumes: []consistency.Volume{{Host: data, Container: "/data"}}}}
+	h.set.roots = map[string]string{"t1": filepath.Join(base, "t1")}
+	os.MkdirAll(h.set.roots["t1"], 0o755)
+	helper, dump := runner.DefaultLimits(2<<30, 2)
+	rn, err := runner.New(runner.Config{Docker: runner.FromClient(c), Binary: "/app/bin/odac-backup", Image: tag, Limits: helper, DumpLimits: dump, DumpRate: runner.DefaultDumpRate, DumpIdle: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps := make(chan SnapshotRecord, 8)
+	m, err := New(Config{
+		Apps: h.apps, States: c, Planner: seqPlanner{},
+		NewRunner: func() (Runner, error) { return FromRunner(rn), nil },
+		BaseDir:   base, ServerDirs: []string{}, ServerID: testServerID, Disk: roomyDisk{},
+		OnRecord:   func(r RunRecord) { h.recs <- r },
+		OnSnapshot: func(r SnapshotRecord) { snaps <- r },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSettings(h.set)
+	h.m = m
+	ctx := context.Background()
+
+	rec := m.takeSnapshot(ctx, snapRequest{series: "db", event: EventManual, apps: []string{"db"}, reuse: true})
+	if rec.Status != StatusOK || rec.Snapshots != 2 || rec.Added <= 0 {
+		t.Fatalf("snapshot: %+v", rec)
+	}
+	<-snaps
+	if fi, err := os.Stat(snapshotKey(base)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key: %v %v", fi, err)
+	}
+	if pts := m.SnapshotPoints("db"); len(pts) != 1 || pts[0].Run != rec.Run || !pts[0].Apps[0].Dump {
+		t.Fatalf("points %+v", pts)
+	}
+
+	a, _ := h.set.Access("t1", settings.AccessOptions{Write: true})
+	if _, err := m.Init(ctx, a); err != nil {
+		t.Fatalf("init t1: %v", err)
+	}
+	m.cfg.Now = time.Now
+	h.clock = &clock{t: time.Now()}
+	job := h.runNow(h.job("a", "t1", 24*60, "db"))
+	if job.Status != StatusOK || job.Apps[0].Method != MethodReused {
+		t.Fatalf("job after the snapshot: %+v", job)
+	}
+
+	m.maintain(ctx, SnapshotTarget)
+	if mr := <-snaps; mr.Kind != KindMaintain || mr.Status != StatusOK {
+		t.Fatalf("maintenance: %+v", mr)
+	}
+	list, err := c.BackupContainers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range list {
+		t.Errorf("left behind: %s (%s)", b.Name, b.Role)
+	}
+}

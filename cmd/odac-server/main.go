@@ -228,6 +228,8 @@ func main() {
 	}
 	if backupMgr != nil {
 		svc.Backup = backupMgr
+		// ODAC's own state is snapshotted before every update.
+		upd.SetSnapshotter(backupMgr)
 	}
 	sys := system.New(cfg, svc, upd)
 	upd.SetSystem(sys) // closes the System↔Updater cycle (rollback re-Init)

@@ -118,6 +118,15 @@ type BackupService interface {
 	StartRestore(payload any) api.Result
 	CancelRestore(payload any) api.Result
 	Restores() api.Result
+	SnapshotStatus() api.Result
+	SnapshotPoints(payload any) api.Result
+	SnapshotHistory(payload any) api.Result
+	SnapshotSettings() api.Result
+	UpdateSnapshotSettings(payload any) api.Result
+	TakeSnapshot(payload any) api.Result
+	DeleteSnapshot(payload any) api.Result
+	PreviewSnapshotRestore(payload any) api.Result
+	StartSnapshotRestore(payload any) api.Result
 }
 
 // ProxyService is the slice of dataplane.Proxy the command table calls.
@@ -1121,6 +1130,55 @@ func (h *Hub) registerBackup() {
 	h.register(restores, &command{
 		fn:       with(func(b BackupService, _ any) api.Result { return b.Restores() }),
 		interval: every(30 * time.Minute),
+	})
+	h.registerSnapshot(with, every, restores)
+}
+
+// registerSnapshot appends the snapshot.* commands after the backup ones,
+// on the same terms: the same payloads as the local API actions, lists as
+// tasks, changes re-sending what they touched. A snapshot restore is
+// listed with the other restores.
+func (h *Hub) registerSnapshot(with func(fn func(b BackupService, payload any) api.Result) func(payload any) (any, error), every func(time.Duration) time.Duration, restores string) {
+	const (
+		status   = "snapshot.status"
+		points   = "snapshot.list"
+		history  = "snapshot.history"
+		settings = "snapshot.settings"
+	)
+	h.register(status, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.SnapshotStatus() }),
+		interval: every(5 * time.Minute),
+	})
+	h.register(points, &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.SnapshotPoints(p) }),
+		interval: every(30 * time.Minute),
+	})
+	h.register(history, &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.SnapshotHistory(p) }),
+		interval: every(30 * time.Minute),
+	})
+	h.register(settings, &command{
+		fn:       with(func(b BackupService, _ any) api.Result { return b.SnapshotSettings() }),
+		interval: every(30 * time.Minute),
+	})
+	h.register("snapshot.settings.update", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.UpdateSnapshotSettings(p) }),
+		triggers: []string{settings, status},
+	})
+	h.register("snapshot.take", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.TakeSnapshot(p) }),
+		triggers: []string{status},
+	})
+	h.register("snapshot.delete", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.DeleteSnapshot(p) }),
+		triggers: []string{points, status},
+	})
+	h.register("snapshot.restore.preview", &command{
+		fn: with(func(b BackupService, p any) api.Result { return b.PreviewSnapshotRestore(p) }),
+	})
+	h.register("snapshot.restore", &command{
+		fn:       with(func(b BackupService, p any) api.Result { return b.StartSnapshotRestore(p) }),
+		triggers: []string{restores, status},
 	})
 }
 

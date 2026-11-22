@@ -46,6 +46,13 @@ type Manager interface {
 	CancelRestore(id string) bool
 	Restores() []backup.RestoreResult
 	StageServerRestore(ctx context.Context, req backup.ServerRestoreRequest) (*backup.ServerRestore, error)
+	SnapshotStatus() backup.SnapshotStatus
+	SnapshotHistory(app string, limit int) []backup.SnapshotRecord
+	SnapshotPoints(app string) []backup.SnapshotPoint
+	TakeSnapshot(app string) (backup.SnapshotRunning, error)
+	DeleteSnapshot(ctx context.Context, run string) error
+	PreviewSnapshotRestore(ctx context.Context, req backup.SnapshotRestoreRequest) (*backup.RestoreResult, error)
+	StartSnapshotRestore(ctx context.Context, req backup.SnapshotRestoreRequest) (*backup.RestoreResult, error)
 }
 
 // Settings is the slice of *settings.Settings the service drives.
@@ -67,6 +74,8 @@ type Settings interface {
 	Retired() ([]settings.RetiredView, error)
 	PurgeRetired(id string) error
 	Coverage() (settings.Coverage, error)
+	Snapshots() (settings.Snapshots, error)
+	SetSnapshots(p settings.SnapshotsPatch) (settings.Snapshots, error)
 }
 
 // Config wires a Service.

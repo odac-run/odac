@@ -62,6 +62,9 @@ func (m *Manager) Status() ([]JobStatus, []TargetStatus) {
 			jobs = append(jobs, s)
 		}
 		for id, t := range d.Targets {
+			if id == SnapshotTarget {
+				continue
+			}
 			targets = append(targets, TargetStatus{Target: id, NextMaintain: t.NextMaintain, LastMaintain: t.LastMaintain, Used: t.Used, Garbage: t.Garbage, Free: t.Free, Total: t.Total})
 		}
 	})

@@ -46,6 +46,32 @@ type runSpec struct {
 	// out: the rest of a run a deploy cut short. Nil is the whole job.
 	apps      []string
 	scheduled time.Time
+	// abort ends the run's helpers, whatever their deadline: a snapshot
+	// given up by its deploy, by the operator or for space. It never
+	// derives from the manager's context (see runContext).
+	abort context.Context
+	// exempt is a snapshot that is part of an operation on its apps (a
+	// deploy, a delete): their deploy does not hold it back or cancel its
+	// dump.
+	exempt bool
+	// noReuse reads every database afresh: a snapshot right before a
+	// deploy or a delete stands for that moment, not for a dump stored
+	// minutes before.
+	noReuse bool
+}
+
+// pieceContext is a helper run's context: the deadline, and the run's
+// abort when it has one.
+func (rs runSpec) pieceContext(deadline time.Time) (context.Context, context.CancelFunc) {
+	ctx, cancel := runContext(deadline)
+	if rs.abort == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(rs.abort, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 func newRunID(now time.Time) string {
@@ -349,7 +375,7 @@ type pieceResult struct {
 // preparation, unless the helper was handed over: it still reads what was
 // prepared, and the next server finishes those plans after it.
 func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline time.Time, labels map[string]string) (out pieceResult) {
-	if p.plan != nil {
+	if p.plan != nil && !rs.exempt {
 		if idle, _ := m.groupIdle(p.group); !idle {
 			out.deferred = &deferral{reason: "a deploy is in progress", deploy: true}
 			return out
@@ -394,7 +420,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 	}
 
 	if p.plan == nil {
-		runCtx, cancel := runContext(deadline)
+		runCtx, cancel := rs.pieceContext(deadline)
 		defer cancel()
 		run(runCtx, p.items, nil, nil)
 		return out
@@ -404,7 +430,7 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 	if rec := m.reusable(app, p.plan, rs); rec != nil {
 		items := slices.Clone(p.items)
 		items[0].Consistency, items[0].Stream = rec.Consistency, rec.File
-		runCtx, cancel := runContext(deadline)
+		runCtx, cancel := rs.pieceContext(deadline)
 		run(runCtx, items, nil, m.storedDump(rec))
 		cancel()
 		if out.err == nil {
@@ -419,12 +445,15 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 		out = pieceResult{snaps: out.snaps}
 	}
 
-	runCtx, cancel := runContext(deadline)
+	runCtx, cancel := rs.pieceContext(deadline)
 	defer cancel()
-	end, ok := m.beginDump(app, p.group, cancel)
-	if !ok {
-		out.deferred = &deferral{reason: "a deploy is in progress", deploy: true}
-		return out
+	end := func() bool { return false }
+	if !rs.exempt {
+		var ok bool
+		if end, ok = m.beginDump(app, p.group, cancel); !ok {
+			out.deferred = &deferral{reason: "a deploy is in progress", deploy: true}
+			return out
+		}
 	}
 	spec := p.plan.Dump.Spec
 	stored := out.snaps
@@ -443,12 +472,11 @@ func (m *Manager) runPiece(ctx context.Context, rs runSpec, p *piece, deadline t
 // invoke runs one backup request on the job's target, claiming the next
 // owner sequence number for it.
 func (m *Manager) invoke(runCtx context.Context, rs runSpec, items []proto.Item, dump *docker.DumpSpec, source func(context.Context) (io.ReadCloser, error), labels map[string]string) ([]proto.Snapshot, error) {
-	set := m.settings()
 	r, err := m.currentRunner()
 	if err != nil {
 		return nil, err
 	}
-	a, err := set.Access(rs.job.Target, settings.AccessOptions{Write: true})
+	a, err := m.access(rs.job.Target, settings.AccessOptions{Write: true})
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +498,7 @@ func (m *Manager) invoke(runCtx context.Context, rs runSpec, items []proto.Item,
 		}},
 	})
 	if err != nil && !errors.Is(err, runner.ErrReleased) {
-		set.Observe(rs.job.Target, err)
+		m.observe(rs.job.Target, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

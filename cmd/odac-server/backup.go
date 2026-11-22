@@ -55,12 +55,14 @@ func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, c
 			}
 			return backup.FromRunner(r), nil
 		},
-		Load:      sysinfo.HostLoad,
-		BaseDir:   baseDir,
-		Control:   appControl{apps},
-		Loader:    planner,
-		OnRecord:  relay.record,
-		OnRestore: relay.restore,
+		Load:       sysinfo.HostLoad,
+		BaseDir:    baseDir,
+		ServerID:   serverID,
+		Control:    appControl{apps},
+		Loader:     planner,
+		OnRecord:   relay.record,
+		OnRestore:  relay.restore,
+		OnSnapshot: relay.snapshot,
 	})
 	if err != nil {
 		log.Error("Backups are disabled:", err.Error())
@@ -80,6 +82,7 @@ func newBackups(log *logx.Logger, cfg *config.Store, baseDir, serverID string, c
 	}
 	mgr.SetSettings(set)
 	apps.SetDeployWatcher(mgr)
+	apps.SetSnapshotter(snapshotHooks{mgr})
 	svc, err := service.New(service.Config{Manager: mgr, Settings: set, ServerID: serverID, BaseDir: baseDir})
 	if err != nil {
 		log.Error("Backups are disabled:", err.Error())
@@ -116,9 +119,35 @@ func (r *hubRelay) record(rec backup.RunRecord) {
 }
 
 // restore re-sends the restores and the apps a finished restore changed.
-func (r *hubRelay) restore(backup.RestoreResult) {
+func (r *hubRelay) restore(res backup.RestoreResult) {
 	r.trigger("backup.restore.list", "backup.status", "app.list")
+	if res.Target == backup.SnapshotTarget {
+		r.trigger("snapshot.status")
+	}
 }
+
+// snapshot re-sends what a snapshot or a maintenance of the snapshot
+// repository changed; the restore points change only with what was
+// stored or deleted.
+func (r *hubRelay) snapshot(rec backup.SnapshotRecord) {
+	r.trigger("snapshot.status", "snapshot.history")
+	if rec.Status == backup.StatusOK || rec.Deleted > 0 {
+		r.trigger("snapshot.list")
+	}
+}
+
+// snapshotHooks adapts the backup manager to the app manager's snapshot
+// seam.
+type snapshotHooks struct{ m *backup.Manager }
+
+func (s snapshotHooks) BeforeDeploy(app string) appmgr.DeploySnapshot {
+	if p := s.m.BeforeDeploy(app); p != nil {
+		return p
+	}
+	return nil
+}
+
+func (s snapshotHooks) BeforeDelete(app string) string { return s.m.BeforeDelete(app) }
 
 // appHub is the app manager's Hub seam. Whenever the apps change, the
 // coverage may too: a new app with data and no job is the warning the
@@ -135,7 +164,8 @@ func (a appHub) Trigger(event string) {
 	}
 }
 
-// registerBackupActions adds the backup.* actions to the local API. Each
+// registerBackupActions adds the backup.* and snapshot.* actions to the
+// local API. Each
 // takes one object argument, the payload of the Hub command of the same
 // name, and a change re-sends the Hub lists that command would. Every one is
 // closed to app tokens (api.AppMayCall). The staging of ODAC's own state is
@@ -179,6 +209,15 @@ func registerBackupActions(apiSrv *api.Server, svc *service.Service, hubSvc *hub
 	reg("backup.server.restore", func(a api.Args) api.Result { return svc.StageServerRestore(a.Caller(), a.At(0)) })
 	reg("backup.server.pending", func(a api.Args) api.Result { return svc.PendingServerRestore(a.Caller()) })
 	reg("backup.server.cancel", func(a api.Args) api.Result { return svc.CancelServerRestore(a.Caller()) })
+	reg("snapshot.status", func(api.Args) api.Result { return svc.SnapshotStatus() })
+	reg("snapshot.list", func(a api.Args) api.Result { return svc.SnapshotPoints(a.At(0)) })
+	reg("snapshot.history", func(a api.Args) api.Result { return svc.SnapshotHistory(a.At(0)) })
+	reg("snapshot.settings", func(api.Args) api.Result { return svc.SnapshotSettings() })
+	reg("snapshot.settings.update", func(a api.Args) api.Result { return svc.UpdateSnapshotSettings(a.At(0)) })
+	reg("snapshot.take", func(a api.Args) api.Result { return svc.TakeSnapshot(a.At(0)) })
+	reg("snapshot.delete", func(a api.Args) api.Result { return svc.DeleteSnapshot(a.At(0)) })
+	reg("snapshot.restore.preview", func(a api.Args) api.Result { return svc.PreviewSnapshotRestore(a.At(0)) })
+	reg("snapshot.restore", func(a api.Args) api.Result { return svc.StartSnapshotRestore(a.At(0)) })
 }
 
 // serverName labels this server's directory on a target for a person

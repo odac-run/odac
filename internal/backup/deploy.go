@@ -25,10 +25,12 @@ func (m *Manager) DeployStarted(app string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deploying[app]++
-	if d := m.dump; d != nil && d.group[app] && !d.byDeploy {
-		d.byDeploy = true
-		d.cancel()
-		m.log.Log("Cancelled the dump of %s: %s is being deployed; it is taken again after the deploy", d.app, app)
+	for d := range m.dumps {
+		if d.group[app] && !d.byDeploy {
+			d.byDeploy = true
+			d.cancel()
+			m.log.Log("Cancelled the dump of %s: %s is being deployed; it is taken again after the deploy", d.app, app)
+		}
 	}
 }
 
@@ -94,14 +96,12 @@ func (m *Manager) beginDump(app string, group map[string]bool, cancel context.Ca
 			return nil, false
 		}
 	}
-	m.dump = d
+	m.dumps[d] = true
 	m.mu.Unlock()
 	return func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if m.dump == d {
-			m.dump = nil
-		}
+		delete(m.dumps, d)
 		return d.byDeploy
 	}, true
 }

@@ -168,6 +168,7 @@ type Manager struct {
 	loggers    map[string]*applog.Logger // app name -> logger instance
 	probeDown  bool                      // last pulse could not list containers
 	deploys    DeployWatcher             // set once by SetDeployWatcher
+	snapshots  Snapshotter               // set once by SetSnapshotter
 	held       map[float64]string        // app id -> name reported to deploys
 
 	// Test hooks: cadences default to Node's literals; sleep defaults to

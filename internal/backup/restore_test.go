@@ -297,15 +297,21 @@ func TestRestoreInPlaceReturnsTheGroup(t *testing.T) {
 		t.Fatalf("loads %+v", loads)
 	}
 	noLeftovers(t, s.web, s.pg)
-	// The state before the restore is a run of its own.
+	// The state before the restore is a snapshot, filed under the app
+	// asked for, not a run on the target.
 	var safety []proto.Snapshot
-	for _, sn := range s.harness.run.repo("t1").snaps {
+	for _, sn := range s.harness.run.repo(s.harness.snapRepo()).snaps {
 		if sn.Run == res.Safety {
 			safety = append(safety, sn)
 		}
 	}
-	if len(safety) < 3 || safety[0].Source.Job != safetyJob {
-		t.Fatalf("safety backup %+v", safety)
+	if len(safety) < 3 || safety[0].Source.Job != "web" || safety[0].Trigger != EventPreRestore {
+		t.Fatalf("safety snapshot %+v", safety)
+	}
+	for _, sn := range s.harness.run.repo("t1").snaps {
+		if sn.Run == res.Safety {
+			t.Fatal("the safety copy went to the target")
+		}
 	}
 	for _, want := range []string{"hold web", "hold db", "start db", "release db true", "release web true"} {
 		if !s.ctl.has(want) {

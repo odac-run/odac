@@ -48,6 +48,7 @@ type Settings interface {
 	Access(id string, opts settings.AccessOptions) (settings.Access, error)
 	Observe(id string, err error)
 	Purged(id string) error
+	Snapshots() (settings.Snapshots, error)
 }
 
 // Apps lists the apps and describes one for a backup; the app manager
@@ -126,8 +127,17 @@ type Config struct {
 	Loader  Loader
 	// OnRestore sees every finished restore, for the Hub.
 	OnRestore func(RestoreResult)
-	Log       *logx.Logger
-	Now       func() time.Time
+	// ServerID names this server in the snapshot repository; without it
+	// there are no snapshots.
+	ServerID string
+	// Disk measures the disk the snapshot repository lives on; nil is the
+	// host's.
+	Disk Disk
+	// OnSnapshot sees every snapshot taken or given up, and every
+	// maintenance of the snapshot repository, for the Hub.
+	OnSnapshot func(SnapshotRecord)
+	Log        *logx.Logger
+	Now        func() time.Time
 }
 
 // timing holds the manager's intervals; tests shrink them.
@@ -145,6 +155,7 @@ type timing struct {
 	runMin        time.Duration
 	runMax        time.Duration
 	finishLimit   time.Duration
+	snap          snapTiming
 }
 
 func defaultTiming() timing {
@@ -162,6 +173,7 @@ func defaultTiming() timing {
 		runMin:        time.Hour,
 		runMax:        12 * time.Hour,
 		finishLimit:   time.Minute,
+		snap:          defaultSnapTiming(),
 	}
 }
 
@@ -190,7 +202,24 @@ type Manager struct {
 	maintSlot   bool
 	deploying   map[string]int
 	deployEnded map[string]time.Time
-	dump        *activeDump
+	// dumps are the dumps in flight that a deploy cancels: a backup's and
+	// a periodic snapshot's can run side by side.
+	dumps map[*activeDump]bool
+	// snapSlot is the snapshot repository's own slot, beside the backup
+	// slot, so a deploy's snapshot never waits behind a remote backup.
+	snapSlot bool
+	// snapReady: the snapshot repository was opened in this start.
+	snapReady bool
+	// snapRunning is the snapshot holding the slot, for the status.
+	snapRunning *SnapshotRunning
+	// snapListed: the snapshot index was read from the repository in this
+	// start.
+	snapListed bool
+	// snapListRetry is when a failed first listing is tried again.
+	snapListRetry time.Time
+	// snapQueued: the scheduler started snapshot work that has not ended.
+	snapQueued bool
+	snapInitMu sync.Mutex
 	// freed is closed and replaced whenever a slot is given back, which
 	// wakes a restore waiting for one.
 	freed chan struct{}
@@ -221,6 +250,9 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Disk == nil {
+		cfg.Disk = hostDisk{}
+	}
 	if cfg.ServerDirs == nil {
 		for _, d := range []string{"config", "cert", "db", "mail"} {
 			cfg.ServerDirs = append(cfg.ServerDirs, filepath.Join(cfg.BaseDir, d))
@@ -242,6 +274,7 @@ func New(cfg Config) (*Manager, error) {
 		busy:        map[string]string{},
 		deploying:   map[string]int{},
 		deployEnded: map[string]time.Time{},
+		dumps:       map[*activeDump]bool{},
 		freed:       make(chan struct{}),
 		restoreWait: map[string]int{},
 	}, nil
@@ -281,6 +314,7 @@ func (m *Manager) Start() {
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.recoveredCh = make(chan struct{})
+	m.snapReady, m.snapListed = false, false
 	if m.released {
 		m.runner = nil
 		m.released = false
@@ -408,3 +442,23 @@ const (
 	labelComplete = docker.LabelBackupPrefix + "complete"
 	labelTrigger  = docker.LabelBackupPrefix + "trigger"
 )
+
+// access opens a target for a run: a target of the settings, or the
+// snapshot repository, which is the manager's own.
+func (m *Manager) access(target string, opts settings.AccessOptions) (settings.Access, error) {
+	if target == SnapshotTarget {
+		if opts.Server != "" {
+			return settings.Access{}, refusal(settings.CodeInvalid, "Snapshots belong to this server.")
+		}
+		return m.snapshotAccess()
+	}
+	return m.settings().Access(target, opts)
+}
+
+// observe passes a failed run to the settings, which keep what it says
+// about a target; the snapshot repository has nothing to say there.
+func (m *Manager) observe(target string, err error) {
+	if target != SnapshotTarget {
+		m.settings().Observe(target, err)
+	}
+}

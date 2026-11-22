@@ -11,9 +11,9 @@ import (
 	"odac/internal/hub"
 )
 
-// Every backup action is closed to apps, and the API and the Hub offer the
-// same ones under the same names, except the staging of ODAC's own state,
-// which is the local CLI's alone.
+// Every backup and snapshot action is closed to apps, and the API and the
+// Hub offer the same ones under the same names, except the staging of
+// ODAC's own state, which is the local CLI's alone.
 func TestBackupActionsMatchTheHubAndAreClosedToApps(t *testing.T) {
 	src, err := os.ReadFile("backup.go")
 	if err != nil {
@@ -35,8 +35,8 @@ func TestBackupActionsMatchTheHubAndAreClosedToApps(t *testing.T) {
 		if api.AppMayCall(action) {
 			t.Errorf("%s is grantable to an app", action)
 		}
-		if !strings.HasPrefix(action, "backup.") {
-			t.Errorf("%s is outside the backup namespace", action)
+		if !strings.HasPrefix(action, "backup.") && !strings.HasPrefix(action, "snapshot.") {
+			t.Errorf("%s is outside the backup and snapshot namespaces", action)
 		}
 		_, onHub := h.Triggers(action)
 		if local := strings.HasPrefix(action, "backup.server."); local == onHub {

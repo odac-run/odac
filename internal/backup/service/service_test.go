@@ -50,6 +50,32 @@ type fakeManager struct {
 	server  backup.ServerRestoreRequest
 	woken   int
 	servers []proto.ServerDir
+	snapReq backup.SnapshotRestoreRequest
+	taken   string
+}
+
+func (f *fakeManager) SnapshotStatus() backup.SnapshotStatus {
+	return backup.SnapshotStatus{Periodic: []backup.PeriodicSnapshot{}, Deploys: []backup.DeployMark{}, Warnings: []backup.SnapshotWarning{}}
+}
+func (f *fakeManager) SnapshotHistory(string, int) []backup.SnapshotRecord { return nil }
+func (f *fakeManager) SnapshotPoints(string) []backup.SnapshotPoint        { return nil }
+func (f *fakeManager) TakeSnapshot(app string) (backup.SnapshotRunning, error) {
+	f.mu.Lock()
+	f.taken = app
+	f.mu.Unlock()
+	return backup.SnapshotRunning{Run: "s1", App: app, Event: backup.EventManual}, nil
+}
+func (f *fakeManager) DeleteSnapshot(context.Context, string) error { return nil }
+func (f *fakeManager) PreviewSnapshotRestore(_ context.Context, req backup.SnapshotRestoreRequest) (*backup.RestoreResult, error) {
+	f.mu.Lock()
+	f.snapReq = req
+	f.mu.Unlock()
+	return &backup.RestoreResult{Mode: backup.RestoreInPlace, Target: backup.SnapshotTarget, Run: req.Run, Status: backup.StatusPlanned, Apps: []backup.AppRestore{}}, nil
+}
+func (f *fakeManager) StartSnapshotRestore(ctx context.Context, req backup.SnapshotRestoreRequest) (*backup.RestoreResult, error) {
+	r, err := f.PreviewSnapshotRestore(ctx, req)
+	r.ID = "r2"
+	return r, err
 }
 
 func (f *fakeManager) Status() ([]backup.JobStatus, []backup.TargetStatus) { return nil, nil }
@@ -311,5 +337,39 @@ func TestServerStateIsTheOperatorsAlone(t *testing.T) {
 	}
 	if r := fx.svc.PendingServerRestore(api.Operator); !r.Status || r.Data != nil {
 		t.Fatalf("nothing staged on disk: %+v", r)
+	}
+}
+
+func TestSnapshotActions(t *testing.T) {
+	fx := newFixture(t)
+	r := fx.svc.SnapshotSettings()
+	if !r.Status || string(r.Data.(json.RawMessage)) != `{"enabled":true,"maxDiskPct":25}` {
+		t.Fatalf("settings %+v", r)
+	}
+	if r := fx.svc.UpdateSnapshotSettings(payload(t, `{"maxDiskPct":60}`)); r.Status {
+		t.Fatal("a share above the maximum was accepted")
+	}
+	r = fx.svc.UpdateSnapshotSettings(payload(t, `{"enabled":false}`))
+	if !r.Status || string(r.Data.(json.RawMessage)) != `{"enabled":false,"maxDiskPct":25}` || fx.mgr.woken != 1 {
+		t.Fatalf("update %+v", r)
+	}
+	for name, r := range map[string]api.Result{
+		"status":  fx.svc.SnapshotStatus(),
+		"history": fx.svc.SnapshotHistory(nil),
+		"list":    fx.svc.SnapshotPoints(payload(t, `{"app":"web"}`)),
+	} {
+		raw := string(r.Data.(json.RawMessage))
+		if !r.Status || strings.Contains(raw, "null") {
+			t.Errorf("%s: %s", name, raw)
+		}
+	}
+	if r := fx.svc.TakeSnapshot(payload(t, `{"app":"web"}`)); !r.Status || fx.mgr.taken != "web" {
+		t.Fatalf("take %+v", r)
+	}
+	// The mode is left to the manager, which restores a snapshot in place
+	// unless an app of it no longer exists.
+	r = fx.svc.StartSnapshotRestore(payload(t, `{"run":"x","apps":["web"],"skipSafety":true}`))
+	if !r.Status || fx.mgr.snapReq.Mode != "" || !fx.mgr.snapReq.SkipSafety || fx.mgr.snapReq.Run != "x" {
+		t.Fatalf("restore %+v %+v", r, fx.mgr.snapReq)
 	}
 }

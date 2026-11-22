@@ -19,6 +19,16 @@ func freeBytes(dir string) (int64, bool) {
 	return int64(st.Bavail) * int64(st.Bsize), true
 }
 
+// diskSpace reports the bytes free to this process and the size of the
+// file system holding dir.
+func diskSpace(dir string) (free, total int64, ok bool) {
+	var st unix.Statfs_t
+	if unix.Statfs(dir, &st) != nil {
+		return 0, 0, false
+	}
+	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize), true
+}
+
 // ownerOf is the owner of a directory, which a file the restore writes
 // into it takes, so that a database running as its own user can read it.
 func ownerOf(fi os.FileInfo) (uid, gid int, ok bool) {

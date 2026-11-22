@@ -132,6 +132,9 @@ func TestDockerRestorePostgres(t *testing.T) {
 		Apps: h.apps, States: c, Planner: planner, Loader: planner, Control: ctl,
 		NewRunner: func() (Runner, error) { return FromRunner(rn), nil },
 		BaseDir:   base, ServerDirs: []string{},
+		// The safety copy before the restore is a snapshot.
+		ServerID:  testServerID,
+		Disk:      roomyDisk{},
 		OnRecord:  func(r RunRecord) { h.recs <- r },
 		OnRestore: func(r RestoreResult) { mu.Lock(); done = append(done, r); mu.Unlock() },
 	})

@@ -173,7 +173,7 @@ func (m *Manager) AppsDir() string { return m.appsPath() }
 // DeleteRestoredApp removes an app a restore created and could not finish,
 // with its directory.
 func (m *Manager) DeleteRestoredApp(name string) error {
-	if r := m.Delete(api.Operator, name, true); r != nil && !r.Status {
+	if r := m.deleteApp(api.Operator, name, true, false); r != nil && !r.Status {
 		return fmt.Errorf("delete %s: %v", name, r.Message)
 	}
 	return nil

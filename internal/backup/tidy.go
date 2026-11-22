@@ -21,10 +21,12 @@ const tidyLimit = 2 * time.Hour
 // keeps or deletes, so an app and its linked database never come back from
 // different moments.
 type runInfo struct {
-	id   string
-	job  string
-	time time.Time
-	ids  []string
+	id      string
+	job     string
+	trigger string
+	time    time.Time
+	ids     []string
+	bytes   int64
 }
 
 // groupRuns turns snapshots into runs, each at the start of its first
@@ -37,13 +39,14 @@ func groupRuns(snaps []proto.Snapshot) map[string]*runInfo {
 		}
 		r := out[s.Run]
 		if r == nil {
-			r = &runInfo{id: s.Run, job: s.Source.Job, time: s.Start}
+			r = &runInfo{id: s.Run, job: s.Source.Job, trigger: s.Trigger, time: s.Start}
 			out[s.Run] = r
 		}
 		if s.Start.Before(r.time) {
 			r.time = s.Start
 		}
 		r.ids = append(r.ids, s.ID)
+		r.bytes += s.Bytes
 	}
 	return out
 }
@@ -69,6 +72,9 @@ type tidyResult struct {
 // (kept backups of deleted jobs, jobs this server no longer knows) are
 // never touched.
 func (m *Manager) tidy(ctx context.Context, target string, maint *proto.Result) (out tidyResult) {
+	if target == SnapshotTarget {
+		return m.tidySnapshots(ctx, maint, 0)
+	}
 	set := m.settings()
 	jobs, err := set.Jobs()
 	if err != nil {
@@ -139,6 +145,9 @@ func (m *Manager) tidy(ctx context.Context, target string, maint *proto.Result) 
 	for _, id := range thin.Thin(now, series, policies) {
 		doomed[id] = true
 	}
+	for _, id := range legacySafety(now, runs) {
+		doomed[id] = true
+	}
 	for _, r := range runs {
 		// A run whose rest a deploy held back is not partial for good.
 		if _, thinned := policies[r.job]; thinned && partial[r.id] && !held[r.id] && r.time.Before(newest[r.job]) {
@@ -172,6 +181,28 @@ func (m *Manager) tidy(ctx context.Context, target string, maint *proto.Result) 
 			return doomed[r] || !there && !d.followUpHolds(r)
 		})
 	})
+	return out
+}
+
+// legacySafety are the safety backups before an in-place restore that
+// went to the restore's target before snapshots existed, under the job
+// safetyJob, which has no policy. They are kept the way snapshots of an
+// event are: the last few, for as long as a deleted app's snapshots.
+func legacySafety(now time.Time, runs map[string]*runInfo) []string {
+	var list []*runInfo
+	for _, r := range runs {
+		if r.job == safetyJob {
+			list = append(list, r)
+		}
+	}
+	slices.SortFunc(list, func(a, b *runInfo) int { return a.time.Compare(b.time) })
+	rules := thin.DefaultSnapshotRules
+	var out []string
+	for i, r := range list {
+		if i < len(list)-rules.KeepEvents || now.Sub(r.time) > rules.Gone {
+			out = append(out, r.id)
+		}
+	}
 	return out
 }
 
@@ -267,7 +298,7 @@ func lastRepo(f []proto.Freed) int64 {
 // maintenance forward when its free space is under the floor, which is
 // where space decisions are made.
 func (m *Manager) checkFloor(ctx context.Context, target string) {
-	a, err := m.settings().Access(target, settings.AccessOptions{})
+	a, err := m.access(target, settings.AccessOptions{})
 	if err != nil || a.Repo.Storage.Filesystem == nil {
 		return
 	}
@@ -344,12 +375,11 @@ func (m *Manager) call(ctx context.Context, target string, write bool, shape fun
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	set := m.settings()
 	r, err := m.currentRunner()
 	if err != nil {
 		return nil, err
 	}
-	a, err := set.Access(target, settings.AccessOptions{Write: write})
+	a, err := m.access(target, settings.AccessOptions{Write: write})
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +392,7 @@ func (m *Manager) call(ctx context.Context, target string, write bool, shape fun
 	defer cancel()
 	res, err := r.Run(runCtx, runner.Invocation{Request: req, Target: a.Target, Handler: h, Labels: map[string]string{labelKind: req.Op, labelTarget: target}})
 	if err != nil && !errors.Is(err, runner.ErrReleased) {
-		set.Observe(target, err)
+		m.observe(target, err)
 	}
 	return res, err
 }

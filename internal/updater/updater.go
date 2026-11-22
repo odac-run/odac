@@ -57,6 +57,13 @@ type SystemControl interface {
 	Stop(exceptWeb bool)
 }
 
+// Snapshotter takes a snapshot of ODAC's own state before an update, within
+// a bounded time, and returns a line for the log; the backup manager
+// implements it. It never stops the update.
+type Snapshotter interface {
+	BeforeUpdate() string
+}
+
 // WebService is the Proxy/DNS surface used during the handover overlap.
 type WebService interface {
 	Stop()
@@ -81,6 +88,7 @@ type Updater struct {
 
 	sysMu sync.Mutex
 	sys   SystemControl
+	snap  Snapshotter
 
 	// Test seams. Production values: runtime.GOOS, os.Hostname,
 	// os.ReadFile, the /.dockerenv stat, os.Exit and Node's load-bearing
@@ -142,6 +150,27 @@ func (u *Updater) SetSystem(sys SystemControl) {
 	u.sysMu.Lock()
 	u.sys = sys
 	u.sysMu.Unlock()
+}
+
+// SetSnapshotter has every later update take a snapshot of ODAC's own
+// state first, once the new image is ready.
+func (u *Updater) SetSnapshotter(s Snapshotter) {
+	u.sysMu.Lock()
+	u.snap = s
+	u.sysMu.Unlock()
+}
+
+// snapshot takes the snapshot before an update, if one is wired.
+func (u *Updater) snapshot() {
+	u.sysMu.Lock()
+	s := u.snap
+	u.sysMu.Unlock()
+	if s == nil {
+		return
+	}
+	if note := s.BeforeUpdate(); note != "" {
+		u.log.Log("%s", note)
+	}
 }
 
 func (u *Updater) system() SystemControl {
@@ -285,6 +314,9 @@ func (u *Updater) Start() (api.Result, error) {
 	go func() { // Node: setTimeout(…, 1) — the update runs detached
 		err := u.download()
 		if err == nil {
+			// After the download, so a pull that fails costs no snapshot,
+			// and before the handover begins.
+			u.snapshot()
 			err = u.execute()
 		}
 		if err != nil {
