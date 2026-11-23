@@ -889,8 +889,9 @@ func (c *Client) Rename(oldName, newName string) error {
 
 // StreamLogs follows the container's stdout/stderr, demuxing into the two
 // writers, until the stream ends or stop() is called. A non-zero since
-// starts at that moment instead of the container's first line. Returns nil
-// when the container does not exist (Node returns a nil stream on 404).
+// starts at that moment instead of the container's first line. stop()
+// returns once the copy has ended, so nothing is written after it. Returns
+// nil when the container does not exist (Node returns a nil stream on 404).
 func (c *Client) StreamLogs(name string, since time.Time, stdout, stderr io.Writer) (stop func(), err error) {
 	if !c.available {
 		return nil, nil
@@ -908,11 +909,13 @@ func (c *Client) StreamLogs(name string, since time.Time, stdout, stderr io.Writ
 		}
 		return nil, nil
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer rc.Close()
 		stdcopy.StdCopy(stdout, stderr, rc)
 	}()
-	return func() { cancel(); rc.Close() }, nil
+	return func() { cancel(); rc.Close(); <-done }, nil
 }
 
 // IsRunning reports the container's State.Running (false on any error;

@@ -1361,12 +1361,18 @@ func TestGetBackendReadsSocketDirFromTheMount(t *testing.T) {
 
 func TestStreamLogsStartsWhereTheLogLeftOff(t *testing.T) {
 	f := newFakeAPI()
+	f.logOutputs["web"] = "line\n"
 	c := New(f, Options{})
 	var out, errOut bytes.Buffer
 	stop, _ := c.StreamLogs("web", time.Time{}, &out, &errOut)
 	stop()
 	stop, _ = c.StreamLogs("web", time.Unix(1700000000, 5), &out, &errOut)
 	stop()
+	// stop() waits for the copy, so both streams have landed and neither
+	// writes into the buffers after it.
+	if got := out.String(); got != "line\nline\n" {
+		t.Errorf("out = %q", got)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.logOpts) != 2 || f.logOpts[0].Since != "" || f.logOpts[1].Since != "1700000000.000000005" {
