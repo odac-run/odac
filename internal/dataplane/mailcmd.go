@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -172,7 +173,11 @@ var boundaryRe = regexp.MustCompile(`boundary="?([^";\s]+)"?`)
 // domain, an app only as a domain routed to it, and anyone else (the zero
 // Caller) as none. A domain of another app answers like an unknown one, the
 // rule the mTLS handlers follow, because the message goes out DKIM-signed for
-// that domain.
+// that domain. For an app the same holds for the key that signs it, which
+// odac-mail finds by walking up from the sender's domain (a subdomain record
+// without a key of its own is signed with its parent's), and for every
+// address in a From or Sender header, which is what a mail client shows as
+// the author whatever the envelope says.
 func (m *Mail) Send(caller api.Caller, data any, rawData json.RawMessage) api.Result {
 	dm, _ := data.(map[string]any)
 	if !truthy(data) || dm == nil || !truthy(dm["from"]) || !truthy(dm["to"]) || !truthy(dm["header"]) {
@@ -189,26 +194,25 @@ func (m *Mail) Send(caller api.Caller, data any, rawData json.RawMessage) api.Re
 		return api.Res(false, __("Invalid email address."))
 	}
 
-	// Sender domain: split on dots, strip leading labels while more than two
-	// remain and no configured domain matches.
 	domainPart := ""
 	if parts := strings.Split(fromAddr, "@"); len(parts) > 1 {
 		domainPart = parts[1]
 	}
-	labels := strings.Split(domainPart, ".")
-	var domain string
+	var domain, signer string
+	owned := false
 	m.cfg.View(func() {
 		domains := m.cfg.Map("domains")
-		for len(labels) > 2 && !truthy(domains[strings.Join(labels, ".")]) {
-			labels = labels[1:]
-		}
-		domain = strings.Join(labels, ".")
-		if !truthy(domains[domain]) || !callerOwnsDomain(caller, domains[domain]) {
-			domain = ""
+		domain = senderRecord(domains, domainPart)
+		owned = truthy(domains[domain]) && callerOwnsDomain(caller, domains[domain])
+		if s := signingRecord(domains, domainPart); owned && s != "" && !callerOwnsDomain(caller, domains[s]) {
+			signer = s
 		}
 	})
-	if domain == "" {
-		return api.Res(false, __("Domain %s not found.", strings.Join(labels, ".")))
+	if !owned {
+		return api.Res(false, __("Domain %s not found.", domain))
+	}
+	if signer != "" {
+		return api.Res(false, __("Domain %s has no DKIM key of its own, so its mail would be signed as %s.", domain, signer))
 	}
 
 	headerMap, _ := dm["header"].(map[string]any)
@@ -230,16 +234,42 @@ func (m *Mail) Send(caller api.Caller, data any, rawData json.RawMessage) api.Re
 	// To, and a subject reading "re: from: x" suppress From.
 	headers := ""
 	present := map[string]bool{}
+	var authors []string
 	for _, key := range headerKeysInOrder(rawData, headerMap) {
 		value := jsString(headerMap[key])
 		if !validHeaderName(key) || strings.ContainsAny(value, "\r\n") {
 			return api.Res(false, __("Invalid header %s.", strconv.Quote(key)))
 		}
 		present[strings.ToLower(key)] = true
+		if authorHeaders[strings.ToLower(key)] && !caller.Root {
+			list, err := mail.ParseAddressList(value)
+			if err != nil || len(list) == 0 {
+				return api.Res(false, __("Invalid header %s.", strconv.Quote(key)))
+			}
+			for _, a := range list {
+				authors = append(authors, a.Address)
+			}
+		}
 		if isMultipart && key == "Content-Type" {
 			continue // rebuilt below with the extracted boundary
 		}
 		headers += key + ": " + value + "\r\n"
+	}
+	if len(authors) > 0 {
+		foreign := ""
+		m.cfg.View(func() {
+			domains := m.cfg.Map("domains")
+			for _, a := range authors {
+				host := strings.TrimSuffix(strings.ToLower(address.Domain(a)), ".")
+				if rec := senderRecord(domains, host); !truthy(domains[rec]) || !callerOwnsDomain(caller, domains[rec]) {
+					foreign = rec
+					return
+				}
+			}
+		})
+		if foreign != "" {
+			return api.Res(false, __("Domain %s not found.", foreign))
+		}
 	}
 	if !present["from"] {
 		headers += "From: " + fromAddr + "\r\n"
@@ -305,6 +335,40 @@ func (m *Mail) Send(caller api.Caller, data any, rawData json.RawMessage) api.Re
 		return api.Res(false, res["message"])
 	}
 	return api.Res(false, __("Mail sending failed."))
+}
+
+// authorHeaders are the header fields a mail client may show as who sent a
+// message, keyed lowercase.
+var authorHeaders = map[string]bool{"from": true, "sender": true, "resent-from": true, "resent-sender": true}
+
+// senderRecord returns the domain record mail from host is sent as: host
+// itself or, stripping leading labels while more than two remain, the nearest
+// configured parent. The result is what a refusal names, configured or not.
+func senderRecord(domains map[string]any, host string) string {
+	labels := strings.Split(host, ".")
+	for len(labels) > 2 && !truthy(domains[strings.Join(labels, ".")]) {
+		labels = labels[1:]
+	}
+	return strings.Join(labels, ".")
+}
+
+// signingRecord returns the record whose DKIM key odac-mail signs mail from
+// host with, walking every label the way dkim.Signer does, or "" when none
+// on the way has one.
+func signingRecord(domains map[string]any, host string) string {
+	for d := host; d != ""; {
+		if rec, _ := domains[d].(map[string]any); rec != nil {
+			if cert, _ := rec["cert"].(map[string]any); cert != nil && cert["dkim"] != nil {
+				return d
+			}
+		}
+		i := strings.IndexByte(d, '.')
+		if i < 0 {
+			break
+		}
+		d = d[i+1:]
+	}
+	return ""
 }
 
 // callerOwnsDomain reports whether caller may send as the domain record.

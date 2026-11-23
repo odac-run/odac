@@ -507,6 +507,110 @@ func TestMailSendIsScopedToTheCallersDomains(t *testing.T) {
 	}
 }
 
+// odac-mail signs with the nearest DKIM key above the sender's domain, and
+// only a record with its own MX zone gets one, so an app's subdomain record
+// under another app's domain went out signed, and DMARC-aligned, as that
+// other app's domain.
+func TestMailSendRefusesAnotherAppsSigningKey(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	key := map[string]any{"dkim": map[string]any{"private": "/k", "selector": "default"}}
+	m.cfg.Set("domains", map[string]any{
+		"example.test":      map[string]any{"appId": "mailer", "cert": key},
+		"blog.example.test": map[string]any{"appId": "blog"},
+		"shop.example.test": map[string]any{"appId": "shop", "cert": key},
+		"own.test":          map[string]any{"appId": "blog", "cert": key},
+		"sub.own.test":      map[string]any{"appId": "blog"},
+	})
+	send := func(caller api.Caller, from string) api.Result {
+		data := `{"from":{"value":[{"address":"` + from + `"}]},"to":{"value":[{"address":"b@dest.test"}]},"header":{},"text":"t"}`
+		var v any
+		json.Unmarshal([]byte(data), &v)
+		return m.Send(caller, v, json.RawMessage(data))
+	}
+
+	blog := api.Caller{App: "blog"}
+	for _, from := range []string{"x@blog.example.test", "x@www.blog.example.test"} {
+		res := send(blog, from)
+		if want := "Domain blog.example.test has no DKIM key of its own, so its mail would be signed as example.test."; res.Status || res.Message != want {
+			t.Errorf("%s: %+v, want %q", from, res, want)
+		}
+	}
+	if f.count() != 0 {
+		t.Errorf("refused sends reached the module API (%d requests)", f.count())
+	}
+	for caller, from := range map[api.Caller]string{
+		blog:            "x@sub.own.test",      // the parent's key is the caller's own
+		{App: "shop"}:   "x@shop.example.test", // a key of its own
+		api.Operator:    "x@blog.example.test",
+		{App: "mailer"}: "x@example.test",
+	} {
+		if res := send(caller, from); !res.Status {
+			t.Errorf("%+v as %s refused: %+v", caller, from, res)
+		}
+	}
+}
+
+// The envelope check alone let an app write any From header: a local
+// mailbox showed the forged author, and with a key of its own the message
+// passed DMARC for any domain on this server it signed for.
+func TestMailSendScopesAuthorHeaders(t *testing.T) {
+	m, f := newTestMailCmd(t, nil)
+	m.cfg.Set("domains", map[string]any{
+		"shop.test":  map[string]any{"appId": "shop"},
+		"store.test": map[string]any{"appId": "shop"},
+		"bank.test":  map[string]any{"appId": "bank"},
+	})
+	send := func(caller api.Caller, header string) api.Result {
+		data := `{"from":{"value":[{"address":"noreply@shop.test"}]},"to":{"value":[{"address":"b@dest.test"}]},"header":` + header + `,"text":"t"}`
+		var v any
+		if err := json.Unmarshal([]byte(data), &v); err != nil {
+			t.Fatal(err)
+		}
+		return m.Send(caller, v, json.RawMessage(data))
+	}
+
+	shop := api.Caller{App: "shop"}
+	for name, header := range map[string]string{
+		"foreign From":           `{"From":"security@bank.test"}`,
+		"foreign subdomain":      `{"From":"x@mail.bank.test"}`,
+		"lowercase name":         `{"from":"security@bank.test"}`,
+		"second of two":          `{"From":"a@shop.test, security@bank.test"}`,
+		"display name":           `{"From":"\"Shop\" <security@bank.test>"}`,
+		"foreign Sender":         `{"Sender":"security@bank.test"}`,
+		"foreign Resent-From":    `{"Resent-From":"security@bank.test"}`,
+		"unparsed":               `{"From":"noreply@shop.test <security@bank.test>"}`,
+		"no address":             `{"From":"undisclosed:;"}`,
+		"unknown domain":         `{"From":"x@nowhere.test"}`,
+		"both spellings, one ok": `{"From":"a@shop.test","FROM":"security@bank.test"}`,
+	} {
+		if res := send(shop, header); res.Status {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if f.count() != 0 {
+		t.Errorf("refused sends reached the module API (%d requests)", f.count())
+	}
+
+	for name, header := range map[string]string{
+		"own From":         `{"From":"\"Shop\" <hello@shop.test>"}`,
+		"another own":      `{"From":"hello@store.test"}`,
+		"own uppercase":    `{"From":"Hello@SHOP.TEST"}`,
+		"own subdomain":    `{"Sender":"bounce@mail.shop.test"}`,
+		"foreign Reply-To": `{"Reply-To":"customer@bank.test"}`,
+	} {
+		if res := send(shop, header); !res.Status {
+			t.Errorf("%s: refused: %+v", name, res)
+		}
+	}
+	if res := send(api.Operator, `{"From":"security@bank.test"}`); !res.Status {
+		t.Errorf("operator refused: %+v", res)
+	}
+	body, _ := f.last(t).body["body"].(string)
+	if !strings.Contains(body, "From: security@bank.test\r\n") {
+		t.Errorf("operator's From not kept: %q", body)
+	}
+}
+
 // The request in docs/server/03-app/08-api-access.md, verbatim. The page once
 // showed from and to as bare strings, which this handler refuses.
 func TestMailSendDocExample(t *testing.T) {
