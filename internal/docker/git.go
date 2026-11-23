@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -21,25 +22,60 @@ const gitImage = "alpine/git@sha256:6a1fdb962814ca11508ca8d1bab94375b5b7ac4e4a9a
 // environment. Store and erase requests are ignored, so nothing is saved.
 const credentialHelper = `!f() { test "$1" = get && echo username=oauth2 && echo "password=$GIT_TOKEN"; }; f`
 
-// credentialEnv hands the token to git through a credential helper set in
-// the environment (GIT_CONFIG_*) and scoped to the remote's origin. A token
-// inside the remote URL is written to .git/config, where the compile step and
-// a custom Dockerfile's `COPY . .` both pick it up.
-func credentialEnv(remote, token string) []string {
+// gitHardening is command-level config for every sandbox run, which outranks
+// the clone's own. The compile step and a dev container write the clone as
+// root, so a hook in .git/hooks or an fsmonitor would otherwise run with the
+// token in its environment.
+var gitHardening = [][2]string{
+	{"core.hooksPath", "/dev/null"},
+	{"core.fsmonitor", "false"},
+}
+
+// gitEnv configures git through the environment (GIT_CONFIG_*): the hardening
+// above and, with a token, a credential helper scoped to the remote's origin.
+// A token inside the remote URL is written to .git/config, where the compile
+// step and a custom Dockerfile's `COPY . .` both pick it up.
+func gitEnv(remote, token string) []string {
+	pairs := append([][2]string(nil), gitHardening...)
+	origin := credentialOrigin(remote, token)
+	if origin != "" {
+		pairs = append(pairs, [2]string{"credential." + origin + ".helper", credentialHelper})
+	}
+	env := []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(len(pairs))}
+	for i, p := range pairs {
+		env = append(env, "GIT_CONFIG_KEY_"+strconv.Itoa(i)+"="+p[0], "GIT_CONFIG_VALUE_"+strconv.Itoa(i)+"="+p[1])
+	}
+	if origin != "" {
+		env = append(env, "GIT_TOKEN="+token)
+	}
+	return env
+}
+
+// credentialOrigin returns the scheme and host the token is offered to, or ""
+// when there is no token or the remote is not HTTPS.
+func credentialOrigin(remote, token string) string {
 	if token == "" || !strings.HasPrefix(remote, "https://") {
-		return nil
+		return ""
 	}
 	u, err := url.Parse(remote)
 	if err != nil || u.Host == "" {
-		return nil
+		return ""
 	}
-	return []string{
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=credential." + u.Scheme + "://" + u.Host + ".helper",
-		"GIT_CONFIG_VALUE_0=" + credentialHelper,
-		"GIT_TOKEN=" + token,
-	}
+	return u.Scheme + "://" + u.Host
 }
+
+// resetConfigScript replaces the clone's config with one that names only the
+// remote ODAC knows, before git runs with the token. The command-level config
+// cannot cover it: a credential helper or an include.path there is added to
+// ours, not replaced. A .git that is not a plain directory of its own (a
+// symlink, a gitfile, a linked worktree's commondir) is refused, since git
+// would read another config through it.
+const resetConfigScript = `test -d .git && test ! -L .git && test ! -e .git/commondir ` +
+	`|| { echo "Refusing to fetch: .git is not a plain repository directory." >&2; exit 1; }; ` +
+	`rm -f .git/config .git/config.worktree && ` +
+	`printf '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n' > .git/config && ` +
+	`git config remote.origin.url "$GIT_REMOTE_URL" && ` +
+	`git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && `
 
 // CloneRepo ports Container.cloneRepo: shallow-clones the repository into
 // targetDir using an ephemeral alpine/git sandbox container. All
@@ -66,7 +102,7 @@ func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildL
 	}
 	c.log.Log("[Git] Cloning %s (branch: %s) into isolated sandbox...", url, branchLabel)
 
-	env := append([]string{"GIT_REMOTE_URL=" + url}, credentialEnv(url, token)...)
+	env := append([]string{"GIT_REMOTE_URL=" + url}, gitEnv(url, token)...)
 	gitCmd := `git clone --depth 1 "$GIT_REMOTE_URL" .`
 	if branch != "" {
 		env = append(env, "GIT_BRANCH="+branch)
@@ -82,9 +118,9 @@ func (c *Client) CloneRepo(url, branch, targetDir, token string, buildLog BuildL
 }
 
 // FetchRepo ports Container.fetchRepo: fetches the branch head (or a
-// pinned commit) into an existing clone and hard-resets to it. The remote is
-// reset to the plain URL first, which also scrubs a token that a clone made
-// before credentialEnv left in .git/config.
+// pinned commit) into an existing clone and hard-resets to it. With a URL the
+// clone's config is rebuilt first (resetConfigScript), which also scrubs a
+// token an older clone left in the remote URL.
 func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buildLog BuildLog) error {
 	if !c.available {
 		return fmt.Errorf("Docker is not available")
@@ -114,7 +150,7 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 	if commitSha != "" {
 		env = append(env, "GIT_COMMIT_SHA="+commitSha)
 	}
-	env = append(env, credentialEnv(url, token)...)
+	env = append(env, gitEnv(url, token)...)
 
 	gitCmd := `git fetch --depth 1 origin "$GIT_BRANCH" && git reset --hard "origin/$GIT_BRANCH"`
 	if commitSha != "" {
@@ -122,7 +158,7 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 	}
 	if url != "" {
 		env = append(env, "GIT_REMOTE_URL="+url)
-		gitCmd = `git remote set-url origin "$GIT_REMOTE_URL" && ` + gitCmd
+		gitCmd = resetConfigScript + gitCmd
 	}
 
 	if err := c.runGitSandbox(gitCmd, env, targetDir, token, buildLog, "fetch"); err != nil {

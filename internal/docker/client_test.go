@@ -607,9 +607,13 @@ func TestCloneRepoCommandAssembly(t *testing.T) {
 	}
 	wantEnv := []string{
 		"GIT_REMOTE_URL=https://github.com/u/r.git",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
-		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor",
+		"GIT_CONFIG_VALUE_1=false",
+		"GIT_CONFIG_KEY_2=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_2=" + credentialHelper,
 		"GIT_TOKEN=sekret",
 		"GIT_BRANCH=main",
 		"GIT_TERMINAL_PROMPT=0",
@@ -641,7 +645,16 @@ func TestCloneRepoNoBranchNoToken(t *testing.T) {
 	if got := call.Config.Cmd[0]; got != `git clone --depth 1 "$GIT_REMOTE_URL" .` {
 		t.Errorf("cmd = %q", got)
 	}
-	if !reflect.DeepEqual(call.Config.Env, []string{"GIT_REMOTE_URL=https://github.com/u/r.git", "GIT_TERMINAL_PROMPT=0"}) {
+	wantEnv := []string{
+		"GIT_REMOTE_URL=https://github.com/u/r.git",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor",
+		"GIT_CONFIG_VALUE_1=false",
+		"GIT_TERMINAL_PROMPT=0",
+	}
+	if !reflect.DeepEqual(call.Config.Env, wantEnv) {
 		t.Errorf("env = %v", call.Config.Env)
 	}
 }
@@ -667,16 +680,20 @@ func TestFetchRepoCommandAssembly(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := f.created[0]
-	want := `git remote set-url origin "$GIT_REMOTE_URL" && git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"`
+	want := resetConfigScript + `git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"`
 	if got := call.Config.Cmd[0]; got != want {
 		t.Errorf("cmd = %q", got)
 	}
 	wantEnv := []string{
 		"GIT_BRANCH=dev",
 		"GIT_COMMIT_SHA=abc123",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
-		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor",
+		"GIT_CONFIG_VALUE_1=false",
+		"GIT_CONFIG_KEY_2=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_2=" + credentialHelper,
 		"GIT_TOKEN=tok",
 		"GIT_REMOTE_URL=https://github.com/u/r.git",
 		"GIT_TERMINAL_PROMPT=0",
@@ -690,7 +707,7 @@ func TestFetchRepoCommandAssembly(t *testing.T) {
 // TestGitTokenNeverReachesTheRemoteURL pins the token to the credential
 // helper: the remote URL is what git writes to .git/config, which the compile
 // step and a custom Dockerfile's COPY can read. A fetch without a token still
-// resets the remote, which scrubs a URL an older clone left a token in.
+// rebuilds the config, which scrubs a URL an older clone left a token in.
 func TestGitTokenNeverReachesTheRemoteURL(t *testing.T) {
 	f := newFakeAPI()
 	f.images[gitImage] = image.InspectResponse{}
@@ -715,15 +732,17 @@ func TestGitTokenNeverReachesTheRemoteURL(t *testing.T) {
 			}
 		}
 	}
-	scoped := "GIT_CONFIG_KEY_0=credential.https://git.example.com:8443.helper"
+	scoped := "GIT_CONFIG_KEY_2=credential.https://git.example.com:8443.helper"
 	if !slices.Contains(f.created[0].Config.Env, scoped) || !slices.Contains(f.created[1].Config.Env, scoped) {
 		t.Errorf("helper not scoped to the remote's origin: %v", f.created[0].Config.Env)
 	}
 	public := f.created[2]
-	if !strings.HasPrefix(public.Config.Cmd[0], `git remote set-url origin "$GIT_REMOTE_URL" && `) {
-		t.Errorf("fetch without a token does not reset the remote: %q", public.Config.Cmd[0])
+	if !strings.HasPrefix(public.Config.Cmd[0], resetConfigScript) {
+		t.Errorf("fetch without a token does not rebuild the config: %q", public.Config.Cmd[0])
 	}
-	if slices.Contains(public.Config.Env, "GIT_CONFIG_COUNT=1") {
+	if !slices.Contains(public.Config.Env, "GIT_CONFIG_COUNT=2") || slices.ContainsFunc(public.Config.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "GIT_TOKEN=")
+	}) {
 		t.Errorf("fetch without a token configures a helper: %v", public.Config.Env)
 	}
 }
