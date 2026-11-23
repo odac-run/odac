@@ -65,18 +65,71 @@ func TestAppCreatedContainerKeepsItsBindsInItsOwnDirectory(t *testing.T) {
 		}
 	})
 
-	t.Run("symlink left in a reused directory", func(t *testing.T) {
+	// app.delete with purge false keeps the directory, named after the app,
+	// so an app could create one of that name and bind the old one's data.
+	leftovers := map[string]func(t *testing.T, appDir string){
+		"data kept by a delete": func(t *testing.T, appDir string) {
+			if err := os.MkdirAll(filepath.Join(appDir, "data"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(appDir, "data", "db.sqlite"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink inside": func(t *testing.T, appDir string) {
+			if err := os.MkdirAll(filepath.Join(appDir, "data"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("/", filepath.Join(appDir, "data", "x")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"directory is a symlink": func(t *testing.T, appDir string) {
+			if err := os.Symlink(t.TempDir(), appDir); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a file in its place": func(t *testing.T, appDir string) {
+			if err := os.WriteFile(appDir, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, leave := range leftovers {
+		t.Run("left behind: "+name, func(t *testing.T) {
+			fx := newFixture(t, []any{})
+			if err := os.MkdirAll(fx.m.appsPath(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			leave(t, filepath.Join(fx.m.appsPath(), "made-by-app"))
+			r := fx.m.Create(app, templateWithVolumes([]any{vol("data", "/data")}, nil))
+			if msg, _ := r.Message.(string); r.Status || !strings.Contains(msg, "still on disk") {
+				t.Fatalf("an app created over a directory left behind: %+v", r)
+			}
+			if fx.findApp("made-by-app") != nil || fx.dock.runCallCount() != 0 {
+				t.Fatal("a refused create still left an app or a container behind")
+			}
+		})
+	}
+
+	t.Run("empty directory", func(t *testing.T) {
 		fx := newFixture(t, []any{})
-		appDir := filepath.Join(fx.m.appsPath(), "made-by-app")
-		if err := os.MkdirAll(filepath.Join(appDir, "data"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(fx.m.appsPath(), "made-by-app"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink("/", filepath.Join(appDir, "data", "x")); err != nil {
-			t.Fatal(err)
+		if r := fx.m.Create(app, templateWithVolumes([]any{vol("data", "/data")}, nil)); !r.Status {
+			t.Fatalf("an empty directory refused: %s", r.Message)
 		}
-		if r := fx.m.Create(app, templateWithVolumes([]any{vol("data/x", "/x")}, nil)); r.Status {
-			t.Fatal("a bind through a symlink left on disk was accepted")
+		fx.waitIdle(t)
+	})
+
+	t.Run("operator over a directory left behind", func(t *testing.T) {
+		fx := newFixture(t, []any{})
+		leftovers["data kept by a delete"](t, filepath.Join(fx.m.appsPath(), "made-by-app"))
+		if r := fx.m.Create(api.Operator, templateWithVolumes([]any{vol("data", "/data")}, nil)); !r.Status {
+			t.Fatalf("the operator's create refused: %s", r.Message)
 		}
+		fx.waitIdle(t)
 	})
 
 	t.Run("separate named volumes", func(t *testing.T) {

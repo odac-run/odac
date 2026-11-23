@@ -90,10 +90,9 @@ A `true` result means the message is queued, not that it reached the recipient. 
 An app that creates another app gets a container confined to that new app's own directory. Every volume must be a named volume, a relative path such as `data` or `db/files` that ODAC places under the new app's directory. The create is refused when a volume:
 
 - is an absolute host path (`/`, `/var/run/docker.sock`), or climbs out with `..`,
-- sits inside another of the same app's volumes, or contains the directory that holds its config files,
-- passes through a symbolic link that is already on disk.
+- sits inside another of the same app's volumes, or contains the directory that holds its config files.
 
-The first is the host itself. The other two would let the new container put a symbolic link where one of its own mounts resolves, which Docker follows on the next start. A recipe from the catalog is checked the same way when an app creates it. The CLI and the dashboard are not limited this way.
+The first is the host itself. The second would let the new container put a symbolic link where one of its own mounts resolves, which Docker follows on the next start. The create is also refused when a directory named after the new app is already on disk with something in it, which is what deleting an app without `purge` leaves behind: the new app would get the old one's data. Pick another name, or ask the operator to remove that directory on the server. A recipe from the catalog is checked the same way when an app creates it. The CLI and the dashboard are not limited this way.
 
 Connecting a host device (`app.device.add`) and switching an app to host networking (`app.network`) are never available to apps. A mapped block device is raw access to the host's disk, and the host network namespace reaches every service on the host's loopback. Both are the operator's decision, like [privileged access](05-privileged-access.md).
 
