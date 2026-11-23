@@ -36,6 +36,11 @@ type JobStatus struct {
 	// Manual is when a run the operator asked for was requested, while it
 	// waits for its turn.
 	Manual int64 `json:"manual,omitempty"`
+	// Used is the packed size the job's backups reference on its target,
+	// what its budget caps, as the last space decision after maintenance
+	// measured it. That walk runs only when the floor or a budget is at
+	// stake or garbage is still coming back, so a job may never report one.
+	Used int64 `json:"used,omitempty"`
 }
 
 // TargetStatus is a target's last measurement, maintenance and
@@ -64,7 +69,7 @@ func (m *Manager) Status() ([]JobStatus, []TargetStatus) {
 	now := m.now()
 	m.state.view(func(d *stateData) {
 		for id, js := range d.Jobs {
-			s := JobStatus{Job: id, Next: js.Next, Running: js.Running, Failures: js.Failures, PostponedSince: js.PostponedSince, Manual: js.Manual}
+			s := JobStatus{Job: id, Next: js.Next, Running: js.Running, Failures: js.Failures, PostponedSince: js.PostponedSince, Manual: js.Manual, Used: js.Used}
 			if f := d.FollowUps[id]; f != nil {
 				s.Waiting = slices.Clone(f.Apps)
 			}

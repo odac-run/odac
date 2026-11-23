@@ -37,7 +37,7 @@ func (m *Manager) RunNow(job string) (JobStatus, error) {
 		if js.Manual == 0 {
 			js.Manual = ms(m.now())
 		}
-		out = JobStatus{Job: job, Next: js.Next, Failures: js.Failures, PostponedSince: js.PostponedSince, Manual: js.Manual}
+		out = JobStatus{Job: job, Next: js.Next, Failures: js.Failures, PostponedSince: js.PostponedSince, Manual: js.Manual, Used: js.Used}
 	})
 	if running {
 		return JobStatus{}, refusal(settings.CodeInUse, "Backup job %s is running already.", job)

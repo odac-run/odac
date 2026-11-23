@@ -56,8 +56,11 @@ type tidyResult struct {
 	deleted int
 	space   *proto.Space
 	used    int64
-	notes   []string
-	err     error
+	// jobs is what each job of the target references after the space
+	// decisions, set only when they measured the repository.
+	jobs  map[string]int64
+	notes []string
+	err   error
 }
 
 // tidy deletes what the rules say goes from a target: every run of a job
@@ -167,9 +170,9 @@ func (m *Manager) tidy(ctx context.Context, target string, maint *proto.Result) 
 
 	if maint != nil && (len(budgets) > 0 || garbage > 0 || belowFloor(maint.Space)) {
 		kept := slices.DeleteFunc(series, func(b thin.Backup) bool { return doomed[b.ID] })
-		n, notes, sp, used, err := m.squeeze(ctx, target, kept, runs, policies, budgets, names)
-		out.deleted += n
-		out.notes, out.space, out.used, out.err = notes, sp, used, err
+		sq := m.squeeze(ctx, target, kept, runs, policies, budgets, names)
+		sq.deleted += out.deleted
+		out = sq
 	} else if maint == nil {
 		m.checkFloor(ctx, target)
 	}
@@ -224,7 +227,7 @@ func (d *stateData) followUpHolds(run string) bool {
 // that ignores the garbage, which under SafetyFull takes days to come back:
 // deciding again on the measured size alone would delete again for space
 // already on its way back.
-func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Backup, runs map[string]*runInfo, policies map[string]thin.Policy, budgets map[string]int64, names map[string]string) (int, []string, *proto.Space, int64, error) {
+func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Backup, runs map[string]*runInfo, policies map[string]thin.Policy, budgets map[string]int64, names map[string]string) (out tidyResult) {
 	jobs := map[string]bool{}
 	for j := range policies {
 		jobs[j] = true
@@ -239,11 +242,14 @@ func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Back
 		req.Share = shares(req)
 	}, proto.Handler{})
 	if err != nil {
-		return 0, nil, nil, 0, err
+		out.err = err
+		return out
 	}
 	sp := res.Space
+	out.space, out.used = sp, res.Bytes
 	if sp == nil || !sp.Detailed || len(sp.Freed) != len(order) {
-		return 0, nil, sp, res.Bytes, errors.New("backup: odac-backup did not measure the repository")
+		out.err = errors.New("backup: odac-backup did not measure the repository")
+		return out
 	}
 
 	var notes []string
@@ -289,10 +295,39 @@ func (m *Manager) squeeze(ctx context.Context, target string, series []thin.Back
 			notes = append(notes, fmt.Sprintf("job %s stays above its budget with only its newest backup left", names[job]))
 		}
 	}
+	out.notes = notes
 	if err := m.deleteRuns(ctx, target, runs, doomed); err != nil {
-		return 0, notes, sp, res.Bytes, err
+		out.err = err
+		out.jobs = jobUsage(sp, order, runs, nil, policies)
+		return out
 	}
-	return len(doomed), notes, sp, res.Bytes, nil
+	out.deleted = len(doomed)
+	out.jobs = jobUsage(sp, order, runs, doomed, policies)
+	return out
+}
+
+// jobUsage is what each job of the target references once the doomed runs
+// are gone: the measured size less what the longest deleted prefix of the
+// job's runs in the squeeze order frees. A run deleteRuns spared ends that
+// prefix, so the figure errs high, never low.
+func jobUsage(sp *proto.Space, order []string, runs map[string]*runInfo, doomed map[string]bool, policies map[string]thin.Policy) map[string]int64 {
+	out := make(map[string]int64, len(policies))
+	for job := range policies {
+		out[job] = sp.Jobs[job]
+	}
+	ended := map[string]bool{}
+	for i, id := range order {
+		job := runs[id].job
+		if ended[job] {
+			continue
+		}
+		if !doomed[id] {
+			ended[job] = true
+			continue
+		}
+		out[job] = max(sp.Jobs[job]-sp.Freed[i].Job, 0)
+	}
+	return out
 }
 
 func lastRepo(f []proto.Freed) int64 {

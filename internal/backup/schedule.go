@@ -511,6 +511,11 @@ func (m *Manager) afterMaintain(target string, rec *RunRecord, res *proto.Result
 			}
 			soon = soon || sp.Garbage > 0
 		}
+		for job, used := range tr.jobs {
+			if js := d.Jobs[job]; js != nil {
+				js.Used = used
+			}
+		}
 		t.Share = 0
 		if err == nil {
 			space := thin.Space{Used: t.Used, Garbage: t.Garbage, Free: t.Free, Total: t.Total, Peers: m.activePeers(t.Peers, now)}

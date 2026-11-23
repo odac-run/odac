@@ -110,6 +110,9 @@ type jobState struct {
 	// Manual is when the operator asked for a run that has not started
 	// yet; it runs beside the schedule, which keeps its own clock.
 	Manual int64 `json:"manual,omitempty"`
+	// Used is the packed size the job's backups reference on its target,
+	// as the last space decision measured it.
+	Used int64 `json:"used,omitempty"`
 }
 
 type targetState struct {

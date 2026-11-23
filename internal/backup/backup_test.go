@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"odac/internal/backup/proto"
 	"odac/internal/backup/runner"
 	"odac/internal/backup/settings"
+	"odac/internal/backup/thin"
 	"odac/internal/docker"
 	"odac/internal/sysinfo"
 )
@@ -389,10 +391,36 @@ func TestMaintenanceKeepsAJobWithinItsBudget(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		h.run.seed("t1", "j1", "r"+itoa(i), now.Add(-time.Duration(i)*24*time.Hour), 100)
 	}
+	h.m.state.update(func(d *stateData) { d.job("j1") })
 	h.m.maintain(context.Background(), "t1")
 	rec := h.record()
 	if len(h.run.runs("t1")) != 3 || rec.Deleted != 2 {
 		t.Fatalf("record %+v, runs %v", rec, h.run.runs("t1"))
+	}
+	// The job reports what it references after the deletions, not the
+	// measurement they were decided on.
+	jobs, _ := h.m.Status()
+	if len(jobs) != 1 || jobs[0].Used != 300 {
+		t.Fatalf("job status %+v", jobs)
+	}
+}
+
+func TestJobUsageStopsAtASparedRun(t *testing.T) {
+	runs := map[string]*runInfo{"a1": {job: "a"}, "a2": {job: "a"}, "a3": {job: "a"}, "b1": {job: "b"}}
+	order := []string{"a1", "b1", "a2", "a3"}
+	sp := &proto.Space{
+		Jobs:  map[string]int64{"a": 300, "b": 50},
+		Freed: []proto.Freed{{Repo: 100, Job: 100}, {Repo: 150, Job: 50}, {Repo: 250, Job: 200}, {Repo: 350, Job: 300}},
+	}
+	policies := map[string]thin.Policy{"a": {}, "b": {}, "c": {}}
+	// a2 was spared (a restore reads it), so only a1 counts as gone for a.
+	got := jobUsage(sp, order, runs, map[string]bool{"a1": true, "a3": true, "b1": true}, policies)
+	want := map[string]int64{"a": 200, "b": 0, "c": 0}
+	if !maps.Equal(got, want) {
+		t.Fatalf("usage %v, want %v", got, want)
+	}
+	if got := jobUsage(sp, order, runs, nil, policies); got["a"] != 300 || got["b"] != 50 {
+		t.Fatalf("usage without deletions %v", got)
 	}
 }
 
