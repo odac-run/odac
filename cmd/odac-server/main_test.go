@@ -326,25 +326,29 @@ func TestServerAPIRoundTrip(t *testing.T) {
 		t.Errorf("bad auth = %s", resp["message"])
 	}
 
-	// The unix socket serves the same protocol (skipped where the path
-	// would exceed the sun_path limit — the short HOME should fit).
+	// The unix socket serves the same protocol. It opens right after the TCP
+	// listener, so an answering TCP port does not mean it is there yet.
 	if runtime.GOOS != "windows" {
 		sock := filepath.Join(home, ".odac", "run", "api.sock")
-		if _, err := os.Stat(sock); err == nil {
-			conn, err := net.Dial("unix", sock)
-			if err != nil {
+		var conn net.Conn
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			var err error
+			if conn, err = net.Dial("unix", sock); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
 				t.Fatalf("unix dial: %v", err)
 			}
-			defer conn.Close()
-			conn.Write([]byte(`{"auth":"` + auth + `","action":"dns.list","data":[]}`))
-			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			buf := make([]byte, 64*1024)
-			n, _ := conn.Read(buf)
-			if !strings.Contains(string(buf[:n]), `"result":true`) {
-				t.Errorf("unix socket reply = %s", buf[:n])
-			}
-		} else {
-			t.Errorf("api.sock missing: %v", err)
+			time.Sleep(50 * time.Millisecond)
+		}
+		defer conn.Close()
+		conn.Write([]byte(`{"auth":"` + auth + `","action":"dns.list","data":[]}`))
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 64*1024)
+		n, _ := conn.Read(buf)
+		if !strings.Contains(string(buf[:n]), `"result":true`) {
+			t.Errorf("unix socket reply = %s", buf[:n])
 		}
 	}
 }
