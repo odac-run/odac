@@ -19,9 +19,14 @@ import (
 )
 
 const (
-	queueWorkers  = 8
-	queuePoll     = 10 * time.Second
-	queueLease    = 30 * time.Minute
+	queueWorkers = 8
+	queuePoll    = 10 * time.Second
+	queueLease   = 30 * time.Minute
+	// queueAttempt bounds one delivery attempt well inside the lease. The
+	// client's timeouts are per command, so a few slow or tarpitting MX hosts
+	// could otherwise keep an attempt past its lease, and another worker, or
+	// the other odac-mail during an update, would claim and deliver it again.
+	queueAttempt  = 25 * time.Minute
 	queueLifetime = 5 * 24 * time.Hour
 	// queueBookkeeping bounds the database write that closes an attempt. It
 	// runs on its own context so a shutdown still records the outcome.
@@ -47,13 +52,14 @@ type Sender interface {
 // expires, then reports a permanent failure to the sender. Without it a
 // greylisting server, or an odac-mail restart, lost the message silently.
 type Queue struct {
-	blobs    *blob.Store
-	lifetime time.Duration
-	now      func() time.Time
-	pruner   interface{ Prune() }
-	sender   Sender
-	store    *storage.Store
-	wake     chan struct{}
+	attemptLimit time.Duration
+	blobs        *blob.Store
+	lifetime     time.Duration
+	now          func() time.Time
+	pruner       interface{ Prune() }
+	sender       Sender
+	store        *storage.Store
+	wake         chan struct{}
 
 	slots chan struct{}
 
@@ -66,13 +72,14 @@ type Queue struct {
 // overrides how long a message is retried before it bounces.
 func NewQueue(store *storage.Store, blobs *blob.Store, sender Sender) *Queue {
 	q := &Queue{
-		blobs:    blobs,
-		lifetime: queueLifetime,
-		now:      time.Now,
-		sender:   sender,
-		store:    store,
-		wake:     make(chan struct{}, 1),
-		slots:    make(chan struct{}, queueWorkers),
+		attemptLimit: queueAttempt,
+		blobs:        blobs,
+		lifetime:     queueLifetime,
+		now:          time.Now,
+		sender:       sender,
+		store:        store,
+		wake:         make(chan struct{}, 1),
+		slots:        make(chan struct{}, queueWorkers),
 	}
 	if p, ok := sender.(interface{ Prune() }); ok {
 		q.pruner = p
@@ -258,7 +265,12 @@ func (q *Queue) attempt(ctx context.Context, row storage.OutboundRow) {
 		}
 		err = fmt.Errorf("message read failed: %w", err)
 	} else {
-		err = q.sender.Send(ctx, row.Sender, row.Recipient, body)
+		sendCtx, cancel := context.WithTimeout(ctx, q.attemptLimit)
+		err = q.sender.Send(sendCtx, row.Sender, row.Recipient, body)
+		if err != nil && ctx.Err() == nil && errors.Is(sendCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("attempt ran past %s: %w", q.attemptLimit, err)
+		}
+		cancel()
 	}
 
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), queueBookkeeping)

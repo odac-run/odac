@@ -230,6 +230,31 @@ func TestQueueStopReleasesInFlightDelivery(t *testing.T) {
 	}
 }
 
+// An attempt had no bound of its own, only per-command timeouts, so slow MX
+// hosts could keep it past its lease and a second worker would deliver the
+// same row again. It now ends inside the lease and is retried like any
+// temporary failure.
+func TestQueueAttemptEndsInsideItsLease(t *testing.T) {
+	if queueAttempt+queueBookkeeping >= queueLease {
+		t.Fatalf("an attempt (%s) and its bookkeeping (%s) do not fit the lease (%s)", queueAttempt, queueBookkeeping, queueLease)
+	}
+	f := newQueueFixture(t)
+	f.sender.block = true
+	f.q.attemptLimit = 50 * time.Millisecond
+	if err := f.q.Enqueue(context.Background(), "ali@emre.red", []string{"bob@remote.test"}, []byte(testBody)); err != nil {
+		t.Fatal(err)
+	}
+
+	f.round(t)
+	rows := f.queued(t)
+	if len(rows) != 1 || rows[0].Attempts != 1 || !strings.Contains(rows[0].LastError, "attempt ran past") {
+		t.Fatalf("after an overlong attempt the queue holds %+v, want one row rescheduled", rows)
+	}
+	if got := f.inbox(t); len(got) != 0 {
+		t.Errorf("an overlong attempt bounced (%d messages)", len(got))
+	}
+}
+
 // A submission is queued in the transaction that answers 250, next to the
 // sender's Sent copy, and the queue is woken.
 func TestSubmissionQueuesRemoteRecipients(t *testing.T) {
