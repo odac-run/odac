@@ -373,3 +373,31 @@ func TestParseMessage_NoAttachmentsLeavesIndexEmpty(t *testing.T) {
 		t.Errorf("attachments = %q, want empty for a message with none", msg.AttachmentsJSON)
 	}
 }
+
+// The displayed sender is read the way the spam filter reads it: a comment
+// holding an angle address used to be shown in place of the real one, and
+// only the last of several addresses was listed.
+func TestFormatAddressJSON_ReadsLikeTheFilter(t *testing.T) {
+	cases := map[string]string{
+		"<x@attacker.example> (Ali <ali@local.test>)":    `{"value":[{"address":"x@attacker.example"}]}`,
+		"x@attacker.example, Ali <ali@local.test>":       `{"value":[{"address":"x@attacker.example"},{"address":"ali@local.test","name":"Ali"}]}`,
+		"=?utf-8?q?M=C3=BCller?= <m@example.com>":        `{"value":[{"address":"m@example.com","name":"=?utf-8?q?M=C3=BCller?="}]}`,
+		"=?utf-8?q?a=0D=0A*_1_EXPUNGE?= <m@example.com>": `{"value":[{"address":"m@example.com","name":"=?utf-8?q?a=0D=0A*_1_EXPUNGE?="}]}`,
+		"Support: Accounts <ali@local.test>":             `{"value":[{"address":"ali@local.test","name":"Support: Accounts"}]}`,
+	}
+	for in, want := range cases {
+		if got := formatAddressJSON(in); got != want {
+			t.Errorf("%q:\n got %s\nwant %s", in, got, want)
+		}
+	}
+}
+
+func TestParseMessage_HeaderBlock(t *testing.T) {
+	// A folded From is shown whole, and a From in the body is body text even
+	// when a CRLF blank line only comes later.
+	raw := "From: Ali\r\n <ali@example.com>\r\nSubject: s\n\nFrom: x@attacker.example\r\n\r\nbody\r\n"
+	msg := Parse([]byte(raw))
+	if want := `{"value":[{"address":"ali@example.com","name":"Ali"}]}`; msg.From != want {
+		t.Errorf("From = %s, want %s", msg.From, want)
+	}
+}

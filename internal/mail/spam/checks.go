@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/mail"
 	"net/textproto"
+	"slices"
 	"strings"
+	"unicode"
 
 	"blitiri.com.ar/go/spf"
 	"github.com/emersion/go-msgauth/authres"
@@ -17,6 +19,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"odac/internal/mail/address"
+	"odac/internal/mail/mimetree"
 )
 
 // heloDomain returns the HELO argument when it names a domain, "" for an
@@ -82,9 +85,12 @@ func (e *evaluation) checkSPF() (bool, string) {
 	return result == spf.Pass, domain
 }
 
-// checkHeaders checks the header shape RFC 5322 requires and returns the
-// single RFC5322.From address, "" when there is no single one.
-func (e *evaluation) checkHeaders() string {
+// checkHeaders checks the header shape RFC 5322 requires and returns every
+// address a reader may take as the author: each address of every From field,
+// in the form author gives it. Mail clients show one of them however many
+// there are, so each is checked; returning none for an ambiguous From let
+// the one a client showed through unchecked.
+func (e *evaluation) checkHeaders() []string {
 	h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(e.raw))).ReadMIMEHeader()
 	if err != nil {
 		e.hit("HEADER_MALFORMED", 2)
@@ -97,27 +103,82 @@ func (e *evaluation) checkHeaders() string {
 		e.hit("MSGID_MISSING", 0.5)
 	}
 
-	froms := h.Values("From")
-	switch len(froms) {
-	case 0:
+	// Read leniently, as the display columns are: net/textproto stops at
+	// the first malformed line, and a From below it is still shown.
+	var froms []string
+	for _, f := range mimetree.Fields(e.raw[:mimetree.HeaderEnd(e.raw)]) {
+		if f.Name == "from" {
+			froms = append(froms, f.Value)
+		}
+	}
+	if len(froms) == 0 {
 		e.hit("FROM_MISSING", 3)
-		return ""
-	case 1:
-	default:
-		e.hit("FROM_MULTIPLE", 3)
-		return ""
+		return nil
 	}
-	list, err := mail.ParseAddressList(froms[0])
-	if err != nil || len(list) == 0 {
+
+	var authors []string
+	invalid := false
+	for _, v := range froms {
+		addrs, ok := fromAddresses(v)
+		invalid = invalid || !ok
+		for _, a := range addrs {
+			if a = author(a); a != "" && !slices.Contains(authors, a) {
+				authors = append(authors, a)
+			}
+		}
+	}
+	if invalid || len(authors) == 0 {
 		e.hit("FROM_INVALID", 2)
-		return ""
 	}
-	if len(list) > 1 {
+	if len(froms) > 1 || len(authors) > 1 {
 		// DMARC has no single author domain to evaluate (RFC 7489 6.6.1).
 		e.hit("FROM_MULTIPLE", 3)
+	}
+	return authors
+}
+
+// fromAddresses returns the addresses of one From value and whether it
+// parsed. A value net/mail refuses still reaches the reader, so every token
+// holding an "@" counts: one of them is what a client salvages from it.
+func fromAddresses(v string) ([]string, bool) {
+	if list, err := mail.ParseAddressList(v); err == nil && len(list) > 0 {
+		out := make([]string, len(list))
+		for i, a := range list {
+			out[i] = a.Address
+		}
+		return out, true
+	}
+	var out []string
+	for _, tok := range strings.FieldsFunc(v, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(`<>,;:"'()`, r)
+	}) {
+		if strings.Contains(tok, "@") {
+			out = append(out, tok)
+		}
+	}
+	return out, false
+}
+
+// author returns addr lowercased and without an absolute domain's trailing
+// dot, which names the same mailbox and the same domain, or "" when it has
+// no domain. Accounts and local domains are stored without the dot.
+func author(addr string) string {
+	addr = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(addr)), ".")
+	if address.Domain(addr) == "" {
 		return ""
 	}
-	return strings.ToLower(list[0].Address)
+	return addr
+}
+
+// authorDomains returns the distinct domains of authors, in order.
+func authorDomains(authors []string) []string {
+	var out []string
+	for _, a := range authors {
+		if d := address.Domain(a); !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // checkDKIM verifies up to maxDKIMSignatures signatures and returns the
@@ -162,14 +223,46 @@ func (e *evaluation) checkDKIM() []string {
 	return passed
 }
 
-// checkDMARC evaluates RFC 7489 for the From domain. It returns whether SPF
-// or DKIM produced an aligned pass (relaxed alignment when the domain
-// publishes no policy, which is what the local spoof check relies on), and
-// the action the published policy asks for on failure.
-func (e *evaluation) checkDMARC(from string, spfPass bool, spfDomain string, dkimPass []string) (bool, Action) {
-	if from == "" {
-		return false, Inbox
+// dmarcResult is the outcome of DMARC for one author domain.
+type dmarcResult struct {
+	aligned bool
+	action  Action
+	test    string
+	score   float64
+}
+
+// checkDMARC evaluates RFC 7489 for every author domain and applies the
+// strictest policy among the ones that fail (RFC 7489 6.6.1). It returns, per
+// domain, whether SPF or DKIM produced an aligned pass (relaxed alignment
+// when the domain publishes no policy, which is what the local spoof check
+// relies on), the action and the domain that decided it.
+func (e *evaluation) checkDMARC(domains []string, spfPass bool, spfDomain string, dkimPass []string) (map[string]bool, Action, string) {
+	aligned := make(map[string]bool, len(domains))
+	var worst dmarcResult
+	worstDomain := ""
+	allPass := len(domains) > 0
+	for i, d := range domains {
+		r := e.dmarcFor(d, spfPass, spfDomain, dkimPass)
+		aligned[d] = r.aligned
+		allPass = allPass && r.test == "DMARC_PASS"
+		if i == 0 || r.action > worst.action || (r.action == worst.action && r.score > worst.score) {
+			worst, worstDomain = r, d
+		}
 	}
+	// One score per message: a pass for each of several domains the sender
+	// controls must not buy its way under the Junk threshold.
+	if allPass {
+		e.hit("DMARC_PASS", -1)
+		return aligned, Inbox, ""
+	}
+	if worst.test != "" {
+		e.hit(worst.test, worst.score)
+	}
+	return aligned, worst.action, worstDomain
+}
+
+// dmarcFor evaluates RFC 7489 for one From domain.
+func (e *evaluation) dmarcFor(from string, spfPass bool, spfDomain string, dkimPass []string) dmarcResult {
 	res := &authres.DMARCResult{From: safe(from)}
 	e.results = append(e.results, res)
 
@@ -186,19 +279,18 @@ func (e *evaluation) checkDMARC(from string, spfPass bool, spfDomain string, dki
 	switch {
 	case dmarc.IsTempFail(err):
 		res.Value = authres.ResultTempError
-		return aligned, Inbox
+		return dmarcResult{aligned: aligned}
 	case errors.Is(err, dmarc.ErrNoPolicy):
 		res.Value = authres.ResultNone
-		return aligned, Inbox
+		return dmarcResult{aligned: aligned}
 	case err != nil:
 		res.Value = authres.ResultPermError
-		return aligned, Inbox
+		return dmarcResult{aligned: aligned}
 	}
 
 	if aligned {
 		res.Value = authres.ResultPass
-		e.hit("DMARC_PASS", -1)
-		return true, Inbox
+		return dmarcResult{aligned: true, test: "DMARC_PASS", score: -1}
 	}
 	res.Value = authres.ResultFail
 
@@ -222,16 +314,13 @@ func (e *evaluation) checkDMARC(from string, spfPass bool, spfDomain string, dki
 		if e.pending(from, spfMode, dkimMode) {
 			// The pass may only be missing because DNS timed out.
 			res.Value = authres.ResultTempError
-			return false, Defer
+			return dmarcResult{action: Defer}
 		}
-		e.hit("DMARC_REJECT", 4)
-		return false, Reject
+		return dmarcResult{action: Reject, test: "DMARC_REJECT", score: 4}
 	case dmarc.PolicyQuarantine:
-		e.hit("DMARC_QUARANTINE", 3)
-		return false, Junk
+		return dmarcResult{action: Junk, test: "DMARC_QUARANTINE", score: 3}
 	}
-	e.hit("DMARC_FAIL", 1.5)
-	return false, Inbox
+	return dmarcResult{test: "DMARC_FAIL", score: 1.5}
 }
 
 // checkLocalDomains refuses mail from outside that claims one of this
@@ -239,14 +328,18 @@ func (e *evaluation) checkDMARC(from string, spfPass bool, spfDomain string, dki
 // for it. The domain's owner is the only one who can make those pass, so a
 // third-party service it set up still gets through, whatever DMARC record the
 // domain publishes, if any.
-func (e *evaluation) checkLocalDomains(fromDomain string, fromAligned, spfPass bool, spfDomain string, dkimPass []string) (Action, string) {
+func (e *evaluation) checkLocalDomains(fromDomains []string, fromAligned map[string]bool, spfPass bool, spfDomain string, dkimPass []string) (Action, string) {
 	var claimed []string
-	if fromDomain != "" && !fromAligned && e.isLocal(fromDomain) {
-		e.hit("FROM_LOCAL_SPOOF", 4)
-		claimed = append(claimed, fromDomain)
+	for _, d := range fromDomains {
+		if !fromAligned[d] && e.isLocal(d) {
+			claimed = append(claimed, d)
+		}
 	}
-	envDomain := strings.ToLower(strings.TrimSuffix(address.Domain(e.env.MailFrom), "."))
-	if envDomain != "" && envDomain != fromDomain && e.isLocal(envDomain) && !authorized(envDomain, spfPass, spfDomain, dkimPass) {
+	if len(claimed) > 0 {
+		e.hit("FROM_LOCAL_SPOOF", 4)
+	}
+	envDomain := address.Domain(author(e.env.MailFrom))
+	if envDomain != "" && !slices.Contains(fromDomains, envDomain) && e.isLocal(envDomain) && !authorized(envDomain, spfPass, spfDomain, dkimPass) {
 		e.hit("MAILFROM_LOCAL_SPOOF", 4)
 		claimed = append(claimed, envDomain)
 	}
@@ -298,17 +391,16 @@ func (e *evaluation) pending(domain, spfMode, dkimMode string) bool {
 // in the envelope or in From, or "" when it names none. Every local account
 // sends through an authenticated session, so a message from outside naming
 // one did not leave this server and is forged, whatever SPF or DKIM say.
-func (e *evaluation) forgedAccount(fromAddr string) (string, error) {
+func (e *evaluation) forgedAccount(authors []string) (string, error) {
 	if e.f.accounts == nil {
 		return "", nil
 	}
-	seen := ""
-	for _, addr := range []string{e.env.MailFrom, fromAddr} {
-		addr = strings.ToLower(addr)
-		if addr == "" || addr == seen || !address.Valid(addr) {
+	var seen []string
+	for _, addr := range append([]string{author(e.env.MailFrom)}, authors...) {
+		if addr == "" || slices.Contains(seen, addr) || !address.Valid(addr) {
 			continue
 		}
-		seen = addr
+		seen = append(seen, addr)
 		local, err := e.f.accounts(e.ctx, addr)
 		if err != nil {
 			return "", err

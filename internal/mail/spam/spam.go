@@ -21,7 +21,6 @@ import (
 
 	"github.com/emersion/go-msgauth/authres"
 
-	"odac/internal/mail/address"
 	"odac/internal/mail/config"
 )
 
@@ -101,6 +100,9 @@ const JunkThreshold = 5.0
 const (
 	defaultTimeout    = 15 * time.Second
 	maxDKIMSignatures = 5
+	// maxAuthors bounds the From addresses checked, each with a DMARC lookup
+	// and an account lookup.
+	maxAuthors = 8
 
 	deferReason = "cannot verify the sender right now, try again later"
 )
@@ -242,10 +244,15 @@ func (f *Filter) evaluate(ctx context.Context, env Envelope, raw []byte) Verdict
 
 	e.checkHelo()
 	spfPass, spfDomain := e.checkSPF()
-	fromAddr := e.checkHeaders()
-	fromDomain := strings.TrimSuffix(address.Domain(fromAddr), ".")
+	authors := e.checkHeaders()
+	tooMany := len(authors) > maxAuthors
+	if tooMany {
+		e.hit("FROM_TOO_MANY", JunkThreshold)
+		authors = authors[:maxAuthors]
+	}
+	domains := authorDomains(authors)
 	dkimPass := e.checkDKIM()
-	aligned, policy := e.checkDMARC(fromDomain, spfPass, spfDomain, dkimPass)
+	aligned, policy, policyDomain := e.checkDMARC(domains, spfPass, spfDomain, dkimPass)
 
 	if !spfPass && len(dkimPass) == 0 {
 		e.hit("NO_AUTH", 1.5)
@@ -254,17 +261,17 @@ func (f *Filter) evaluate(ctx context.Context, env Envelope, raw []byte) Verdict
 	var reason string
 	switch policy {
 	case Reject:
-		reason = fmt.Sprintf("message from %s rejected per its domain's DMARC policy", fromDomain)
+		reason = fmt.Sprintf("message from %s rejected per its domain's DMARC policy", policyDomain)
 	case Defer:
 		reason = deferReason
 	}
-	if local, why := e.checkLocalDomains(fromDomain, aligned, spfPass, spfDomain, dkimPass); local >= policy && local != Inbox {
+	if local, why := e.checkLocalDomains(domains, aligned, spfPass, spfDomain, dkimPass); local >= policy && local != Inbox {
 		policy, reason = local, why
 	}
 
 	// A failed account lookup proves nothing either way, so the sender is
 	// asked to retry rather than told its mail was forged.
-	switch forged, err := e.forgedAccount(fromAddr); {
+	switch forged, err := e.forgedAccount(authors); {
 	case err != nil:
 		log.Printf("[SMTP Spam] Account lookup failed, deferring ip=%s from=%s: %v", e.env.IP, e.env.MailFrom, err)
 		if policy < Defer {
@@ -274,6 +281,13 @@ func (f *Filter) evaluate(ctx context.Context, env Envelope, raw []byte) Verdict
 		e.hit("LOCAL_ACCOUNT_FORGED", 10)
 		policy = Reject
 		reason = fmt.Sprintf("%s is a local account and only sends through this server", forged)
+	}
+
+	// Past maxAuthors some addresses went unchecked, and no legitimate
+	// message names that many authors (RFC 7489 6.6.1).
+	if tooMany && policy != Reject {
+		policy = Reject
+		reason = fmt.Sprintf("message names more than %d From addresses", maxAuthors)
 	}
 
 	action := Inbox

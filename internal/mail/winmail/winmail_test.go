@@ -368,3 +368,52 @@ func FuzzExpand(f *testing.F) {
 		}
 	})
 }
+
+func emptyWinmail(stream []byte) string {
+	return "Content-Type: application/ms-tnef; name=\"winmail.dat\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"\r\n" +
+		b64(stream)
+}
+
+// Removing an empty winmail.dat must keep every multipart valid: the first
+// part with no preamble before it, neighbours removed together, and a
+// multipart whose every part goes.
+func TestExpandRemovesEmptyWinmailAnywhere(t *testing.T) {
+	stream := tt.New().
+		Class("IPM.Note").
+		Attr(tt.LevelMessage, tt.AttMsgProps, (&tt.Props{}).
+			Binary(tt.PrRTFCompressed, tt.TypeBinary, tt.RTFExample1).Bytes()).
+		Bytes()
+	w := emptyWinmail(stream)
+	text := "Content-Type: text/plain; charset=utf-8\r\n\r\nMerhaba.\r\n"
+	head := "From: ali@example.com\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n"
+
+	cases := map[string]struct {
+		raw   string
+		inner int // parts left in the inner multipart, -1 when there is none
+	}{
+		"first":         {head + "--b\r\n" + w + "--b\r\n" + text + "--b--\r\n", -1},
+		"first two":     {head + "--b\r\n" + w + "--b\r\n" + w + "--b\r\n" + text + "--b--\r\n", -1},
+		"with preamble": {head + "preamble\r\n--b\r\n" + w + "--b\r\n" + text + "--b--\r\n", -1},
+		"every part": {head + "--b\r\n" + text +
+			"--b\r\nContent-Type: multipart/mixed; boundary=\"i\"\r\n\r\n--i\r\n" + w + "--i\r\n" + w + "--i--\r\n" +
+			"--b--\r\n", 1},
+	}
+	for name, tc := range cases {
+		out := mustExpand(t, []byte(tc.raw))
+		root := mimetree.Parse(out)
+		if root.Children[0].MediaType() != "text/plain" {
+			t.Errorf("%s: text part lost:\n%s", name, out)
+		}
+		if tc.inner < 0 && len(root.Children) != 1 {
+			t.Errorf("%s: %d parts left:\n%s", name, len(root.Children), out)
+		}
+		if tc.inner >= 0 && (len(root.Children) != 2 || len(root.Children[1].Children) != tc.inner) {
+			t.Errorf("%s: structure:\n%s", name, out)
+		}
+		if p := message.Parse(out); p.Text != "Merhaba." || p.AttachmentsJSON != "" {
+			t.Errorf("%s: text %q attachments %q:\n%s", name, p.Text, p.AttachmentsJSON, out)
+		}
+	}
+}

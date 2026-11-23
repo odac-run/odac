@@ -70,6 +70,7 @@ func expand(raw []byte) ([]byte, error) {
 	nl := newline(raw)
 	keepBody := hasBody(root, candidates)
 	budget := maxRTFBytes
+	left := map[*mimetree.Part]int{}
 	var edits []edit
 	for _, p := range candidates {
 		msg, err := tnef.Decode(p.DecodedBody(raw), tnef.Limits{MaxRTFBytes: max(budget, 1)})
@@ -87,7 +88,7 @@ func expand(raw []byte) ([]byte, error) {
 			continue
 		}
 		b := &builder{nl: nl}
-		e, err := replace(raw, root, p, b.content(msg, !keepBody), nl)
+		e, err := replace(raw, root, p, b.content(msg, !keepBody), nl, left)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +178,9 @@ type edit struct {
 // replace builds the edit that swaps p for e. A part inside a multipart is
 // replaced whole, or removed with its delimiter when e is empty; the message
 // itself keeps every header but the ones describing its content.
-func replace(raw []byte, root, p *mimetree.Part, e *entity, nl string) (edit, error) {
+//
+// left counts, per multipart, the parts not removed yet.
+func replace(raw []byte, root, p *mimetree.Part, e *entity, nl string, left map[*mimetree.Part]int) (edit, error) {
 	if p == root {
 		return edit{0, p.BodyEnd, rootEntity(raw, p, e, nl)}, nil
 	}
@@ -203,16 +206,34 @@ func replace(raw []byte, root, p *mimetree.Part, e *entity, nl string) (edit, er
 		// delimiter, which is already there.
 		return edit{p.HeaderStart, p.BodyEnd, bytes.TrimSuffix(data, []byte(nl))}, nil
 	}
-	if len(parent.Children) == 1 {
-		// A multipart needs a part; an empty one shows nothing.
+	if left[parent] == 0 {
+		left[parent] = len(parent.Children)
+	}
+	left[parent]--
+	if left[parent] == 0 {
+		// A multipart needs a part, so the last one stays, empty: an empty
+		// part shows nothing.
 		return edit{p.HeaderStart, p.BodyEnd, nil}, nil
 	}
 	// The delimiter line ends at HeaderStart, and the line break before it
 	// belongs to the delimiter (RFC 2046 5.1.1), so both go with the part.
-	start := bytes.LastIndexByte(raw[:max(p.HeaderStart-1, 0)], '\n')
-	if start < 0 || start < parent.BodyStart {
+	line := bytes.LastIndexByte(raw[:max(p.HeaderStart-1, 0)], '\n') + 1
+	if line < parent.BodyStart {
 		return edit{}, errors.New("winmail: delimiter not found")
 	}
+	if line == parent.BodyStart {
+		// The first delimiter with no preamble has no line break before it.
+		// The part goes with its own delimiter line, and the next delimiter
+		// keeps its line, now first, without the break before it.
+		end := p.BodyEnd
+		if bytes.HasPrefix(raw[end:], []byte("\r\n")) {
+			end += 2
+		} else if end < len(raw) && raw[end] == '\n' {
+			end++
+		}
+		return edit{line, end, nil}, nil
+	}
+	start := line - 1
 	if start > 0 && raw[start-1] == '\r' {
 		start--
 	}
@@ -268,20 +289,22 @@ func rootEntity(raw []byte, p *mimetree.Part, e *entity, nl string) []byte {
 	return b.Bytes()
 }
 
-// splice applies edits, which do not overlap, and prepends header.
+// splice applies edits and prepends header. Edits replacing a part never
+// overlap; two removals of neighbouring parts may share the line break
+// between them, which goes once.
 func splice(raw []byte, edits []edit, header string) []byte {
 	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
 	size := len(raw) + len(header)
 	for _, e := range edits {
 		size += len(e.data) - (e.end - e.start)
 	}
-	out := make([]byte, 0, size)
+	out := make([]byte, 0, max(size, 0))
 	out = append(out, header...)
 	pos := 0
 	for _, e := range edits {
-		out = append(out, raw[pos:e.start]...)
+		out = append(out, raw[pos:max(e.start, pos)]...)
 		out = append(out, e.data...)
-		pos = e.end
+		pos = max(e.end, pos)
 	}
 	return append(out, raw[pos:]...)
 }

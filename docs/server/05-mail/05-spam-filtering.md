@@ -6,7 +6,7 @@ ODAC screens every message that arrives without a login before it reaches a mail
 - **DKIM**: does the message carry a valid signature, and for which domain?
 - **DMARC**: does SPF or DKIM pass for the domain in the `From:` header, and what does that domain ask receivers to do when neither does?
 - **HELO**: the name the sending server introduces itself with. A bare IP, a name without a dot, or one of your own domains coming from outside all count against the message.
-- **Headers**: exactly one `From:` with one address, plus `Date:` and `Message-ID:`.
+- **Headers**: exactly one `From:` with one address, plus `Date:` and `Message-ID:`. A message with several `From:` addresses, or one ODAC cannot fully parse, has every address in it checked by the rules above and below, because a mail client may show any of them as the sender. With several domains, the strictest DMARC policy among the ones that fail applies.
 - **Forged local accounts**: a message from outside whose sender (the envelope sender or the `From:` header) is one of your own mail accounts.
 - **Local domain spoofing**: a message claiming any address on one of your own domains (or a subdomain), in the envelope sender or the `From:` header, with no SPF or DKIM pass for that domain.
 
@@ -17,7 +17,7 @@ Each check adds to a score. The result is one of:
 
 - **Inbox**: the score stays below 5.
 - **Junk**: the score reaches 5, or the sender's domain publishes DMARC `p=quarantine` and the message fails it.
-- **Rejected**: the sender's domain publishes DMARC `p=reject` and the message fails it, the message names one of your accounts as its sender, or it claims one of your domains without passing SPF or DKIM for it. The sending server receives `550 5.7.1` and informs the sender; ODAC sends no bounce itself.
+- **Rejected**: the sender's domain publishes DMARC `p=reject` and the message fails it, the message names one of your accounts as its sender, it claims one of your domains without passing SPF or DKIM for it, or its `From:` names more than 8 addresses. The sending server receives `550 5.7.1` and informs the sender; ODAC sends no bounce itself.
 
 Your accounts always send through ODAC with a login, so a message from outside naming one of them was not sent by it. It is refused even when SPF and DKIM pass. If the account lookup itself fails, the message gets a temporary `451` and the sending server retries.
 

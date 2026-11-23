@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -473,5 +474,101 @@ func TestAccountLookupFailureDefers(t *testing.T) {
 	v := f.Check(context.Background(), env("ali@local.test"), message("ali@local.test"))
 	if v.Action != Defer || v.Reason == "" {
 		t.Fatalf("got %s reason=%q, want defer", v.Action, v.Reason)
+	}
+}
+
+func headerMessage(fromLines string) []byte {
+	return []byte(fromLines +
+		"To: user@local.test\r\n" +
+		"Subject: hello\r\n" +
+		"Date: Thu, 19 Nov 2026 10:00:00 +0000\r\n" +
+		"Message-ID: <1@sender.example>\r\n" +
+		"\r\n" +
+		"body\r\n")
+}
+
+// Every address a client may show as the sender is checked. An ambiguous
+// From used to return no author at all, which skipped DMARC and both local
+// checks while the mailbox still listed the local address.
+func TestAmbiguousFromIsChecked(t *testing.T) {
+	cases := map[string]string{
+		"second address":   "From: x@sender.example, Boss <boss@local.test>\r\n",
+		"second field":     "From: x@sender.example\r\nFrom: Boss <boss@local.test>\r\n",
+		"after a bad line": "Subject: x\r\nnot a header\r\nFrom: Boss <boss@local.test>\r\n",
+		"unparseable":      "From: Support: Accounts <boss@local.test>\r\n",
+		"trailing dot":     "From: <boss@local.test.>\r\n",
+		"folded":           "From: Boss\r\n <boss@local.test>\r\n",
+	}
+	for name, from := range cases {
+		v := newFilter(newDNS(), ModeEnforce).Check(context.Background(), env("x@sender.example"), headerMessage(from))
+		if v.Action != Reject || !hasTest(v, "FROM_LOCAL_SPOOF") {
+			t.Errorf("%s: got %s %v, want reject with FROM_LOCAL_SPOOF", name, v.Action, v.Tests)
+		}
+	}
+}
+
+// RFC 7489 6.6.1: with several author domains the strictest failing policy
+// applies.
+func TestDMARCAppliesToEveryAuthorDomain(t *testing.T) {
+	attacker := Envelope{IP: net.ParseIP("203.0.113.9"), Helo: "mail.attacker.example", MailFrom: "x@attacker.example"}
+	for _, from := range []string{
+		"From: x@attacker.example, CEO <ceo@sender.example>\r\n",
+		"From: x@attacker.example\r\nFrom: CEO <ceo@sender.example>\r\n",
+	} {
+		v := newFilter(newDNS(), ModeEnforce).Check(context.Background(), attacker, headerMessage(from))
+		if v.Action != Reject || !hasTest(v, "DMARC_REJECT") || !strings.Contains(v.Reason, "sender.example") {
+			t.Errorf("%q: got %s %v reason=%q, want DMARC reject", from, v.Action, v.Tests, v.Reason)
+		}
+	}
+}
+
+// Several passing domains of one sender earn one DMARC_PASS, not one each.
+func TestDMARCPassCountsOnce(t *testing.T) {
+	dns := newDNS()
+	raw := sign(t, dns, "sender.example", headerMessage("From: a@sender.example, b@bounce.sender.example\r\n"))
+	v := newFilter(dns, ModeEnforce).Check(context.Background(), env("a@sender.example"), raw)
+	n := 0
+	for _, test := range v.Tests {
+		if test == "DMARC_PASS" {
+			n++
+		}
+	}
+	if n != 1 || v.Action != Inbox {
+		t.Fatalf("got %s %v, want inbox with one DMARC_PASS", v.Action, v.Tests)
+	}
+}
+
+// An absolute domain names the same account, so its trailing dot cannot
+// hide one from the account check.
+func TestForgedAccountBehindAmbiguity(t *testing.T) {
+	dns := newDNS()
+	dns.txt["local.test"] = []string{"v=spf1 ip4:" + senderIP + " -all"}
+	cases := map[string]struct {
+		env Envelope
+		raw []byte
+	}{
+		"envelope trailing dot": {env("ali@local.test."), message("noreply@local.test")},
+		"header trailing dot":   {env("noreply@local.test"), headerMessage("From: <ali@local.test.>\r\n")},
+		"second address":        {env("noreply@local.test"), headerMessage("From: noreply@local.test, Ali <ali@local.test>\r\n")},
+		"second field":          {env("noreply@local.test"), headerMessage("From: noreply@local.test\r\nFrom: Ali <ali@local.test>\r\n")},
+	}
+	for name, tc := range cases {
+		v := withAccounts(newFilter(dns, ModeEnforce), "ali@local.test").Check(context.Background(), tc.env, tc.raw)
+		if v.Action != Reject || !hasTest(v, "LOCAL_ACCOUNT_FORGED") {
+			t.Errorf("%s: got %s %v, want reject with LOCAL_ACCOUNT_FORGED", name, v.Action, v.Tests)
+		}
+	}
+}
+
+func TestTooManyAuthorsRejected(t *testing.T) {
+	var addrs []string
+	for i := range maxAuthors + 1 {
+		addrs = append(addrs, fmt.Sprintf("a%d@sender.example", i))
+	}
+	dns := newDNS()
+	raw := sign(t, dns, "sender.example", headerMessage("From: "+strings.Join(addrs, ", ")+"\r\n"))
+	v := newFilter(dns, ModeEnforce).Check(context.Background(), env("a0@sender.example"), raw)
+	if v.Action != Reject || !hasTest(v, "FROM_TOO_MANY") {
+		t.Fatalf("got %s %v, want reject with FROM_TOO_MANY", v.Action, v.Tests)
 	}
 }
