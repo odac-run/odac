@@ -260,13 +260,13 @@ func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	return ok("ok")
 }
 func (f *fakeApp) SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult {
-	f.record("image:" + payload.Container + ":" + payload.Image + ":" + str(payload.Pull))
+	f.record("image:" + payload.Container + ":" + payload.Image + ":" + str(payload.Pull) + ":" + str(payload.RequireSnapshot))
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.imageResult
 }
 func (f *fakeApp) Rollback(payload appmgr.RollbackPayload) appmgr.RollbackResult {
-	f.record("rollback:" + payload.Container + ":" + payload.BuildID)
+	f.record("rollback:" + payload.Container + ":" + payload.BuildID + ":" + str(payload.RequireSnapshot))
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.rollback
@@ -798,6 +798,18 @@ func TestImageSetRepliesFlat(t *testing.T) {
 	if len(data) != 3 || data["success"] != true || data["changed"] != false {
 		t.Fatalf("unchanged reply = %v", data)
 	}
+
+	data = ask("req-4", appmgr.ImageSetResult{Reason: "snapshot", Message: "No snapshot."})
+	if data["reason"] != "snapshot" || data["rolledBack"] != false {
+		t.Fatalf("snapshot refusal = %v", data)
+	}
+	if _, ok := data["snapshot"]; ok {
+		t.Fatalf("a refusal without a snapshot names one: %v", data)
+	}
+	data = ask("req-5", appmgr.ImageSetResult{Reason: "unhealthy", RolledBack: true, Message: "Rolled back.", Snapshot: "s20261124T030000Z-abc"})
+	if data["snapshot"] != "s20261124T030000Z-abc" || data["reason"] != "unhealthy" {
+		t.Fatalf("failure after the snapshot = %v", data)
+	}
 }
 
 func TestRollbackRepliesFlat(t *testing.T) {
@@ -1111,7 +1123,9 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.network.isolate", map[string]any{"name": "web"}) // absent → off
 	run("app.image.set", map[string]any{"id": "res-1", "container": "db", "image": "postgres:17.6", "pull": true})
 	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "pull": "yes"}) // only true forces
+	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "requireSnapshot": true})
 	run("app.rollback", map[string]any{"id": "res-1", "container": "web", "buildId": "build_1_a"})
+	run("app.rollback", map[string]any{"container": "web", "buildId": "build_1_a", "requireSnapshot": "yes"}) // only true requires
 
 	want := []string{
 		"delete:web:true",
@@ -1127,9 +1141,11 @@ func TestPayloadMappings(t *testing.T) {
 		"isolate:web:on",
 		"isolate:web:off",
 		"isolate:web:off",
-		"image:db:postgres:17.6:true",
-		"image:db:postgres:17.6:false",
-		"rollback:web:build_1_a",
+		"image:db:postgres:17.6:true:false",
+		"image:db:postgres:17.6:false:false",
+		"image:db:postgres:17.6:false:true",
+		"rollback:web:build_1_a:false",
+		"rollback:web:build_1_a:false",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {

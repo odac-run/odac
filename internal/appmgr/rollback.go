@@ -10,13 +10,15 @@ import (
 // BuildMissing is app.rollback's reason when the target build's image is
 // not local; the rest of its closed set is shared with app.image.set
 // (ImageInvalid, ImageBusy, ImageStartFailed, ImageUnhealthy,
-// ImageRollbackFailed).
+// ImageRollbackFailed, ImageSnapshot).
 const BuildMissing = "missing"
 
-// RollbackPayload carries app.rollback's named arguments.
+// RollbackPayload carries app.rollback's named arguments; RequireSnapshot
+// is as in ImageSetPayload.
 type RollbackPayload struct {
-	Container string
-	BuildID   string
+	Container       string
+	BuildID         string
+	RequireSnapshot bool
 }
 
 // RollbackResult is app.rollback's reply, flat on the wire like
@@ -31,19 +33,16 @@ type RollbackResult struct {
 	Reason     string
 	RolledBack bool
 	Message    string
+	Snapshot   string
 }
 
 // ReplyFields renders the reply in the contract's key order. A failure
 // carries reason, rolledBack and message; a success names the builds only
 // when something changed, and previous and commitSha only when known.
+// Either ends with snapshot when one was taken.
 func (r RollbackResult) ReplyFields() jscanon.Obj {
 	if !r.Success {
-		return jscanon.Obj{
-			{K: "success", V: false},
-			{K: "reason", V: r.Reason},
-			{K: "rolledBack", V: r.RolledBack},
-			{K: "message", V: r.Message},
-		}
+		return withSnapshot(failureFields(r.Reason, r.RolledBack, r.Message), r.Snapshot)
 	}
 	obj := jscanon.Obj{{K: "success", V: true}, {K: "changed", V: r.Changed}}
 	if !r.Changed {
@@ -59,7 +58,7 @@ func (r RollbackResult) ReplyFields() jscanon.Obj {
 	if r.ImageID != "" {
 		obj = append(obj, jscanon.Field{K: "imageId", V: r.ImageID})
 	}
-	return obj
+	return withSnapshot(obj, r.Snapshot)
 }
 
 func rollbackFailure(reason string, rolledBack bool, format string, args ...any) RollbackResult {
@@ -79,6 +78,10 @@ func rollbackFailure(reason string, rolledBack bool, format string, args ...any)
 // the right build, and recoverImageChange finishes an interrupted rollback
 // unchanged.
 //
+// The snapshot comes first, while the current build serves: before the
+// target is tagged and before a green container starts, since the target's
+// code may migrate the data as it starts.
+//
 // An app that redeploys Blue-Green rolls back Blue-Green: traffic moves only
 // once the green container passed readiness, so a failure leaves the old
 // container serving and is reported as rolledBack (the app is on the
@@ -87,7 +90,7 @@ func rollbackFailure(reason string, rolledBack bool, format string, args ...any)
 //
 // Nothing here writes a build log or a tag, or reorders retention: the
 // target stays where it was in localBuilds.
-func (m *Manager) Rollback(p RollbackPayload) RollbackResult {
+func (m *Manager) Rollback(p RollbackPayload) (out RollbackResult) {
 	var name, typ, current, recorded string
 	var idNum float64
 	var active, dev bool
@@ -177,6 +180,14 @@ func (m *Manager) Rollback(p RollbackPayload) RollbackResult {
 	m.set(idNum, map[string]any{"status": "updating"})
 	restoreStatus := func() { m.set(idNum, map[string]any{"status": prevStatus}) }
 
+	snapRun, refusal := m.switchSnapshot(name, deadline, meta.Healthcheck, p.RequireSnapshot)
+	if refusal != "" {
+		restoreStatus()
+		return rollbackFailure(ImageSnapshot, false, "%s", refusal)
+	}
+	// Every answer from here on, failures included, names the snapshot.
+	defer func() { out.Snapshot = snapRun }()
+
 	zdd := m.zddEligible(name, idNum)
 	marker := map[string]any{"image": target, "build": p.BuildID}
 	greenName := ""
@@ -218,12 +229,12 @@ func (m *Manager) Rollback(p RollbackPayload) RollbackResult {
 		m.proxyPurge(idNum)
 	}
 
-	out := RollbackResult{Success: true, Changed: true, BuildID: p.BuildID, Previous: previous, CommitSha: identity.commitSha, ImageID: meta.ID}
+	done := RollbackResult{Success: true, Changed: true, BuildID: p.BuildID, Previous: previous, CommitSha: identity.commitSha, ImageID: meta.ID}
 	if st, err := m.deps.Docker.InspectState(name); err == nil && st.ImageID != "" {
-		out.ImageID = st.ImageID
+		done.ImageID = st.ImageID
 	}
 	m.log.Log("Rolled %s back to build %s", name, p.BuildID)
-	return out
+	return done
 }
 
 // rollbackBlueGreen runs the green container on the target build and moves

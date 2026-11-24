@@ -1045,9 +1045,10 @@ func (h *Hub) buildCommands() {
 		fn: withApp(func(p any) (any, error) {
 			m := pmap(p)
 			return h.deps.App.SetImage(appmgr.ImageSetPayload{
-				Container: str(m["container"]),
-				Image:     str(m["image"]),
-				Pull:      m["pull"] == true,
+				Container:       str(m["container"]),
+				Image:           str(m["image"]),
+				Pull:            m["pull"] == true,
+				RequireSnapshot: m["requireSnapshot"] == true,
 			}), nil
 		}),
 		triggers: []string{"app.list", "app.stats"},
@@ -1056,8 +1057,9 @@ func (h *Hub) buildCommands() {
 		fn: withApp(func(p any) (any, error) {
 			m := pmap(p)
 			return h.deps.App.Rollback(appmgr.RollbackPayload{
-				Container: str(m["container"]),
-				BuildID:   str(m["buildId"]),
+				Container:       str(m["container"]),
+				BuildID:         str(m["buildId"]),
+				RequireSnapshot: m["requireSnapshot"] == true,
 			}), nil
 		}),
 		triggers: []string{"app.list", "app.stats"},

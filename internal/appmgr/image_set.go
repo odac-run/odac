@@ -34,7 +34,8 @@ const holdRepository = "odac-previous"
 const maxImageRef = 255
 
 // The closed set of reasons an image change reports; the dashboard keys its
-// handling on them.
+// handling on them. ImageSnapshot is a switch asked to require a snapshot
+// (requireSnapshot) that could not get one: nothing was touched.
 const (
 	ImageInvalid        = "invalid"
 	ImageBusy           = "busy"
@@ -42,21 +43,28 @@ const (
 	ImageStartFailed    = "start_failed"
 	ImageUnhealthy      = "unhealthy"
 	ImageRollbackFailed = "rollback_failed"
+	ImageSnapshot       = "snapshot"
 )
 
 // credentialInURL strips a userinfo part from any URL a daemon error quotes.
 var credentialInURL = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@`)
 
-// ImageSetPayload carries app.image.set's named arguments.
+// ImageSetPayload carries app.image.set's named arguments. RequireSnapshot
+// refuses the change, before anything is touched, when no snapshot can be
+// taken first: the dashboard asks for it on an automatic switch of an app
+// with data, whose data is never restored by itself.
 type ImageSetPayload struct {
-	Container string
-	Image     string
-	Pull      bool
+	Container       string
+	Image           string
+	Pull            bool
+	RequireSnapshot bool
 }
 
 // ImageSetResult is app.image.set's reply. It is flat on the wire
 // (ReplyFields), not the {success, message, data} envelope, because the
-// dashboard reads reason and rolledBack beside success.
+// dashboard reads reason and rolledBack beside success. Snapshot is the run
+// of the snapshot taken before the switch, the restore point of the data as
+// it was on the previous image.
 type ImageSetResult struct {
 	Success     bool
 	Changed     bool
@@ -67,19 +75,16 @@ type ImageSetResult struct {
 	Reason      string
 	RolledBack  bool
 	Message     string
+	Snapshot    string
 }
 
 // ReplyFields renders the reply in the contract's key order. Every failure
 // carries reason, rolledBack and message; a success names the images only
-// when something changed, and the digest only when it is known.
+// when something changed, and the digest only when it is known. Either ends
+// with snapshot when one was taken.
 func (r ImageSetResult) ReplyFields() jscanon.Obj {
 	if !r.Success {
-		return jscanon.Obj{
-			{K: "success", V: false},
-			{K: "reason", V: r.Reason},
-			{K: "rolledBack", V: r.RolledBack},
-			{K: "message", V: r.Message},
-		}
+		return withSnapshot(failureFields(r.Reason, r.RolledBack, r.Message), r.Snapshot)
 	}
 	obj := jscanon.Obj{{K: "success", V: true}, {K: "changed", V: r.Changed}}
 	if !r.Changed {
@@ -91,6 +96,25 @@ func (r ImageSetResult) ReplyFields() jscanon.Obj {
 	}
 	if r.ImageDigest != "" {
 		obj = append(obj, jscanon.Field{K: "imageDigest", V: r.ImageDigest})
+	}
+	return withSnapshot(obj, r.Snapshot)
+}
+
+// failureFields is the failure shape both switches share.
+func failureFields(reason string, rolledBack bool, message string) jscanon.Obj {
+	return jscanon.Obj{
+		{K: "success", V: false},
+		{K: "reason", V: reason},
+		{K: "rolledBack", V: rolledBack},
+		{K: "message", V: message},
+	}
+}
+
+// withSnapshot appends the snapshot run when there is one; absent is "none
+// was taken", never an empty string.
+func withSnapshot(obj jscanon.Obj, run string) jscanon.Obj {
+	if run != "" {
+		obj = append(obj, jscanon.Field{K: "snapshot", V: run})
 	}
 	return obj
 }
@@ -166,8 +190,9 @@ func shortError(err error) string {
 // keeping the app on the previous one unless the new one proves healthy.
 //
 // Order is what keeps the app up: the pull runs while the old container
-// serves, the container is recreated only once the image is local, and the
-// record names the new image only after the health gate passed. Anything
+// serves, then the version snapshot (switchSnapshot) while it still serves,
+// the container is recreated only once the image is local, and the record
+// names the new image only after the health gate passed. Anything
 // that fails after the recreate rolls back to the previous image, which is
 // still local (held under holdTag even when a re-pull untagged it).
 //
@@ -253,17 +278,35 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 		return ImageSetResult{Success: true}
 	}
 
-	// Step 3: keep the previous image reachable, then record the change on
+	// Step 3: the snapshot, while the old container still serves: after the
+	// pull, so it is as close to the switch as it can be, and done before
+	// the stop, because the new image's migration must not run beside its
+	// dump. A change that requires one and gets none ends here.
+	snapRun, refusal := m.switchSnapshot(name, deadline, meta.Healthcheck, p.RequireSnapshot)
+	if refusal != "" {
+		// A re-pull of the record's own tag moved it; nothing else changed.
+		if sameReference(current, target) && before.ImageID != "" && before.ImageID != meta.ID {
+			if err := m.deps.Docker.TagImage(before.ImageID, current); err != nil {
+				m.log.Error("Could not restore the tag %s for %s: %s", current, name, err.Error())
+			}
+		}
+		restoreStatus()
+		return imageFailure(ImageSnapshot, false, "%s", refusal)
+	}
+
+	// Step 4: keep the previous image reachable, then record the change on
 	// disk before anything stops.
 	sw := m.beginSwitch(name, idNum, current, before.ImageID, map[string]any{"image": target}, switchText{
 		op: "Image change", to: target, back: current, during: "the image change",
 	})
 	rollback := func(reason, cause string) ImageSetResult {
 		f := sw.rollback(reason, cause)
-		return imageFailure(f.reason, f.rolledBack, "%s", f.message)
+		out := imageFailure(f.reason, f.rolledBack, "%s", f.message)
+		out.Snapshot = snapRun
+		return out
 	}
 
-	// Step 4: recreate on the new image, same config. The record still
+	// Step 5: recreate on the new image, same config. The record still
 	// names the previous image, so only this start sees the new one.
 	m.endLogStream(name)
 	m.deps.Docker.Stop(name)
@@ -271,15 +314,15 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 		return rollback(ImageStartFailed, fmt.Sprintf("%s did not start: %s.", target, shortError(err)))
 	}
 
-	// Step 5: the health gate.
+	// Step 6: the health gate.
 	if cause := m.imageGate(name, idNum, meta.Healthcheck, deadline); cause != "" {
 		return rollback(ImageUnhealthy, cause)
 	}
 
-	// Step 6: the record follows only now, and the marker goes with it.
+	// Step 7: the record follows only now, and the marker goes with it.
 	sw.commit(func(app map[string]any) { app["image"] = target })
 
-	out := ImageSetResult{Success: true, Changed: true, Previous: current, Image: target, ImageID: meta.ID}
+	out := ImageSetResult{Success: true, Changed: true, Previous: current, Image: target, ImageID: meta.ID, Snapshot: snapRun}
 	if st, err := m.deps.Docker.InspectState(name); err == nil && st.ImageID != "" {
 		out.ImageID = st.ImageID
 	}
@@ -476,6 +519,81 @@ func (m *Manager) imageGate(name string, id float64, healthcheck bool, deadline 
 // stopping the new container and starting the previous one.
 func rollbackReserve(budget time.Duration) time.Duration {
 	return budget / 12
+}
+
+// startReserve is the part of the budget kept for stopping the old
+// container and starting the new one, before the gate's clock runs.
+func startReserve(budget time.Duration) time.Duration {
+	return budget / 24
+}
+
+// snapshotWait is how long a switch may wait for its snapshot: what is left
+// of its budget once the new container's start, the whole health gate and a
+// rollback have their share. A snapshot that ate into the gate's time would
+// turn a healthy image into a rollback for want of time.
+func (m *Manager) snapshotWait(deadline time.Time, healthcheck bool) time.Duration {
+	gate := m.imageStableFor
+	if healthcheck {
+		gate = max(gate, m.imageHealthTimeout)
+	}
+	return time.Until(deadline) - rollbackReserve(m.imageSetBudget) - startReserve(m.imageSetBudget) - gate
+}
+
+// switchSnapshot takes the snapshot a version switch (app.image.set,
+// app.rollback) starts with, while the old container serves, and returns its
+// run, "" when none was taken. A switch goes on without one, unless require
+// is set: refusal is then the reason, and the caller touches nothing. The
+// data is never restored by itself; the run is what an operator restores.
+func (m *Manager) switchSnapshot(name string, deadline time.Time, healthcheck, require bool) (run, refusal string) {
+	refuse := func(why string) string {
+		return sentence(why) + " The version was not changed, because the change requires a snapshot."
+	}
+	s := m.snapshotter()
+	if s == nil {
+		if require {
+			return "", refuse("Snapshots are not available on this server.")
+		}
+		return "", ""
+	}
+	snap, why := s.BeforeDeploy(name, SnapshotVersion)
+	if snap == nil {
+		if require {
+			return "", refuse(why)
+		}
+		return "", ""
+	}
+	defer snap.Cancel()
+	limit := m.snapshotWait(deadline, healthcheck)
+	if limit <= 0 {
+		note := "No snapshot before the version change: no time is left in the switch's budget."
+		if require {
+			return "", refuse(note)
+		}
+		m.log.Warn("%s: %s", name, note)
+		return "", ""
+	}
+	run, note := snap.Wait(limit)
+	if run == "" {
+		m.log.Warn("%s: %s", name, note)
+		if require {
+			return "", refuse(note)
+		}
+		return "", ""
+	}
+	m.log.Log("%s: %s", name, note)
+	return run, ""
+}
+
+// sentence ends s with a full stop unless it already ends a sentence.
+func sentence(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "No snapshot could be taken."
+	}
+	if strings.HasSuffix(s, ".") || strings.HasSuffix(s, "!") || strings.HasSuffix(s, "?") {
+		return s
+	}
+	return s + "."
 }
 
 func minTime(a, b time.Time) time.Time {
