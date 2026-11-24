@@ -100,6 +100,13 @@ type fakeAPI struct {
 
 	removedImages []string
 	prunedImages  bool
+	tagged        [][2]string // ImageTag source, target
+	tagErr        error
+
+	imageListErr     error
+	imageListFilters []string
+
+	imageInspects int
 }
 
 func newFakeAPI() *fakeAPI {
@@ -290,6 +297,7 @@ func (f *fakeAPI) ContainerExecResize(context.Context, string, container.ResizeO
 func (f *fakeAPI) ImageInspectWithRaw(_ context.Context, id string) (image.InspectResponse, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.imageInspects++
 	if resp, ok := f.images[id]; ok {
 		return resp, nil, nil
 	}
@@ -304,11 +312,40 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ image.PullOptions) 
 	if !ok {
 		body = `{"status":"Pulling from library"}` + "\n"
 	}
-	// The image becomes "local" after a pull that did not report an error.
-	if !strings.Contains(body, `"error"`) {
+	// The image becomes "local" after a pull that did not report an error;
+	// a seeded image keeps its config, as a re-pull of the same tag would.
+	if _, local := f.images[ref]; !local && !strings.Contains(body, `"error"`) {
 		f.images[ref] = image.InspectResponse{}
 	}
 	return io.NopCloser(bytes.NewReader([]byte(body))), nil
+}
+
+func (f *fakeAPI) ImageList(_ context.Context, opts image.ListOptions) ([]image.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.imageListErr != nil {
+		return nil, f.imageListErr
+	}
+	f.imageListFilters = append(f.imageListFilters, opts.Filters.Get("reference")...)
+	byID := map[string]*image.Summary{}
+	var order []string
+	for ref, img := range f.images {
+		if img.ID == "" || strings.HasPrefix(ref, "sha256:") {
+			continue
+		}
+		s := byID[img.ID]
+		if s == nil {
+			s = &image.Summary{ID: img.ID}
+			byID[img.ID] = s
+			order = append(order, img.ID)
+		}
+		s.RepoTags = append(s.RepoTags, ref)
+	}
+	out := make([]image.Summary, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
 }
 
 func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOptions) ([]image.DeleteResponse, error) {
@@ -320,6 +357,29 @@ func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOption
 	delete(f.images, id)
 	f.removedImages = append(f.removedImages, id)
 	return []image.DeleteResponse{{Deleted: id}}, nil
+}
+
+func (f *fakeAPI) ImageTag(_ context.Context, source, target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tagErr != nil {
+		return f.tagErr
+	}
+	img, ok := f.images[source]
+	if !ok {
+		for _, candidate := range f.images {
+			if candidate.ID == source {
+				img, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return notFoundErr{"No such image: " + source}
+	}
+	f.images[target] = img
+	f.tagged = append(f.tagged, [2]string{source, target})
+	return nil
 }
 
 func (f *fakeAPI) ImagesPrune(context.Context, filters.Args) (image.PruneReport, error) {

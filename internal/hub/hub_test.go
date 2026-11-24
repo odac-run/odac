@@ -164,7 +164,10 @@ type fakeApp struct {
 	mu    sync.Mutex
 	calls []string
 
-	listResult *api.Result
+	listResult  *api.Result
+	imageResult appmgr.ImageSetResult
+	rollback    appmgr.RollbackResult
+	redeploys   []appmgr.RedeployPayload
 
 	logCB    func(applog.Entry)
 	logUnsub func()
@@ -251,7 +254,22 @@ func (f *fakeApp) SetVolumes(id any, volumes []any, payloadOK bool) *api.Result 
 }
 func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	f.record("redeploy:" + payload.Container + ":" + payload.Branch)
+	f.mu.Lock()
+	f.redeploys = append(f.redeploys, payload)
+	f.mu.Unlock()
 	return ok("ok")
+}
+func (f *fakeApp) SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult {
+	f.record("image:" + payload.Container + ":" + payload.Image + ":" + str(payload.Pull))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.imageResult
+}
+func (f *fakeApp) Rollback(payload appmgr.RollbackPayload) appmgr.RollbackResult {
+	f.record("rollback:" + payload.Container + ":" + payload.BuildID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rollback
 }
 func (f *fakeApp) Restart(id any) *api.Result { f.record("restart:" + str(id)); return ok("ok") }
 func (f *fakeApp) Start(id any) *api.Result   { f.record("start:" + str(id)); return ok("ok") }
@@ -689,6 +707,165 @@ func TestCommandDispatchResponseAndTrigger(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandAnswersFailure(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	fx.cloud.send(t, jscanon.Obj{
+		{K: "id", V: "req-9"},
+		{K: "type", V: "command"},
+		{K: "data", V: map[string]any{"action": "app.image.switch", "payload": map[string]any{}}},
+		{K: "timestamp", V: time.Now().Unix()},
+	})
+
+	resp := fx.cloud.next(t)
+	if resp["type"] != "command.response" {
+		t.Fatalf("expected command.response, got %v", resp["type"])
+	}
+	data, _ := resp["data"].(map[string]any)
+	if data["id"] != "req-9" || data["success"] != false || data["message"] != "unknown action" {
+		t.Fatalf("bad response data: %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("unknown action carried data: %v", data)
+	}
+
+	// Without a request id there is nobody to answer.
+	fx.cloud.send(t, jscanon.Obj{
+		{K: "type", V: "command"},
+		{K: "data", V: map[string]any{"action": "app.image.switch", "payload": map[string]any{}}},
+		{K: "timestamp", V: time.Now().Unix()},
+	})
+	fx.cloud.expectNone(t, 150*time.Millisecond)
+}
+
+func TestImageSetRepliesFlat(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	ask := func(reqID string, result appmgr.ImageSetResult) map[string]any {
+		t.Helper()
+		fx.app.mu.Lock()
+		fx.app.imageResult = result
+		fx.app.mu.Unlock()
+		fx.cloud.send(t, jscanon.Obj{
+			{K: "id", V: reqID},
+			{K: "type", V: "command"},
+			{K: "data", V: map[string]any{"action": "app.image.set", "payload": map[string]any{
+				"id": "res-1", "container": "db", "image": "postgres:17.6-alpine", "pull": false,
+			}}},
+			{K: "timestamp", V: time.Now().Unix()},
+		})
+		for {
+			resp := fx.cloud.next(t)
+			if resp["type"] == "command.response" {
+				data, _ := resp["data"].(map[string]any)
+				return data
+			}
+		}
+	}
+
+	data := ask("req-1", appmgr.ImageSetResult{Reason: "unhealthy", RolledBack: true, Message: "Rolled back."})
+	if data["id"] != "req-1" || data["success"] != false || data["reason"] != "unhealthy" ||
+		data["rolledBack"] != true || data["message"] != "Rolled back." {
+		t.Fatalf("failure reply = %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("a flat reply must not nest data: %v", data)
+	}
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	data = ask("req-2", appmgr.ImageSetResult{
+		Success: true, Changed: true, Previous: "postgres:17.5-alpine", Image: "postgres:17.6-alpine",
+		ImageID: digest, ImageDigest: digest,
+	})
+	want := map[string]any{
+		"id": "req-2", "success": true, "changed": true, "previous": "postgres:17.5-alpine",
+		"image": "postgres:17.6-alpine", "imageId": digest, "imageDigest": digest,
+	}
+	if len(data) != len(want) {
+		t.Fatalf("success reply = %v", data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v, want %v", k, data[k], v)
+		}
+	}
+
+	data = ask("req-3", appmgr.ImageSetResult{Success: true})
+	if len(data) != 3 || data["success"] != true || data["changed"] != false {
+		t.Fatalf("unchanged reply = %v", data)
+	}
+}
+
+func TestRollbackRepliesFlat(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	ask := func(reqID string, result appmgr.RollbackResult) map[string]any {
+		t.Helper()
+		fx.app.mu.Lock()
+		fx.app.rollback = result
+		fx.app.mu.Unlock()
+		fx.cloud.send(t, jscanon.Obj{
+			{K: "id", V: reqID},
+			{K: "type", V: "command"},
+			{K: "data", V: map[string]any{"action": "app.rollback", "payload": map[string]any{
+				"id": "res-1", "container": "web", "buildId": "build_1785879774117_52c29d07",
+			}}},
+			{K: "timestamp", V: time.Now().Unix()},
+		})
+		for {
+			resp := fx.cloud.next(t)
+			if resp["type"] == "command.response" {
+				data, _ := resp["data"].(map[string]any)
+				return data
+			}
+		}
+	}
+
+	data := ask("req-1", appmgr.RollbackResult{Reason: "missing", Message: "Build is gone."})
+	if data["id"] != "req-1" || data["success"] != false || data["reason"] != "missing" ||
+		data["rolledBack"] != false || data["message"] != "Build is gone." {
+		t.Fatalf("failure reply = %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("a flat reply must not nest data: %v", data)
+	}
+	fx.app.mu.Lock()
+	calls := strings.Join(fx.app.calls, " ")
+	fx.app.mu.Unlock()
+	if !strings.Contains(calls, "rollback:web:build_1785879774117_52c29d07") {
+		t.Fatalf("calls = %s", calls)
+	}
+
+	imageID := "sha256:" + strings.Repeat("a", 64)
+	sha := strings.Repeat("b", 40)
+	data = ask("req-2", appmgr.RollbackResult{
+		Success: true, Changed: true, BuildID: "build_2", Previous: "build_3", CommitSha: sha, ImageID: imageID,
+	})
+	want := map[string]any{
+		"id": "req-2", "success": true, "changed": true, "buildId": "build_2", "previous": "build_3",
+		"commitSha": sha, "imageId": imageID,
+	}
+	if len(data) != len(want) {
+		t.Fatalf("success reply = %v", data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v, want %v", k, data[k], v)
+		}
+	}
+
+	data = ask("req-3", appmgr.RollbackResult{Success: true})
+	if len(data) != 3 || data["success"] != true || data["changed"] != false {
+		t.Fatalf("unchanged reply = %v", data)
+	}
+}
+
 func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	fx := newHubFixture(t)
 	fx.connect()
@@ -718,20 +895,6 @@ func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	if !dispatched {
 		t.Fatalf("restart not dispatched: %v", fx.app.called())
 	}
-}
-
-func TestUnknownCommandIgnored(t *testing.T) {
-	fx := newHubFixture(t)
-	fx.connect()
-	fx.waitIdle()
-
-	fx.cloud.send(t, jscanon.Obj{
-		{K: "id", V: "req-9"},
-		{K: "type", V: "command"},
-		{K: "data", V: map[string]any{"action": "bogus.action"}},
-		{K: "timestamp", V: time.Now().Unix()},
-	})
-	fx.cloud.expectNone(t, 200*time.Millisecond)
 }
 
 func TestCommandErrorAnswersFailure(t *testing.T) {
@@ -946,6 +1109,9 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.network.isolate", map[string]any{"name": "web", "isolated": true})
 	run("app.network.isolate", map[string]any{"name": "web", "isolated": false})
 	run("app.network.isolate", map[string]any{"name": "web"}) // absent → off
+	run("app.image.set", map[string]any{"id": "res-1", "container": "db", "image": "postgres:17.6", "pull": true})
+	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "pull": "yes"}) // only true forces
+	run("app.rollback", map[string]any{"id": "res-1", "container": "web", "buildId": "build_1_a"})
 
 	want := []string{
 		"delete:web:true",
@@ -961,6 +1127,9 @@ func TestPayloadMappings(t *testing.T) {
 		"isolate:web:on",
 		"isolate:web:off",
 		"isolate:web:off",
+		"image:db:postgres:17.6:true",
+		"image:db:postgres:17.6:false",
+		"rollback:web:build_1_a",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {
@@ -1223,6 +1392,7 @@ func TestCommandTableOrder(t *testing.T) {
 		"snapshot.status", "snapshot.list", "snapshot.history", "snapshot.settings",
 		"snapshot.settings.update", "snapshot.take", "snapshot.delete",
 		"snapshot.restore.preview", "snapshot.restore",
+		"app.image.set", "app.rollback",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1487,5 +1657,37 @@ func TestBackupListsAreNotTasksWithoutBackups(t *testing.T) {
 	}
 	if _, err := fx.h.commands["backup.job.list"].fn(nil); err == nil {
 		t.Fatal("backup.job.list answered without backups")
+	}
+}
+
+// TestRedeployForwardsRuntimePresence pins the one distinction the hub must
+// not flatten: an absent runtime member keeps the stored override, a null
+// one clears it.
+func TestRedeployForwardsRuntimePresence(t *testing.T) {
+	fx := newHubFixture(t)
+	fn := fx.h.commands["app.redeploy"].fn
+	for _, p := range []map[string]any{
+		{"container": "web", "commitSha": "abc1234"},
+		{"container": "web", "runtime": nil},
+		{"container": "web", "runtime": map[string]any{"version": "22"}},
+	} {
+		if _, err := fn(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.app.mu.Lock()
+	got := fx.app.redeploys
+	fx.app.mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("redeploys = %d", len(got))
+	}
+	if got[0].HasRuntime || got[0].CommitSha != "abc1234" {
+		t.Errorf("absent runtime = %+v", got[0])
+	}
+	if !got[1].HasRuntime || got[1].Runtime != nil {
+		t.Errorf("null runtime = %+v", got[1])
+	}
+	if v, _ := got[2].Runtime.(map[string]any); !got[2].HasRuntime || v["version"] != "22" {
+		t.Errorf("versioned runtime = %+v", got[2])
 	}
 }

@@ -580,3 +580,88 @@ func TestRuntimeStreamKnowsTheLastWrite(t *testing.T) {
 		t.Fatalf("last write %v, want %v", next.LastWrite(), at)
 	}
 }
+
+func TestBuildStreamSetMetadata(t *testing.T) {
+	l := newTestLogger(t)
+	b, err := l.NewBuildStream("build_2000_abc", map[string]any{"image": "img", "strategy": "git-app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetMetadata("runtime", map[string]any{"strategy": "go"})
+	b.SetMetadata("dropped", "x")
+	b.SetMetadata("dropped", nil)
+	if err := b.Finalize(false); err != nil {
+		t.Fatal(err)
+	}
+	b.SetMetadata("late", "x") // after the summary was written
+
+	last := l.GetLastBuild()
+	if last == nil {
+		t.Fatal("no build summary")
+	}
+	rt, _ := last.Metadata["runtime"].(map[string]any)
+	if rt["strategy"] != "go" || last.Metadata["image"] != "img" {
+		t.Errorf("metadata = %v", last.Metadata)
+	}
+	if _, ok := last.Metadata["dropped"]; ok {
+		t.Errorf("nil did not remove the key: %v", last.Metadata)
+	}
+	if _, ok := last.Metadata["late"]; ok {
+		t.Errorf("metadata written after Finalize: %v", last.Metadata)
+	}
+}
+
+func TestBuildPruneKeepsTheNewestSuccessesThroughFailures(t *testing.T) {
+	l := newTestLogger(t)
+	base := time.Now().Add(-time.Hour)
+	// Four successes, then eleven failures: the newest ten are all failures.
+	for i := 0; i < 15; i++ {
+		id := fmt.Sprintf("build_%03d", i)
+		b, _ := l.NewBuildStream(id, nil)
+		b.Finalize(i < 4)
+		ts := base.Add(time.Duration(i) * time.Minute)
+		os.Chtimes(filepath.Join(l.buildsDir, id+".json"), ts, ts)
+		os.Chtimes(filepath.Join(l.buildsDir, id+".log"), ts, ts)
+	}
+	l.pruneBuilds()
+
+	exists := func(id string) bool {
+		_, err := os.Stat(filepath.Join(l.buildsDir, id+".json"))
+		return err == nil
+	}
+	for _, id := range []string{"build_001", "build_002", "build_003"} {
+		if !exists(id) {
+			t.Errorf("%s is one of the three newest successes and must survive", id)
+		}
+	}
+	for _, id := range []string{"build_000", "build_004"} {
+		if exists(id) {
+			t.Errorf("%s must be pruned", id)
+		}
+	}
+	for i := 5; i < 15; i++ {
+		if id := fmt.Sprintf("build_%03d", i); !exists(id) {
+			t.Errorf("%s is one of the ten newest and must survive", id)
+		}
+	}
+}
+
+func TestBuildReadsOneSummaryByID(t *testing.T) {
+	l := newTestLogger(t)
+	b, _ := l.NewBuildStream("build_1785879774117_52c29d07", map[string]any{"image": "odac-app-web"})
+	if b.ID() != "build_1785879774117_52c29d07" {
+		t.Fatalf("ID() = %q", b.ID())
+	}
+	b.SetMetadata("commitSha", strings.Repeat("a", 40))
+	b.Finalize(true)
+
+	info := l.Build("build_1785879774117_52c29d07")
+	if info == nil || info.Status != "success" || info.Metadata["commitSha"] != strings.Repeat("a", 40) {
+		t.Fatalf("Build = %+v", info)
+	}
+	for _, id := range []string{"", ".", "..", "../x", "a/b", `a\b`, "build_missing"} {
+		if l.Build(id) != nil {
+			t.Errorf("Build(%q) must be nil", id)
+		}
+	}
+}

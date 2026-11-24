@@ -97,7 +97,9 @@ type API interface {
 	ContainerExecResize(ctx context.Context, execID string, options container.ResizeOptions) error
 	ImageInspectWithRaw(ctx context.Context, imageID string) (image.InspectResponse, []byte, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
 	ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error)
+	ImageTag(ctx context.Context, source, target string) error
 	ImagesPrune(ctx context.Context, pruneFilter filters.Args) (image.PruneReport, error)
 	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
@@ -187,6 +189,14 @@ type Client struct {
 	mu           sync.Mutex
 	activeBuilds map[string]bool
 	buildLoggers map[string]*applog.Logger
+
+	// images caches what app.list reports per image ID (ImageDigest,
+	// ImageVersionMeta), one inspect per ID.
+	images imageInfoCache
+
+	// dockerRoot is the engine's DockerRootDir once read (DataRootSpace);
+	// guarded by mu.
+	dockerRoot string
 
 	// appNames resolves managed app names for CreateTerminalSession
 	// (injected by main; see SetAppNames).
@@ -1150,6 +1160,9 @@ type Status struct {
 	StartTime string         `json:"startTime,omitempty"`
 	Networks  []string       `json:"networks,omitempty"`
 	GPU       *GPUAttachment `json:"gpu,omitempty"`
+	// ImageID is the image the container was created from (sha256:<hex>),
+	// read off the same inspect so List needs no second call to name it.
+	ImageID string `json:"imageId,omitempty"`
 }
 
 // GPUAttachment is the accelerator a container actually holds, read back from
@@ -1258,6 +1271,9 @@ func (c *Client) GetStatus(name string) Status {
 	}
 
 	st := Status{Restarts: data.RestartCount, Networks: networks, GPU: gpuAttachment(data.HostConfig)}
+	if imageIDRe.MatchString(data.Image) {
+		st.ImageID = data.Image
+	}
 	if data.State != nil {
 		st.Running = data.State.Running
 		st.StartTime = data.State.StartedAt

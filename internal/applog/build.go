@@ -65,6 +65,11 @@ func (l *Logger) NewBuildStream(buildID string, metadata map[string]any) (*Build
 // Path returns the on-disk build log path.
 func (b *BuildControl) Path() string { return b.logPath }
 
+// ID returns the build id the stream was opened with, which is also the
+// name of its summary and, for a git build that went live, its image tag.
+// It is fixed at construction, so no lock is needed.
+func (b *BuildControl) ID() string { return b.stats.ID }
+
 // Write feeds build output through the line analyzer (error/warning
 // heuristics, phase attribution, subscriber broadcast) and appends the raw
 // bytes to the log file. Implements io.Writer.
@@ -141,6 +146,22 @@ func (b *BuildControl) Write(p []byte) (int, error) {
 		l.notify(Build, e.typ, e.line, l.now().UnixMilli())
 	}
 	return len(p), err
+}
+
+// SetMetadata records a fact learned during the build in its summary, for
+// what is only known once the build has run (the runtime it built on). A
+// nil value removes the key. No-op after Finalize, which wrote the summary.
+func (b *BuildControl) SetMetadata(key string, value any) {
+	b.logger.mu.Lock()
+	defer b.logger.mu.Unlock()
+	if b.finalized {
+		return
+	}
+	if value == nil {
+		delete(b.stats.Metadata, key)
+		return
+	}
+	b.stats.Metadata[key] = value
 }
 
 // StartPhase records the start of a named phase.
