@@ -1472,6 +1472,16 @@ func TestCheckoutHead(t *testing.T) {
 		t.Errorf("cmd = %q", call.Config.Cmd[0])
 	}
 	assertSandboxed(t, f, call.HostConfig)
+	for _, want := range []string{"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null", "GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false"} {
+		if !slices.Contains(call.Config.Env, want) {
+			t.Errorf("env %v lacks %s: the probe runs without the git hardening", call.Config.Env, want)
+		}
+	}
+	for _, e := range call.Config.Env {
+		if strings.HasPrefix(e, "GIT_TOKEN=") || strings.Contains(e, "credential.") {
+			t.Errorf("the probe offers a credential: %s", e)
+		}
+	}
 	if len(f.removed) != 1 {
 		t.Errorf("sandbox not removed: %v", f.removed)
 	}

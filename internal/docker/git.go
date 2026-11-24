@@ -212,7 +212,10 @@ func (c *Client) FetchRepo(url, branch, targetDir, token, commitSha string, buil
 // CheckoutHead names the commit a checkout has, "" when git cannot name one.
 // It asks the git sandbox like every other HEAD read, because the tree is
 // written by repository code, and it never pulls: a host without the sandbox
-// image answers an error rather than a download nobody asked for.
+// image answers an error rather than a download nobody asked for. It carries
+// the same command-level hardening as every other git run (gitEnv): there is
+// no token here, but an fsmonitor planted in the clone's config would still
+// run inside the sandbox on rev-parse.
 func (c *Client) CheckoutHead(targetDir string) (string, error) {
 	if !c.available {
 		return "", fmt.Errorf("Docker is not available")
@@ -222,7 +225,7 @@ func (c *Client) CheckoutHead(targetDir string) (string, error) {
 	if _, _, err := c.api.ImageInspectWithRaw(ctx, gitImage); err != nil {
 		return "", err
 	}
-	return c.runGitSandbox(ctx, "true", nil, targetDir, "", nil, "rev-parse")
+	return c.runGitSandbox(ctx, "true", gitEnv("", ""), targetDir, "", nil, "rev-parse")
 }
 
 // headProbeTimeout bounds CheckoutHead, container start included.
