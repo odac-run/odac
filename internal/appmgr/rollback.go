@@ -120,13 +120,31 @@ func (m *Manager) Rollback(p RollbackPayload) (out RollbackResult) {
 		return rollbackFailure(ImageInvalid, false, "Invalid build id.")
 	case current != buildRepo(name):
 		return rollbackFailure(ImageInvalid, false, "App %s does not run on its own build image, so it has no kept builds.", name)
-	case !active:
+	}
+	// Check the processing lock before active: HoldApp persists active=false
+	// while a restore holds the app, and a rollback must answer busy rather
+	// than invalid.
+	if m.isCreating(name) || m.isProcessing(idNum) {
+		return rollbackFailure(ImageBusy, false, "App %s is already being processed.", name)
+	}
+	if !active {
 		return rollbackFailure(ImageInvalid, false, "App %s is stopped. Start it before rolling it back.", name)
 	}
 	if m.isCreating(name) || !m.tryLockProcessing(idNum) {
 		return rollbackFailure(ImageBusy, false, "App %s is already being processed.", name)
 	}
 	defer m.unlockProcessing(idNum)
+	m.cfg.View(func() {
+		if app := m.getLocked(idNum); app != nil {
+			active = app["active"] == true
+			prevStatus = app["status"]
+		} else {
+			active = false
+		}
+	})
+	if !active {
+		return rollbackFailure(ImageInvalid, false, "App %s is stopped. Start it before rolling it back.", name)
+	}
 
 	// Nothing was tried: the Cloud retries a busy answer.
 	if !m.deps.Docker.Available() {

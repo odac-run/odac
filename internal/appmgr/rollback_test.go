@@ -468,6 +468,23 @@ func TestRollbackRefusals(t *testing.T) {
 	}
 }
 
+func TestRollbackIsBusyWhileHeldForRestore(t *testing.T) {
+	fx := newRollbackFixture(t)
+	h, err := fx.m.HoldApp("web")
+	if err != nil {
+		t.Fatalf("HoldApp: %v", err)
+	}
+	res := fx.m.Rollback(RollbackPayload{Container: "web", BuildID: "build_200_b"})
+	if err := h.Release(true); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	fx.waitIdle(t)
+	if res.Success || res.Reason != ImageBusy || res.RolledBack {
+		t.Fatalf("Rollback while held for restore = %+v, want reason=%s", res, ImageBusy)
+	}
+	assertStillOnC(t, fx)
+}
+
 func TestRollbackIsBusyWhileAnotherOperationRuns(t *testing.T) {
 	fx := newRollbackFixture(t)
 	if !fx.m.tryLockProcessing(1) {

@@ -227,6 +227,12 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 	if refusal := imageChangeRefusal(typ, current, p.Image); refusal != "" {
 		return imageFailure(ImageInvalid, false, "%s", refusal)
 	}
+	// Check the processing lock before active: HoldApp persists active=false
+	// while a restore holds the app, and a switch must answer busy rather
+	// than invalid so callers retry instead of treating the app as stopped.
+	if m.isCreating(name) || m.isProcessing(idNum) {
+		return imageFailure(ImageBusy, false, "App %s is already being processed.", name)
+	}
 	// A stopped app has nothing to gate on, and starting it is not what
 	// was asked for.
 	if !active {
@@ -236,6 +242,19 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 		return imageFailure(ImageBusy, false, "App %s is already being processed.", name)
 	}
 	defer m.unlockProcessing(idNum)
+	// Re-check active once locked in case Stop completed between the read
+	// above and claiming the lock.
+	m.cfg.View(func() {
+		if app := m.getLocked(idNum); app != nil {
+			active = app["active"] == true
+			prevStatus = app["status"]
+		} else {
+			active = false
+		}
+	})
+	if !active {
+		return imageFailure(ImageInvalid, false, "App %s is stopped. Start it before changing its image.", name)
+	}
 
 	target := p.Image
 	deadline := time.Now().Add(m.imageSetBudget)

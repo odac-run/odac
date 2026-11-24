@@ -193,6 +193,25 @@ func TestSetImageRefusesAStoppedApp(t *testing.T) {
 	}
 }
 
+func TestSetImageIsBusyWhileHeldForRestore(t *testing.T) {
+	fx := newImageFixture(t)
+	h, err := fx.m.HoldApp("db")
+	if err != nil {
+		t.Fatalf("HoldApp: %v", err)
+	}
+	res := fx.m.SetImage(ImageSetPayload{Container: "db", Image: "postgres:17.6"})
+	if err := h.Release(true); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	fx.waitIdle(t)
+	if res.Success || res.Reason != ImageBusy || res.RolledBack {
+		t.Fatalf("SetImage while held for restore = %+v, want reason=%s", res, ImageBusy)
+	}
+	if len(fx.dock.pulls) != 0 {
+		t.Fatalf("a held app was pulled for: %v", fx.dock.pulls)
+	}
+}
+
 func TestSetImageIsBusyWhileAnotherOperationRuns(t *testing.T) {
 	fx := newImageFixture(t)
 	if !fx.m.tryLockProcessing(1) {

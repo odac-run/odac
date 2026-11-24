@@ -377,6 +377,12 @@ func (m *Manager) Restart(id any) *api.Result {
 	return res(false, __("Failed to restart app %s.", name))
 }
 
+func (m *Manager) isProcessing(id float64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.processing[id]
+}
+
 func (m *Manager) tryLockProcessing(id float64) bool {
 	return m.claimProcessing(id, math.MaxUint64)
 }
