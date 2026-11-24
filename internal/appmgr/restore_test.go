@@ -1,6 +1,7 @@
 package appmgr
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,7 +79,8 @@ func TestCreateRestoredAppKeepsNothingShared(t *testing.T) {
 			"manual": map[string]any{"DB_HOST": "db", "URL": "postgres://u:p@db:5432/app", "PATH_TO": "/srv/db/x", "CACHE": "redis://cache"},
 			"linked": []any{"db", "other"},
 		},
-		"template": map[string]any{"group": "blog", "name": "blog", "role": "web"},
+		"template":     map[string]any{"group": "blog", "name": "blog", "role": "web"},
+		imageChangeKey: map[string]any{"image": "nginx:2", "previous": "nginx", "hold": "odac-previous:app-7"},
 	}
 	r, err := fx.m.CreateRestoredApp(def, "web-restored", map[string]string{"web": "web-restored", "db": "db-restored"}, "blog-restored-x")
 	if err != nil {
@@ -89,7 +91,7 @@ func TestCreateRestoredAppKeepsNothingShared(t *testing.T) {
 	}
 	var app map[string]any
 	fx.cfg.View(func() { app = copyMap(fx.m.getLocked("web-restored")) })
-	if app == nil || app["active"] != false || app["api"] != nil || app["networkMode"] != nil || app["devices"] != nil || app["status"] != nil || app["id"] == float64(7) {
+	if app == nil || app["active"] != false || app["api"] != nil || app["networkMode"] != nil || app["devices"] != nil || app["status"] != nil || app["id"] == float64(7) || app[imageChangeKey] != nil {
 		t.Fatalf("record %v", app)
 	}
 	for _, p := range app["ports"].([]any) {
@@ -158,4 +160,41 @@ func TestRenameHosts(t *testing.T) {
 			t.Errorf("%q: %q, want %q", in, got, want)
 		}
 	}
+}
+
+// A switch's marker belongs to this server's switch in flight: a stored
+// definition never carries it, and a hold refuses an app whose marker no
+// operation owns, since its container may run an image the record does not
+// name until Check's recovery decides.
+func TestImageChangeMarkerStaysOutOfRestores(t *testing.T) {
+	marker := map[string]any{"image": "postgres:17", "previous": "postgres:16", "previousId": "sha256:" + strings.Repeat("1", 64)}
+	fx := newFixture(t, []any{map[string]any{"id": float64(1), "name": "db", "type": "container", "image": "postgres:16", "active": true, imageChangeKey: marker}})
+	fx.cfg.Mutate(func() { fx.m.apps = fx.m.loadAppsFromConfig() })
+	def, ok := fx.m.AppDefinition("db")
+	if !ok || def[imageChangeKey] != nil || def["image"] != "postgres:16" {
+		t.Fatalf("definition %v", def)
+	}
+	w := &deployLog{}
+	fx.m.SetDeployWatcher(w)
+	if _, err := fx.m.HoldApp("db"); !errors.Is(err, ErrImageChangePending) {
+		t.Fatalf("hold of a marked app: %v", err)
+	}
+	if len(fx.dock.stopped) != 0 {
+		t.Fatalf("a refused hold stopped the app: %v", fx.dock.stopped)
+	}
+	if !fx.m.tryLockProcessing(1) {
+		t.Fatal("a refused hold kept the processing lock")
+	}
+	fx.m.unlockProcessing(1)
+	var active any
+	fx.cfg.View(func() { active = fx.m.getLocked("db")["active"] })
+	if active != true {
+		t.Fatal("a refused hold marked the app inactive")
+	}
+	fx.cfg.Mutate(func() { delete(fx.m.getLocked("db"), imageChangeKey) })
+	h, err := fx.m.HoldApp("db")
+	if err != nil {
+		t.Fatalf("hold once recovered: %v", err)
+	}
+	h.Release(true)
 }

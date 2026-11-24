@@ -31,10 +31,20 @@ type AppHold struct {
 // ErrAppBusy is an app another operation holds, such as a deploy.
 var ErrAppBusy = errors.New("the app is being processed by another operation")
 
+// ErrImageChangePending is an app whose record still carries an image change
+// marker with no operation holding it: a version switch a restart cut short,
+// which Check has not finished yet (recoverImageChange). Its container may
+// run an image the record does not name, so a restore must not load data
+// into it until the recovery decided what it runs.
+var ErrImageChangePending = errors.New("an interrupted image change of the app is not recovered yet")
+
 // HoldApp stops the app and holds it for a restore. The app is marked
 // inactive while held and that is persisted, so a server that dies during
 // the restore does not have its check pulse start a database on data
-// that is half replaced; the restore's recovery marks it active again.
+// that is half replaced; the restore's recovery marks it active again. An
+// app with an image change marker is refused (ErrImageChangePending); the
+// marker is read under the processing lock, which every switch holds for as
+// long as its marker exists, so one found there is always a leftover.
 func (m *Manager) HoldApp(name string) (*AppHold, error) {
 	var (
 		id     float64
@@ -53,6 +63,16 @@ func (m *Manager) HoldApp(name string) (*AppHold, error) {
 	}
 	if m.isCreating(name) || !m.tryLockProcessing(id) {
 		return nil, fmt.Errorf("%s: %w", name, ErrAppBusy)
+	}
+	marked := false
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			marked = app[imageChangeKey] != nil
+		}
+	})
+	if marked {
+		m.unlockProcessing(id)
+		return nil, fmt.Errorf("%s: %w", name, ErrImageChangePending)
 	}
 	m.mu.Lock()
 	if m.restoring == nil {
@@ -160,7 +180,9 @@ func (m *Manager) SetAppActive(name string, active bool) bool {
 // AppDefinition returns the app's record as it is persisted, which a
 // backup stores beside the app's data so that it can be restored as a new
 // app, here or on another server. It holds the app's environment, and so
-// its credentials; the repository it goes to is encrypted.
+// its credentials; the repository it goes to is encrypted. The image change
+// marker is left out: it describes a switch in flight on this server (a hold
+// tag, a green container), never the app a restore point stands for.
 func (m *Manager) AppDefinition(name string) (map[string]any, bool) {
 	var out map[string]any
 	m.cfg.View(func() {
@@ -180,6 +202,7 @@ func (m *Manager) AppDefinition(name string) (map[string]any, bool) {
 			delete(out, k)
 		}
 		delete(out, "activeContainerId")
+		delete(out, imageChangeKey)
 	})
 	return out, out != nil
 }
@@ -246,6 +269,9 @@ func (m *Manager) CreateRestoredApp(def map[string]any, name string, renames map
 		delete(rec, k)
 	}
 	delete(rec, "activeContainerId")
+	// A definition from an older server can carry a switch's marker; on the
+	// copy Check would read it as an interrupted change of its own.
+	delete(rec, imageChangeKey)
 	if rec["api"] != nil {
 		delete(rec, "api")
 		drop("the API grant")
