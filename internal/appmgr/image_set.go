@@ -258,7 +258,7 @@ func (m *Manager) SetImage(p ImageSetPayload) ImageSetResult {
 
 	target := p.Image
 	deadline := time.Now().Add(m.imageSetBudget)
-	m.log.Log("Changing the image of %s from %s to %s (pull: %t)", name, current, target, p.Pull)
+	m.log.Log("Changing the image of %s from %s to %s (pull: %v)", name, current, target, p.Pull)
 	m.set(idNum, map[string]any{"status": "updating"})
 	restoreStatus := func() { m.set(idNum, map[string]any{"status": prevStatus}) }
 
