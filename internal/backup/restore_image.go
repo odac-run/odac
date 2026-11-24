@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/distribution/reference"
+
+	"odac/internal/docker"
 )
 
 // BlockedImageMismatch marks an app of an in-place restore whose restore
@@ -54,7 +56,7 @@ func parseImage(ref string) (reference.Named, bool) {
 	if ref == "" || len(ref) > maxRestoreImageRef {
 		return nil, false
 	}
-	n, err := reference.ParseNormalizedNamed(ref)
+	n, err := docker.ParseImageRef(ref)
 	return n, err == nil
 }
 

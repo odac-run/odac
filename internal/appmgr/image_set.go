@@ -11,6 +11,7 @@ import (
 
 	"github.com/distribution/reference"
 
+	"odac/internal/docker"
 	"odac/internal/jscanon"
 )
 
@@ -133,7 +134,7 @@ func imageChangeRefusal(typ, current, target string) string {
 	if target == "" || len(target) > maxImageRef {
 		return "Invalid image reference."
 	}
-	next, err := reference.ParseNormalizedNamed(target)
+	next, err := docker.ParseImageRef(target)
 	if err != nil {
 		return "Invalid image reference."
 	}
@@ -143,7 +144,7 @@ func imageChangeRefusal(typ, current, target string) string {
 	if _, tagged := next.(reference.Tagged); !tagged {
 		return "The image must be a repository:tag reference."
 	}
-	cur, err := reference.ParseNormalizedNamed(current)
+	cur, err := docker.ParseImageRef(current)
 	if err != nil {
 		return "The app's current image reference cannot be read."
 	}
@@ -159,8 +160,8 @@ func imageChangeRefusal(typ, current, target string) string {
 // sameReference reports whether two references name the same repository and
 // tag once normalized (postgres == docker.io/library/postgres:latest).
 func sameReference(a, b string) bool {
-	na, errA := reference.ParseNormalizedNamed(a)
-	nb, errB := reference.ParseNormalizedNamed(b)
+	na, errA := docker.ParseImageRef(a)
+	nb, errB := docker.ParseImageRef(b)
 	if errA != nil || errB != nil {
 		return false
 	}

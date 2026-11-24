@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/distribution/reference"
@@ -124,18 +125,34 @@ func (c *Client) ImageVersionMeta(imageID string) (ImageVersionMeta, bool) {
 	return info.meta, true
 }
 
+// ParseImageRef parses ref as a normalized image reference with
+// case-insensitive registry domain matching. distribution/reference preserves
+// uppercase letters in the domain component (and only collapses docker.io and
+// index.docker.io when lowercase), so without lowercasing the host first,
+// GHCR.IO/org/app and ghcr.io/org/app compare as different repositories.
+// Repository path and tag case stay untouched so uppercase repository paths
+// remain rejected and case-sensitive tags stay exact.
+func ParseImageRef(ref string) (reference.Named, error) {
+	if domain, rest, ok := strings.Cut(ref, "/"); ok && (strings.ContainsAny(domain, ".:") || strings.EqualFold(domain, "localhost")) {
+		if lower := strings.ToLower(domain); lower != domain {
+			ref = lower + "/" + rest
+		}
+	}
+	return reference.ParseNormalizedNamed(ref)
+}
+
 // matchRepoDigest picks the digest of ref's repository out of an image's
 // RepoDigests. Both sides are normalized, so `postgres`,
 // `docker.io/library/postgres` and `index.docker.io/library/postgres` are
-// one repository.
+// one repository, and registry hostnames match case-insensitively.
 func matchRepoDigest(repoDigests []string, ref string) string {
-	named, err := reference.ParseNormalizedNamed(ref)
+	named, err := ParseImageRef(ref)
 	if err != nil {
 		return ""
 	}
 	want := named.Name()
 	for _, entry := range repoDigests {
-		parsed, err := reference.ParseNormalizedNamed(entry)
+		parsed, err := ParseImageRef(entry)
 		if err != nil || parsed.Name() != want {
 			continue
 		}
