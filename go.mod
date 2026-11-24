@@ -14,7 +14,7 @@ require (
 	github.com/emersion/go-smtp v0.24.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.5
 	github.com/kopia/kopia v0.23.1
 	github.com/miekg/dns v1.1.62
 	github.com/moby/docker-image-spec v1.3.1
