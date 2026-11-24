@@ -21,14 +21,15 @@ import (
 // running app no operation holds, and drained by one worker so a host coming
 // up with many such apps probes them one at a time. It never takes the
 // processing lock: a redeploy arriving meanwhile must not be refused, since
-// the Cloud treats a refusal as a failed deployment. Instead every processing
-// claim bumps opEpoch, and the write is dropped if one happened since the
-// job was queued.
+// the Cloud treats a refusal as a failed deployment. Instead the job keeps
+// the opSeq it was queued under, and the write is dropped when an operation
+// holds the app or released it since (opEnded past that sequence): the same
+// counters claimProcessing reads for the pulse's own decisions.
 
-// backfillJob is one queued app and the opEpoch it was queued under.
+// backfillJob is one queued app and the opSeq it was queued under.
 type backfillJob struct {
-	id    float64
-	epoch uint64
+	id  float64
+	seq uint64
 }
 
 // needsRuntimeBackfill reports whether a record is a candidate: a live,
@@ -61,7 +62,7 @@ func (m *Manager) queueRuntimeBackfill(id float64) {
 		return
 	}
 	m.runtimeTried[id] = true
-	m.backfillQueue = append(m.backfillQueue, backfillJob{id: id, epoch: m.opEpoch[id]})
+	m.backfillQueue = append(m.backfillQueue, backfillJob{id: id, seq: m.opSeq})
 	if !m.backfillRunning {
 		m.backfillRunning = true
 		m.spawn(m.drainRuntimeBackfill)
@@ -92,11 +93,13 @@ func (m *Manager) drainRuntimeBackfill() {
 }
 
 // untouchedSince reports whether no operation holds the app now or has
-// claimed it since the job was queued.
+// released it since the job was queued. An operation that claimed it after
+// the queueing either still holds it or has released it, so both cases are
+// covered without counting claims.
 func (m *Manager) untouchedSince(job backfillJob, name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return !m.processing[job.id] && !m.creating[name] && m.opEpoch[job.id] == job.epoch
+	return !m.processing[job.id] && !m.creating[name] && m.opEnded[job.id] <= job.seq
 }
 
 // backfillRuntime makes one attempt and reports whether it wrote the record.

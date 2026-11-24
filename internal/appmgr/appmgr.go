@@ -187,9 +187,6 @@ type Manager struct {
 	opSeq      uint64                    // processing locks released so far
 	opEnded    map[float64]uint64        // app id -> opSeq at its last release
 
-	// opEpoch counts processing claims per app, so work that ran without
-	// the lock can tell an operation started meanwhile (runtime_backfill.go).
-	opEpoch map[float64]uint64
 	// Runtime backfill: apps tried this process, failures included, and the
 	// queue its single worker drains.
 	runtimeTried    map[float64]bool
@@ -258,7 +255,6 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 		logStreams: map[string]*runtimeStream{},
 		loggers:    map[string]*applog.Logger{},
 
-		opEpoch:      map[float64]uint64{},
 		runtimeTried: map[float64]bool{},
 
 		httpProbe:         realHTTPProbe,

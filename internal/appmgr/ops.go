@@ -392,7 +392,6 @@ func (m *Manager) claimProcessing(id float64, listed uint64) bool {
 		return false
 	}
 	m.processing[id] = true
-	m.opEpoch[id]++
 	w := m.deploys
 	m.mu.Unlock()
 	if w != nil {
