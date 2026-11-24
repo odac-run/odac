@@ -7,9 +7,20 @@ import (
 	"testing"
 
 	"odac/internal/api"
+	"odac/internal/appmgr"
+	"odac/internal/backup"
 	"odac/internal/config"
 	"odac/internal/hub"
 )
+
+// The app manager names a snapshot's event by its own constants and the
+// backup manager tags and lists it by its own: they must be the same
+// strings, or a version switch's snapshot is refused as an unknown event.
+func TestSnapshotEventsMatchTheBackupManager(t *testing.T) {
+	if appmgr.SnapshotDeploy != backup.EventDeploy || appmgr.SnapshotVersion != backup.EventVersion {
+		t.Fatalf("appmgr %q/%q, backup %q/%q", appmgr.SnapshotDeploy, appmgr.SnapshotVersion, backup.EventDeploy, backup.EventVersion)
+	}
+}
 
 // Every backup and snapshot action is closed to apps, and the API and the
 // Hub offer the same ones under the same names, except the staging of

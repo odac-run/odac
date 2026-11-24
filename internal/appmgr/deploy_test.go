@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"odac/internal/api"
 	"odac/internal/docker"
@@ -715,11 +716,11 @@ type fakeSnapshotter struct {
 	canceled bool
 }
 
-func (s *fakeSnapshotter) BeforeDeploy(app string) DeploySnapshot {
+func (s *fakeSnapshotter) BeforeDeploy(app, event string) (DeploySnapshot, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, "start "+app)
-	return s
+	s.events = append(s.events, "start "+app+" "+event)
+	return s, ""
 }
 
 func (s *fakeSnapshotter) BeforeDelete(app string) string {
@@ -729,15 +730,15 @@ func (s *fakeSnapshotter) BeforeDelete(app string) string {
 	return "snapshot of " + app
 }
 
-func (s *fakeSnapshotter) Wait() (bool, string) {
+func (s *fakeSnapshotter) Wait(limit time.Duration) (string, string) {
 	s.fx.dock.mu.Lock()
 	builds := len(s.fx.dock.buildCalls)
 	s.fx.dock.mu.Unlock()
 	runs := s.fx.dock.runCallCount()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, fmt.Sprintf("wait builds=%d runs=%d", builds, runs))
-	return false, "Deploying without a snapshot: it did not finish in time."
+	s.events = append(s.events, fmt.Sprintf("wait builds=%d runs=%d limit=%s", builds, runs, limit))
+	return "", "Deploying without a snapshot: it did not finish in time."
 }
 
 func (s *fakeSnapshotter) Cancel() {
@@ -760,7 +761,7 @@ func TestRedeployWaitsForItsSnapshotBeforeTheNewContainer(t *testing.T) {
 	fx.waitIdle(t)
 	snap.mu.Lock()
 	defer snap.mu.Unlock()
-	if !slices.Equal(snap.events, []string{"start web", "wait builds=1 runs=0"}) {
+	if !slices.Equal(snap.events, []string{"start web deploy", "wait builds=1 runs=0 limit=0s"}) {
 		t.Fatalf("events %v", snap.events)
 	}
 	fx.dock.mu.Lock()

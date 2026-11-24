@@ -146,11 +146,14 @@ func (r *hubRelay) snapshot(rec backup.SnapshotRecord) {
 // seam.
 type snapshotHooks struct{ m *backup.Manager }
 
-func (s snapshotHooks) BeforeDeploy(app string) appmgr.DeploySnapshot {
-	if p := s.m.BeforeDeploy(app); p != nil {
-		return p
+// BeforeDeploy never hands a nil *PendingSnapshot through the interface,
+// which would read as a snapshot that is there.
+func (s snapshotHooks) BeforeDeploy(app, event string) (appmgr.DeploySnapshot, string) {
+	p, note := s.m.BeforeDeploy(app, event)
+	if p == nil {
+		return nil, note
 	}
-	return nil
+	return p, ""
 }
 
 func (s snapshotHooks) BeforeDelete(app string) string { return s.m.BeforeDelete(app) }
