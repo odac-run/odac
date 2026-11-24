@@ -143,6 +143,10 @@ const (
 	CodeOwnerConflict = proto.CodeOwnerConflict
 	// CodeUnreachable: the target's init failed, so it was not saved.
 	CodeUnreachable = "unreachable"
+	// CodeImageMismatch: an in-place restore of data taken on another
+	// repository or major version of an app's image than it runs now
+	// (backup.BlockedImageMismatch).
+	CodeImageMismatch = "image_mismatch"
 )
 
 // errorf builds a refusal in the operator's language: format is the

@@ -203,7 +203,7 @@ func newRestoreSetup(t *testing.T) *restoreSetup {
 	h.apps.mu.Unlock()
 	ctl.active["web"], ctl.active["db"] = true, true
 	ctl.defs["web"] = map[string]any{"name": "web", "type": "container", "env": map[string]any{"manual": map[string]any{}, "linked": []any{"db"}}}
-	ctl.defs["db"] = map[string]any{"name": "db", "type": "container"}
+	ctl.defs["db"] = map[string]any{"name": "db", "type": "container", "image": "postgres:16.4"}
 
 	os.WriteFile(filepath.Join(s.web, "a.txt"), []byte("v1"), 0o644)
 	os.MkdirAll(filepath.Join(s.web, "sub"), 0o755)
@@ -712,5 +712,117 @@ func TestCrashCheckCountsRestartsSinceTheStart(t *testing.T) {
 	h.states.mu.Unlock()
 	if err := check(context.Background()); err != nil {
 		t.Fatalf("a failed inspect read as a crash: %v", err)
+	}
+}
+
+func TestCompareImagesBlocksAnotherRepositoryOrMajor(t *testing.T) {
+	cases := []struct {
+		point, current string
+		reported       bool
+		blocked        bool
+	}{
+		{"postgres:17.6-alpine", "postgres:17.2", true, false},
+		{"postgres:17.6-alpine", "postgres:18", true, true},
+		{"postgres:16", "docker.io/library/postgres:16.9", true, false},
+		{"postgres:16", "mysql:8", true, true},
+		{"postgres:16", "ghcr.io/library/postgres:16", true, true},
+		{"traefik:v3.1", "traefik:v2.11", true, true},
+		{"traefik:v3.1", "traefik:3.2", true, false},
+		{"postgres:latest", "postgres:18", true, false},
+		{"postgres", "postgres:16", true, false},
+		{"redis:alpine", "redis:alpine3.20", true, false},
+		{"", "postgres:16", false, false},
+		{"Not A Ref::", "postgres:16", false, false},
+		{"postgres:1234567890", "postgres:1", true, false},
+	}
+	for _, c := range cases {
+		img, blocked := compareImages(c.point, c.current)
+		if (img != nil) != c.reported || blocked != c.blocked {
+			t.Errorf("%s -> %s: image %+v blocked %v, want reported %v blocked %v", c.point, c.current, img, blocked, c.reported, c.blocked)
+		}
+		if img != nil && (img.Point != c.point || img.Current != c.current) {
+			t.Errorf("%s -> %s reported as %+v", c.point, c.current, img)
+		}
+	}
+}
+
+// An in-place restore compares the image the point was taken on with the
+// one the app runs: another major is refused by the restore itself, a minor
+// is not, and a new app is never compared.
+func TestRestoreInPlaceRefusesAnotherImageMajor(t *testing.T) {
+	s := newRestoreSetup(t)
+	ctx := context.Background()
+	setImage := func(img string) {
+		s.ctl.mu.Lock()
+		s.ctl.defs["db"]["image"] = img
+		s.ctl.mu.Unlock()
+	}
+	preview := func() map[string]AppRestore {
+		t.Helper()
+		r, err := s.m.PreviewRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Mode: RestoreInPlace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]AppRestore{}
+		for _, a := range r.Apps {
+			out[a.App] = a
+		}
+		return out
+	}
+
+	apps := preview()
+	if db := apps["db"]; db.Image == nil || *db.Image != (RestoreImage{Point: "postgres:16.4", Current: "postgres:16.4"}) || db.Blocked != "" {
+		t.Fatalf("same image: %+v", db)
+	}
+	if web := apps["web"]; web.Image != nil || web.Blocked != "" {
+		t.Fatalf("an app whose records name no image: %+v", web)
+	}
+
+	setImage("postgres:16.6")
+	if db := preview()["db"]; db.Blocked != "" || db.Image.Current != "postgres:16.6" {
+		t.Fatalf("a minor difference: %+v", db)
+	}
+
+	setImage("postgres:17.1")
+	db := preview()["db"]
+	if db.Blocked != BlockedImageMismatch || *db.Image != (RestoreImage{Point: "postgres:16.4", Current: "postgres:17.1"}) {
+		t.Fatalf("a major difference: %+v", db)
+	}
+	raw, _ := json.Marshal(db)
+	if !strings.Contains(string(raw), `"image":{"point":"postgres:16.4","current":"postgres:17.1"},"blocked":"image_mismatch"`) {
+		t.Fatalf("wire shape %s", raw)
+	}
+	// The restore checks again and never trusts the preview.
+	_, err := s.m.StartRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Apps: []string{"web"}, Mode: RestoreInPlace})
+	var se *settings.Error
+	if !errors.As(err, &se) || se.Code != settings.CodeImageMismatch || !strings.Contains(se.Message, "postgres:17.1") {
+		t.Fatalf("restore across a major: %v", err)
+	}
+	if s.ctl.has("hold web") || s.ctl.has("hold db") || read(t, filepath.Join(s.pg, "PG_VERSION")) != "16-live" {
+		t.Fatal("a refused restore touched an app")
+	}
+
+	setImage("mysql:8")
+	if preview()["db"].Blocked != BlockedImageMismatch {
+		t.Fatal("another repository was not blocked")
+	}
+
+	// A new app is made from the point's own definition: nothing to compare.
+	r, err := s.m.PreviewRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Mode: RestoreNewApp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range r.Apps {
+		if a.Image != nil || a.Blocked != "" {
+			t.Fatalf("new app compared: %+v", a)
+		}
+	}
+
+	setImage("postgres:16.9")
+	if _, err := s.m.StartRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Mode: RestoreInPlace}); err != nil {
+		t.Fatalf("restore within the major: %v", err)
+	}
+	if res := s.wait(); res.Status != StatusOK {
+		t.Fatalf("restore: %+v", res)
 	}
 }
