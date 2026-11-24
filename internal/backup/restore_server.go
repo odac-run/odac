@@ -28,6 +28,17 @@ import (
 // server.
 var keptModules = []string{"server", "backup"}
 
+// machineLocalAppFields are members of an app record (appmgr's names) that
+// describe images on the server that wrote them, which a server taking over
+// does not have: imageChange is a version switch in flight there (its hold
+// tag and green container exist only on that engine, and Check here would
+// read it as an interrupted switch of its own), buildId names a local build
+// tag (odac-app-<name>:<id>) and, while set, keeps the record out of the
+// runtime backfill. runtimeOverride stays on purpose: it is the operator's
+// standing choice of language version, not a fact about an image, and a
+// rebuild here must honour it as the old server did.
+var machineLocalAppFields = []string{"imageChange", "buildId"}
+
 // ServerRestoreRequest names the run whose copy of ODAC's state is
 // restored; Server and Key are as in a RestoreRequest.
 type ServerRestoreRequest struct {
@@ -219,8 +230,10 @@ func ApplyServerRestore(base string) (*ServerRestore, error) {
 }
 
 // fixRestoredConfig keeps this server's own modules and stops every
-// restored app, and drops the backups of the replaced modules, which
-// would otherwise stand in for a restored module that does not parse.
+// restored app (dropping what its record says about the old server's
+// images, machineLocalAppFields), and drops the backups of the replaced
+// modules, which would otherwise stand in for a restored module that does
+// not parse.
 func fixRestoredConfig(base, previous string) error {
 	config := filepath.Join(base, "config")
 	for _, mod := range keptModules {
@@ -260,6 +273,9 @@ func fixRestoredConfig(base, previous string) error {
 	for _, a := range apps {
 		if app, ok := a.(map[string]any); ok {
 			app["active"] = false
+			for _, k := range machineLocalAppFields {
+				delete(app, k)
+			}
 		}
 	}
 	out, err := json.MarshalIndent(mod, "", "  ")

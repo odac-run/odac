@@ -606,7 +606,7 @@ func TestServerRestoreStagesAndApplies(t *testing.T) {
 	newControl(h)
 	config := filepath.Join(h.base, "config")
 	write := func(name, body string) { os.WriteFile(filepath.Join(config, name), []byte(body), 0o600) }
-	write("app.json", `{"apps":[{"name":"web","active":true}]}`)
+	write("app.json", `{"apps":[{"name":"web","active":true,"type":"git","buildId":"build_1_a","runtimeOverride":"22","imageChange":{"image":"odac-app-web:build_0_z","previous":"odac-app-web"}}]}`)
 	write("domain.json", `{"domains":{"a.com":{}}}`)
 	write("server.json", `{"server":{"pid":1}}`)
 	j := h.job("j1", "t1", 60)
@@ -654,6 +654,11 @@ func TestServerRestoreStagesAndApplies(t *testing.T) {
 	json.Unmarshal([]byte(read(t, filepath.Join(config, "app.json"))), &mod)
 	if len(mod.Apps) != 1 || mod.Apps[0]["active"] != false {
 		t.Fatalf("apps %+v", mod.Apps)
+	}
+	// What named the old server's images goes; the operator's runtime pin
+	// is a choice, not an image, and stays.
+	if a := mod.Apps[0]; a["imageChange"] != nil || a["buildId"] != nil || a["runtimeOverride"] != "22" || a["type"] != "git" {
+		t.Fatalf("restored app %+v", a)
 	}
 	if again, err := ApplyServerRestore(h.base); err != nil || again != nil {
 		t.Fatalf("second apply: %+v, %v", again, err)
