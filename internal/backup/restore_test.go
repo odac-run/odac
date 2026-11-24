@@ -746,6 +746,47 @@ func TestCompareImagesBlocksAnotherRepositoryOrMajor(t *testing.T) {
 	}
 }
 
+func TestCompareImagesGHCRAndQuay(t *testing.T) {
+	d := "sha256:" + strings.Repeat("a", 64)
+	cases := []struct {
+		name, point, current string
+		reported             bool
+		blocked              bool
+	}{
+		{"ghcr same major minor diff", "ghcr.io/immich-app/immich-server:v2.1.0", "ghcr.io/immich-app/immich-server:v2.3.0", true, false},
+		{"ghcr different major", "ghcr.io/immich-app/immich-server:v2.1.0", "ghcr.io/immich-app/immich-server:v3.0.0", true, true},
+		{"ghcr numeric major diff", "ghcr.io/wg-easy/wg-easy:14", "ghcr.io/wg-easy/wg-easy:15", true, true},
+		{"ghcr numeric same major", "ghcr.io/wg-easy/wg-easy:15.0.0", "ghcr.io/wg-easy/wg-easy:15.1.0", true, false},
+		{"ghcr calver major diff", "ghcr.io/home-assistant/home-assistant:2025.12.0", "ghcr.io/home-assistant/home-assistant:2026.1.0", true, true},
+		{"ghcr floating stable vs version", "ghcr.io/home-assistant/home-assistant:stable", "ghcr.io/home-assistant/home-assistant:2026.1.0", true, false},
+		{"ghcr multi-segment same major", "ghcr.io/org/team/app:1.2", "ghcr.io/org/team/app:1.3", true, false},
+		{"ghcr multi-segment different major", "ghcr.io/org/team/app:1.2", "ghcr.io/org/team/app:2.0", true, true},
+		{"ghcr multi-segment different depth", "ghcr.io/org/team/app:1.2", "ghcr.io/org/app:1.2", true, true},
+		{"ghcr digest-only point vs version", "ghcr.io/org/app@" + d, "ghcr.io/org/app:2.0", true, false},
+		{"ghcr tagged and digested different major", "ghcr.io/org/app:1.0@" + d, "ghcr.io/org/app:2.0", true, true},
+		{"quay latest vs release tag", "quay.io/minio/minio:latest", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z", true, false},
+		{"quay implicit vs explicit tag", "quay.io/minio/minio", "quay.io/minio/minio:latest", true, false},
+		{"quay digest-only vs tag", "quay.io/minio/minio@" + d, "quay.io/minio/minio:latest", true, false},
+		{"quay multi-segment different major", "quay.io/org/sub/repo:1.0", "quay.io/org/sub/repo:2.0", true, true},
+		{"ghcr vs quay same path", "ghcr.io/minio/minio:latest", "quay.io/minio/minio:latest", true, true},
+		{"quay vs docker hub same path", "quay.io/minio/minio:latest", "minio/minio:latest", true, true},
+		{"ghcr uppercase host same major", "GHCR.IO/wg-easy/wg-easy:15.0", "ghcr.io/wg-easy/wg-easy:15.1", true, false},
+		{"ghcr uppercase host different major", "GHCR.IO/wg-easy/wg-easy:14.0", "ghcr.io/wg-easy/wg-easy:15.0", true, true},
+		{"quay uppercase host", "QUAY.IO/minio/minio:latest", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z", true, false},
+		{"ghcr uppercase repo path invalid", "ghcr.io/WG-Easy/wg-easy:15", "ghcr.io/wg-easy/wg-easy:15", false, false},
+	}
+	for _, c := range cases {
+		img, blocked := compareImages(c.point, c.current)
+		if (img != nil) != c.reported || blocked != c.blocked {
+			t.Errorf("%s (%s -> %s): image %+v blocked %v, want reported %v blocked %v",
+				c.name, c.point, c.current, img, blocked, c.reported, c.blocked)
+		}
+		if img != nil && (img.Point != c.point || img.Current != c.current) {
+			t.Errorf("%s reported verbatim as %+v", c.name, img)
+		}
+	}
+}
+
 // An in-place restore compares the image the point was taken on with the
 // one the app runs: another major is refused by the restore itself, a minor
 // is not, and a new app is never compared.

@@ -526,3 +526,108 @@ func TestShortErrorStripsCredentials(t *testing.T) {
 		t.Fatalf("not bounded: %d", len(long))
 	}
 }
+
+func TestImageChangeRefusalGHCRAndQuay(t *testing.T) {
+	d := "sha256:" + strings.Repeat("a", 64)
+	allowed := []struct {
+		name, current, target string
+	}{
+		{"ghcr tag change", "ghcr.io/blakeblackshear/frigate:stable", "ghcr.io/blakeblackshear/frigate:0.15.0"},
+		{"ghcr multi-segment tag change", "ghcr.io/org/team/app:1.0", "ghcr.io/org/team/app:1.1"},
+		{"quay implicit tag to explicit release tag", "quay.io/minio/minio", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"},
+		{"quay multi-segment tag change", "quay.io/org/sub/repo:1.0", "quay.io/org/sub/repo:1.1"},
+		{"ghcr digest-pinned current to tag", "ghcr.io/org/app@" + d, "ghcr.io/org/app:1.2.3"},
+		{"quay digest-pinned current to tag", "quay.io/minio/minio@" + d, "quay.io/minio/minio:latest"},
+		{"ghcr uppercase host current to lowercase", "GHCR.IO/open-webui/open-webui:main", "ghcr.io/open-webui/open-webui:v0.6.0"},
+		{"quay uppercase host current to lowercase", "QUAY.IO/minio/minio:latest", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"},
+		{"ghcr repo starting with odac-app prefix", "ghcr.io/odac-app-x/y:1", "ghcr.io/odac-app-x/y:2"},
+	}
+	for _, tc := range allowed {
+		if got := imageChangeRefusal("container", tc.current, tc.target); got != "" {
+			t.Errorf("%s (%s -> %s): unexpected refusal %q", tc.name, tc.current, tc.target, got)
+		}
+	}
+
+	refused := []struct {
+		name, current, target string
+	}{
+		{"ghcr to quay same path", "ghcr.io/minio/minio:latest", "quay.io/minio/minio:latest"},
+		{"quay to docker hub same path", "quay.io/minio/minio:latest", "minio/minio:latest"},
+		{"ghcr to docker hub same path", "ghcr.io/org/app:1", "org/app:2"},
+		{"ghcr different org", "ghcr.io/org/app:1", "ghcr.io/other/app:1"},
+		{"ghcr different segment depth", "ghcr.io/org/app:1", "ghcr.io/org/team/app:1"},
+		{"quay untagged target", "quay.io/minio/minio:latest", "quay.io/minio/minio"},
+		{"ghcr untagged target", "ghcr.io/org/app:1", "ghcr.io/org/app"},
+		{"ghcr digest target", "ghcr.io/org/app:1", "ghcr.io/org/app@" + d},
+		{"quay tagged and digested target", "quay.io/minio/minio:latest", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@" + d},
+		{"ghcr uppercase repo path in target", "ghcr.io/org/app:1", "ghcr.io/Org/app:2"},
+		{"quay uppercase repo path in target", "quay.io/minio/minio:latest", "quay.io/MinIO/minio:latest"},
+		{"ghcr uppercase repo path in current", "ghcr.io/Org/app:1", "ghcr.io/org/app:2"},
+	}
+	for _, tc := range refused {
+		if got := imageChangeRefusal("container", tc.current, tc.target); got == "" {
+			t.Errorf("%s (%s -> %s): allowed, want refusal", tc.name, tc.current, tc.target)
+		}
+	}
+}
+
+func TestSameReferenceGHCRAndQuay(t *testing.T) {
+	d := "sha256:" + strings.Repeat("b", 64)
+	cases := []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"ghcr implicit and explicit latest", "ghcr.io/openclaw/openclaw", "ghcr.io/openclaw/openclaw:latest", true},
+		{"ghcr multi-segment implicit and explicit latest", "ghcr.io/org/team/app", "ghcr.io/org/team/app:latest", true},
+		{"quay implicit and explicit latest", "quay.io/minio/minio", "quay.io/minio/minio:latest", true},
+		{"ghcr uppercase host implicit latest", "GHCR.IO/openclaw/openclaw", "ghcr.io/openclaw/openclaw:latest", true},
+		{"quay uppercase host release tag", "QUAY.IO/minio/minio:RELEASE.2025-04-22T22-12-26Z", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z", true},
+		{"quay tag case stays sensitive", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z", "quay.io/minio/minio:release.2025-04-22t22-12-26z", false},
+		{"ghcr different tags", "ghcr.io/open-webui/open-webui:main", "ghcr.io/open-webui/open-webui:latest", false},
+		{"ghcr digest vs latest tag", "ghcr.io/org/app@" + d, "ghcr.io/org/app:latest", false},
+		{"quay digest vs latest tag", "quay.io/minio/minio@" + d, "quay.io/minio/minio:latest", false},
+		{"ghcr vs quay same path", "ghcr.io/minio/minio:latest", "quay.io/minio/minio:latest", false},
+		{"quay vs docker hub same path", "quay.io/minio/minio:latest", "minio/minio:latest", false},
+		{"ghcr uppercase repo path", "ghcr.io/Org/app:1", "ghcr.io/org/app:1", false},
+	}
+	for _, tc := range cases {
+		if got := sameReference(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s (%q vs %q) = %v, want %v", tc.name, tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestSetImageGHCRAndQuay(t *testing.T) {
+	digestNew := "sha256:" + strings.Repeat("e", 64)
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(1), "name": "app", "type": "container", "image": "ghcr.io/org/team/app:1.0", "active": true},
+		map[string]any{"id": float64(2), "name": "s3", "type": "container", "image": "quay.io/minio/minio", "active": true},
+	})
+	fx.dock.images = map[string]string{
+		"ghcr.io/org/team/app:1.0": idOld,
+		"quay.io/minio/minio":      idOld,
+	}
+	fx.dock.pullResult = map[string]string{
+		"ghcr.io/org/team/app:1.1":   idNew,
+		"quay.io/minio/minio:latest": idOld,
+	}
+	fx.dock.digests = map[string]string{idNew + "\x00ghcr.io/org/team/app:1.1": digestNew}
+	fx.dock.running["app"] = true
+	fx.dock.running["s3"] = true
+	fx.dock.containerImage = map[string]string{"app": idOld, "s3": idOld}
+	fx.m.imageStableFor = 0
+	fx.m.imageHealthTimeout = 0
+
+	res := fx.m.SetImage(ImageSetPayload{Container: "app", Image: "ghcr.io/org/team/app:1.1"})
+	fx.waitIdle(t)
+	if !res.Success || !res.Changed || res.Previous != "ghcr.io/org/team/app:1.0" ||
+		res.Image != "ghcr.io/org/team/app:1.1" || res.ImageID != idNew || res.ImageDigest != digestNew {
+		t.Fatalf("ghcr SetImage = %+v", res)
+	}
+
+	// Implicit latest on quay.io matches explicit :latest with the same ID.
+	noop := fx.m.SetImage(ImageSetPayload{Container: "s3", Image: "quay.io/minio/minio:latest"})
+	if !noop.Success || noop.Changed {
+		t.Fatalf("quay implicit-to-explicit unchanged = %+v", noop)
+	}
+}

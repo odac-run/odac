@@ -323,3 +323,47 @@ func TestListReportsImageMetaForImageAppsOnly(t *testing.T) {
 		t.Errorf("retained image IDs = %v", retained)
 	}
 }
+
+func TestListReportsGHCRAndQuayImageIdentity(t *testing.T) {
+	ghcrID := "sha256:" + strings.Repeat("1", 64)
+	quayID := "sha256:" + strings.Repeat("2", 64)
+	ghcrDigest := "sha256:" + strings.Repeat("a", 64)
+	quayDigest := "sha256:" + strings.Repeat("b", 64)
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(1), "name": "webui", "type": "container", "image": "ghcr.io/org/team/app:1.2.3"},
+		map[string]any{"id": float64(2), "name": "minio", "type": "container", "image": "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"},
+	})
+	fx.dock.mu.Lock()
+	fx.dock.status["webui"] = docker.Status{Running: true, ImageID: ghcrID}
+	fx.dock.status["minio"] = docker.Status{Running: true, ImageID: quayID}
+	fx.dock.digests = map[string]string{
+		ghcrID + "\x00ghcr.io/org/team/app:1.2.3":                       ghcrDigest,
+		quayID + "\x00quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z": quayDigest,
+	}
+	fx.dock.versionMeta = map[string]docker.ImageVersionMeta{
+		ghcrID: {Labels: map[string]string{"org.opencontainers.image.version": "1.2.3"}, Env: map[string]string{}},
+		quayID: {Labels: map[string]string{"release": "RELEASE.2025-04-22T22-12-26Z"}, Env: map[string]string{"MINIO_VERSION": "2025-04-22"}},
+	}
+	fx.dock.mu.Unlock()
+
+	webui := fx.listRow(t, "webui")
+	if webui["image"] != "ghcr.io/org/team/app:1.2.3" || webui["imageId"] != ghcrID || webui["imageDigest"] != ghcrDigest {
+		t.Errorf("webui row = image:%v id:%v digest:%v", webui["image"], webui["imageId"], webui["imageDigest"])
+	}
+	wantWebUI := map[string]any{"labels": map[string]any{"org.opencontainers.image.version": "1.2.3"}, "env": map[string]any{}}
+	if !reflect.DeepEqual(webui["imageMeta"], wantWebUI) {
+		t.Errorf("webui imageMeta = %v, want %v", webui["imageMeta"], wantWebUI)
+	}
+
+	minio := fx.listRow(t, "minio")
+	if minio["image"] != "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z" || minio["imageId"] != quayID || minio["imageDigest"] != quayDigest {
+		t.Errorf("minio row = image:%v id:%v digest:%v", minio["image"], minio["imageId"], minio["imageDigest"])
+	}
+	wantMinIO := map[string]any{
+		"labels": map[string]any{"release": "RELEASE.2025-04-22T22-12-26Z"},
+		"env":    map[string]any{"MINIO_VERSION": "2025-04-22"},
+	}
+	if !reflect.DeepEqual(minio["imageMeta"], wantMinIO) {
+		t.Errorf("minio imageMeta = %v, want %v", minio["imageMeta"], wantMinIO)
+	}
+}
