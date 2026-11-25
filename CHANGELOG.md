@@ -1,3 +1,69 @@
+### ⚙️ Engine Tuning
+
+- **appmgr:** detect runtime backfill conflicts through opSeq
+- **backup:** let an operation name its snapshot's event and learn its run
+
+### ✨ What's New
+
+- **appmgr:** take a snapshot before a version switch
+- **apps:** backfill the runtime of git apps built before it was recorded
+- **apps:** keep the last git builds and roll back to one without a rebuild
+- **apps:** pin a git app's runtime version and report what decided it
+- **apps:** report what an image declares about its version
+- **apps:** report what each app actually runs
+- **apps:** switch a catalog app to another image tag with rollback
+- **backup:** add a permanent server id and the odac-backup binary
+- **backup:** add backup API actions, CLI commands and Hub commands
+- **backup:** add calendar-anchored thinning
+- **backup:** add fair share on shared targets and periodic verification
+- **backup:** add system-managed snapshots
+- **backup:** add targets, keys and jobs as backup settings
+- **backup:** add the odac-backup protocol
+- **backup:** add the server-side backup manager
+- **backup:** choose a consistent method per piece of an app's data
+- **backup:** enhance job usage tracking and status reporting
+- **backup:** refuse an in-place restore across an image major
+- **backup:** restore apps in place, as new apps and from other servers
+- **backup:** run odac-backup in contained helper containers
+- **backup:** wrap Kopia in a narrow backup engine
+- **mail:** add a TNEF decoder for winmail.dat
+- **mail:** expand winmail.dat into MIME attachments on delivery
+- **mail:** screen inbound mail with SPF, DKIM and DMARC
+
+### 📚 Documentation
+
+- **backup:** document backups, snapshots, restores and their limits
+- note HoldApp busy precedence and Phase G Docker tests in AGENTS.md
+- say why kept builds stay out of the disk budget
+
+### 🛠️ Fixes & Improvements
+
+- **appmgr:** keep image change markers out of definitions and holds
+- **appmgr:** refuse an app's create over a directory an earlier app left
+- **appmgr:** return busy instead of invalid while HoldApp holds an app
+- **appmgr:** stop the check pulse recreating new apps and discovery rewriting held ones
+- **appmgr:** use %v instead of %t in SetImage logx call
+- **backup:** drop the old server's image state from a server restore
+- **backup:** end crash-looping loads early and tidy restore and coverage output
+- **backup:** fix ClickHouse parts, in-place database restores and dump reuse
+- **backup:** prevent operations when manager is released
+- **dns:** answer for the zone's own delegation
+- **docker:** make StreamLogs' stop wait for its copy to end
+- **docker:** normalize registry host case in image reference parsing
+- **docker:** run the checkout HEAD probe with the git hardening
+- **git:** rebuild the clone's config and turn hooks off before a fetch
+- **logs:** resume app logs on start and format %d and %v markers
+- **mail:** check every From address and keep empty winmail removal valid
+- **mail:** end a delivery attempt inside its queue lease
+- **mail:** hold mail.send's author headers and signing key to the caller
+- **proxy:** count new clients by their block when the firewall table is full
+
+
+
+---
+
+Powered by [⚡ ODAC](https://odac.run)
+
 ### ✨ What's New
 
 - **appmgr:** give bridge app containers a backend socket directory
