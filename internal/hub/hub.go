@@ -57,6 +57,8 @@ type AppService interface {
 	SetPorts(id any, portsPayload []any, payloadOK bool) *api.Result
 	SetVolumes(id any, volumes []any, payloadOK bool) *api.Result
 	Redeploy(payload appmgr.RedeployPayload) *api.Result
+	SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult
+	Rollback(payload appmgr.RollbackPayload) appmgr.RollbackResult
 	Restart(id any) *api.Result
 	Start(id any) *api.Result
 	Stop(id any) *api.Result
@@ -397,6 +399,14 @@ func (h *Hub) processCommand(action string, payload any, requestID any) {
 	h.mu.Unlock()
 	if action == "" || cmd == nil {
 		h.log.Log("Invalid or unknown command received: %s", action)
+		// An answer instead of silence lets the Cloud tell an agent that
+		// predates an action apart from one that is slow or gone.
+		if jsTruthy(requestID) {
+			h.sendCommandResponse(requestID, cmdResult{
+				success: false, hasSuccess: true,
+				message: "unknown action", hasMessage: true,
+			})
+		}
 		return
 	}
 
@@ -429,7 +439,8 @@ func (h *Hub) processCommand(action string, payload any, requestID any) {
 }
 
 // cmdResult is the normalized {success, message, data} triple feeding
-// command.response, with JS-undefined tracked per field.
+// command.response, with JS-undefined tracked per field. flat replaces the
+// triple for a reply that defines its own members (flatReply).
 type cmdResult struct {
 	success    any
 	hasSuccess bool
@@ -437,6 +448,14 @@ type cmdResult struct {
 	hasMessage bool
 	data       any
 	hasData    bool
+	flat       jscanon.Obj
+}
+
+// flatReply is a command result whose members sit beside id at the top of
+// command.response instead of inside the {success, message, data} envelope.
+// It is opt-in per result type, so no existing action's reply changes shape.
+type flatReply interface {
+	ReplyFields() jscanon.Obj
 }
 
 // normalizeResult ports #sendCommandResponse's normalization: success is
@@ -444,6 +463,8 @@ type cmdResult struct {
 // undefined fields vanish from the JSON.
 func normalizeResult(result any) cmdResult {
 	switch r := result.(type) {
+	case flatReply:
+		return cmdResult{flat: r.ReplyFields()}
 	case nil:
 		// Node: result || {result: true}
 		return cmdResult{success: true, hasSuccess: true}
@@ -488,6 +509,11 @@ func apiCmdResult(r api.Result) cmdResult {
 
 func (h *Hub) sendCommandResponse(requestID any, r cmdResult) {
 	data := jscanon.Obj{{K: "id", V: requestID}}
+	if r.flat != nil {
+		data = append(data, r.flat...)
+		h.sendSignedMessage("command.response", data)
+		return
+	}
 	if r.hasSuccess {
 		data = append(data, jscanon.Field{K: "success", V: r.success})
 	}
@@ -806,12 +832,15 @@ func (h *Hub) buildCommands() {
 	h.register("app.redeploy", &command{
 		fn: withApp(func(p any) (any, error) {
 			m := pmap(p)
+			rt, hasRuntime := m["runtime"]
 			return h.deps.App.Redeploy(appmgr.RedeployPayload{
-				Container: str(m["container"]),
-				URL:       str(m["url"]),
-				Token:     str(m["token"]),
-				Branch:    str(m["branch"]),
-				CommitSha: str(m["commitSha"]),
+				Container:  str(m["container"]),
+				URL:        str(m["url"]),
+				Token:      str(m["token"]),
+				Branch:     str(m["branch"]),
+				CommitSha:  str(m["commitSha"]),
+				Runtime:    rt,
+				HasRuntime: hasRuntime,
 			}), nil
 		}),
 		triggers: []string{"app.list", "app.stats"},
@@ -1010,10 +1039,35 @@ func (h *Hub) buildCommands() {
 		triggers: []string{"domain.mtls.cert.list"},
 	})
 	h.registerBackup()
+	// Registered after the backup and snapshot commands: the table's
+	// order is pinned, so new commands only ever go at the end.
+	h.register("app.image.set", &command{
+		fn: withApp(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.App.SetImage(appmgr.ImageSetPayload{
+				Container:       str(m["container"]),
+				Image:           str(m["image"]),
+				Pull:            m["pull"] == true,
+				RequireSnapshot: m["requireSnapshot"] == true,
+			}), nil
+		}),
+		triggers: []string{"app.list", "app.stats"},
+	})
+	h.register("app.rollback", &command{
+		fn: withApp(func(p any) (any, error) {
+			m := pmap(p)
+			return h.deps.App.Rollback(appmgr.RollbackPayload{
+				Container:       str(m["container"]),
+				BuildID:         str(m["buildId"]),
+				RequireSnapshot: m["requireSnapshot"] == true,
+			}), nil
+		}),
+		triggers: []string{"app.list", "app.stats"},
+	})
 }
 
-// registerBackup appends the backup.* commands, after everything else
-// because the table's order is pinned. Each takes the same object payload as
+// registerBackup appends the backup.* commands after the ones that predate
+// them, because the table's order is pinned. Each takes the same object payload as
 // the local API action of the same name. Lists are periodic tasks; a change
 // re-sends the lists it touched. The finished runs and restores themselves
 // reach the Hub through those lists too, triggered by the backup manager.

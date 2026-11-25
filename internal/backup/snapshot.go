@@ -23,7 +23,8 @@ import (
 
 // Snapshots are short-lived backups in a repository of the manager's own,
 // in ODAC's data directory, taken right before an operation that can go
-// wrong (a deploy, a delete, an update, an in-place restore), on the
+// wrong (a deploy, a version change, a delete, an update, an in-place
+// restore), on the
 // operator's request and periodically. They run on the same engine and
 // helpers as backups, but the system manages them: no job, no target, a
 // key nobody sees, and a share of the disk that follows the swap rule
@@ -45,9 +46,13 @@ const SnapshotTarget = "snapshots"
 const KindSnapshot = "snapshot"
 
 // Snapshot events: what took a snapshot. Each is the trigger its
-// snapshots are tagged with.
+// snapshots are tagged with. EventVersion is a version switch of an app
+// (app.image.set, app.rollback), kept apart from EventDeploy because it is
+// the point a restore after a failed upgrade returns to, and thinning keeps
+// each event's series on its own.
 const (
 	EventDeploy     = "deploy"
+	EventVersion    = "version"
 	EventDelete     = "delete"
 	EventUpdate     = "update"
 	EventManual     = "manual"
@@ -852,69 +857,96 @@ func (m *Manager) track() (context.Context, bool) {
 	return m.ctx, true
 }
 
-// PendingSnapshot is the snapshot a deploy started beside its build. Its
-// methods are safe on nil, which is a deploy that takes no snapshot.
+// PendingSnapshot is the snapshot an operation that replaces an app's
+// container (a deploy, a version switch) started before the new container
+// runs. Its methods are safe on nil, which is an operation that takes none.
 type PendingSnapshot struct {
 	m     *Manager
+	event string
 	done  chan struct{}
 	abort context.CancelCauseFunc
 	rec   SnapshotRecord
 }
 
-// BeforeDeploy starts the snapshot before a deploy of app, beside its
-// build, and returns at once. It takes the app and the apps it links, and
-// nothing when none of them holds data. The app's deploy neither holds it
-// back nor cancels its dump: it is part of the deploy.
-func (m *Manager) BeforeDeploy(app string) *PendingSnapshot {
+// BeforeDeploy starts the snapshot before app's container is replaced and
+// returns at once: event is EventDeploy for a deploy (started beside its
+// build) or EventVersion for a version switch. It takes the app and the
+// apps it links, and nothing when none of them holds data, snapshots are
+// off or the event is not one of those two; the line returned then says
+// why, for a caller that must not go on without a snapshot. The operation
+// neither holds it back nor cancels its dump: it is part of the operation.
+func (m *Manager) BeforeDeploy(app, event string) (*PendingSnapshot, string) {
+	if event != EventDeploy && event != EventVersion {
+		return nil, noSnapshotLine(event, tr("the operation takes no snapshot"))
+	}
 	if reason, _ := m.snapshotsOff(); reason != "" {
-		return nil
+		return nil, noSnapshotLine(event, snapshotNote(SnapshotRecord{Reason: reason}))
 	}
 	group := snapshotGroup(app, m.cfg.Apps.BackupApps())
 	if len(group) == 0 {
-		return nil
+		return nil, noSnapshotLine(event, tr("%s and the apps it links hold no data", app))
 	}
 	ctx, ok := m.track()
 	if !ok {
-		return nil
+		return nil, noSnapshotLine(event, tr("backups are not running"))
 	}
 	abortCtx, abort := context.WithCancelCause(context.Background())
-	p := &PendingSnapshot{m: m, done: make(chan struct{}), abort: abort}
+	p := &PendingSnapshot{m: m, event: event, done: make(chan struct{}), abort: abort}
 	go func() {
 		defer m.workers.Done()
 		defer close(p.done)
-		p.rec = m.takeSnapshot(ctx, snapRequest{series: app, event: EventDeploy, apps: group, exempt: true, abort: abortCtx, every: 15})
+		p.rec = m.takeSnapshot(ctx, snapRequest{series: app, event: event, apps: group, exempt: true, abort: abortCtx, every: 15})
 	}()
-	return p
+	return p, ""
 }
 
-// Wait waits for the snapshot once the deploy is ready to start its new
-// container, for a bounded time, and gives the snapshot up after it: its
-// dump must not go on beside the migration the new container starts. It
-// reports whether the snapshot was taken, with a line for the build log.
-// A deploy goes on either way.
-func (p *PendingSnapshot) Wait() (bool, string) {
+// Wait waits for the snapshot once the operation is ready to start its new
+// container, and gives the snapshot up after a bounded time: its dump must
+// not go on beside the migration the new container starts. The bound is
+// deployWait plus abortGrace for the helpers to stop, and with a positive
+// limit never more than limit in all, because a version switch has a time
+// budget of its own and a health gate after the wait. It returns the run of
+// the snapshot taken ("" for none) and a line for the log. A deploy goes on
+// either way; a switch that requires a snapshot does not.
+func (p *PendingSnapshot) Wait(limit time.Duration) (string, string) {
 	if p == nil {
-		return true, ""
+		return "", ""
 	}
-	t := time.NewTimer(p.m.t.snap.deployWait)
+	wait, grace := p.m.t.snap.deployWait, p.m.t.snap.abortGrace
+	if limit > 0 && wait+grace > limit {
+		grace = min(grace, limit/2)
+		wait = limit - grace
+	}
+	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case <-p.done:
 	case <-t.C:
 		p.abort(errSnapTimeout)
-		grace := time.NewTimer(p.m.t.snap.abortGrace)
-		defer grace.Stop()
+		g := time.NewTimer(grace)
+		defer g.Stop()
 		select {
 		case <-p.done:
-		case <-grace.C:
-			return false, tr("Deploying without a snapshot: it did not finish in time.")
+		case <-g.C:
+			return "", noSnapshotLine(p.event, snapshotNote(SnapshotRecord{Reason: ReasonTimeout}))
 		}
 	}
 	rec := p.rec
 	if rec.Status == StatusOK {
-		return true, tr("Snapshot %s taken before the deploy.", rec.Run)
+		if p.event == EventVersion {
+			return rec.Run, tr("Snapshot %s taken before the version change.", rec.Run)
+		}
+		return rec.Run, tr("Snapshot %s taken before the deploy.", rec.Run)
 	}
-	return false, tr("Deploying without a snapshot: %s", snapshotNote(rec))
+	return "", noSnapshotLine(p.event, snapshotNote(rec))
+}
+
+// noSnapshotLine is the log line of an operation that has no snapshot.
+func noSnapshotLine(event, why string) string {
+	if event == EventVersion {
+		return tr("No snapshot before the version change: %s", why)
+	}
+	return tr("Deploying without a snapshot: %s", why)
 }
 
 // Cancel gives up the snapshot of a deploy that ended before it needed
@@ -933,6 +965,10 @@ func snapshotNote(rec SnapshotRecord) string {
 		return tr("there is not enough free disk space")
 	case ReasonDisabled:
 		return tr("snapshots are turned off")
+	case ReasonUnavailable:
+		if rec.Error == "" {
+			return tr("snapshots are not available on this server")
+		}
 	}
 	if rec.Error != "" {
 		return rec.Error

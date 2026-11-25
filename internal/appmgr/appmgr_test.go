@@ -64,7 +64,19 @@ type fakeDocker struct {
 	cloneErr   error
 	fetchCalls [][2]string
 	buildCalls []string // image names
-	buildErr   error
+	// buildOverrides is the runtime version each Build call was given.
+	buildOverrides []string
+	// fetchCommits is the commit each FetchRepo call pinned ("" for the head).
+	fetchCommits []string
+	buildErr     error
+
+	head         string            // HEAD CloneRepo/FetchRepo report
+	buildRuntime docker.Runtime    // what Build reports, on failure too
+	digests      map[string]string // ImageDigest answers, key imageID\x00ref
+	digestCalls  int
+	// versionMeta answers ImageVersionMeta by image ID; absent = unreadable.
+	versionMeta map[string]docker.ImageVersionMeta
+	retained    map[string]bool // the last RetainImageInfo set
 
 	containers []docker.ContainerInfo
 
@@ -78,6 +90,40 @@ type fakeDocker struct {
 
 	socketDirs    map[string]bool
 	socketDirsErr error
+
+	// Image change seams (image_set_test.go). images maps a local reference
+	// (or a hold tag) to its image ID; a container started on a known
+	// reference records that ID in containerImage.
+	images         map[string]string
+	imageHealth    map[string]bool   // image IDs with a HEALTHCHECK
+	pullResult     map[string]string // ref -> ID a pull resolves it to
+	pullErr        map[string]error
+	pullWaits      bool     // PullImage blocks until its context ends
+	pulls          []string // "ref force"
+	tags           [][2]string
+	containerImage map[string]string
+	runImageErr    map[string]error // RunApp fails for this image reference
+	stateHook      func(name string, st docker.ContainerState) docker.ContainerState
+
+	// Build retention seams (rollback_test.go). buildImageID is the image a
+	// Build call leaves under its reference; untagged records UntagImage.
+	buildImageID string
+	untagged     []string
+	untagErr     map[string]error
+	tagListErr   error
+	tagLists     []string // ImageTags patterns
+	diskFree     uint64
+	diskTotal    uint64
+	diskKnown    bool
+
+	// Runtime backfill seams (runtime_backfill_test.go).
+	observed      docker.Runtime
+	observedErr   error
+	observedCalls [][2]string // sourceDir, imageID
+	observedHook  func()      // fires inside ObservedRuntime
+	checkoutHead  string
+	headErr       error
+	headCalls     []string
 }
 
 func newFakeDocker() *fakeDocker {
@@ -118,8 +164,20 @@ func (f *fakeDocker) RunApp(name string, options docker.RunOptions, _ docker.Bui
 		return false, nil
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.runImageErr[options.Image]; err != nil {
+		// The real RunApp removed the previous container first.
+		delete(f.running, name)
+		delete(f.containerImage, name)
+		return false, err
+	}
 	f.running[name] = true
-	f.mu.Unlock()
+	if id, ok := f.images[options.Image]; ok {
+		if f.containerImage == nil {
+			f.containerImage = map[string]string{}
+		}
+		f.containerImage[name] = id
+	}
 	return true, nil
 }
 
@@ -225,7 +283,7 @@ func (f *fakeDocker) GetStatus(name string) docker.Status {
 	if st, ok := f.status[name]; ok {
 		return st
 	}
-	return docker.Status{Running: f.running[name]}
+	return docker.Status{Running: f.running[name], ImageID: f.containerImage[name]}
 }
 
 func (f *fakeDocker) GetListeningPorts(name string) []int {
@@ -285,35 +343,69 @@ func (f *fakeDocker) StatPathIsDir(name, containerPath string) (bool, bool) {
 	return isDir, ok
 }
 
-func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) error {
+func (f *fakeDocker) CloneRepo(url, branch, _, _ string, _ docker.BuildLog) (string, error) {
 	f.mu.Lock()
 	f.cloneCalls = append(f.cloneCalls, [2]string{url, branch})
 	err := f.cloneErr
+	head := f.head
 	f.mu.Unlock()
-	return err
+	if err != nil {
+		return "", err
+	}
+	return head, nil
 }
 
-func (f *fakeDocker) FetchRepo(url, branch, _, _, _ string, _ docker.BuildLog) error {
+func (f *fakeDocker) FetchRepo(url, branch, _, _, commitSha string, _ docker.BuildLog) (string, error) {
 	f.mu.Lock()
 	f.fetchCalls = append(f.fetchCalls, [2]string{url, branch})
+	f.fetchCommits = append(f.fetchCommits, commitSha)
 	hook := f.fetchHook
+	head := f.head
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
-	return nil
+	return head, nil
 }
 
-func (f *fakeDocker) Build(_, imageName, _ string, _ docker.BuildLog) error {
+func (f *fakeDocker) Build(_, imageName, _, runtimeVersion string, _ docker.BuildLog) (docker.Runtime, error) {
 	f.mu.Lock()
 	f.buildCalls = append(f.buildCalls, imageName)
+	f.buildOverrides = append(f.buildOverrides, runtimeVersion)
 	hook := f.buildHook
 	err := f.buildErr
+	rt := f.buildRuntime
+	if err == nil && f.buildImageID != "" {
+		if f.images == nil {
+			f.images = map[string]string{}
+		}
+		f.images[imageName] = f.buildImageID
+	}
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
-	return err
+	return rt, err
+}
+
+func (f *fakeDocker) ImageDigest(imageID, ref string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.digestCalls++
+	return f.digests[imageID+"\x00"+ref]
+}
+
+func (f *fakeDocker) ImageVersionMeta(imageID string) (docker.ImageVersionMeta, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	meta, ok := f.versionMeta[imageID]
+	return meta, ok
+}
+
+func (f *fakeDocker) RetainImageInfo(inUse map[string]bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retained = inUse
 }
 
 func (f *fakeDocker) RegisterBuildLogger(appName string, _ *applog.Logger) {
@@ -692,7 +784,7 @@ type blockingCloneDocker struct {
 	once    sync.Once
 }
 
-func (b *blockingCloneDocker) CloneRepo(url, branch, dir, token string, l docker.BuildLog) error {
+func (b *blockingCloneDocker) CloneRepo(url, branch, dir, token string, l docker.BuildLog) (string, error) {
 	b.once.Do(func() { close(b.started) })
 	<-b.block
 	return b.fakeDocker.CloneRepo(url, branch, dir, token, l)

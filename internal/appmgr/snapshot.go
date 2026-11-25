@@ -1,33 +1,49 @@
 package appmgr
 
-import "odac/internal/applog"
+import (
+	"time"
+
+	"odac/internal/applog"
+)
+
+// The events an operation names when it starts a snapshot. They are the
+// backup manager's own values (backup.EventDeploy, backup.EventVersion),
+// which the snapshot list reports as each point's event.
+const (
+	SnapshotDeploy  = "deploy"
+	SnapshotVersion = "version"
+)
 
 // Snapshotter takes the snapshots that operations on an app call for: one
-// beside a deploy's build, finished before the new container (and its
+// before a deploy's or a version switch's new container (and its
 // migration) starts, and one before a delete. The backup manager
-// implements it through the composition root. Nothing it does fails the
-// operation: a snapshot that could not be taken is a line in the log.
+// implements it through the composition root. Nothing it does fails a
+// deploy or a delete: a snapshot that could not be taken is a line in the
+// log. A version switch asked to require one is the exception.
 type Snapshotter interface {
-	// BeforeDeploy starts the snapshot of a deploy of app and returns at
-	// once; nil means the deploy takes none (the app and the apps it links
-	// hold no data, or snapshots are off).
-	BeforeDeploy(app string) DeploySnapshot
+	// BeforeDeploy starts the snapshot that event (SnapshotDeploy,
+	// SnapshotVersion) takes before app's container is replaced, and
+	// returns at once. nil means none is taken (the app and the apps it
+	// links hold no data, or snapshots are off), and the line says why.
+	BeforeDeploy(app, event string) (DeploySnapshot, string)
 	// BeforeDelete takes the snapshot before app is deleted, within a
 	// bounded time, and returns a line for the log.
 	BeforeDelete(app string) string
 }
 
-// DeploySnapshot is the snapshot a deploy started.
+// DeploySnapshot is the snapshot a deploy or a version switch started.
 type DeploySnapshot interface {
 	// Wait waits for it, within a bounded time after which it is given
-	// up, and reports whether it was taken, with a line for the build log.
-	Wait() (taken bool, note string)
-	// Cancel gives up a snapshot the deploy ended without needing.
+	// up (never longer than limit in all when limit is positive), and
+	// returns the run of the snapshot taken, "" for none, with a line for
+	// the log.
+	Wait(limit time.Duration) (run, note string)
+	// Cancel gives up a snapshot the operation ended without needing.
 	Cancel()
 }
 
-// SetSnapshotter has every later deploy and delete take its snapshot
-// through s.
+// SetSnapshotter has every later deploy, version switch and delete take
+// its snapshot through s.
 func (m *Manager) SetSnapshotter(s Snapshotter) {
 	m.mu.Lock()
 	m.snapshots = s
@@ -43,7 +59,8 @@ func (m *Manager) snapshotter() Snapshotter {
 // startDeploySnapshot starts the snapshot of a deploy, beside its build.
 func (m *Manager) startDeploySnapshot(name string) DeploySnapshot {
 	if s := m.snapshotter(); s != nil {
-		return s.BeforeDeploy(name)
+		snap, _ := s.BeforeDeploy(name, SnapshotDeploy)
+		return snap
 	}
 	return nil
 }
@@ -55,11 +72,11 @@ func (m *Manager) awaitDeploySnapshot(name string, snap DeploySnapshot, logCtrl 
 	if snap == nil {
 		return
 	}
-	taken, note := snap.Wait()
+	run, note := snap.Wait(0)
 	if note == "" {
 		return
 	}
-	if taken {
+	if run != "" {
 		m.dlog.Log("%s: %s", name, note)
 	} else {
 		m.dlog.Warn("%s: %s", name, note)

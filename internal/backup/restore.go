@@ -171,6 +171,11 @@ type AppRestore struct {
 	Warnings    []string `json:"warnings,omitempty"`
 	// Dropped is what a new app does not keep of its definition.
 	Dropped []string `json:"dropped,omitempty"`
+	// Image is, in place, the app's image at the point and now, when both
+	// are known; Blocked (BlockedImageMismatch) is an app the restore
+	// refuses because they differ in repository or major version.
+	Image   *RestoreImage `json:"image,omitempty"`
+	Blocked string        `json:"blocked,omitempty"`
 }
 
 // restorePlan is a restore worked out from the run's snapshots.
@@ -190,9 +195,12 @@ type appPlan struct {
 	name   string
 	dump   *proto.Snapshot
 	dirs   []proto.Snapshot
-	def    map[string]any
-	links  []string
-	out    *AppRestore
+	// defSnap is the definition stored with the run; def is it read back,
+	// for a new app.
+	defSnap *proto.Snapshot
+	def     map[string]any
+	links   []string
+	out     *AppRestore
 	// filled in when the restore runs
 	app     consistency.App
 	load    *consistency.Load
@@ -445,15 +453,21 @@ func (m *Manager) planRestore(ctx context.Context, req RestoreRequest, work stri
 			}
 			ap.dump = &s
 		case s.Source.Name == definitionSource:
+			ap.defSnap = &s
 		default:
 			ap.dirs = append(ap.dirs, s)
 		}
 	}
-	// Definitions are read only to make new apps: each takes a helper run.
-	for _, s := range snaps {
-		if req.Mode == RestoreNewApp && s.Source.Name == definitionSource && byApp[s.Source.App] != nil {
-			if err := m.readDefinition(ctx, a, req.Target, s, work, byApp[s.Source.App]); err != nil {
-				m.log.Warn("Cannot read the definition of %s stored with run %s: %s", s.Source.App, req.Run, err.Error())
+	// A new app is made from its definition: each read takes a helper run.
+	if req.Mode == RestoreNewApp {
+		for name, ap := range byApp {
+			if ap.defSnap == nil {
+				continue
+			}
+			if def, err := m.readDefinition(ctx, a, req.Target, *ap.defSnap, work); err != nil {
+				m.log.Warn("Cannot read the definition of %s stored with run %s: %s", name, req.Run, err.Error())
+			} else {
+				ap.def = def
 			}
 		}
 	}
@@ -555,6 +569,9 @@ func (m *Manager) planRestore(ctx context.Context, req RestoreRequest, work stri
 	var point time.Time
 	for _, ap := range plan.apps {
 		out := &AppRestore{App: ap.source, As: ap.name, Method: MethodFiles}
+		if req.Mode == RestoreInPlace {
+			out.Image, out.Blocked = m.imageCheck(ctx, a, req, ap, work)
+		}
 		var first time.Time
 		var levels []string
 		for _, s := range ap.allSnapshots() {
@@ -621,33 +638,54 @@ func definitionLinks(def map[string]any) []string {
 
 // readDefinition restores an app's definition snapshot into a directory on
 // ODAC's own disk and reads it.
-func (m *Manager) readDefinition(ctx context.Context, a settings.Access, target string, s proto.Snapshot, work string, ap *appPlan) error {
+func (m *Manager) readDefinition(ctx context.Context, a settings.Access, target string, s proto.Snapshot, work string) (map[string]any, error) {
 	dir := work
 	if dir == "" {
 		tmp, err := m.workDir("preview")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer os.RemoveAll(tmp)
 		dir = tmp
 	}
 	dest := filepath.Join(dir, "definition-"+s.Source.App)
 	if err := os.RemoveAll(dest); err != nil {
-		return err
+		return nil, err
 	}
 	if err := os.Mkdir(dest, 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(dest)
 	if err := m.restoreDir(ctx, a, target, s.ID, dest); err != nil {
-		return err
+		return nil, err
 	}
-	def, err := readDefinitionFile(filepath.Join(dest, definitionFile))
+	return readDefinitionFile(filepath.Join(dest, definitionFile))
+}
+
+// imageCheck compares the image an in-place restore's point was taken on,
+// from the definition stored with it, with the image the app runs now
+// (compareImages). A point without a readable definition (one older than
+// definitions, or a read that failed) reports nothing and blocks nothing;
+// a failed read is logged. Preview and restore both run it, and the
+// restore refuses on its own answer, never on what a preview said.
+func (m *Manager) imageCheck(ctx context.Context, a settings.Access, req RestoreRequest, ap *appPlan, work string) (*RestoreImage, string) {
+	if ap.defSnap == nil {
+		return nil, ""
+	}
+	cur, ok := m.cfg.Control.AppDefinition(ap.name)
+	if !ok || definitionImage(cur) == "" {
+		return nil, ""
+	}
+	def, err := m.readDefinition(ctx, a, req.Target, *ap.defSnap, work)
 	if err != nil {
-		return err
+		m.log.Warn("Cannot read the definition of %s stored with run %s, so its image is not compared: %s", ap.source, req.Run, err.Error())
+		return nil, ""
 	}
-	ap.def = def
-	return nil
+	img, blocked := compareImages(definitionImage(def), definitionImage(cur))
+	if blocked {
+		return img, BlockedImageMismatch
+	}
+	return img, ""
 }
 
 // workDir makes a private directory under <base>/backup/restore.
@@ -800,6 +838,11 @@ func (p *restorePlan) update(m *Manager, fn func(r *RestoreResult)) {
 // for the restored data beside the data it replaces, which stays until
 // the restore has succeeded.
 func (m *Manager) checkRestore(p *restorePlan) error {
+	for _, ap := range p.apps {
+		if out := ap.out; out != nil && out.Blocked == BlockedImageMismatch && out.Image != nil {
+			return refusal(settings.CodeImageMismatch, "App %s ran %s when this point was taken and runs %s now. Change its version back before restoring this data.", ap.name, out.Image.Point, out.Image.Current)
+		}
+	}
 	names := []string{}
 	for _, ap := range p.apps {
 		names = append(names, ap.name)

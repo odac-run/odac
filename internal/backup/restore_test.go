@@ -203,7 +203,7 @@ func newRestoreSetup(t *testing.T) *restoreSetup {
 	h.apps.mu.Unlock()
 	ctl.active["web"], ctl.active["db"] = true, true
 	ctl.defs["web"] = map[string]any{"name": "web", "type": "container", "env": map[string]any{"manual": map[string]any{}, "linked": []any{"db"}}}
-	ctl.defs["db"] = map[string]any{"name": "db", "type": "container"}
+	ctl.defs["db"] = map[string]any{"name": "db", "type": "container", "image": "postgres:16.4"}
 
 	os.WriteFile(filepath.Join(s.web, "a.txt"), []byte("v1"), 0o644)
 	os.MkdirAll(filepath.Join(s.web, "sub"), 0o755)
@@ -606,7 +606,7 @@ func TestServerRestoreStagesAndApplies(t *testing.T) {
 	newControl(h)
 	config := filepath.Join(h.base, "config")
 	write := func(name, body string) { os.WriteFile(filepath.Join(config, name), []byte(body), 0o600) }
-	write("app.json", `{"apps":[{"name":"web","active":true}]}`)
+	write("app.json", `{"apps":[{"name":"web","active":true,"type":"git","buildId":"build_1_a","runtimeOverride":"22","imageChange":{"image":"odac-app-web:build_0_z","previous":"odac-app-web"}}]}`)
 	write("domain.json", `{"domains":{"a.com":{}}}`)
 	write("server.json", `{"server":{"pid":1}}`)
 	j := h.job("j1", "t1", 60)
@@ -654,6 +654,11 @@ func TestServerRestoreStagesAndApplies(t *testing.T) {
 	json.Unmarshal([]byte(read(t, filepath.Join(config, "app.json"))), &mod)
 	if len(mod.Apps) != 1 || mod.Apps[0]["active"] != false {
 		t.Fatalf("apps %+v", mod.Apps)
+	}
+	// What named the old server's images goes; the operator's runtime pin
+	// is a choice, not an image, and stays.
+	if a := mod.Apps[0]; a["imageChange"] != nil || a["buildId"] != nil || a["runtimeOverride"] != "22" || a["type"] != "git" {
+		t.Fatalf("restored app %+v", a)
 	}
 	if again, err := ApplyServerRestore(h.base); err != nil || again != nil {
 		t.Fatalf("second apply: %+v, %v", again, err)
@@ -707,5 +712,158 @@ func TestCrashCheckCountsRestartsSinceTheStart(t *testing.T) {
 	h.states.mu.Unlock()
 	if err := check(context.Background()); err != nil {
 		t.Fatalf("a failed inspect read as a crash: %v", err)
+	}
+}
+
+func TestCompareImagesBlocksAnotherRepositoryOrMajor(t *testing.T) {
+	cases := []struct {
+		point, current string
+		reported       bool
+		blocked        bool
+	}{
+		{"postgres:17.6-alpine", "postgres:17.2", true, false},
+		{"postgres:17.6-alpine", "postgres:18", true, true},
+		{"postgres:16", "docker.io/library/postgres:16.9", true, false},
+		{"postgres:16", "mysql:8", true, true},
+		{"postgres:16", "ghcr.io/library/postgres:16", true, true},
+		{"traefik:v3.1", "traefik:v2.11", true, true},
+		{"traefik:v3.1", "traefik:3.2", true, false},
+		{"postgres:latest", "postgres:18", true, false},
+		{"postgres", "postgres:16", true, false},
+		{"redis:alpine", "redis:alpine3.20", true, false},
+		{"", "postgres:16", false, false},
+		{"Not A Ref::", "postgres:16", false, false},
+		{"postgres:1234567890", "postgres:1", true, false},
+	}
+	for _, c := range cases {
+		img, blocked := compareImages(c.point, c.current)
+		if (img != nil) != c.reported || blocked != c.blocked {
+			t.Errorf("%s -> %s: image %+v blocked %v, want reported %v blocked %v", c.point, c.current, img, blocked, c.reported, c.blocked)
+		}
+		if img != nil && (img.Point != c.point || img.Current != c.current) {
+			t.Errorf("%s -> %s reported as %+v", c.point, c.current, img)
+		}
+	}
+}
+
+func TestCompareImagesGHCRAndQuay(t *testing.T) {
+	d := "sha256:" + strings.Repeat("a", 64)
+	cases := []struct {
+		name, point, current string
+		reported             bool
+		blocked              bool
+	}{
+		{"ghcr same major minor diff", "ghcr.io/immich-app/immich-server:v2.1.0", "ghcr.io/immich-app/immich-server:v2.3.0", true, false},
+		{"ghcr different major", "ghcr.io/immich-app/immich-server:v2.1.0", "ghcr.io/immich-app/immich-server:v3.0.0", true, true},
+		{"ghcr numeric major diff", "ghcr.io/wg-easy/wg-easy:14", "ghcr.io/wg-easy/wg-easy:15", true, true},
+		{"ghcr numeric same major", "ghcr.io/wg-easy/wg-easy:15.0.0", "ghcr.io/wg-easy/wg-easy:15.1.0", true, false},
+		{"ghcr calver major diff", "ghcr.io/home-assistant/home-assistant:2025.12.0", "ghcr.io/home-assistant/home-assistant:2026.1.0", true, true},
+		{"ghcr floating stable vs version", "ghcr.io/home-assistant/home-assistant:stable", "ghcr.io/home-assistant/home-assistant:2026.1.0", true, false},
+		{"ghcr multi-segment same major", "ghcr.io/org/team/app:1.2", "ghcr.io/org/team/app:1.3", true, false},
+		{"ghcr multi-segment different major", "ghcr.io/org/team/app:1.2", "ghcr.io/org/team/app:2.0", true, true},
+		{"ghcr multi-segment different depth", "ghcr.io/org/team/app:1.2", "ghcr.io/org/app:1.2", true, true},
+		{"ghcr digest-only point vs version", "ghcr.io/org/app@" + d, "ghcr.io/org/app:2.0", true, false},
+		{"ghcr tagged and digested different major", "ghcr.io/org/app:1.0@" + d, "ghcr.io/org/app:2.0", true, true},
+		{"quay latest vs release tag", "quay.io/minio/minio:latest", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z", true, false},
+		{"quay implicit vs explicit tag", "quay.io/minio/minio", "quay.io/minio/minio:latest", true, false},
+		{"quay digest-only vs tag", "quay.io/minio/minio@" + d, "quay.io/minio/minio:latest", true, false},
+		{"quay multi-segment different major", "quay.io/org/sub/repo:1.0", "quay.io/org/sub/repo:2.0", true, true},
+		{"ghcr vs quay same path", "ghcr.io/minio/minio:latest", "quay.io/minio/minio:latest", true, true},
+		{"quay vs docker hub same path", "quay.io/minio/minio:latest", "minio/minio:latest", true, true},
+		{"ghcr uppercase host same major", "GHCR.IO/wg-easy/wg-easy:15.0", "ghcr.io/wg-easy/wg-easy:15.1", true, false},
+		{"ghcr uppercase host different major", "GHCR.IO/wg-easy/wg-easy:14.0", "ghcr.io/wg-easy/wg-easy:15.0", true, true},
+		{"quay uppercase host", "QUAY.IO/minio/minio:latest", "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z", true, false},
+		{"ghcr uppercase repo path invalid", "ghcr.io/WG-Easy/wg-easy:15", "ghcr.io/wg-easy/wg-easy:15", false, false},
+	}
+	for _, c := range cases {
+		img, blocked := compareImages(c.point, c.current)
+		if (img != nil) != c.reported || blocked != c.blocked {
+			t.Errorf("%s (%s -> %s): image %+v blocked %v, want reported %v blocked %v",
+				c.name, c.point, c.current, img, blocked, c.reported, c.blocked)
+		}
+		if img != nil && (img.Point != c.point || img.Current != c.current) {
+			t.Errorf("%s reported verbatim as %+v", c.name, img)
+		}
+	}
+}
+
+// An in-place restore compares the image the point was taken on with the
+// one the app runs: another major is refused by the restore itself, a minor
+// is not, and a new app is never compared.
+func TestRestoreInPlaceRefusesAnotherImageMajor(t *testing.T) {
+	s := newRestoreSetup(t)
+	ctx := context.Background()
+	setImage := func(img string) {
+		s.ctl.mu.Lock()
+		s.ctl.defs["db"]["image"] = img
+		s.ctl.mu.Unlock()
+	}
+	preview := func() map[string]AppRestore {
+		t.Helper()
+		r, err := s.m.PreviewRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Mode: RestoreInPlace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]AppRestore{}
+		for _, a := range r.Apps {
+			out[a.App] = a
+		}
+		return out
+	}
+
+	apps := preview()
+	if db := apps["db"]; db.Image == nil || *db.Image != (RestoreImage{Point: "postgres:16.4", Current: "postgres:16.4"}) || db.Blocked != "" {
+		t.Fatalf("same image: %+v", db)
+	}
+	if web := apps["web"]; web.Image != nil || web.Blocked != "" {
+		t.Fatalf("an app whose records name no image: %+v", web)
+	}
+
+	setImage("postgres:16.6")
+	if db := preview()["db"]; db.Blocked != "" || db.Image.Current != "postgres:16.6" {
+		t.Fatalf("a minor difference: %+v", db)
+	}
+
+	setImage("postgres:17.1")
+	db := preview()["db"]
+	if db.Blocked != BlockedImageMismatch || *db.Image != (RestoreImage{Point: "postgres:16.4", Current: "postgres:17.1"}) {
+		t.Fatalf("a major difference: %+v", db)
+	}
+	raw, _ := json.Marshal(db)
+	if !strings.Contains(string(raw), `"image":{"point":"postgres:16.4","current":"postgres:17.1"},"blocked":"image_mismatch"`) {
+		t.Fatalf("wire shape %s", raw)
+	}
+	// The restore checks again and never trusts the preview.
+	_, err := s.m.StartRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Apps: []string{"web"}, Mode: RestoreInPlace})
+	var se *settings.Error
+	if !errors.As(err, &se) || se.Code != settings.CodeImageMismatch || !strings.Contains(se.Message, "postgres:17.1") {
+		t.Fatalf("restore across a major: %v", err)
+	}
+	if s.ctl.has("hold web") || s.ctl.has("hold db") || read(t, filepath.Join(s.pg, "PG_VERSION")) != "16-live" {
+		t.Fatal("a refused restore touched an app")
+	}
+
+	setImage("mysql:8")
+	if preview()["db"].Blocked != BlockedImageMismatch {
+		t.Fatal("another repository was not blocked")
+	}
+
+	// A new app is made from the point's own definition: nothing to compare.
+	r, err := s.m.PreviewRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Mode: RestoreNewApp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range r.Apps {
+		if a.Image != nil || a.Blocked != "" {
+			t.Fatalf("new app compared: %+v", a)
+		}
+	}
+
+	setImage("postgres:16.9")
+	if _, err := s.m.StartRestore(ctx, RestoreRequest{Target: "t1", Run: s.runID, Mode: RestoreInPlace}); err != nil {
+		t.Fatalf("restore within the major: %v", err)
+	}
+	if res := s.wait(); res.Status != StatusOK {
+		t.Fatalf("restore: %+v", res)
 	}
 }

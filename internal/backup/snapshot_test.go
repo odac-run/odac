@@ -133,18 +133,21 @@ func TestDeploySnapshotTakesTheLinkedDatabaseAndIsNotCancelled(t *testing.T) {
 		<-release
 		return []byte("dump of db"), nil
 	}
-	p := h.m.BeforeDeploy("web")
+	p, _ := h.m.BeforeDeploy("web", EventDeploy)
 	if p == nil {
 		t.Fatal("no snapshot before deploying an app whose database holds data")
 	}
 	<-started
 	h.m.DeployStarted("web")
 	close(release)
-	taken, note := p.Wait()
-	if !taken || !strings.Contains(note, "taken") {
-		t.Fatalf("wait: %v %q", taken, note)
+	run, note := p.Wait(0)
+	if run == "" || !strings.Contains(note, "taken before the deploy") {
+		t.Fatalf("wait: %q %q", run, note)
 	}
 	rec := h.snapshot()
+	if rec.Run != run {
+		t.Fatalf("wait named run %s, the record %s", run, rec.Run)
+	}
 	if rec.Status != StatusOK || rec.Event != EventDeploy || rec.App != "web" || len(rec.Apps) != 1 || rec.Apps[0].App != "db" {
 		t.Fatalf("record %+v", rec)
 	}
@@ -170,11 +173,93 @@ func TestStatelessDeployTakesNoSnapshot(t *testing.T) {
 	h := newHarness(t)
 	h.stateless("static")
 	h.live()
-	if p := h.m.BeforeDeploy("static"); p != nil {
+	p, note := h.m.BeforeDeploy("static", EventDeploy)
+	if p != nil {
 		t.Fatal("a snapshot before deploying an app without data")
 	}
-	if taken, note := (*PendingSnapshot)(nil).Wait(); !taken || note != "" {
+	if !strings.Contains(note, "hold no data") {
+		t.Fatalf("why none: %q", note)
+	}
+	if run, note := (*PendingSnapshot)(nil).Wait(0); run != "" || note != "" {
 		t.Fatal("no snapshot is no news")
+	}
+}
+
+// A version switch's snapshot is its own event: listed as version, kept
+// in a series of its own and never counted as a deploy's.
+func TestVersionSnapshotIsItsOwnEvent(t *testing.T) {
+	h := newHarness(t)
+	h.app("db")
+	h.live()
+	h.m.DeployStarted("db")
+	defer h.m.DeployEnded("db")
+	p, why := h.m.BeforeDeploy("db", EventVersion)
+	if p == nil {
+		t.Fatalf("no snapshot before a version change of an app with data: %q", why)
+	}
+	run, note := p.Wait(time.Minute)
+	if run == "" || !strings.Contains(note, "before the version change") {
+		t.Fatalf("wait: %q %q", run, note)
+	}
+	rec := h.snapshot()
+	if rec.Status != StatusOK || rec.Event != EventVersion || rec.Run != run {
+		t.Fatalf("record %+v", rec)
+	}
+	for _, sn := range h.run.repo(h.snapRepo()).snaps {
+		if sn.Trigger != EventVersion {
+			t.Fatalf("snapshot tagged %q", sn.Trigger)
+		}
+	}
+	if pts := h.m.SnapshotPoints("db"); len(pts) != 1 || pts[0].Event != EventVersion || pts[0].Run != run {
+		t.Fatalf("points %+v", pts)
+	}
+	if st := h.m.SnapshotStatus(); len(st.Deploys) != 0 {
+		t.Fatalf("a version change marked as a deploy: %+v", st.Deploys)
+	}
+}
+
+// A caller that must not go on without a snapshot learns why none is
+// taken: snapshots off, or an event no operation takes.
+func TestBeforeDeploySaysWhyItTakesNone(t *testing.T) {
+	h := newHarness(t)
+	h.app("db")
+	h.live()
+	if p, why := h.m.BeforeDeploy("db", "periodic"); p != nil || why == "" {
+		t.Fatalf("an event no operation takes: %v %q", p, why)
+	}
+	h.set.mu.Lock()
+	h.set.snapshots = &settings.Snapshots{Enabled: false, MaxDiskPct: 25}
+	h.set.mu.Unlock()
+	p, why := h.m.BeforeDeploy("db", EventVersion)
+	if p != nil || why != "No snapshot before the version change: snapshots are turned off" {
+		t.Fatalf("snapshots off: %v %q", p, why)
+	}
+}
+
+// A limit bounds the whole wait, the helpers' time to stop included, so a
+// version switch keeps the rest of its budget for its health gate.
+func TestWaitIsBoundedByTheCallersLimit(t *testing.T) {
+	h := newHarness(t)
+	h.m.t.snap.deployWait = time.Hour
+	h.m.t.snap.abortGrace = time.Hour
+	h.app("db")
+	h.live()
+	started, release := make(chan struct{}), make(chan struct{})
+	h.run.dump = func(ctx context.Context, _ docker.DumpSpec) ([]byte, error) {
+		close(started)
+		<-release
+		return nil, ctx.Err()
+	}
+	defer close(release)
+	p, _ := h.m.BeforeDeploy("db", EventVersion)
+	<-started
+	begin := time.Now()
+	run, note := p.Wait(200 * time.Millisecond)
+	if took := time.Since(begin); took > 2*time.Second {
+		t.Fatalf("waited %s past a 200ms limit", took)
+	}
+	if run != "" || !strings.Contains(note, "did not finish in time") {
+		t.Fatalf("wait: %q %q", run, note)
 	}
 }
 
@@ -190,11 +275,11 @@ func TestDeployGivesUpASlowSnapshot(t *testing.T) {
 		close(stopped)
 		return nil, ctx.Err()
 	}
-	p := h.m.BeforeDeploy("db")
+	p, _ := h.m.BeforeDeploy("db", EventDeploy)
 	<-started
-	taken, note := p.Wait()
-	if taken || !strings.Contains(note, "without a snapshot") {
-		t.Fatalf("wait: %v %q", taken, note)
+	run, note := p.Wait(0)
+	if run != "" || !strings.Contains(note, "without a snapshot") {
+		t.Fatalf("wait: %q %q", run, note)
 	}
 	select {
 	case <-stopped:
@@ -218,7 +303,7 @@ func TestSnapshotsOff(t *testing.T) {
 	h.app("db")
 	h.live()
 	h.set.snapshots = &settings.Snapshots{Enabled: false, MaxDiskPct: 25}
-	if h.m.BeforeDeploy("db") != nil || h.m.BeforeDelete("db") != "" || h.m.BeforeUpdate() != "" {
+	if p, _ := h.m.BeforeDeploy("db", EventDeploy); p != nil || h.m.BeforeDelete("db") != "" || h.m.BeforeUpdate() != "" {
 		t.Fatal("a snapshot was taken while snapshots are off")
 	}
 	if _, err := h.m.TakeSnapshot("db"); err == nil {

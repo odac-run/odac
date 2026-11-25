@@ -794,6 +794,13 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		return res(false, __("Invalid backup configuration: %s", berr.Error()))
 	}
 
+	rawRuntime, hasRuntime := cfg["runtime"]
+	override, _, oerr := parseRuntimeOverride(rawRuntime, hasRuntime)
+	if oerr != nil {
+		m.clog.Log("createFromGit: %s", oerr.Error())
+		return res(false, oerr.Error())
+	}
+
 	exists := false
 	m.cfg.View(func() { exists = m.getLocked(name) != nil })
 	if exists {
@@ -825,7 +832,7 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		return res(false, err.Error())
 	}
 
-	imageName := "odac-app-" + name
+	imageName := buildRepo(name)
 	logCtrl, err := logger.NewBuildStream(generateRuntimeID("build"), map[string]any{
 		"image":    imageName,
 		"strategy": "git-app",
@@ -845,14 +852,17 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 
 	m.clog.Log("createFromGit: Cloning repository...")
 	logCtrl.StartPhase("git_clone")
-	if err := m.deps.Docker.CloneRepo(url, branch, appDir, token, logCtrl); err != nil {
+	head, err := m.deps.Docker.CloneRepo(url, branch, appDir, token, logCtrl)
+	if err != nil {
 		return fail(err)
 	}
 	logCtrl.EndPhase("git_clone", true)
 	m.clog.Log("createFromGit: Clone successful")
 
 	m.clog.Log("createFromGit: Building image...")
-	if err := m.deps.Docker.Build(appDir, imageName, name, logCtrl); err != nil {
+	built, err := m.deps.Docker.Build(appDir, imageName, name, override, logCtrl)
+	recordBuildRuntime(logCtrl, built)
+	if err != nil {
 		return fail(err)
 	}
 	m.clog.Log("createFromGit: Build successful")
@@ -919,6 +929,14 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 		if branch != "" {
 			app["branch"] = branch
 		}
+		// The image is built, so these describe what the record now runs.
+		if rt := built.Map(); rt != nil {
+			app["runtime"] = rt
+		}
+		if commit := deployedCommit(head, ""); commit != "" {
+			app["commitSha"] = commit
+		}
+		applyRuntimeOverrideLocked(app, override)
 		kernelSpec.Apply(app)
 		resourceSpec.Apply(app)
 		backupSpec.Apply(app)
@@ -936,7 +954,18 @@ func (m *Manager) createFromGit(cfg map[string]any) *api.Result {
 	}
 	logCtrl.EndPhase("start_new_container", true)
 
-	m.set(appID, map[string]any{"status": "running", "started": nowMs()})
+	runningState := map[string]any{"status": "running", "started": nowMs()}
+	// The first build is live: keep it, and drop any tag a deleted app of
+	// the same name left behind, so it never becomes this app's target.
+	recordBuildCommit(logCtrl, deployedCommit(head, ""))
+	tagged := m.tagBuild(name, imageName, logCtrl.ID())
+	if tagged {
+		runningState[buildIDKey] = logCtrl.ID()
+	}
+	m.set(appID, runningState)
+	if tagged {
+		m.retainBuilds(name, logCtrl.ID(), true)
+	}
 	m.spawn(func() {
 		if scanErr := m.scanAndSaveHTTPStatus(appID); scanErr != nil {
 			m.clog.Error("HTTP scan failed for %s: %s", name, scanErr.Error())

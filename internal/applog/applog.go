@@ -123,11 +123,14 @@ const (
 	runtimeBufferSize = 100
 	maxLineLength     = 65536 // 64KB per-line cap against memory exhaustion
 
-	maxRuntimeBytes   = 100 * 1024 * 1024 // in-day size cap; one .1 backup ≈ 200 MB peak
-	rotateCheckEvery  = 1024 * 1024       // stat the file every ~1 MB of writes
-	runtimeKeeepDays  = 7
-	buildsToKeep      = 10
-	statsSaveThrottle = 2 * time.Second
+	maxRuntimeBytes  = 100 * 1024 * 1024 // in-day size cap; one .1 backup ≈ 200 MB peak
+	rotateCheckEvery = 1024 * 1024       // stat the file every ~1 MB of writes
+	runtimeKeeepDays = 7
+	buildsToKeep     = 10
+	// successfulBuildsToKeep matches the number of build images a git app
+	// keeps (appmgr), so every image a rollback can reach has its summary.
+	successfulBuildsToKeep = 3
+	statsSaveThrottle      = 2 * time.Second
 )
 
 var (
@@ -455,8 +458,107 @@ func (l *Logger) ReadLastBuildLog() string {
 	return string(raw)
 }
 
-// pruneBuilds keeps the 10 newest build summaries by mtime and deletes the
-// .json/.log pairs of the rest. Best-effort.
+// LastAttemptStatus is how the newest build attempt ended: its summary's
+// status, "pending" when its log has no summary (a build still running, or
+// one a crash cut short before Finalize, whose fetch may already have moved
+// the checkout), and "" when the app has no build history. Newest is by
+// build id, as in GetLastBuild.
+func (l *Logger) LastAttemptStatus() string {
+	names, err := os.ReadDir(l.buildsDir)
+	if err != nil {
+		return ""
+	}
+	newest := ""
+	summaries := map[string]bool{}
+	for _, de := range names {
+		id, isSummary := strings.CutSuffix(de.Name(), ".json")
+		if !isSummary {
+			var isLog bool
+			if id, isLog = strings.CutSuffix(de.Name(), ".log"); !isLog {
+				continue
+			}
+		}
+		if isSummary {
+			summaries[id] = true
+		}
+		if id > newest {
+			newest = id
+		}
+	}
+	if newest == "" {
+		return ""
+	}
+	if !summaries[newest] {
+		return "pending"
+	}
+	raw, err := os.ReadFile(filepath.Join(l.buildsDir, newest+".json"))
+	if err != nil {
+		return "pending"
+	}
+	var data buildSummary
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return "pending"
+	}
+	return data.Status
+}
+
+// Build returns the summary of one build by id, nil when there is none
+// (never written, pruned, unreadable) or the id could name a path outside
+// the builds directory. A rollback reads the commit and runtime of the
+// build it returns to from here.
+func (l *Logger) Build(id string) *BuildInfo {
+	if id == "" || id == "." || id == ".." || filepath.Base(id) != id || strings.ContainsAny(id, `/\`) {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(l.buildsDir, id+".json"))
+	if err != nil {
+		return nil
+	}
+	var data buildSummary
+	if err := json.Unmarshal(raw, &data); err != nil || data.ID != id {
+		return nil
+	}
+	meta := data.Metadata
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	phases := data.Phases
+	if phases == nil {
+		phases = []*Phase{}
+	}
+	return &BuildInfo{
+		ID:       data.ID,
+		Status:   data.Status,
+		Time:     data.Timestamp,
+		Duration: data.Duration,
+		Errors:   data.Errors,
+		Warnings: data.Warnings,
+		Phases:   phases,
+		Metadata: meta,
+	}
+}
+
+// summaryStatus reads one summary's status, "" when it cannot be read.
+func (l *Logger) summaryStatus(name string) string {
+	raw, err := os.ReadFile(filepath.Join(l.buildsDir, name))
+	if err != nil {
+		return ""
+	}
+	var data struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(raw, &data) != nil {
+		return ""
+	}
+	return data.Status
+}
+
+// pruneBuilds keeps the 10 newest build summaries by mtime, plus the newest
+// successfulBuildsToKeep successful ones wherever they fall, and deletes the
+// .json/.log pairs of the rest. Best-effort. The successful ones outlive a
+// run of failures because a git app keeps the images of its last successful
+// builds for an instant rollback, and the rollback needs their summaries
+// (commit, runtime); ten failed pushes in a row must not orphan them.
 func (l *Logger) pruneBuilds() {
 	names, err := os.ReadDir(l.buildsDir)
 	if err != nil {
@@ -481,7 +583,19 @@ func (l *Logger) pruneBuilds() {
 		return
 	}
 	sort.Slice(jsonFiles, func(i, j int) bool { return jsonFiles[i].time.After(jsonFiles[j].time) })
-	for _, ft := range jsonFiles[buildsToKeep:] {
+	successes := 0
+	for i, ft := range jsonFiles {
+		success := l.summaryStatus(ft.name) == "success"
+		if i < buildsToKeep {
+			if success {
+				successes++
+			}
+			continue
+		}
+		if success && successes < successfulBuildsToKeep {
+			successes++
+			continue
+		}
 		id := strings.TrimSuffix(ft.name, ".json")
 		os.Remove(filepath.Join(l.buildsDir, ft.name))
 		os.Remove(filepath.Join(l.buildsDir, id+".log"))

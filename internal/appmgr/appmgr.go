@@ -20,6 +20,7 @@
 package appmgr
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -65,10 +66,22 @@ type Docker interface {
 	SetNetworks(name string, networks []string) docker.SetNetworksResult
 	EnsureNetworks(names []string) error
 	EnsureImage(imageName string, logw io.Writer) error
+	PullImage(ctx context.Context, ref string, force bool) error
+	ImageMeta(ref string) (docker.ImageMeta, error)
+	TagImage(source, target string) error
+	ImageTags(pattern string) ([]docker.ImageTag, error)
+	UntagImage(ref string) error
+	DataRootSpace() (free, total uint64, ok bool)
+	InspectState(name string) (docker.ContainerState, error)
 	StatPathIsDir(name, containerPath string) (isDir bool, ok bool)
-	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) error
-	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) error
-	Build(sourceDir, imageName, appName string, buildLog docker.BuildLog) error
+	CloneRepo(url, branch, targetDir, token string, buildLog docker.BuildLog) (string, error)
+	FetchRepo(url, branch, targetDir, token, commitSha string, buildLog docker.BuildLog) (string, error)
+	Build(sourceDir, imageName, appName, runtimeVersion string, buildLog docker.BuildLog) (docker.Runtime, error)
+	ImageDigest(imageID, ref string) string
+	ImageVersionMeta(imageID string) (docker.ImageVersionMeta, bool)
+	RetainImageInfo(inUse map[string]bool)
+	ObservedRuntime(sourceDir, imageID string) (docker.Runtime, error)
+	CheckoutHead(targetDir string) (string, error)
 	RegisterBuildLogger(appName string, logger *applog.Logger)
 	UnregisterBuildLogger(appName string)
 	ResolveHostPath(localPath string) string
@@ -174,6 +187,12 @@ type Manager struct {
 	opSeq      uint64                    // processing locks released so far
 	opEnded    map[float64]uint64        // app id -> opSeq at its last release
 
+	// Runtime backfill: apps tried this process, failures included, and the
+	// queue its single worker drains.
+	runtimeTried    map[float64]bool
+	backfillQueue   []backfillJob
+	backfillRunning bool
+
 	// Test hooks: cadences default to Node's literals; sleep defaults to
 	// time.Sleep. deploySwitchDelay is Deploy.js's NODE_ENV!=='test' 5s.
 	// httpProbe answers whether ip:port speaks HTTP (jest mocked the http
@@ -189,6 +208,13 @@ type Manager struct {
 	renameInterval    time.Duration // Deploy rename retry (2s)
 	restartDelay      time.Duration // standard restart settle (1s)
 	deploySwitchDelay time.Duration // Blue-Green pre-stop drain (5s)
+
+	// app.image.set budgets (image_set.go), fields so tests do not sleep.
+	imageSetBudget     time.Duration // whole operation, pull included (12m)
+	imagePullTimeout   time.Duration // pull alone (8m)
+	imageStableFor     time.Duration // continuous running the gate needs (30s)
+	imageHealthTimeout time.Duration // HEALTHCHECK must report healthy within (120s)
+	imageGateInterval  time.Duration // gate probe cadence (1s)
 }
 
 // spawn runs fn on a tracked goroutine (Node's un-awaited promises).
@@ -229,6 +255,8 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 		logStreams: map[string]*runtimeStream{},
 		loggers:    map[string]*applog.Logger{},
 
+		runtimeTried: map[float64]bool{},
+
 		httpProbe:         realHTTPProbe,
 		sleep:             time.Sleep,
 		pollInterval:      time.Second,
@@ -240,6 +268,12 @@ func New(cfg *config.Store, logsRoot string, deps Deps) *Manager {
 		renameInterval:    2 * time.Second,
 		restartDelay:      time.Second,
 		deploySwitchDelay: 5 * time.Second,
+
+		imageSetBudget:     12 * time.Minute,
+		imagePullTimeout:   8 * time.Minute,
+		imageStableFor:     30 * time.Second,
+		imageHealthTimeout: 120 * time.Second,
+		imageGateInterval:  time.Second,
 	}
 }
 
@@ -302,8 +336,11 @@ func (m *Manager) Check() {
 		status string
 		typ    string
 		pid    int
+		// backfill marks a git app whose record has no runtime yet.
+		backfill bool
 	}
 	var pulses []pulse
+	var interrupted []float64
 
 	if m.deps.Docker.Available() {
 		m.socketSweep.Do(func() { m.spawn(m.SweepProxySockets) })
@@ -312,17 +349,35 @@ func (m *Manager) Check() {
 	m.cfg.Mutate(func() {
 		m.apps = m.loadAppsFromConfig()
 		for _, app := range m.apps {
+			id, _ := app["id"].(float64)
+			if app[imageChangeKey] != nil {
+				interrupted = append(interrupted, id)
+			}
 			if app["active"] != true {
 				continue
 			}
-			id, _ := app["id"].(float64)
 			name, _ := app["name"].(string)
 			status, _ := app["status"].(string)
 			typ, _ := app["type"].(string)
 			pid, _ := app["pid"].(float64)
-			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid)})
+			pulses = append(pulses, pulse{id: id, name: name, status: status, typ: typ, pid: int(pid), backfill: needsRuntimeBackfill(app)})
 		}
 	})
+
+	// A marker on an app no operation holds is an image change a restart
+	// cut short. Claiming the processing lock here keeps the loop below from
+	// starting the app before the recovery has decided what it runs.
+	if m.deps.Docker.Available() {
+		for _, id := range interrupted {
+			if m.tryLockProcessing(id) {
+				m.spawn(func() {
+					defer m.unlockProcessing(id)
+					m.recoverImageChange(id)
+				})
+			}
+		}
+	}
+
 	if len(pulses) == 0 {
 		return
 	}
@@ -360,6 +415,7 @@ func (m *Manager) Check() {
 		m.mu.Lock()
 		busy := m.processing[p.id]
 		hasStream := m.logStreams[p.name] != nil
+		tried := m.runtimeTried[p.id]
 		m.mu.Unlock()
 		if busy {
 			continue
@@ -372,6 +428,10 @@ func (m *Manager) Check() {
 			isRunning = running[p.name]
 		case p.pid > 0:
 			isRunning = pidAlive(p.pid)
+		}
+
+		if p.backfill && isRunning && useDocker && !tried {
+			m.queueRuntimeBackfill(p.id)
 		}
 
 		// Re-attach logger for running apps (if missing). Fire-and-forget
