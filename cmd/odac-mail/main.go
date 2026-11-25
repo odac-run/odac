@@ -41,7 +41,9 @@ import (
 	"odac/internal/mail/dkim"
 	imapserver "odac/internal/mail/imap"
 	smtpserver "odac/internal/mail/smtp"
+	"odac/internal/mail/spam"
 	"odac/internal/mail/storage"
+	"odac/internal/mail/winmail"
 	"odac/internal/netutil"
 )
 
@@ -138,8 +140,22 @@ func main() {
 	queue.Start()
 	defer queue.Stop()
 
+	spamFilter := spam.New(getConfig, spam.ModeFromEnv(), spam.WithAccounts(
+		func(ctx context.Context, email string) (bool, error) {
+			account, err := store.AccountExists(ctx, email)
+			return account != nil, err
+		}))
+	log.Printf("[Mail] Spam filter mode: %s", spamFilter.Mode())
+
+	// winmail.dat is expanded into ordinary MIME parts for local mailboxes.
+	var rewrite smtpserver.Rewrite
+	if winmail.EnabledFromEnv() {
+		rewrite = winmail.Expand
+	}
+	log.Printf("[Mail] winmail.dat conversion: %v", rewrite != nil)
+
 	// Start SMTP Server (ports 25 and 465)
-	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, queue)
+	smtpSrv := smtpserver.NewServer(store, blobs, fw, getConfig, queue, spamFilter, rewrite)
 	smtpSrv.Start()
 	defer smtpSrv.Stop()
 

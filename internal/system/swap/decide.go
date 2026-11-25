@@ -1,5 +1,7 @@
 package swap
 
+import "odac/internal/system/diskbudget"
+
 // The manager keeps one empty swap increment ahead of the fill frontier: a
 // "hot" demand tier (RAM, or any swapfile, whose fill crosses growHotPct) must
 // always have a pre-provisioned empty increment beyond it, so a burst has an
@@ -148,16 +150,16 @@ func desiredBuffers(s snapshot, fillThreshold int64, psiThreshold float64) int64
 
 // plannedGrowSize returns the byte size of the next increment, honoring the
 // increment-count cap and the disk budget (total odac swap must stay within
-// MaxDiskPct of the disk, counting our own swapfiles as reclaimable space).
+// MaxDiskPct of the disk, counting our own swapfiles as reclaimable space;
+// the snapshot store shares the disk under the same rule, see diskbudget).
 // ok is false when a cap blocks growth.
 func plannedGrowSize(s snapshot, cfg Config, totalOdac int64) (int64, bool) {
 	if int64(len(s.areas)) >= cfg.MaxIncrements {
 		return 0, false
 	}
-	// freeDisk already excludes our swapfiles; add them back so the percentage
-	// is against a stable base and does not double-count.
-	maxTotal := pct(s.freeDisk+totalOdac, cfg.MaxDiskPct)
-	budget := maxTotal - totalOdac
+	// freeDisk already excludes our swapfiles; Room adds them back so the
+	// percentage is against a stable base and does not double-count.
+	budget := diskbudget.Room(s.freeDisk, totalOdac, cfg.MaxDiskPct)
 	if budget < minIncrement {
 		return 0, false
 	}

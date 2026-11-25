@@ -75,3 +75,51 @@ func (c *countingDocker) IsRunning(name string) bool {
 	c.inspects++
 	return c.fakeDocker.IsRunning(name)
 }
+
+// staleListDocker answers the pulse's list with what it held before the
+// app's create finished: the create runs and ends while the list is in
+// flight, as it does when Docker is slow under a template's starts.
+type staleListDocker struct {
+	*fakeDocker
+	during func()
+}
+
+func (s *staleListDocker) RunningNames() (map[string]bool, error) {
+	names, err := s.fakeDocker.RunningNames()
+	if s.during != nil {
+		s.during()
+		s.during = nil
+	}
+	return names, err
+}
+
+// TestCheckDoesNotRestartAnAppStartedDuringItsList: a container a create
+// started after the pulse listed containers is missing from that list,
+// and the create's lock is gone by the time the pulse looks. Restarting
+// it then killed a database's initdb half way.
+func TestCheckDoesNotRestartAnAppStartedDuringItsList(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(7), "name": "db", "active": true, "type": "container",
+	}})
+	stale := &staleListDocker{fakeDocker: fx.dock}
+	stale.during = func() {
+		if !fx.m.tryLockProcessing(7) {
+			t.Error("the create could not take the app")
+		}
+		fx.dock.mu.Lock()
+		fx.dock.running["db"] = true
+		fx.dock.mu.Unlock()
+		fx.m.unlockProcessing(7)
+	}
+	fx.m.deps.Docker = stale
+
+	fx.checkAndSettle(t)
+	if got := fx.dock.runCallCount(); got != 0 {
+		t.Fatalf("%d runs of an app started during the list, want 0", got)
+	}
+	// The next pulse sees it running.
+	fx.checkAndSettle(t)
+	if got := fx.dock.runCallCount(); got != 0 {
+		t.Fatalf("%d runs of a running app", got)
+	}
+}

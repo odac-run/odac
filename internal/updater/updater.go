@@ -18,13 +18,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"odac/internal/api"
+	"odac/internal/docker"
 	"odac/internal/logx"
 	"odac/internal/rundir"
 )
@@ -57,6 +57,13 @@ type SystemControl interface {
 	Stop(exceptWeb bool)
 }
 
+// Snapshotter takes a snapshot of ODAC's own state before an update, within
+// a bounded time, and returns a line for the log; the backup manager
+// implements it. It never stops the update.
+type Snapshotter interface {
+	BeforeUpdate() string
+}
+
 // WebService is the Proxy/DNS surface used during the handover overlap.
 type WebService interface {
 	Stop()
@@ -81,6 +88,7 @@ type Updater struct {
 
 	sysMu sync.Mutex
 	sys   SystemControl
+	snap  Snapshotter
 
 	// Test seams. Production values: runtime.GOOS, os.Hostname,
 	// os.ReadFile, the /.dockerenv stat, os.Exit and Node's load-bearing
@@ -142,6 +150,27 @@ func (u *Updater) SetSystem(sys SystemControl) {
 	u.sysMu.Lock()
 	u.sys = sys
 	u.sysMu.Unlock()
+}
+
+// SetSnapshotter has every later update take a snapshot of ODAC's own
+// state first, once the new image is ready.
+func (u *Updater) SetSnapshotter(s Snapshotter) {
+	u.sysMu.Lock()
+	u.snap = s
+	u.sysMu.Unlock()
+}
+
+// snapshot takes the snapshot before an update, if one is wired.
+func (u *Updater) snapshot() {
+	u.sysMu.Lock()
+	s := u.snap
+	u.sysMu.Unlock()
+	if s == nil {
+		return
+	}
+	if note := s.BeforeUpdate(); note != "" {
+		u.log.Log("%s", note)
+	}
 }
 
 func (u *Updater) system() SystemControl {
@@ -285,6 +314,9 @@ func (u *Updater) Start() (api.Result, error) {
 	go func() { // Node: setTimeout(…, 1) — the update runs detached
 		err := u.download()
 		if err == nil {
+			// After the download, so a pull that fails costs no snapshot,
+			// and before the handover begins.
+			u.snapshot()
 			err = u.execute()
 		}
 		if err != nil {
@@ -361,47 +393,16 @@ func (u *Updater) getRemoteImageID() string {
 	return id
 }
 
-var (
-	shortIDPattern   = regexp.MustCompile(`^[0-9a-f]{12}$`)
-	mountinfoPattern = regexp.MustCompile(`/docker/containers/([0-9a-f]{64})`)
-	cgroupPattern    = regexp.MustCompile(`[-/]docker[-/]([0-9a-f]{64})`)
-)
-
 // resolveSelfName ports #resolveSelfName: best-effort resolution of the name
-// of the container we are running inside. Probe order (2189336): hostname
-// first — a bridge-network container's default hostname is its short id
-// (useless for the update container, which runs with NetworkMode host) —
-// then the id Docker injects into our mount table and cgroup, then
-// "whichever update-cycle container is running". Returns "" when every
-// probe fails (Node: null).
+// of the container we are running inside. The probes (hostname, then the id
+// Docker leaves in our mount table and cgroup) are docker.SelfCandidates;
+// the last resort is "whichever update-cycle container is running".
+// Returns "" when every probe fails (Node: null).
 func (u *Updater) resolveSelfName() string {
-	if hn := u.hostname(); shortIDPattern.MatchString(hn) {
-		if info, err := u.deps.Docker.Inspect(hn); err == nil {
+	for _, cand := range docker.SelfCandidates(u.hostname(), u.readFile) {
+		if info, err := u.deps.Docker.Inspect(cand); err == nil {
 			return strings.TrimPrefix(info.Name, "/")
 		}
-	}
-
-	probes := []struct {
-		file    string
-		pattern *regexp.Regexp
-	}{
-		{"/proc/self/mountinfo", mountinfoPattern},
-		{"/proc/self/cgroup", cgroupPattern},
-	}
-	for _, p := range probes {
-		content, err := u.readFile(p.file)
-		if err != nil {
-			continue // probe unavailable on this kernel/storage driver
-		}
-		m := p.pattern.FindSubmatch(content)
-		if m == nil {
-			continue
-		}
-		info, err := u.deps.Docker.Inspect(string(m[1]))
-		if err != nil {
-			continue
-		}
-		return strings.TrimPrefix(info.Name, "/")
 	}
 
 	// Fallback: the live ODAC process necessarily inhabits one of the

@@ -25,6 +25,13 @@ const PrivateNetwork = "odac-network-private"
 // host's loopback services and a seat in the proxy's SO_REUSEPORT groups.
 const BuildNetwork = "odac-network-build"
 
+// BackupNetwork is where a backup helper whose repository is remote (S3,
+// WebDAV) runs: egress for the storage, and inter-container traffic
+// switched off, because the helper holds the repository key and target
+// credentials and no app may reach it. Helpers whose target is a mounted
+// path get no network at all.
+const BackupNetwork = "odac-network-backup"
+
 // iccOption is the bridge driver option behind PrivateNetwork. Like
 // `internal` it belongs to the network and cannot change after creation.
 const iccOption = "com.docker.network.bridge.enable_icc"
@@ -35,8 +42,8 @@ var networkNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 // the host's stack past every guard on networkMode (domains, net.* sysctls),
 // "none" leaves the container without an address the proxy can reach, and
 // PrivateNetwork is only ever ODAC's fallback for an empty list. BuildNetwork
-// belongs to build containers alone.
-var reservedNetworks = map[string]bool{"host": true, "none": true, "default": true, PrivateNetwork: true, BuildNetwork: true}
+// belongs to build containers alone, BackupNetwork to backup helpers.
+var reservedNetworks = map[string]bool{"host": true, "none": true, "default": true, PrivateNetwork: true, BuildNetwork: true, BackupNetwork: true}
 
 // NormalizeNetworks validates an app's network list and returns it
 // deduplicated and sorted, never nil. It is the single check for both doors,
@@ -96,7 +103,7 @@ func networkSpec(name string) network.CreateOptions {
 		// FORWARD rules drop every packet routed between the subnet and any
 		// other interface: the enforcement behind RunOptions.Isolated.
 		opts.Internal = true
-	case PrivateNetwork, BuildNetwork:
+	case PrivateNetwork, BuildNetwork, BackupNetwork:
 		opts.Options = map[string]string{iccOption: "false"}
 	}
 	return opts

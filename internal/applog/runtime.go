@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // RuntimeControl is the control object returned by NewRuntimeStream —
@@ -16,6 +18,7 @@ type RuntimeControl struct {
 	// All fields below are guarded by the logger's mu; file writes are
 	// serialized under it too (Node relied on the single-threaded loop).
 	file            *os.File
+	lastWrite       time.Time
 	ended           bool
 	stats           runtimeStats
 	bytesSinceCheck int64
@@ -48,6 +51,7 @@ func (l *Logger) NewRuntimeStream() (*RuntimeControl, error) {
 		}
 	}
 
+	last := l.lastRuntimeWrite()
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
@@ -55,11 +59,37 @@ func (l *Logger) NewRuntimeStream() (*RuntimeControl, error) {
 
 	l.pruneRuntimeLogs()
 
-	return &RuntimeControl{logger: l, logPath: logPath, file: file, stats: stats}, nil
+	return &RuntimeControl{logger: l, logPath: logPath, file: file, lastWrite: last, stats: stats}, nil
+}
+
+// lastRuntimeWrite is when a runtime log of this app was last written, or
+// the zero time when none holds anything.
+func (l *Logger) lastRuntimeWrite() time.Time {
+	var last time.Time
+	entries, err := os.ReadDir(l.runtimeDir)
+	if err != nil {
+		return last
+	}
+	for _, de := range entries {
+		n := de.Name()
+		if !strings.HasSuffix(n, ".log") && !strings.HasSuffix(n, ".log.1") {
+			continue
+		}
+		if info, err := de.Info(); err == nil && info.Mode().IsRegular() && info.Size() > 0 && info.ModTime().After(last) {
+			last = info.ModTime()
+		}
+	}
+	return last
 }
 
 // Path returns the on-disk runtime log path for the day the stream opened.
 func (r *RuntimeControl) Path() string { return r.logPath }
+
+// LastWrite is when the app's runtime log was last written before this
+// stream opened (zero for none). A stream attached to a container that was
+// already running reads the container's output from there on: from its
+// start, every restart of ODAC appended the container's whole log again.
+func (r *RuntimeControl) LastWrite() time.Time { return r.lastWrite }
 
 // Write appends a stdout chunk: broadcast, file write, size-rotation check.
 func (r *RuntimeControl) Write(p []byte) {

@@ -13,9 +13,12 @@ import (
 )
 
 const (
-	// firewallMaxTracked bounds the rate-limit table. Once it is full of live records a new
-	// client goes untracked rather than resetting everyone: clearing the table let any
-	// client with enough addresses wipe every other client's counter.
+	// firewallMaxTracked bounds each rate-limit table. Once the client table is full of live
+	// records a new client is counted by its block instead (blockKey), rather than resetting
+	// everyone: clearing the table let any client with enough addresses wipe every other
+	// client's counter, and leaving it uncounted let one IPv6 /48 (65,536 /64s) fill the
+	// table and then pass unlimited. Only a client whose block is new while the block table
+	// is full too goes uncounted.
 	firewallMaxTracked = 20000
 
 	// firewallSweepInterval throttles the expiry walk a full table triggers, so a flood of
@@ -25,6 +28,11 @@ const (
 	// firewallIPv6Prefix is the block one IPv6 client is counted as. A single host
 	// commonly holds a whole /64, which would otherwise give it 2^64 separate budgets.
 	firewallIPv6Prefix = 64
+
+	// firewallIPv4Block and firewallIPv6Block are the blocks a new client shares a budget
+	// with while the client table is full: a typical allocation to one network.
+	firewallIPv4Block = 24
+	firewallIPv6Block = 48
 )
 
 type Firewall struct {
@@ -32,7 +40,8 @@ type Firewall struct {
 	blacklist     addrList
 	whitelist     addrList
 	requestCounts map[string]*requestRecord
-	wsCounts      map[string]int // Active WebSocket connections per client
+	blockCounts   map[string]*requestRecord // overflow of requestCounts, per blockKey
+	wsCounts      map[string]int            // Active WebSocket connections per client
 	lastSweep     time.Time
 	mu            sync.RWMutex
 	stopCleanup   chan struct{}
@@ -113,6 +122,7 @@ func NewFirewall(cfg config.Firewall) *Firewall {
 		blacklist:     newAddrList(cfg.Blacklist),
 		whitelist:     newAddrList(cfg.Whitelist),
 		requestCounts: make(map[string]*requestRecord),
+		blockCounts:   make(map[string]*requestRecord),
 		wsCounts:      make(map[string]int),
 		stopCleanup:   make(chan struct{}),
 	}
@@ -162,26 +172,54 @@ func (f *Firewall) sweepLocked(now time.Time) {
 	}
 	nowMs := now.UnixMilli()
 	windowMs := int64(f.config.RateLimit.WindowMs)
-	for key, record := range f.requestCounts {
-		if nowMs-record.timestamp > windowMs {
-			delete(f.requestCounts, key)
+	for _, table := range []map[string]*requestRecord{f.requestCounts, f.blockCounts} {
+		for key, record := range table {
+			if nowMs-record.timestamp > windowMs {
+				delete(table, key)
+			}
 		}
 	}
 }
 
-// countRequest records one request for key and returns its count in the current window,
-// or 0 when the table is full of live records and key is not among them.
-func (f *Firewall) countRequest(key string, windowMs int) int {
+// blockKey names the block a client is counted by once the client table is full, or ""
+// for a client whose address did not parse.
+func blockKey(addr netip.Addr) string {
+	switch {
+	case !addr.IsValid():
+		return ""
+	case addr.Is6():
+		return netip.PrefixFrom(addr, firewallIPv6Block).Masked().String()
+	default:
+		return netip.PrefixFrom(addr, firewallIPv4Block).Masked().String()
+	}
+}
+
+// countRequest records one request for the client and returns its count in the current
+// window: by key while the client table has room or holds it, else by its block, and 0
+// when the block table is full of live records too and the block is not among them.
+func (f *Firewall) countRequest(addr netip.Addr, key string, windowMs int) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	now := time.Now()
-	record, exists := f.requestCounts[key]
-	if !exists && len(f.requestCounts) >= firewallMaxTracked {
+	if count := f.countInLocked(f.requestCounts, key, now, windowMs); count > 0 {
+		return count
+	}
+	if block := blockKey(addr); block != "" {
+		return f.countInLocked(f.blockCounts, block, now, windowMs)
+	}
+	return 0
+}
+
+// countInLocked counts one request for key in table and returns its count, or 0 when the
+// table is full of live records and key is not among them. f.mu must be held for writing.
+func (f *Firewall) countInLocked(table map[string]*requestRecord, key string, now time.Time, windowMs int) int {
+	record, exists := table[key]
+	if !exists && len(table) >= firewallMaxTracked {
 		if now.Sub(f.lastSweep) >= firewallSweepInterval {
 			f.sweepLocked(now)
 		}
-		if len(f.requestCounts) >= firewallMaxTracked {
+		if len(table) >= firewallMaxTracked {
 			return 0
 		}
 	}
@@ -190,7 +228,7 @@ func (f *Firewall) countRequest(key string, windowMs int) int {
 	switch {
 	case !exists:
 		record = &requestRecord{count: 1, timestamp: nowMs}
-		f.requestCounts[key] = record
+		table[key] = record
 	case nowMs-record.timestamp > int64(windowMs):
 		record.count = 1
 		record.timestamp = nowMs
@@ -237,7 +275,7 @@ func (f *Firewall) Check(next http.Handler) http.Handler {
 		}
 
 		if rateLimit.Enabled {
-			if count := f.countRequest(key, rateLimit.WindowMs); count > rateLimit.Max {
+			if count := f.countRequest(addr, key, rateLimit.WindowMs); count > rateLimit.Max {
 				if count == rateLimit.Max+1 {
 					log.Printf("Rate limit exceeded for %s", key)
 				}

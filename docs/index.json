@@ -115,6 +115,14 @@
         {
           "file": "04-change-account-password.md",
           "title": "Change Account Password"
+        },
+        {
+          "file": "05-spam-filtering.md",
+          "title": "Spam Filtering"
+        },
+        {
+          "file": "06-winmail-attachments.md",
+          "title": "Outlook winmail.dat Attachments"
         }
       ]
     },
@@ -155,6 +163,48 @@
         {
           "file": "03-app-integration.md",
           "title": "Building an ODAC-Compatible App"
+        }
+      ]
+    },
+    {
+      "file": "08-backup",
+      "title": "Backups and Snapshots",
+      "children": [
+        {
+          "file": "01-overview.md",
+          "title": "Overview"
+        },
+        {
+          "file": "02-targets-and-keys.md",
+          "title": "Targets and Keys"
+        },
+        {
+          "file": "03-jobs-and-retention.md",
+          "title": "Jobs and Retention"
+        },
+        {
+          "file": "04-consistency.md",
+          "title": "Consistency"
+        },
+        {
+          "file": "05-snapshots.md",
+          "title": "Snapshots"
+        },
+        {
+          "file": "06-restore.md",
+          "title": "Restoring"
+        },
+        {
+          "file": "07-verification.md",
+          "title": "Verification and Damage"
+        },
+        {
+          "file": "08-security.md",
+          "title": "Security Model"
+        },
+        {
+          "file": "09-limits.md",
+          "title": "Limits and Caveats"
         }
       ]
     }

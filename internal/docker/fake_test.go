@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/system"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -38,6 +39,10 @@ type createCall struct {
 // fakeAPI implements the API interface with programmable behavior.
 type fakeAPI struct {
 	mu sync.Mutex
+
+	// captureStdin records what is written to an attached stdin.
+	captureStdin bool
+	stdin        map[string][]byte
 
 	pingErr error
 
@@ -72,9 +77,16 @@ type fakeAPI struct {
 	waitCodes map[string]int64
 	// log output per container ID (mux'd on read).
 	logOutputs map[string]string
+	logOpts    []container.LogsOptions
 
 	inspects map[string]container.InspectResponse
 	list     []container.Summary // ContainerList result when set
+
+	// startErrs fail the next ContainerStart calls, in order.
+	startErrs []error
+
+	volumes        []volume.CreateOptions
+	removedVolumes []string
 
 	execCmds    []string
 	execOutputs map[string]string // command -> stdout
@@ -88,6 +100,13 @@ type fakeAPI struct {
 
 	removedImages []string
 	prunedImages  bool
+	tagged        [][2]string // ImageTag source, target
+	tagErr        error
+
+	imageListErr     error
+	imageListFilters []string
+
+	imageInspects int
 }
 
 func newFakeAPI() *fakeAPI {
@@ -127,6 +146,11 @@ func (f *fakeAPI) ContainerCreate(_ context.Context, cfg *container.Config, hc *
 func (f *fakeAPI) ContainerStart(_ context.Context, id string, _ container.StartOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		return err
+	}
 	f.started = append(f.started, id)
 	return nil
 }
@@ -177,9 +201,10 @@ func muxBytes(stdout string) []byte {
 	return buf.Bytes()
 }
 
-func (f *fakeAPI) ContainerLogs(_ context.Context, id string, _ container.LogsOptions) (io.ReadCloser, error) {
+func (f *fakeAPI) ContainerLogs(_ context.Context, id string, opts container.LogsOptions) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.logOpts = append(f.logOpts, opts)
 	out, ok := f.logOutputs[id]
 	if !ok {
 		out = ""
@@ -210,9 +235,26 @@ func (f *fakeAPI) ContainerStatsOneShot(context.Context, string) (container.Stat
 	}, nil
 }
 
-func (f *fakeAPI) ContainerAttach(context.Context, string, container.AttachOptions) (types.HijackedResponse, error) {
+func (f *fakeAPI) ContainerAttach(_ context.Context, id string, o container.AttachOptions) (types.HijackedResponse, error) {
 	server, client := net.Pipe()
-	server.Close()
+	f.mu.Lock()
+	capture := f.captureStdin && o.Stdin
+	f.mu.Unlock()
+	if !capture {
+		server.Close()
+		return types.NewHijackedResponse(client, ""), nil
+	}
+	go func() {
+		buf := make([]byte, 64<<10)
+		n, _ := server.Read(buf)
+		f.mu.Lock()
+		if f.stdin == nil {
+			f.stdin = map[string][]byte{}
+		}
+		f.stdin[id] = buf[:n]
+		f.mu.Unlock()
+		server.Close()
+	}()
 	return types.NewHijackedResponse(client, ""), nil
 }
 
@@ -255,6 +297,7 @@ func (f *fakeAPI) ContainerExecResize(context.Context, string, container.ResizeO
 func (f *fakeAPI) ImageInspectWithRaw(_ context.Context, id string) (image.InspectResponse, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.imageInspects++
 	if resp, ok := f.images[id]; ok {
 		return resp, nil, nil
 	}
@@ -269,11 +312,40 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ image.PullOptions) 
 	if !ok {
 		body = `{"status":"Pulling from library"}` + "\n"
 	}
-	// The image becomes "local" after a pull that did not report an error.
-	if !strings.Contains(body, `"error"`) {
+	// The image becomes "local" after a pull that did not report an error;
+	// a seeded image keeps its config, as a re-pull of the same tag would.
+	if _, local := f.images[ref]; !local && !strings.Contains(body, `"error"`) {
 		f.images[ref] = image.InspectResponse{}
 	}
 	return io.NopCloser(bytes.NewReader([]byte(body))), nil
+}
+
+func (f *fakeAPI) ImageList(_ context.Context, opts image.ListOptions) ([]image.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.imageListErr != nil {
+		return nil, f.imageListErr
+	}
+	f.imageListFilters = append(f.imageListFilters, opts.Filters.Get("reference")...)
+	byID := map[string]*image.Summary{}
+	var order []string
+	for ref, img := range f.images {
+		if img.ID == "" || strings.HasPrefix(ref, "sha256:") {
+			continue
+		}
+		s := byID[img.ID]
+		if s == nil {
+			s = &image.Summary{ID: img.ID}
+			byID[img.ID] = s
+			order = append(order, img.ID)
+		}
+		s.RepoTags = append(s.RepoTags, ref)
+	}
+	out := make([]image.Summary, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
 }
 
 func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOptions) ([]image.DeleteResponse, error) {
@@ -285,6 +357,29 @@ func (f *fakeAPI) ImageRemove(_ context.Context, id string, _ image.RemoveOption
 	delete(f.images, id)
 	f.removedImages = append(f.removedImages, id)
 	return []image.DeleteResponse{{Deleted: id}}, nil
+}
+
+func (f *fakeAPI) ImageTag(_ context.Context, source, target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tagErr != nil {
+		return f.tagErr
+	}
+	img, ok := f.images[source]
+	if !ok {
+		for _, candidate := range f.images {
+			if candidate.ID == source {
+				img, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return notFoundErr{"No such image: " + source}
+	}
+	f.images[target] = img
+	f.tagged = append(f.tagged, [2]string{source, target})
+	return nil
 }
 
 func (f *fakeAPI) ImagesPrune(context.Context, filters.Args) (image.PruneReport, error) {
@@ -336,4 +431,28 @@ func (f *fakeAPI) NetworkDisconnect(_ context.Context, networkID, containerID st
 	defer f.mu.Unlock()
 	f.netDisconnects = append(f.netDisconnects, [2]string{networkID, containerID})
 	return nil
+}
+
+func (f *fakeAPI) VolumeCreate(_ context.Context, opts volume.CreateOptions) (volume.Volume, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.volumes = append(f.volumes, opts)
+	return volume.Volume{Name: opts.Name, Driver: opts.Driver, Options: opts.DriverOpts, Labels: opts.Labels}, nil
+}
+
+func (f *fakeAPI) VolumeRemove(_ context.Context, id string, _ bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedVolumes = append(f.removedVolumes, id)
+	return nil
+}
+
+func (f *fakeAPI) VolumeList(context.Context, volume.ListOptions) (volume.ListResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out volume.ListResponse
+	for _, v := range f.volumes {
+		out.Volumes = append(out.Volumes, &volume.Volume{Name: v.Name, Labels: v.Labels})
+	}
+	return out, nil
 }

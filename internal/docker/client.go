@@ -36,6 +36,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/api/types/system"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
@@ -96,12 +97,17 @@ type API interface {
 	ContainerExecResize(ctx context.Context, execID string, options container.ResizeOptions) error
 	ImageInspectWithRaw(ctx context.Context, imageID string) (image.InspectResponse, []byte, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
 	ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error)
+	ImageTag(ctx context.Context, source, target string) error
 	ImagesPrune(ctx context.Context, pruneFilter filters.Args) (image.PruneReport, error)
 	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
+	VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
+	VolumeRemove(ctx context.Context, volumeID string, force bool) error
+	VolumeList(ctx context.Context, options volume.ListOptions) (volume.ListResponse, error)
 }
 
 // Mount is one volume mapping. Container may carry a ":ro" suffix.
@@ -184,9 +190,23 @@ type Client struct {
 	activeBuilds map[string]bool
 	buildLoggers map[string]*applog.Logger
 
+	// images caches what app.list reports per image ID (ImageDigest,
+	// ImageVersionMeta), one inspect per ID.
+	images imageInfoCache
+
+	// dockerRoot is the engine's DockerRootDir once read (DataRootSpace);
+	// guarded by mu.
+	dockerRoot string
+
 	// appNames resolves managed app names for CreateTerminalSession
 	// (injected by main; see SetAppNames).
 	appNames func() []string
+
+	// selfImage caches SelfImage: a container's image never changes.
+	selfImage string
+	// noIOWeight is set once a backup container failed to start for want
+	// of I/O weight support (see startAttached).
+	noIOWeight bool
 }
 
 // Options configures New.
@@ -878,16 +898,20 @@ func (c *Client) Rename(oldName, newName string) error {
 }
 
 // StreamLogs follows the container's stdout/stderr, demuxing into the two
-// writers, until the stream ends or stop() is called. Returns nil when the
-// container does not exist (Node returns a nil stream on 404).
-func (c *Client) StreamLogs(name string, stdout, stderr io.Writer) (stop func(), err error) {
+// writers, until the stream ends or stop() is called. A non-zero since
+// starts at that moment instead of the container's first line. stop()
+// returns once the copy has ended, so nothing is written after it. Returns
+// nil when the container does not exist (Node returns a nil stream on 404).
+func (c *Client) StreamLogs(name string, since time.Time, stdout, stderr io.Writer) (stop func(), err error) {
 	if !c.available {
 		return nil, nil
 	}
+	opts := container.LogsOptions{ShowStdout: true, ShowStderr: true, Follow: true}
+	if !since.IsZero() {
+		opts.Since = fmt.Sprintf("%d.%09d", since.Unix(), since.Nanosecond())
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	rc, err := c.api.ContainerLogs(ctx, name, container.LogsOptions{
-		ShowStdout: true, ShowStderr: true, Follow: true,
-	})
+	rc, err := c.api.ContainerLogs(ctx, name, opts)
 	if err != nil {
 		cancel()
 		if !client.IsErrNotFound(err) {
@@ -895,11 +919,13 @@ func (c *Client) StreamLogs(name string, stdout, stderr io.Writer) (stop func(),
 		}
 		return nil, nil
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer rc.Close()
 		stdcopy.StdCopy(stdout, stderr, rc)
 	}()
-	return func() { cancel(); rc.Close() }, nil
+	return func() { cancel(); rc.Close(); <-done }, nil
 }
 
 // IsRunning reports the container's State.Running (false on any error;
@@ -1134,6 +1160,9 @@ type Status struct {
 	StartTime string         `json:"startTime,omitempty"`
 	Networks  []string       `json:"networks,omitempty"`
 	GPU       *GPUAttachment `json:"gpu,omitempty"`
+	// ImageID is the image the container was created from (sha256:<hex>),
+	// read off the same inspect so List needs no second call to name it.
+	ImageID string `json:"imageId,omitempty"`
 }
 
 // GPUAttachment is the accelerator a container actually holds, read back from
@@ -1242,6 +1271,9 @@ func (c *Client) GetStatus(name string) Status {
 	}
 
 	st := Status{Restarts: data.RestartCount, Networks: networks, GPU: gpuAttachment(data.HostConfig)}
+	if imageIDRe.MatchString(data.Image) {
+		st.ImageID = data.Image
+	}
 	if data.State != nil {
 		st.Running = data.State.Running
 		st.StartTime = data.State.StartedAt

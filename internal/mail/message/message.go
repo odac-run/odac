@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"mime"
+	"net/mail"
 	"strings"
 
 	"odac/internal/mail/mimetree"
@@ -29,65 +31,28 @@ type Parsed struct {
 // extracting structured fields compatible with the Node.js mailparser output format.
 func Parse(raw []byte) Parsed {
 	msg := Parsed{}
-	content := string(raw)
+	tree := mimetree.Parse(raw)
 
-	// Only the header block is scanned here. The body is not split off: the
-	// bodies and the attachment index both come from the mimetree walk below,
-	// which reads the raw bytes directly.
-	headerEnd := strings.Index(content, "\r\n\r\n")
-	if headerEnd < 0 {
-		headerEnd = strings.Index(content, "\n\n")
-	}
-
-	headerSection := content
-	if headerEnd >= 0 {
-		headerSection = content[:headerEnd]
-	}
-
-	// Parse headers — unfold continuation lines (RFC 2822 §2.2.3)
+	// The header block ends where the part tree's does, so a field below the
+	// first blank line is body text here as it is everywhere else.
 	var headerLines []map[string]string
 	headers := make(map[string]string)
-
-	lines := strings.Split(headerSection, "\n")
-	for i := 0; i < len(lines); i++ {
-		line := strings.TrimRight(lines[i], "\r")
-		if line == "" {
-			continue
-		}
-
-		// Continuation line (starts with whitespace)
-		if (line[0] == ' ' || line[0] == '\t') && len(headerLines) > 0 {
-			last := headerLines[len(headerLines)-1]
-			last["line"] += " " + strings.TrimSpace(line)
-			key := last["key"]
-			headers[key] += " " + strings.TrimSpace(line)
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx < 0 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		keyLower := strings.ToLower(key)
-
+	for _, f := range mimetree.Fields(raw[:tree.BodyStart]) {
 		headerLines = append(headerLines, map[string]string{
-			"key":  keyLower,
-			"line": line,
+			"key":  f.Name,
+			"line": f.Line,
 		})
-		headers[keyLower] = value
+		headers[f.Name] = f.Value
 
-		switch keyLower {
+		switch f.Name {
 		case "subject":
-			msg.Subject = value
+			msg.Subject = f.Value
 		case "message-id":
-			msg.MessageID = value
+			msg.MessageID = f.Value
 		case "from":
-			msg.From = formatAddressJSON(value)
+			msg.From = formatAddressJSON(f.Value)
 		case "to":
-			msg.To = formatAddressJSON(value)
+			msg.To = formatAddressJSON(f.Value)
 		}
 	}
 
@@ -100,7 +65,6 @@ func Parse(raw []byte) Parsed {
 	// One parse feeds both the display bodies and the attachment index; the
 	// tree walk is over the header block's actual structure rather than a
 	// guess made from the Content-Type header alone.
-	tree := mimetree.Parse(raw)
 	pickBodies(raw, tree, &msg.HTML, &msg.Text)
 	msg.AttachmentsJSON = buildAttachmentsJSON(raw, tree)
 
@@ -115,17 +79,43 @@ func Parse(raw []byte) Parsed {
 	return msg
 }
 
-// formatAddressJSON converts a raw email address header value into the JSON format
+// formatAddressJSON converts a raw address header value into the JSON format
 // used by Node.js mailparser: {"value":[{"address":"user@example.com","name":"User Name"}]}
+//
+// A value net/mail can read is taken as it reads it, every address included,
+// because the spam filter reads From the same way: a second reading of the
+// same header (a comment holding an angle address, a second address after a
+// comma) would show a sender the filter never checked.
 func formatAddressJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return `{"value":[]}`
 	}
 
-	var address, name string
+	var entries []map[string]string
+	if list, err := mail.ParseAddressList(raw); err == nil && len(list) > 0 {
+		for _, a := range list {
+			entry := map[string]string{"address": a.Address}
+			if a.Name != "" {
+				// IMAP sends the name as a quoted string, which carries no
+				// line break and, strictly, no 8-bit text, so a decoded name
+				// goes back into an encoded-word.
+				entry["name"] = mime.QEncoding.Encode("utf-8", a.Name)
+			}
+			entries = append(entries, entry)
+		}
+	} else {
+		entries = append(entries, lenientAddress(raw))
+	}
 
-	// Parse "Display Name <email@example.com>" format
+	b, _ := json.Marshal(map[string]any{"value": entries})
+	return string(b)
+}
+
+// lenientAddress salvages one address from a value net/mail refuses, taking
+// the last angle address as most clients do.
+func lenientAddress(raw string) map[string]string {
+	var address, name string
 	if ltIdx := strings.LastIndex(raw, "<"); ltIdx >= 0 {
 		gtIdx := strings.Index(raw[ltIdx:], ">")
 		if gtIdx >= 0 {
@@ -134,9 +124,7 @@ func formatAddressJSON(raw string) string {
 			name = strings.Trim(name, `"'`)
 		}
 	}
-
 	if address == "" {
-		// Plain email address
 		address = strings.Trim(raw, "<> ")
 	}
 
@@ -144,10 +132,7 @@ func formatAddressJSON(raw string) string {
 	if name != "" {
 		entry["name"] = name
 	}
-
-	result := map[string]any{"value": []map[string]string{entry}}
-	b, _ := json.Marshal(result)
-	return string(b)
+	return entry
 }
 
 // pickBodies fills in the display bodies of a message: the first

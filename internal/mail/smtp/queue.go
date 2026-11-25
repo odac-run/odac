@@ -19,9 +19,14 @@ import (
 )
 
 const (
-	queueWorkers  = 8
-	queuePoll     = 10 * time.Second
-	queueLease    = 30 * time.Minute
+	queueWorkers = 8
+	queuePoll    = 10 * time.Second
+	queueLease   = 30 * time.Minute
+	// queueAttempt bounds one delivery attempt well inside the lease. The
+	// client's timeouts are per command, so a few slow or tarpitting MX hosts
+	// could otherwise keep an attempt past its lease, and another worker, or
+	// the other odac-mail during an update, would claim and deliver it again.
+	queueAttempt  = 25 * time.Minute
 	queueLifetime = 5 * 24 * time.Hour
 	// queueBookkeeping bounds the database write that closes an attempt. It
 	// runs on its own context so a shutdown still records the outcome.
@@ -47,13 +52,14 @@ type Sender interface {
 // expires, then reports a permanent failure to the sender. Without it a
 // greylisting server, or an odac-mail restart, lost the message silently.
 type Queue struct {
-	blobs    *blob.Store
-	lifetime time.Duration
-	now      func() time.Time
-	pruner   interface{ Prune() }
-	sender   Sender
-	store    *storage.Store
-	wake     chan struct{}
+	attemptLimit time.Duration
+	blobs        *blob.Store
+	lifetime     time.Duration
+	now          func() time.Time
+	pruner       interface{ Prune() }
+	sender       Sender
+	store        *storage.Store
+	wake         chan struct{}
 
 	slots chan struct{}
 
@@ -66,13 +72,14 @@ type Queue struct {
 // overrides how long a message is retried before it bounces.
 func NewQueue(store *storage.Store, blobs *blob.Store, sender Sender) *Queue {
 	q := &Queue{
-		blobs:    blobs,
-		lifetime: queueLifetime,
-		now:      time.Now,
-		sender:   sender,
-		store:    store,
-		wake:     make(chan struct{}, 1),
-		slots:    make(chan struct{}, queueWorkers),
+		attemptLimit: queueAttempt,
+		blobs:        blobs,
+		lifetime:     queueLifetime,
+		now:          time.Now,
+		sender:       sender,
+		store:        store,
+		wake:         make(chan struct{}, 1),
+		slots:        make(chan struct{}, queueWorkers),
 	}
 	if p, ok := sender.(interface{ Prune() }); ok {
 		q.pruner = p
@@ -87,8 +94,14 @@ func NewQueue(store *storage.Store, blobs *blob.Store, sender Sender) *Queue {
 	return q
 }
 
-// Enqueue accepts one message for remote recipients: the message goes to the
-// blob store and one queue row per recipient is committed before it returns.
+// Enqueue accepts one message: it goes to the blob store, and a mailbox row
+// per local account and a queue row per remote recipient commit together
+// before it returns.
+//
+// A local recipient is stored here rather than queued. Queued, it would go out
+// through its MX, which is this server, and arrive on port 25 with no login, so
+// the spam filter would screen the server's own mail and refuse any sender
+// that is a local account as forged.
 func (q *Queue) Enqueue(ctx context.Context, from string, to []string, body []byte) error {
 	if !address.Valid(from) {
 		return fmt.Errorf("invalid sender address %q", from)
@@ -105,10 +118,44 @@ func (q *Queue) Enqueue(ctx context.Context, from string, to []string, body []by
 	if err != nil {
 		return fmt.Errorf("message store failed: %w", err)
 	}
-	if err := q.store.Deliver(ctx, nil, OutboundRows(from, to, ref, q.now())); err != nil {
+	var local []*storage.MessageRow
+	var remote []string
+	var parsed *message.Parsed
+	seen := map[string]bool{}
+	for _, rcpt := range to {
+		account, err := q.store.AccountExists(ctx, rcpt)
+		if err != nil {
+			return fmt.Errorf("recipient lookup failed: %w", err)
+		}
+		if account == nil {
+			remote = append(remote, rcpt)
+			continue
+		}
+		key := strings.ToLower(account.Email)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if parsed == nil {
+			p := message.Parse(body)
+			parsed = &p
+		}
+		row := &storage.MessageRow{
+			Email:   account.Email,
+			Flags:   toNullString("[]"),
+			Mailbox: "INBOX",
+			RawRef:  toNullString(ref),
+		}
+		parsed.Apply(row)
+		local = append(local, row)
+	}
+
+	if err := q.store.Deliver(ctx, local, OutboundRows(from, remote, ref, q.now())); err != nil {
 		return err
 	}
-	q.Wake()
+	if len(remote) > 0 {
+		q.Wake()
+	}
 	return nil
 }
 
@@ -218,7 +265,12 @@ func (q *Queue) attempt(ctx context.Context, row storage.OutboundRow) {
 		}
 		err = fmt.Errorf("message read failed: %w", err)
 	} else {
-		err = q.sender.Send(ctx, row.Sender, row.Recipient, body)
+		sendCtx, cancel := context.WithTimeout(ctx, q.attemptLimit)
+		err = q.sender.Send(sendCtx, row.Sender, row.Recipient, body)
+		if err != nil && ctx.Err() == nil && errors.Is(sendCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("attempt ran past %s: %w", q.attemptLimit, err)
+		}
+		cancel()
 	}
 
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), queueBookkeeping)

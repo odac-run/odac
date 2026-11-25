@@ -133,3 +133,16 @@ func TestFormatSize(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBytes(t *testing.T) {
+	for text, want := range map[string]int64{"0": 0, "1024": 1024, "512m": 512 << 20, "50G": 50 << 30, "2t": 2 << 40, " 1.5g ": 3 << 29} {
+		if got, err := ParseBytes(text); err != nil || got != want {
+			t.Errorf("ParseBytes(%q) = %d, %v; want %d", text, got, err, want)
+		}
+	}
+	for _, text := range []string{"", "-1g", "1.5", "lots", "1x"} {
+		if _, err := ParseBytes(text); err == nil {
+			t.Errorf("ParseBytes(%q) accepted", text)
+		}
+	}
+}

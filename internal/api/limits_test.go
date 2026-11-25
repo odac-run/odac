@@ -1,10 +1,12 @@
 package api
 
 import (
+	"errors"
 	"io"
 	"net"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -107,8 +109,14 @@ func TestFailedAttemptsShareOneDeadline(t *testing.T) {
 
 	conn := dialUnix(t, s)
 	stop := make(chan struct{})
-	defer close(stop)
+	done := make(chan struct{})
+	defer func() {
+		close(stop)
+		conn.Close()
+		<-done
+	}()
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-stop:
@@ -121,7 +129,12 @@ func TestFailedAttemptsShareOneDeadline(t *testing.T) {
 		}
 	}()
 	start := time.Now()
-	readUntilClosed(t, conn, 3*time.Second)
+	conn.SetReadDeadline(start.Add(3 * time.Second))
+	// On deadline the server closes without draining unread input, so a retry
+	// queued as it closes surfaces as ECONNRESET on Linux instead of EOF.
+	if data, err := io.ReadAll(conn); err != nil && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("connection still open after 3s (read %q): %v", data, err)
+	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("closed only after %s", elapsed)
 	}

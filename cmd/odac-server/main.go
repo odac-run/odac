@@ -19,17 +19,21 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"odac/internal/api"
 	"odac/internal/appmgr"
+	"odac/internal/backup"
+	"odac/internal/backup/service"
 	"odac/internal/config"
 	"odac/internal/dataplane"
 	"odac/internal/docker"
 	"odac/internal/domains"
 	"odac/internal/hub"
 	"odac/internal/logx"
+	"odac/internal/serverid"
 	"odac/internal/sysinfo"
 	"odac/internal/system"
 	"odac/internal/system/swap"
@@ -40,6 +44,13 @@ func main() {
 	log := logx.New("Server")
 
 	baseDir := config.DefaultBaseDir()
+	// A restore of ODAC's own state staged on the last run is swapped in
+	// before anything reads the config, certificates or databases.
+	if sr, err := backup.ApplyServerRestore(baseDir); err != nil {
+		log.Error("Applying the staged restore of ODAC's state failed, starting with the state as it is:", err.Error())
+	} else if sr != nil {
+		log.Log("Applied the restore of ODAC's state from run %s (%s); the state it replaced is in %s and every app is stopped until its data is restored", sr.Run, strings.Join(sr.Dirs, ", "), sr.Previous)
+	}
 	cfg, err := config.Open(baseDir)
 	if err != nil {
 		log.Error("Config initialization failed:", err.Error())
@@ -52,6 +63,13 @@ func main() {
 	cfg.AutoSave(500*time.Millisecond, func(err error) {
 		log.Error("Config autosave failed:", err.Error())
 	})
+
+	// Minted on the first start so the identity predates anything written
+	// under it. A failure is not fatal: only backups depend on the id.
+	serverID, err := serverid.Ensure(baseDir)
+	if err != nil {
+		log.Error("Server identity unavailable, backups are disabled:", err.Error())
+	}
 
 	// Docker client (Container.js port). Availability is probed once here,
 	// exactly like Node's constructor-time ping; a docker-less host keeps a
@@ -115,6 +133,16 @@ func main() {
 		appMgr.Init() // Node: the DI registry runs App.init() on first resolve
 	}
 
+	// Backups (internal/backup). They need the app manager and the server
+	// identity; the system starts them once an update's handover is
+	// complete and stops them first.
+	var backupMgr *backup.Manager
+	var backupSvc *service.Service
+	relay := &hubRelay{}
+	if appMgr != nil && serverID != "" {
+		backupMgr, backupSvc = newBackups(log, cfg, baseDir, serverID, containers, appMgr, relay)
+	}
+
 	// Updater (task 3.7): zero-downtime self-update. It owns its own SDK
 	// client like Node's Updater constructs its own dockerode instance; a
 	// docker-less host degrades to an always-failing client (update checks
@@ -154,6 +182,9 @@ func main() {
 	if appMgr != nil {
 		hubDeps.App = appMgr
 	}
+	if backupSvc != nil {
+		hubDeps.Backup = backupSvc
+	}
 	if containers != nil {
 		hubDeps.Container = hubContainers{containers}
 		// Terminal sessions validate the target against the managed-app
@@ -174,8 +205,9 @@ func main() {
 		})
 	}
 	hubSvc := hub.New(cfg, hubURL, hubDeps)
+	relay.set(hubSvc)
 	if appMgr != nil {
-		appMgr.SetHub(hubSvc) // closes the 3.4e seam (triggers + recipe fetch)
+		appMgr.SetHub(appHub{Hub: hubSvc, backups: backupSvc != nil}) // closes the 3.4e seam (triggers + recipe fetch)
 	}
 	mailSvc.SetHub(hubSvc)
 	// A GPU that becomes schedulable mid-flight (driver loaded, toolkit
@@ -194,10 +226,18 @@ func main() {
 	if appMgr != nil {
 		svc.App = appMgr
 	}
+	if backupMgr != nil {
+		svc.Backup = backupMgr
+		// ODAC's own state is snapshotted before every update.
+		upd.SetSnapshotter(backupMgr)
+	}
 	sys := system.New(cfg, svc, upd)
 	upd.SetSystem(sys) // closes the System↔Updater cycle (rollback re-Init)
 
 	registerActions(apiSrv, sys, upd, dnsSvc, mailSvc, appMgr, domainSvc, mtlsSvc, sslSvc, hubSvc)
+	if backupSvc != nil {
+		registerBackupActions(apiSrv, backupSvc, hubSvc)
+	}
 
 	if err := sys.Init(); err != nil {
 		log.Error("System initialization failed:", err.Error())

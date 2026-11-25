@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -597,18 +598,22 @@ func TestCloneRepoCommandAssembly(t *testing.T) {
 	f.images[gitImage] = image.InspectResponse{}
 	c := newTestClient(t, f)
 
-	if err := c.CloneRepo("https://github.com/u/r.git", "main", "/apps/r", "sekret", nil); err != nil {
+	if _, err := c.CloneRepo("https://github.com/u/r.git", "main", "/apps/r", "sekret", nil); err != nil {
 		t.Fatal(err)
 	}
 	call := f.created[0]
-	if got := call.Config.Cmd[0]; got != `git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REMOTE_URL" .` {
+	if got := call.Config.Cmd[0]; got != withHead(`git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REMOTE_URL" .`) {
 		t.Errorf("cmd = %q", got)
 	}
 	wantEnv := []string{
 		"GIT_REMOTE_URL=https://github.com/u/r.git",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
-		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor",
+		"GIT_CONFIG_VALUE_1=false",
+		"GIT_CONFIG_KEY_2=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_2=" + credentialHelper,
 		"GIT_TOKEN=sekret",
 		"GIT_BRANCH=main",
 		"GIT_TERMINAL_PROMPT=0",
@@ -633,14 +638,23 @@ func TestCloneRepoNoBranchNoToken(t *testing.T) {
 	f := newFakeAPI()
 	f.images[gitImage] = image.InspectResponse{}
 	c := newTestClient(t, f)
-	if err := c.CloneRepo("https://github.com/u/r.git", "", "/apps/r", "", nil); err != nil {
+	if _, err := c.CloneRepo("https://github.com/u/r.git", "", "/apps/r", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	call := f.created[0]
-	if got := call.Config.Cmd[0]; got != `git clone --depth 1 "$GIT_REMOTE_URL" .` {
+	if got := call.Config.Cmd[0]; got != withHead(`git clone --depth 1 "$GIT_REMOTE_URL" .`) {
 		t.Errorf("cmd = %q", got)
 	}
-	if !reflect.DeepEqual(call.Config.Env, []string{"GIT_REMOTE_URL=https://github.com/u/r.git", "GIT_TERMINAL_PROMPT=0"}) {
+	wantEnv := []string{
+		"GIT_REMOTE_URL=https://github.com/u/r.git",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor",
+		"GIT_CONFIG_VALUE_1=false",
+		"GIT_TERMINAL_PROMPT=0",
+	}
+	if !reflect.DeepEqual(call.Config.Env, wantEnv) {
 		t.Errorf("env = %v", call.Config.Env)
 	}
 }
@@ -651,7 +665,7 @@ func TestCloneRepoFailureCode(t *testing.T) {
 	c := newTestClient(t, f)
 	// First created container will be ctr1.
 	f.waitCodes["ctr1"] = 128
-	err := c.CloneRepo("https://x/y.git", "", "/apps/y", "", nil)
+	_, err := c.CloneRepo("https://x/y.git", "", "/apps/y", "", nil)
 	if err == nil || err.Error() != "Git clone failed with exit code 128." {
 		t.Errorf("err = %v", err)
 	}
@@ -662,20 +676,24 @@ func TestFetchRepoCommandAssembly(t *testing.T) {
 	f.images[gitImage] = image.InspectResponse{}
 	c := newTestClient(t, f)
 
-	if err := c.FetchRepo("https://github.com/u/r.git", "dev", "/apps/r", "tok", "abc123", nil); err != nil {
+	if _, err := c.FetchRepo("https://github.com/u/r.git", "dev", "/apps/r", "tok", "abc123", nil); err != nil {
 		t.Fatal(err)
 	}
 	call := f.created[0]
-	want := `git remote set-url origin "$GIT_REMOTE_URL" && git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"`
+	want := withHead(resetConfigScript + `git fetch --depth 1 origin "$GIT_COMMIT_SHA" && git reset --hard "$GIT_COMMIT_SHA"`)
 	if got := call.Config.Cmd[0]; got != want {
 		t.Errorf("cmd = %q", got)
 	}
 	wantEnv := []string{
 		"GIT_BRANCH=dev",
 		"GIT_COMMIT_SHA=abc123",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
-		"GIT_CONFIG_VALUE_0=" + credentialHelper,
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor",
+		"GIT_CONFIG_VALUE_1=false",
+		"GIT_CONFIG_KEY_2=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_2=" + credentialHelper,
 		"GIT_TOKEN=tok",
 		"GIT_REMOTE_URL=https://github.com/u/r.git",
 		"GIT_TERMINAL_PROMPT=0",
@@ -686,22 +704,90 @@ func TestFetchRepoCommandAssembly(t *testing.T) {
 	assertSandboxed(t, f, call.HostConfig)
 }
 
+// TestGitSandboxReportsHead pins how the built commit is learned: rev-parse
+// runs in the same sandbox and is the only writer of stdout, everything else
+// the step prints going to stderr.
+func TestGitSandboxReportsHead(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	f := newFakeAPI()
+	f.images[gitImage] = image.InspectResponse{}
+	f.logOutputs["ctr1"] = sha + "\n"
+	f.logOutputs["ctr2"] = sha + "\n"
+	c := newTestClient(t, f)
+
+	head, err := c.CloneRepo("https://github.com/u/r.git", "main", "/apps/r", "", nil)
+	if err != nil || head != sha {
+		t.Fatalf("clone head = %q, err = %v", head, err)
+	}
+	head, err = c.FetchRepo("https://github.com/u/r.git", "main", "/apps/r", "", "", nil)
+	if err != nil || head != sha {
+		t.Fatalf("fetch head = %q, err = %v", head, err)
+	}
+	cmd := f.created[0].Config.Cmd[0]
+	if !strings.HasPrefix(cmd, "{ git clone ") || !strings.HasSuffix(cmd, "; } 1>&2 && { git rev-parse --verify -q HEAD || true; }") {
+		t.Errorf("cmd = %q", cmd)
+	}
+}
+
+func TestGitSandboxHeadNeverFailsTheStep(t *testing.T) {
+	f := newFakeAPI()
+	f.images[gitImage] = image.InspectResponse{}
+	f.logOutputs["ctr1"] = "HEAD\n" // what a bare rev-parse echoes when it cannot resolve
+	c := newTestClient(t, f)
+
+	head, err := c.CloneRepo("https://github.com/u/r.git", "", "/apps/r", "", nil)
+	if err != nil || head != "" {
+		t.Errorf("head = %q, err = %v", head, err)
+	}
+}
+
+func TestParseHead(t *testing.T) {
+	sha := strings.Repeat("0f", 20)
+	cases := map[string]string{
+		sha + "\n":                      sha,
+		"  " + sha + "  ":               sha,
+		strings.ToUpper(sha):            "",
+		sha[:12]:                        "",
+		sha + "\n" + sha:                "",
+		strings.Repeat("0f", 32) + "\n": "", // SHA-256 object name
+		"":                              "",
+	}
+	for in, want := range cases {
+		if got := parseHead([]byte(in)); got != want {
+			t.Errorf("parseHead(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBoundedBufferKeepsPrefix(t *testing.T) {
+	b := &boundedBuffer{max: 4}
+	if n, _ := b.Write([]byte("abc")); n != 3 {
+		t.Errorf("short write reported %d", n)
+	}
+	if n, _ := b.Write([]byte("defgh")); n != 5 {
+		t.Errorf("overflowing write must still report its length, got %d", n)
+	}
+	if got := string(b.Bytes()); got != "abcd" {
+		t.Errorf("kept %q", got)
+	}
+}
+
 // TestGitTokenNeverReachesTheRemoteURL pins the token to the credential
 // helper: the remote URL is what git writes to .git/config, which the compile
 // step and a custom Dockerfile's COPY can read. A fetch without a token still
-// resets the remote, which scrubs a URL an older clone left a token in.
+// rebuilds the config, which scrubs a URL an older clone left a token in.
 func TestGitTokenNeverReachesTheRemoteURL(t *testing.T) {
 	f := newFakeAPI()
 	f.images[gitImage] = image.InspectResponse{}
 	c := newTestClient(t, f)
 
-	if err := c.CloneRepo("https://git.example.com:8443/u/r.git", "", "/apps/r", "sekret", nil); err != nil {
+	if _, err := c.CloneRepo("https://git.example.com:8443/u/r.git", "", "/apps/r", "sekret", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.FetchRepo("https://git.example.com:8443/u/r.git", "main", "/apps/r", "sekret", "", nil); err != nil {
+	if _, err := c.FetchRepo("https://git.example.com:8443/u/r.git", "main", "/apps/r", "sekret", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.FetchRepo("https://github.com/u/r.git", "main", "/apps/r", "", "", nil); err != nil {
+	if _, err := c.FetchRepo("https://github.com/u/r.git", "main", "/apps/r", "", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	for i, call := range f.created {
@@ -714,15 +800,17 @@ func TestGitTokenNeverReachesTheRemoteURL(t *testing.T) {
 			}
 		}
 	}
-	scoped := "GIT_CONFIG_KEY_0=credential.https://git.example.com:8443.helper"
+	scoped := "GIT_CONFIG_KEY_2=credential.https://git.example.com:8443.helper"
 	if !slices.Contains(f.created[0].Config.Env, scoped) || !slices.Contains(f.created[1].Config.Env, scoped) {
 		t.Errorf("helper not scoped to the remote's origin: %v", f.created[0].Config.Env)
 	}
 	public := f.created[2]
-	if !strings.HasPrefix(public.Config.Cmd[0], `git remote set-url origin "$GIT_REMOTE_URL" && `) {
-		t.Errorf("fetch without a token does not reset the remote: %q", public.Config.Cmd[0])
+	if !strings.HasPrefix(public.Config.Cmd[0], "{ "+resetConfigScript) {
+		t.Errorf("fetch without a token does not rebuild the config: %q", public.Config.Cmd[0])
 	}
-	if slices.Contains(public.Config.Env, "GIT_CONFIG_COUNT=1") {
+	if !slices.Contains(public.Config.Env, "GIT_CONFIG_COUNT=2") || slices.ContainsFunc(public.Config.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "GIT_TOKEN=")
+	}) {
 		t.Errorf("fetch without a token configures a helper: %v", public.Config.Env)
 	}
 }
@@ -768,10 +856,12 @@ func TestParseProcNetTCP(t *testing.T) {
    1: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000
    2: 00000000:01BB 00000000:0000 01 00000000:00000000 00:00000000 00000000  1000
    3: 00000000:F230 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000
+   4: 0B00007F:8075 00000000:0000 0A 00000000:00000000 00:00000000 00000000  0
 `
 	got := parseProcNetTCP(proc)
 	// 0BB8=3000 listed; 1F90=8080 loopback skipped; 01BB=443 state 01 skipped;
-	// F230=62000 >= 60000 skipped.
+	// F230=62000 >= 60000 skipped; 8075 on 127.0.0.11 (Docker's embedded
+	// DNS) skipped.
 	if !reflect.DeepEqual(got, []int{3000}) {
 		t.Errorf("ports = %v", got)
 	}
@@ -1334,5 +1424,65 @@ func TestGetBackendReadsSocketDirFromTheMount(t *testing.T) {
 	used, err := c.ProxySocketDirs()
 	if err != nil || len(used) != 2 || !used["web-green-ab12"] || !used["other"] {
 		t.Fatalf("ProxySocketDirs = %v, %v", used, err)
+	}
+}
+
+func TestStreamLogsStartsWhereTheLogLeftOff(t *testing.T) {
+	f := newFakeAPI()
+	f.logOutputs["web"] = "line\n"
+	c := New(f, Options{})
+	var out, errOut bytes.Buffer
+	stop, _ := c.StreamLogs("web", time.Time{}, &out, &errOut)
+	stop()
+	stop, _ = c.StreamLogs("web", time.Unix(1700000000, 5), &out, &errOut)
+	stop()
+	// stop() waits for the copy, so both streams have landed and neither
+	// writes into the buffers after it.
+	if got := out.String(); got != "line\nline\n" {
+		t.Errorf("out = %q", got)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.logOpts) != 2 || f.logOpts[0].Since != "" || f.logOpts[1].Since != "1700000000.000000005" {
+		t.Fatalf("logs asked with %+v", f.logOpts)
+	}
+}
+
+// TestCheckoutHead pins the HEAD probe to the git sandbox, with no step and
+// no pull.
+func TestCheckoutHead(t *testing.T) {
+	sha := strings.Repeat("cd", 20)
+	f := newFakeAPI()
+	c := newTestClient(t, f)
+	if _, err := c.CheckoutHead("/apps/r"); err == nil {
+		t.Fatal("probed without the sandbox image")
+	}
+	if len(f.created) != 0 || f.pulled != nil {
+		t.Fatalf("created %d, pulled %v", len(f.created), f.pulled)
+	}
+
+	f.images[gitImage] = image.InspectResponse{}
+	f.logOutputs["ctr1"] = sha + "\n"
+	head, err := c.CheckoutHead("/apps/r")
+	if err != nil || head != sha {
+		t.Fatalf("head = %q, err = %v", head, err)
+	}
+	call := f.created[0]
+	if want := "{ true; } 1>&2 && { git rev-parse --verify -q HEAD || true; }"; call.Config.Cmd[0] != want {
+		t.Errorf("cmd = %q", call.Config.Cmd[0])
+	}
+	assertSandboxed(t, f, call.HostConfig)
+	for _, want := range []string{"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null", "GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false"} {
+		if !slices.Contains(call.Config.Env, want) {
+			t.Errorf("env %v lacks %s: the probe runs without the git hardening", call.Config.Env, want)
+		}
+	}
+	for _, e := range call.Config.Env {
+		if strings.HasPrefix(e, "GIT_TOKEN=") || strings.Contains(e, "credential.") {
+			t.Errorf("the probe offers a credential: %s", e)
+		}
+	}
+	if len(f.removed) != 1 {
+		t.Errorf("sandbox not removed: %v", f.removed)
 	}
 }

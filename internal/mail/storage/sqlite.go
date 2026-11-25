@@ -359,11 +359,11 @@ func insertMessage(ctx context.Context, tx *sql.Tx, msg *MessageRow) error {
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO mail_received
 			(uid, email, mailbox, attachments, headers, headerLines,
-			 html, text, textAsHtml, subject, "to", "from", messageId, flags, rawRef)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 html, text, textAsHtml, subject, "to", "from", messageId, flags, rawRef, originalRef)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nextUID, msg.Email, msg.Mailbox, msg.Attachments, msg.Headers,
 		msg.HeaderLines, msg.HTML, msg.Text, msg.TextAsHTML, msg.Subject,
-		msg.To, msg.From, msg.MessageID, msg.Flags, msg.RawRef)
+		msg.To, msg.From, msg.MessageID, msg.Flags, msg.RawRef, msg.OriginalRef)
 	if err != nil {
 		return fmt.Errorf("message insert failed: %w", err)
 	}
@@ -376,7 +376,7 @@ func (s *Store) MessageFetch(ctx context.Context, email, mailbox string, uidMin,
 	defer s.mu.RUnlock()
 
 	query := `SELECT id, uid, email, mailbox, flags, attachments, headers,
-		headerLines, html, text, textAsHtml, subject, date, "to", "from", messageId, rawRef
+		headerLines, html, text, textAsHtml, subject, date, "to", "from", messageId, rawRef, originalRef
 		FROM mail_received WHERE email = ? AND mailbox = ?`
 	args := []any{email, mailbox}
 
@@ -402,7 +402,7 @@ func (s *Store) MessageFetch(ctx context.Context, email, mailbox string, uidMin,
 		err := rows.Scan(&m.ID, &m.UID, &m.Email, &m.Mailbox, &m.Flags,
 			&m.Attachments, &m.Headers, &m.HeaderLines, &m.HTML, &m.Text,
 			&m.TextAsHTML, &m.Subject, &m.Date, &m.To, &m.From, &m.MessageID,
-			&m.RawRef)
+			&m.RawRef, &m.OriginalRef)
 		if err != nil {
 			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
@@ -660,6 +660,9 @@ type MessageRow struct {
 	ID          int64
 	Mailbox     string
 	MessageID   sql.NullString
+	// OriginalRef addresses the message as received when RawRef is a
+	// rewritten copy of it, and is NULL otherwise.
+	OriginalRef sql.NullString
 	RawRef      sql.NullString
 	Subject     sql.NullString
 	Text        sql.NullString
@@ -698,7 +701,7 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 
 	rows, err := tx.QueryContext(ctx,
 		`SELECT email, flags, attachments, headers, headerLines, html, text,
-			textAsHtml, subject, "to", "from", messageId, rawRef
+			textAsHtml, subject, "to", "from", messageId, rawRef, originalRef
 		FROM mail_received WHERE email = ? AND mailbox = ? AND uid BETWEEN ? AND ?`,
 		email, sourceMailbox, uidMin, uidMax)
 	if err != nil {
@@ -710,7 +713,7 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 		var m MessageRow
 		err := rows.Scan(&m.Email, &m.Flags, &m.Attachments, &m.Headers,
 			&m.HeaderLines, &m.HTML, &m.Text, &m.TextAsHTML, &m.Subject,
-			&m.To, &m.From, &m.MessageID, &m.RawRef)
+			&m.To, &m.From, &m.MessageID, &m.RawRef, &m.OriginalRef)
 		if err != nil {
 			return fmt.Errorf("row scan failed: %w", err)
 		}
@@ -718,11 +721,11 @@ func (s *Store) MessageCopy(ctx context.Context, email string, uidMin, uidMax in
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO mail_received
 				(uid, email, mailbox, attachments, headers, headerLines,
-				 html, text, textAsHtml, subject, "to", "from", messageId, flags, rawRef)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 html, text, textAsHtml, subject, "to", "from", messageId, flags, rawRef, originalRef)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			nextUID, m.Email, targetMailbox, m.Attachments, m.Headers,
 			m.HeaderLines, m.HTML, m.Text, m.TextAsHTML, m.Subject,
-			m.To, m.From, m.MessageID, m.Flags, m.RawRef)
+			m.To, m.From, m.MessageID, m.Flags, m.RawRef, m.OriginalRef)
 		if err != nil {
 			return fmt.Errorf("copy insert failed: %w", err)
 		}
@@ -776,11 +779,13 @@ func (s *Store) RawRefExists(ctx context.Context, ref string) (bool, error) {
 	defer s.mu.RUnlock()
 
 	// A queued message is referenced too: the queue can hold one for days,
-	// far past the sweeper's grace period.
+	// far past the sweeper's grace period. So is the original of a message
+	// delivery rewrote, which no reader opens but which must not be lost.
 	var one int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT 1 FROM mail_received WHERE rawRef = ?
-		 UNION ALL SELECT 1 FROM mail_outbound WHERE rawRef = ? LIMIT 1`, ref, ref).Scan(&one)
+		 UNION ALL SELECT 1 FROM mail_received WHERE originalRef = ?
+		 UNION ALL SELECT 1 FROM mail_outbound WHERE rawRef = ? LIMIT 1`, ref, ref, ref).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

@@ -7,11 +7,14 @@
 //
 //	Init: server.pid/started set → Updater.Init() → when ready:
 //	      Proxy.Start, DNS.Start, Hub.Start; +1s: Mail.Start, Api.Start.
+//	      Once Updater.Init has returned (the handover is complete):
+//	      Backup.Start.
 //	      +1s after Init (regardless of readiness): 1s tick of
 //	      App.Check, SSL.Check, Proxy.Check, DNS.Check, Mail.Check, Hub.Check.
-//	Stop(exceptWeb): tick stops; Mail, Api, Hub stop always; DNS and Proxy
-//	      only when exceptWeb is false (true = update-overlap mode, they keep
-//	      serving via SO_REUSEPORT until the new instance takes over).
+//	Stop(exceptWeb): tick stops; Backup, Mail, Api, Hub stop always; DNS
+//	      and Proxy only when exceptWeb is false (true = update-overlap mode,
+//	      they keep serving via SO_REUSEPORT until the new instance takes
+//	      over).
 //
 // Init after Stop must work: the updater's rollback path re-runs Init on a
 // half-stopped instance, so services must be idempotently restartable.
@@ -62,6 +65,10 @@ type Services struct {
 	Api   StartStopper     // 3.3
 	Hub   StartStopChecker // 3.6
 	Swap  RestoreChecker   // elastic host-swap manager (Linux-only at runtime)
+	// Backup starts only after the updater gate returns, never at ready:
+	// it adopts the helpers the outgoing server released, and until the
+	// handover is complete that server may still be reading them.
+	Backup StartStopper
 }
 
 // Updater gates service startup: Init may block for the update handshake;
@@ -139,6 +146,7 @@ func (s *System) Init() error {
 	if err := s.updater.Init(); err != nil {
 		return err
 	}
+	start(s.svc.Backup)
 
 	s.afterFunc(s.tickDelay, s.startTick)
 	return nil
@@ -168,6 +176,9 @@ func (s *System) Stop(exceptWeb bool) {
 		<-tickDone
 	}
 
+	// First, so the runs in flight are handed over while the incoming
+	// server is still waiting for the ACK.
+	stop(s.svc.Backup)
 	stop(s.svc.Mail)
 	stop(s.svc.Api)
 	stop(s.svc.Hub)

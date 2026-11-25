@@ -5,10 +5,14 @@ package appmgr
 // gating, the switch order, rename retries, artifact sweeps.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"odac/internal/api"
 	"odac/internal/docker"
@@ -700,5 +704,91 @@ func TestStartUnknownApp(t *testing.T) {
 	}
 	if !strings.Contains(jsString(r.Message), "not found") {
 		t.Fatalf("message = %q", jsString(r.Message))
+	}
+}
+
+// fakeSnapshotter records when a deploy starts its snapshot and when it
+// waits for it, with what the deploy had done by then.
+type fakeSnapshotter struct {
+	fx       *fixture
+	mu       sync.Mutex
+	events   []string
+	canceled bool
+}
+
+func (s *fakeSnapshotter) BeforeDeploy(app, event string) (DeploySnapshot, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, "start "+app+" "+event)
+	return s, ""
+}
+
+func (s *fakeSnapshotter) BeforeDelete(app string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, "delete "+app)
+	return "snapshot of " + app
+}
+
+func (s *fakeSnapshotter) Wait(limit time.Duration) (string, string) {
+	s.fx.dock.mu.Lock()
+	builds := len(s.fx.dock.buildCalls)
+	s.fx.dock.mu.Unlock()
+	runs := s.fx.dock.runCallCount()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, fmt.Sprintf("wait builds=%d runs=%d limit=%s", builds, runs, limit))
+	return "", "Deploying without a snapshot: it did not finish in time."
+}
+
+func (s *fakeSnapshotter) Cancel() {
+	s.mu.Lock()
+	s.canceled = true
+	s.mu.Unlock()
+}
+
+// The snapshot starts with the deploy and is waited for after the build,
+// before the green container starts; one that is not ready does not stop
+// the deploy.
+func TestRedeployWaitsForItsSnapshotBeforeTheNewContainer(t *testing.T) {
+	fx := gitAppWithDomain(t)
+	snap := &fakeSnapshotter{fx: fx}
+	fx.m.SetSnapshotter(snap)
+	r := fx.m.Redeploy(RedeployPayload{Container: "web"})
+	if !r.Status {
+		t.Fatalf("redeploy failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+	snap.mu.Lock()
+	defer snap.mu.Unlock()
+	if !slices.Equal(snap.events, []string{"start web deploy", "wait builds=1 runs=0 limit=0s"}) {
+		t.Fatalf("events %v", snap.events)
+	}
+	fx.dock.mu.Lock()
+	defer fx.dock.mu.Unlock()
+	if len(fx.dock.renames) != 1 {
+		t.Fatal("a snapshot that was not ready stopped the deploy")
+	}
+}
+
+// A delete takes its snapshot first; a restore removing an app it made
+// does not.
+func TestDeleteTakesASnapshotFirst(t *testing.T) {
+	fx := newFixture(t, []any{
+		map[string]any{"id": float64(1), "name": "victim", "type": "container", "image": "app"},
+		map[string]any{"id": float64(2), "name": "copy", "type": "container", "image": "app"},
+	})
+	snap := &fakeSnapshotter{fx: fx}
+	fx.m.SetSnapshotter(snap)
+	if r := fx.m.Delete(api.Operator, float64(1), false); !r.Status {
+		t.Fatal(r.Message)
+	}
+	if err := fx.m.DeleteRestoredApp("copy"); err != nil {
+		t.Fatal(err)
+	}
+	snap.mu.Lock()
+	defer snap.mu.Unlock()
+	if !slices.Equal(snap.events, []string{"delete victim"}) {
+		t.Fatalf("events %v", snap.events)
 	}
 }

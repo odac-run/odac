@@ -584,3 +584,22 @@ func TestHandlersSeeTheCaller(t *testing.T) {
 		t.Fatal("an unset caller must be neither root nor an app")
 	}
 }
+
+// Backups are closed whole, including actions a later change adds: no
+// handler there narrows by caller.
+func TestBackupNamespacesAreClosedToApps(t *testing.T) {
+	for _, action := range []string{"backup.key", "backup.restore", "backup.target.prepare", "backup.something.new", "snapshot.list"} {
+		if AppMayCall(action) {
+			t.Errorf("an app grant could reach %s", action)
+		}
+	}
+	for _, action := range []string{"backupx", "app.list"} {
+		if !AppMayCall(action) {
+			t.Errorf("%s is closed but should not be", action)
+		}
+	}
+	listed := strings.Join(AppDeniedActions(), ",")
+	if !strings.Contains(listed, "backup.*") || !strings.Contains(listed, "snapshot.*") {
+		t.Errorf("the denied list does not name the closed namespaces: %s", listed)
+	}
+}

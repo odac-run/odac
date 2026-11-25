@@ -359,3 +359,33 @@ func TestRunCarriesPublicFlagToDocker(t *testing.T) {
 	opts := fx.dock.runCallAt(0).options
 	portEq(t, opts.Ports[0], map[string]any{"host": float64(3307), "container": float64(3306), "public": true})
 }
+
+// A restore starts a held database for its dump to be loaded, or watches
+// it fail to come up; neither is the app as it runs, and the record a
+// rollback hands back must be the one it had.
+func TestDiscoveryLeavesAHeldAppAlone(t *testing.T) {
+	fx := newFixture(t, []any{map[string]any{
+		"id": float64(1), "name": "web", "type": "container", "image": "n8n", "active": true,
+		"ports": []any{map[string]any{"host": "proxy", "container": float64(3000), "auto": true}},
+	}})
+	fx.cfg.Mutate(func() { fx.m.apps = fx.m.loadAppsFromConfig() })
+	fx.dock.setListening("web", []int{5678})
+	fx.setHTTPPorts(5678)
+	h, err := fx.m.HoldApp("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx.m.pollForPort(float64(1), "web", 3000)
+	_ = fx.m.scanAndSaveHTTPStatus(float64(1))
+	p, _ := fx.app(0)["ports"].([]any)
+	portEq(t, p[0], map[string]any{"host": "proxy", "container": float64(3000), "auto": true})
+	if v, ok := fx.app(0)["http"]; ok {
+		t.Fatalf("http = %v while held", v)
+	}
+	if err := h.Release(false); err != nil {
+		t.Fatal(err)
+	}
+	fx.m.pollForPort(float64(1), "web", 3000)
+	p, _ = fx.app(0)["ports"].([]any)
+	portEq(t, p[0], map[string]any{"host": "proxy", "container": float64(5678), "auto": true})
+}

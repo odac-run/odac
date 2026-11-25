@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,7 +164,10 @@ type fakeApp struct {
 	mu    sync.Mutex
 	calls []string
 
-	listResult *api.Result
+	listResult  *api.Result
+	imageResult appmgr.ImageSetResult
+	rollback    appmgr.RollbackResult
+	redeploys   []appmgr.RedeployPayload
 
 	logCB    func(applog.Entry)
 	logUnsub func()
@@ -250,7 +254,22 @@ func (f *fakeApp) SetVolumes(id any, volumes []any, payloadOK bool) *api.Result 
 }
 func (f *fakeApp) Redeploy(payload appmgr.RedeployPayload) *api.Result {
 	f.record("redeploy:" + payload.Container + ":" + payload.Branch)
+	f.mu.Lock()
+	f.redeploys = append(f.redeploys, payload)
+	f.mu.Unlock()
 	return ok("ok")
+}
+func (f *fakeApp) SetImage(payload appmgr.ImageSetPayload) appmgr.ImageSetResult {
+	f.record("image:" + payload.Container + ":" + payload.Image + ":" + str(payload.Pull) + ":" + str(payload.RequireSnapshot))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.imageResult
+}
+func (f *fakeApp) Rollback(payload appmgr.RollbackPayload) appmgr.RollbackResult {
+	f.record("rollback:" + payload.Container + ":" + payload.BuildID + ":" + str(payload.RequireSnapshot))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rollback
 }
 func (f *fakeApp) Restart(id any) *api.Result { f.record("restart:" + str(id)); return ok("ok") }
 func (f *fakeApp) Start(id any) *api.Result   { f.record("start:" + str(id)); return ok("ok") }
@@ -454,6 +473,7 @@ type hubFixture struct {
 	mail   *fakeMail
 	cont   *fakeContainer
 	mtls   *fakeMTLS
+	backup *fakeBackup
 	dials  chan string
 	noApp  bool
 	noMail bool
@@ -509,6 +529,9 @@ func newHubFixture(t *testing.T, opts ...func(*hubFixture)) *hubFixture {
 	}
 	if !fx.noMail {
 		deps.Mail = fx.mail
+	}
+	if fx.backup != nil {
+		deps.Backup = fx.backup
 	}
 
 	fx.h = New(cfg, fx.cloud.srv.URL, deps)
@@ -684,6 +707,177 @@ func TestCommandDispatchResponseAndTrigger(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandAnswersFailure(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	fx.cloud.send(t, jscanon.Obj{
+		{K: "id", V: "req-9"},
+		{K: "type", V: "command"},
+		{K: "data", V: map[string]any{"action": "app.image.switch", "payload": map[string]any{}}},
+		{K: "timestamp", V: time.Now().Unix()},
+	})
+
+	resp := fx.cloud.next(t)
+	if resp["type"] != "command.response" {
+		t.Fatalf("expected command.response, got %v", resp["type"])
+	}
+	data, _ := resp["data"].(map[string]any)
+	if data["id"] != "req-9" || data["success"] != false || data["message"] != "unknown action" {
+		t.Fatalf("bad response data: %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("unknown action carried data: %v", data)
+	}
+
+	// Without a request id there is nobody to answer.
+	fx.cloud.send(t, jscanon.Obj{
+		{K: "type", V: "command"},
+		{K: "data", V: map[string]any{"action": "app.image.switch", "payload": map[string]any{}}},
+		{K: "timestamp", V: time.Now().Unix()},
+	})
+	fx.cloud.expectNone(t, 150*time.Millisecond)
+}
+
+func TestImageSetRepliesFlat(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	ask := func(reqID string, result appmgr.ImageSetResult) map[string]any {
+		t.Helper()
+		fx.app.mu.Lock()
+		fx.app.imageResult = result
+		fx.app.mu.Unlock()
+		fx.cloud.send(t, jscanon.Obj{
+			{K: "id", V: reqID},
+			{K: "type", V: "command"},
+			{K: "data", V: map[string]any{"action": "app.image.set", "payload": map[string]any{
+				"id": "res-1", "container": "db", "image": "postgres:17.6-alpine", "pull": false,
+			}}},
+			{K: "timestamp", V: time.Now().Unix()},
+		})
+		for {
+			resp := fx.cloud.next(t)
+			if resp["type"] == "command.response" {
+				data, _ := resp["data"].(map[string]any)
+				return data
+			}
+		}
+	}
+
+	data := ask("req-1", appmgr.ImageSetResult{Reason: "unhealthy", RolledBack: true, Message: "Rolled back."})
+	if data["id"] != "req-1" || data["success"] != false || data["reason"] != "unhealthy" ||
+		data["rolledBack"] != true || data["message"] != "Rolled back." {
+		t.Fatalf("failure reply = %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("a flat reply must not nest data: %v", data)
+	}
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	data = ask("req-2", appmgr.ImageSetResult{
+		Success: true, Changed: true, Previous: "postgres:17.5-alpine", Image: "postgres:17.6-alpine",
+		ImageID: digest, ImageDigest: digest,
+	})
+	want := map[string]any{
+		"id": "req-2", "success": true, "changed": true, "previous": "postgres:17.5-alpine",
+		"image": "postgres:17.6-alpine", "imageId": digest, "imageDigest": digest,
+	}
+	if len(data) != len(want) {
+		t.Fatalf("success reply = %v", data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v, want %v", k, data[k], v)
+		}
+	}
+
+	data = ask("req-3", appmgr.ImageSetResult{Success: true})
+	if len(data) != 3 || data["success"] != true || data["changed"] != false {
+		t.Fatalf("unchanged reply = %v", data)
+	}
+
+	data = ask("req-4", appmgr.ImageSetResult{Reason: "snapshot", Message: "No snapshot."})
+	if data["reason"] != "snapshot" || data["rolledBack"] != false {
+		t.Fatalf("snapshot refusal = %v", data)
+	}
+	if _, ok := data["snapshot"]; ok {
+		t.Fatalf("a refusal without a snapshot names one: %v", data)
+	}
+	data = ask("req-5", appmgr.ImageSetResult{Reason: "unhealthy", RolledBack: true, Message: "Rolled back.", Snapshot: "s20261124T030000Z-abc"})
+	if data["snapshot"] != "s20261124T030000Z-abc" || data["reason"] != "unhealthy" {
+		t.Fatalf("failure after the snapshot = %v", data)
+	}
+}
+
+func TestRollbackRepliesFlat(t *testing.T) {
+	fx := newHubFixture(t)
+	fx.connect()
+	fx.waitIdle()
+
+	ask := func(reqID string, result appmgr.RollbackResult) map[string]any {
+		t.Helper()
+		fx.app.mu.Lock()
+		fx.app.rollback = result
+		fx.app.mu.Unlock()
+		fx.cloud.send(t, jscanon.Obj{
+			{K: "id", V: reqID},
+			{K: "type", V: "command"},
+			{K: "data", V: map[string]any{"action": "app.rollback", "payload": map[string]any{
+				"id": "res-1", "container": "web", "buildId": "build_1785879774117_52c29d07",
+			}}},
+			{K: "timestamp", V: time.Now().Unix()},
+		})
+		for {
+			resp := fx.cloud.next(t)
+			if resp["type"] == "command.response" {
+				data, _ := resp["data"].(map[string]any)
+				return data
+			}
+		}
+	}
+
+	data := ask("req-1", appmgr.RollbackResult{Reason: "missing", Message: "Build is gone."})
+	if data["id"] != "req-1" || data["success"] != false || data["reason"] != "missing" ||
+		data["rolledBack"] != false || data["message"] != "Build is gone." {
+		t.Fatalf("failure reply = %v", data)
+	}
+	if _, ok := data["data"]; ok {
+		t.Fatalf("a flat reply must not nest data: %v", data)
+	}
+	fx.app.mu.Lock()
+	calls := strings.Join(fx.app.calls, " ")
+	fx.app.mu.Unlock()
+	if !strings.Contains(calls, "rollback:web:build_1785879774117_52c29d07") {
+		t.Fatalf("calls = %s", calls)
+	}
+
+	imageID := "sha256:" + strings.Repeat("a", 64)
+	sha := strings.Repeat("b", 40)
+	data = ask("req-2", appmgr.RollbackResult{
+		Success: true, Changed: true, BuildID: "build_2", Previous: "build_3", CommitSha: sha, ImageID: imageID,
+	})
+	want := map[string]any{
+		"id": "req-2", "success": true, "changed": true, "buildId": "build_2", "previous": "build_3",
+		"commitSha": sha, "imageId": imageID,
+	}
+	if len(data) != len(want) {
+		t.Fatalf("success reply = %v", data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v, want %v", k, data[k], v)
+		}
+	}
+
+	data = ask("req-3", appmgr.RollbackResult{Success: true})
+	if len(data) != 3 || data["success"] != true || data["changed"] != false {
+		t.Fatalf("unchanged reply = %v", data)
+	}
+}
+
 func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	fx := newHubFixture(t)
 	fx.connect()
@@ -713,20 +907,6 @@ func TestCommandWithoutRequestIDSendsNoResponse(t *testing.T) {
 	if !dispatched {
 		t.Fatalf("restart not dispatched: %v", fx.app.called())
 	}
-}
-
-func TestUnknownCommandIgnored(t *testing.T) {
-	fx := newHubFixture(t)
-	fx.connect()
-	fx.waitIdle()
-
-	fx.cloud.send(t, jscanon.Obj{
-		{K: "id", V: "req-9"},
-		{K: "type", V: "command"},
-		{K: "data", V: map[string]any{"action": "bogus.action"}},
-		{K: "timestamp", V: time.Now().Unix()},
-	})
-	fx.cloud.expectNone(t, 200*time.Millisecond)
 }
 
 func TestCommandErrorAnswersFailure(t *testing.T) {
@@ -941,6 +1121,11 @@ func TestPayloadMappings(t *testing.T) {
 	run("app.network.isolate", map[string]any{"name": "web", "isolated": true})
 	run("app.network.isolate", map[string]any{"name": "web", "isolated": false})
 	run("app.network.isolate", map[string]any{"name": "web"}) // absent → off
+	run("app.image.set", map[string]any{"id": "res-1", "container": "db", "image": "postgres:17.6", "pull": true})
+	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "pull": "yes"}) // only true forces
+	run("app.image.set", map[string]any{"container": "db", "image": "postgres:17.6", "requireSnapshot": true})
+	run("app.rollback", map[string]any{"id": "res-1", "container": "web", "buildId": "build_1_a"})
+	run("app.rollback", map[string]any{"container": "web", "buildId": "build_1_a", "requireSnapshot": "yes"}) // only true requires
 
 	want := []string{
 		"delete:web:true",
@@ -956,6 +1141,11 @@ func TestPayloadMappings(t *testing.T) {
 		"isolate:web:on",
 		"isolate:web:off",
 		"isolate:web:off",
+		"image:db:postgres:17.6:true:false",
+		"image:db:postgres:17.6:false:false",
+		"image:db:postgres:17.6:false:true",
+		"rollback:web:build_1_a:false",
+		"rollback:web:build_1_a:false",
 	}
 	got := fx.app.called()
 	if len(got) != len(want) {
@@ -1207,6 +1397,18 @@ func TestCommandTableOrder(t *testing.T) {
 		"mail.password", "system.update", "domain.mtls.set", "domain.mtls.cert.issue",
 		"domain.mtls.cert.scope", "domain.mtls.cert.revoke", "domain.mtls.cert.list",
 		"domain.mtls.cert.import",
+		"backup.target.list", "backup.target.prepare", "backup.target.confirm",
+		"backup.target.cancel", "backup.target.update", "backup.target.delete",
+		"backup.target.adopt", "backup.target.servers", "backup.key",
+		"backup.job.list", "backup.job.create", "backup.job.update", "backup.job.delete",
+		"backup.job.run", "backup.retired.list", "backup.retired.purge",
+		"backup.coverage", "backup.status", "backup.history", "backup.point.list",
+		"backup.restore.preview", "backup.restore", "backup.restore.cancel",
+		"backup.restore.list",
+		"snapshot.status", "snapshot.list", "snapshot.history", "snapshot.settings",
+		"snapshot.settings.update", "snapshot.take", "snapshot.delete",
+		"snapshot.restore.preview", "snapshot.restore",
+		"app.image.set", "app.rollback",
 	}
 	if len(fx.h.order) != len(want) {
 		t.Fatalf("command table has %d entries, want %d\n%v", len(fx.h.order), len(want), fx.h.order)
@@ -1322,5 +1524,186 @@ func TestNormalizeResultShapes(t *testing.T) {
 	r = normalizeResult(map[string]any{"success": false, "message": "nope"})
 	if r.success != false || r.message != "nope" || r.hasData {
 		t.Errorf("map: %+v", r)
+	}
+}
+
+// fakeBackup records which backup methods ran, with the caller where one is
+// asked.
+type fakeBackup struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeBackup) rec(call string, payload any) api.Result {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, _ := payload.(map[string]any); m != nil && m["id"] != nil {
+		call += " " + fmt.Sprint(m["id"])
+	}
+	f.calls = append(f.calls, call)
+	return api.Res(true, nil, []any{})
+}
+
+func (f *fakeBackup) Targets() api.Result             { return f.rec("targets", nil) }
+func (f *fakeBackup) PrepareTarget(p any) api.Result  { return f.rec("prepare", p) }
+func (f *fakeBackup) ConfirmTarget(p any) api.Result  { return f.rec("confirm", p) }
+func (f *fakeBackup) CancelTarget(p any) api.Result   { return f.rec("cancel", p) }
+func (f *fakeBackup) UpdateTarget(p any) api.Result   { return f.rec("update", p) }
+func (f *fakeBackup) DeleteTarget(p any) api.Result   { return f.rec("delete", p) }
+func (f *fakeBackup) AdoptTarget(p any) api.Result    { return f.rec("adopt", p) }
+func (f *fakeBackup) TargetServers(p any) api.Result  { return f.rec("servers", p) }
+func (f *fakeBackup) Jobs() api.Result                { return f.rec("jobs", nil) }
+func (f *fakeBackup) CreateJob(p any) api.Result      { return f.rec("job.create", p) }
+func (f *fakeBackup) UpdateJob(p any) api.Result      { return f.rec("job.update", p) }
+func (f *fakeBackup) DeleteJob(p any) api.Result      { return f.rec("job.delete", p) }
+func (f *fakeBackup) RunJob(p any) api.Result         { return f.rec("job.run", p) }
+func (f *fakeBackup) Retired() api.Result             { return f.rec("retired", nil) }
+func (f *fakeBackup) PurgeRetired(p any) api.Result   { return f.rec("purge", p) }
+func (f *fakeBackup) Coverage() api.Result            { return f.rec("coverage", nil) }
+func (f *fakeBackup) Status() api.Result              { return f.rec("status", nil) }
+func (f *fakeBackup) History(p any) api.Result        { return f.rec("history", p) }
+func (f *fakeBackup) Points(p any) api.Result         { return f.rec("points", p) }
+func (f *fakeBackup) PreviewRestore(p any) api.Result { return f.rec("preview", p) }
+func (f *fakeBackup) StartRestore(p any) api.Result   { return f.rec("restore", p) }
+func (f *fakeBackup) CancelRestore(p any) api.Result  { return f.rec("restore.cancel", p) }
+func (f *fakeBackup) Restores() api.Result            { return f.rec("restores", nil) }
+func (f *fakeBackup) SnapshotStatus() api.Result      { return f.rec("snapshot.status", nil) }
+func (f *fakeBackup) SnapshotPoints(p any) api.Result { return f.rec("snapshot.list", p) }
+func (f *fakeBackup) SnapshotHistory(p any) api.Result {
+	return f.rec("snapshot.history", p)
+}
+func (f *fakeBackup) SnapshotSettings() api.Result { return f.rec("snapshot.settings", nil) }
+func (f *fakeBackup) UpdateSnapshotSettings(p any) api.Result {
+	return f.rec("snapshot.settings.update", p)
+}
+func (f *fakeBackup) TakeSnapshot(p any) api.Result   { return f.rec("snapshot.take", p) }
+func (f *fakeBackup) DeleteSnapshot(p any) api.Result { return f.rec("snapshot.delete", p) }
+func (f *fakeBackup) PreviewSnapshotRestore(p any) api.Result {
+	return f.rec("snapshot.restore.preview", p)
+}
+func (f *fakeBackup) StartSnapshotRestore(p any) api.Result {
+	return f.rec("snapshot.restore", p)
+}
+func (f *fakeBackup) Key(c api.Caller, p any) api.Result {
+	if c != api.Operator {
+		return api.Res(false, "denied")
+	}
+	return f.rec("key (operator)", p)
+}
+
+func TestBackupCommandsReachTheService(t *testing.T) {
+	fb := &fakeBackup{}
+	fx := newHubFixture(t, func(f *hubFixture) { f.backup = fb })
+	for _, name := range []string{"backup.key", "backup.job.run", "backup.restore"} {
+		res, err := fx.h.commands[name].fn(map[string]any{"id": "x1"})
+		if err != nil || !res.(api.Result).Status {
+			t.Fatalf("%s: %v %v", name, res, err)
+		}
+	}
+	if want := []string{"key (operator) x1", "job.run x1", "restore x1"}; !reflect.DeepEqual(fb.calls, want) {
+		t.Fatalf("calls = %v, want %v", fb.calls, want)
+	}
+	// Lists are tasks; a change re-sends the lists it touched.
+	for name, want := range map[string]time.Duration{
+		"backup.target.list": 30 * time.Minute, "backup.job.list": 30 * time.Minute,
+		"backup.retired.list": 30 * time.Minute, "backup.coverage": 30 * time.Minute,
+		"backup.status": 5 * time.Minute, "backup.history": 30 * time.Minute,
+		"backup.restore.list": 30 * time.Minute,
+	} {
+		if got := fx.h.commands[name].interval; got != want {
+			t.Errorf("%s interval = %v, want %v", name, got, want)
+		}
+	}
+	if got, _ := fx.h.Triggers("backup.job.create"); !reflect.DeepEqual(got, []string{"backup.job.list", "backup.coverage", "backup.status"}) {
+		t.Errorf("job.create triggers = %v", got)
+	}
+	for _, name := range []string{"backup.target.prepare", "backup.key", "backup.point.list", "backup.restore.preview"} {
+		if got, ok := fx.h.Triggers(name); !ok || len(got) != 0 {
+			t.Errorf("%s changes nothing but triggers %v", name, got)
+		}
+	}
+}
+
+func TestSnapshotCommandsReachTheService(t *testing.T) {
+	fb := &fakeBackup{}
+	fx := newHubFixture(t, func(f *hubFixture) { f.backup = fb })
+	for _, name := range []string{"snapshot.take", "snapshot.restore", "snapshot.settings.update"} {
+		res, err := fx.h.commands[name].fn(map[string]any{"id": "x1"})
+		if err != nil || !res.(api.Result).Status {
+			t.Fatalf("%s: %v %v", name, res, err)
+		}
+	}
+	if want := []string{"snapshot.take x1", "snapshot.restore x1", "snapshot.settings.update x1"}; !reflect.DeepEqual(fb.calls, want) {
+		t.Fatalf("calls = %v, want %v", fb.calls, want)
+	}
+	for name, want := range map[string]time.Duration{
+		"snapshot.status": 5 * time.Minute, "snapshot.list": 30 * time.Minute,
+		"snapshot.history": 30 * time.Minute, "snapshot.settings": 30 * time.Minute,
+	} {
+		if got := fx.h.commands[name].interval; got != want {
+			t.Errorf("%s interval = %v, want %v", name, got, want)
+		}
+	}
+	if got, _ := fx.h.Triggers("snapshot.restore"); !reflect.DeepEqual(got, []string{"backup.restore.list", "snapshot.status"}) {
+		t.Errorf("snapshot.restore triggers = %v", got)
+	}
+	if got, _ := fx.h.Triggers("snapshot.delete"); !reflect.DeepEqual(got, []string{"snapshot.list", "snapshot.status"}) {
+		t.Errorf("snapshot.delete triggers = %v", got)
+	}
+}
+
+// ODAC's own state is restored on a freshly installed server, from its CLI;
+// the hub has no door to it.
+func TestHubCannotStageAServerRestore(t *testing.T) {
+	fx := newHubFixture(t, func(f *hubFixture) { f.backup = &fakeBackup{} })
+	for name := range fx.h.commands {
+		if strings.HasPrefix(name, "backup.server.") {
+			t.Fatalf("the hub offers %s", name)
+		}
+	}
+}
+
+// Without backups the commands keep their place but no list is sent.
+func TestBackupListsAreNotTasksWithoutBackups(t *testing.T) {
+	fx := newHubFixture(t)
+	for _, name := range fx.h.order {
+		if (strings.HasPrefix(name, "backup.") || strings.HasPrefix(name, "snapshot.")) && fx.h.commands[name].hasInterval {
+			t.Errorf("%s is a task on a server without backups", name)
+		}
+	}
+	if _, err := fx.h.commands["backup.job.list"].fn(nil); err == nil {
+		t.Fatal("backup.job.list answered without backups")
+	}
+}
+
+// TestRedeployForwardsRuntimePresence pins the one distinction the hub must
+// not flatten: an absent runtime member keeps the stored override, a null
+// one clears it.
+func TestRedeployForwardsRuntimePresence(t *testing.T) {
+	fx := newHubFixture(t)
+	fn := fx.h.commands["app.redeploy"].fn
+	for _, p := range []map[string]any{
+		{"container": "web", "commitSha": "abc1234"},
+		{"container": "web", "runtime": nil},
+		{"container": "web", "runtime": map[string]any{"version": "22"}},
+	} {
+		if _, err := fn(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.app.mu.Lock()
+	got := fx.app.redeploys
+	fx.app.mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("redeploys = %d", len(got))
+	}
+	if got[0].HasRuntime || got[0].CommitSha != "abc1234" {
+		t.Errorf("absent runtime = %+v", got[0])
+	}
+	if !got[1].HasRuntime || got[1].Runtime != nil {
+		t.Errorf("null runtime = %+v", got[1])
+	}
+	if v, _ := got[2].Runtime.(map[string]any); !got[2].HasRuntime || v["version"] != "22" {
+		t.Errorf("versioned runtime = %+v", got[2])
 	}
 }

@@ -2,6 +2,7 @@ package appmgr
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -124,11 +125,16 @@ func (m *Manager) StopAll() {
 
 // Delete ports App.delete: force-cleanup regardless of in-flight state.
 // An app caller may not delete an app whose domains carry a client certificate
-// policy, since the cascade removes them (see Domain.Delete).
+// policy, since the cascade removes them (see Domain.Delete). A snapshot of the
+// app is taken first, which is how a deleted app comes back.
 func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
+	return m.deleteApp(caller, id, purge, true)
+}
+
+func (m *Manager) deleteApp(caller api.Caller, id any, purge, snapshot bool) *api.Result {
 	var name string
 	var idNum float64
-	var activeContainerID string
+	var activeContainerID, hold string
 	found := false
 	m.cfg.View(func() {
 		if app := m.getLocked(id); app != nil {
@@ -136,6 +142,9 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 			name, _ = app["name"].(string)
 			idNum, _ = app["id"].(float64)
 			activeContainerID, _ = app["activeContainerId"].(string)
+			if marker, _ := app[imageChangeKey].(map[string]any); marker != nil {
+				hold, _ = marker["hold"].(string)
+			}
 		}
 	})
 	if !found {
@@ -143,6 +152,10 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 	}
 	if !caller.Root && m.deps.Domains != nil && m.deps.Domains.HasClientAuthPolicy(name) {
 		return res(false, __("App %s has a domain with a client certificate policy, so only the server operator can delete it.", name))
+	}
+
+	if snapshot {
+		m.deleteSnapshot(name)
 	}
 
 	m.log.Log("Deleting app %s (force-cleanup any in-flight blue/green containers)", name)
@@ -172,7 +185,14 @@ func (m *Manager) Delete(caller api.Caller, id any, purge bool) *api.Result {
 		m.deps.Docker.Remove(name)
 		// Container.js left the built image behind; repeated create/delete
 		// then leaked one odac-app-<name> image per app until the disk filled.
-		m.deps.Docker.RemoveImage("odac-app-" + name)
+		// Its kept builds go first: each tag would otherwise hold its image.
+		m.removeBuildTags(name)
+		m.deps.Docker.RemoveImage(buildRepo(name))
+		// An interrupted image change would otherwise leave its hold tag,
+		// and the previous image with it, behind for good.
+		if hold != "" && hold == holdTag(idNum) {
+			m.deps.Docker.RemoveImage(hold)
+		}
 	}
 
 	// Sweep Blue-Green companions left behind by an in-flight ZDD deploy —
@@ -319,7 +339,7 @@ func (m *Manager) Restart(id any) *api.Result {
 				if typ == "git" {
 					return m.runGitApp(idNum, greenName)
 				}
-				return m.runContainer(idNum, greenName, nil)
+				return m.runContainer(idNum, greenName, "", nil)
 			},
 		})
 		if err != nil {
@@ -357,20 +377,81 @@ func (m *Manager) Restart(id any) *api.Result {
 	return res(false, __("Failed to restart app %s.", name))
 }
 
-func (m *Manager) tryLockProcessing(id float64) bool {
+func (m *Manager) isProcessing(id float64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.processing[id] {
+	return m.processing[id]
+}
+
+func (m *Manager) tryLockProcessing(id float64) bool {
+	return m.claimProcessing(id, math.MaxUint64)
+}
+
+// claimProcessing is tryLockProcessing for a decision made on what Docker
+// reported once opSeq was listed: an operation on the app that ended
+// since may have started what the report says is missing, so the app is
+// left to a later decision.
+func (m *Manager) claimProcessing(id float64, listed uint64) bool {
+	m.mu.Lock()
+	if m.processing[id] || m.opEnded[id] > listed {
+		m.mu.Unlock()
 		return false
 	}
 	m.processing[id] = true
+	w := m.deploys
+	m.mu.Unlock()
+	if w != nil {
+		// Read outside m.mu: the config lock is never taken under it.
+		name := m.nameOf(id)
+		m.mu.Lock()
+		if m.processing[id] && name != "" {
+			if m.held == nil {
+				m.held = map[float64]string{}
+			}
+			m.held[id] = name
+		} else {
+			name = ""
+		}
+		m.mu.Unlock()
+		if name != "" {
+			w.DeployStarted(name)
+		}
+	}
 	return true
 }
 
 func (m *Manager) unlockProcessing(id float64) {
 	m.mu.Lock()
 	delete(m.processing, id)
+	m.opSeq++
+	if m.opEnded == nil {
+		m.opEnded = map[float64]uint64{}
+	}
+	m.opEnded[id] = m.opSeq
+	name := m.held[id]
+	delete(m.held, id)
+	w := m.deploys
 	m.mu.Unlock()
+	if w != nil && name != "" {
+		w.DeployEnded(name)
+	}
+}
+
+// SetDeployWatcher reports every later operation on an app to w.
+func (m *Manager) SetDeployWatcher(w DeployWatcher) {
+	m.mu.Lock()
+	m.deploys = w
+	m.mu.Unlock()
+}
+
+func (m *Manager) nameOf(id float64) string {
+	var name string
+	m.cfg.View(func() {
+		if app := m.getLocked(id); app != nil {
+			name, _ = app["name"].(string)
+		}
+	})
+	return name
 }
 
 // inFlight reports whether an operation currently holds this app, by id
@@ -383,13 +464,18 @@ func (m *Manager) inFlight(id float64, name string) bool {
 	return m.processing[id] || m.creating[name]
 }
 
-// RedeployPayload carries app.redeploy's named arguments.
+// RedeployPayload carries app.redeploy's named arguments. Runtime is the
+// payload's raw runtime member and HasRuntime whether it was sent at all,
+// because an absent member and a null one mean different things
+// (parseRuntimeOverride).
 type RedeployPayload struct {
-	Container string
-	URL       string
-	Token     string
-	Branch    string
-	CommitSha string
+	Container  string
+	URL        string
+	Token      string
+	Branch     string
+	CommitSha  string
+	Runtime    any
+	HasRuntime bool
 }
 
 // Redeploy ports App.redeploy: fetch + rebuild + (Blue-Green) restart.
@@ -399,10 +485,10 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		return res(false, __("Missing container name"))
 	}
 
-	var name, appBranch, appURL, appImage string
+	var name, appBranch, appURL, appImage, storedOverride string
 	var idNum float64
 	var typ string
-	var hasGitMeta bool
+	var hasGitMeta, storedOverrideOK bool
 	var gitMeta map[string]any
 	found := false
 	m.cfg.View(func() {
@@ -414,6 +500,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			appBranch, _ = app["branch"].(string)
 			appURL, _ = app["url"].(string)
 			appImage, _ = app["image"].(string)
+			storedOverride, storedOverrideOK = storedRuntimeOverride(app)
 			if g, _ := app["git"].(map[string]any); g != nil {
 				hasGitMeta = true
 				gitMeta = copyMap(g)
@@ -443,6 +530,16 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	if !validBranch(payload.Branch) {
 		return res(false, __("Invalid branch name format."))
 	}
+	override, overrideSet, err := parseRuntimeOverride(payload.Runtime, payload.HasRuntime)
+	if err != nil {
+		return res(false, err.Error())
+	}
+	if !overrideSet {
+		if !storedOverrideOK {
+			return res(false, docker.ErrUnsupportedRuntimeVersion.Error())
+		}
+		override = storedOverride
+	}
 	targetBranch := payload.Branch
 	if targetBranch == "" {
 		targetBranch = appBranch
@@ -455,6 +552,24 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		return res(false, __("App %s is already being processed.", name))
 	}
 	defer m.unlockProcessing(idNum)
+
+	// The override is the caller's standing choice, not this build's
+	// outcome, so it is stored before the build and stays when it fails.
+	if overrideSet {
+		m.cfg.Mutate(func() {
+			if app := m.getLocked(idNum); app != nil {
+				applyRuntimeOverrideLocked(app, override)
+				m.saveAppsLocked()
+			}
+		})
+	}
+
+	// The snapshot runs beside the fetch and the build; the deploy waits
+	// for it only before the new container starts.
+	snap := m.startDeploySnapshot(name)
+	if snap != nil {
+		defer snap.Cancel()
+	}
 
 	// Register the logger IMMEDIATELY to prevent races with Hub requests.
 	logger := m.getLoggerInstance(name)
@@ -486,6 +601,9 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			m.cleanupGreenArtifacts(greenName)
 		}
 		m.set(idNum, map[string]any{"status": "errored"})
+		if errors.Is(err, docker.ErrUnsupportedRuntimeVersion) {
+			return res(false, err.Error())
+		}
 		return res(false, __("Redeploy failed: %s", err.Error()))
 	}
 
@@ -504,7 +622,7 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 	imageName := appImage
 	if imageName == "" {
-		imageName = "odac-app-" + name
+		imageName = buildRepo(name)
 	}
 
 	// Step 1: fetch the latest code (app still running -> zero downtime).
@@ -517,7 +635,6 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 
 	buildID := generateRuntimeID("build")
-	var err error
 	logCtrl, err = logger.NewBuildStream(buildID, map[string]any{
 		"image":    imageName,
 		"strategy": "git-app",
@@ -532,9 +649,10 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 	}
 	logCtrl.StartPhase(gitPhase)
 
+	var head string
 	if hasGit {
 		// Fast path: incremental fetch (delta download only).
-		if err := m.deps.Docker.FetchRepo(targetURL, targetBranch, appDir, payload.Token, payload.CommitSha, logCtrl); err != nil {
+		if head, err = m.deps.Docker.FetchRepo(targetURL, targetBranch, appDir, payload.Token, payload.CommitSha, logCtrl); err != nil {
 			return fail(err)
 		}
 	} else {
@@ -546,8 +664,15 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		if err := os.MkdirAll(appDir, 0o755); err != nil {
 			return fail(err)
 		}
-		if err := m.deps.Docker.CloneRepo(targetURL, targetBranch, appDir, payload.Token, logCtrl); err != nil {
+		if head, err = m.deps.Docker.CloneRepo(targetURL, targetBranch, appDir, payload.Token, logCtrl); err != nil {
 			return fail(err)
+		}
+		// A clone checks out the branch head, so a pinned commit is fetched
+		// onto it, or the deploy would build a commit nobody asked for.
+		if payload.CommitSha != "" {
+			if head, err = m.deps.Docker.FetchRepo(targetURL, targetBranch, appDir, payload.Token, payload.CommitSha, logCtrl); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	logCtrl.EndPhase(gitPhase, true)
@@ -558,13 +683,19 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 
 	// Step 2: rebuild the image (app still running on the old one).
 	m.set(idNum, map[string]any{"status": "building"})
-	if err := m.deps.Docker.Build(appDir, imageName, name, logCtrl); err != nil {
+	built, err := m.deps.Docker.Build(appDir, imageName, name, override, logCtrl)
+	recordBuildRuntime(logCtrl, built)
+	if err != nil {
 		return fail(err)
 	}
 
 	if m.appDeleted(idNum) {
 		return res(false, "App was deleted during build phase.")
 	}
+
+	// A migration runs as the new container starts, so the snapshot must
+	// be done or given up by then.
+	m.awaitDeploySnapshot(name, snap, logCtrl)
 
 	if m.zddEligible(name, idNum) {
 		// Zero-Downtime Deployment (Blue-Green).
@@ -610,10 +741,23 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 		logCtrl.EndPhase("proxy_propagation", true)
 	}
 
-	// Persist updated metadata.
+	// The build is live: keep its image for a rollback, and record what it
+	// deployed in its summary, which is where a rollback reads it back.
+	commit := deployedCommit(head, payload.CommitSha)
+	recordBuildCommit(logCtrl, commit)
+	tagged := m.tagBuild(name, imageName, buildID)
+
+	// Persist updated metadata. The runtime and the commit describe the
+	// image now running, so they are written only here, past every failure.
 	updates := map[string]any{}
-	if payload.CommitSha != "" {
-		updates["commitSha"] = payload.CommitSha
+	if rt := built.Map(); rt != nil {
+		updates["runtime"] = rt
+	}
+	if commit != "" {
+		updates["commitSha"] = commit
+	}
+	if tagged {
+		updates[buildIDKey] = buildID
 	}
 	if payload.Branch != "" || payload.URL != "" {
 		if payload.Branch != "" {
@@ -630,8 +774,29 @@ func (m *Manager) Redeploy(payload RedeployPayload) *api.Result {
 			updates["git"] = gitMeta
 		}
 	}
-	if len(updates) > 0 {
-		m.set(idNum, updates)
+	m.cfg.Mutate(func() {
+		app := m.getLocked(idNum)
+		if app == nil {
+			return
+		}
+		if commit == "" {
+			// Unknown is better than the previous deploy's commit.
+			delete(app, "commitSha")
+		}
+		if !tagged {
+			// The running build has no tag a rollback could name.
+			delete(app, buildIDKey)
+		}
+		for k, v := range updates {
+			app[k] = v
+		}
+		m.saveAppsLocked()
+	})
+
+	// Retention only now that the new build is live, and before the prune
+	// so the images it frees go in the same sweep.
+	if tagged {
+		m.retainBuilds(name, buildID, false)
 	}
 
 	// The rebuild retagged odac-app-<name> onto fresh layers, orphaning the
@@ -1582,11 +1747,33 @@ func (m *Manager) List(detailed bool) *api.Result {
 		}
 	})
 
+	// One image list for every git app's kept builds, never one per row.
+	// A failed list leaves localBuilds out, which the Cloud reads as "no
+	// report", not as "none".
+	var builds map[string][]localBuild
+	buildsKnown := false
+	for _, r := range rows {
+		if r.app["type"] == "git" {
+			if m.deps.Docker.Available() {
+				if tags, err := m.deps.Docker.ImageTags(buildRepoPrefix + "*"); err == nil {
+					builds, buildsKnown = groupBuildTags(tags), true
+				} else {
+					m.log.Error("Could not list the kept builds: %s", err.Error())
+				}
+			}
+			break
+		}
+	}
+
 	cleanApps := make([]any, 0, len(rows))
+	imagesInUse := make(map[string]bool, len(rows))
 	for _, r := range rows {
 		cp := r.app
 		statusInfo := m.deps.Docker.GetStatus(r.name)
 		isRunning := statusInfo.Running
+		if statusInfo.ImageID != "" {
+			imagesInUse[statusInfo.ImageID] = true
+		}
 
 		logger := applog.New(m.logsRoot, r.name)
 		if lastBuild := logger.GetLastBuild(); lastBuild != nil {
@@ -1601,7 +1788,7 @@ func (m *Manager) List(detailed bool) *api.Result {
 					phases[i] = 0
 				}
 			}
-			cp["build"] = map[string]any{
+			build := map[string]any{
 				"id":       lastBuild.ID,
 				"status":   lastBuild.Status,
 				"duration": lastBuild.Duration,
@@ -1609,6 +1796,10 @@ func (m *Manager) List(detailed bool) *api.Result {
 				"warnings": lastBuild.Warnings,
 				"phases":   phases,
 			}
+			if rt := docker.RuntimeRow(lastBuild.Metadata["runtime"]); rt != nil {
+				build["runtime"] = rt
+			}
+			cp["build"] = build
 		}
 		health := logger.GetHealth()
 		if health == nil {
@@ -1639,6 +1830,10 @@ func (m *Manager) List(detailed bool) *api.Result {
 				cp["started"] = float64(t.UnixMilli())
 			}
 		}
+		m.applyIdentity(cp, statusInfo)
+		applyBuilds(cp, builds, buildsKnown, r.name, statusInfo.ImageID)
+		delete(cp, imageChangeKey)
+		delete(cp, runtimeOverrideKey)
 
 		if detailed {
 			delete(cp, "pid")
@@ -1696,6 +1891,9 @@ func (m *Manager) List(detailed bool) *api.Result {
 			})
 		}
 	}
+	// The image info cache keeps only what some app still runs, so a server
+	// that rebuilds and pulls for months does not hold every image it saw.
+	m.deps.Docker.RetainImageInfo(imagesInUse)
 
 	return res(true, cleanApps)
 }

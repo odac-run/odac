@@ -71,6 +71,9 @@ func TestPercentSSubstitution(t *testing.T) {
 		{"excess args appended", []any{"v=%s", "1", "extra"}, "[U]  v=1 extra\n"},
 		{"non-string first arg untouched", []any{42, "x"}, "[U]  42 x\n"},
 		{"number substitution", []any{"pid %s", 123}, "[U]  pid 123\n"},
+		{"go verbs", []any{"Pruned %d image(s), %d bytes (%v)", 2, 512, true}, "[U]  Pruned 2 image(s), 512 bytes (true)\n"},
+		{"mixed order", []any{"%s:%d", "host", 80}, "[U]  host:80\n"},
+		{"a value is not scanned again", []any{"%s then %d", "50%d", 7}, "[U]  50%d then 7\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -624,3 +624,23 @@ func TestImageEnvOverride(t *testing.T) {
 		t.Fatalf("image = %q, want %q", fx.u.image, defaultImage)
 	}
 }
+
+type fakeUpdateSnapshot struct{ calls int }
+
+func (f *fakeUpdateSnapshot) BeforeUpdate() string {
+	f.calls++
+	return "Snapshot s1 of ODAC's own state taken before the update."
+}
+
+// The snapshot before an update is taken through the seam, and an updater
+// without one updates all the same.
+func TestUpdateTakesASnapshotFirst(t *testing.T) {
+	fx := newFixture(t)
+	fx.u.snapshot()
+	s := &fakeUpdateSnapshot{}
+	fx.u.SetSnapshotter(s)
+	fx.u.snapshot()
+	if s.calls != 1 {
+		t.Fatalf("%d snapshots", s.calls)
+	}
+}

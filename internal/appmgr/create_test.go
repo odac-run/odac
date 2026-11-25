@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"odac/internal/api"
+	"odac/internal/backup/consistency"
 	"odac/internal/docker"
 	"odac/internal/gpu"
 	"odac/internal/kernel"
@@ -1613,5 +1614,40 @@ func TestTemplateRejectsDisallowedKernelBeforeDeploying(t *testing.T) {
 	}
 	if fx.appCount() != 0 || fx.dock.runCallCount() != 0 {
 		t.Fatalf("nothing may be created: %d apps, %d runs", fx.appCount(), fx.dock.runCallCount())
+	}
+}
+
+// A recipe's backup declaration lands on the app record, where the backup
+// planner reads it; an app that declares nothing grows no member, and a
+// malformed one fails the create before anything exists.
+func TestCreateBackupDeclaration(t *testing.T) {
+	fx := newFixture(t, []any{})
+	fx.setRecipe(map[string]any{
+		"name": "vault", "image": "example/vault",
+		"backup": map[string]any{"hook": map[string]any{"dump": []any{"/bin/export"}, "consistency": "consistent"}},
+	})
+	if r := fx.m.Create(api.Operator, map[string]any{"type": "app", "app": "vault", "name": "vault-a"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	fx.waitIdle(t)
+	spec, err := consistency.Parse(fx.findApp("vault-a"))
+	if err != nil || spec == nil || spec.Hook == nil || spec.Hook.Dump[0] != "/bin/export" || spec.Hook.Consistency != consistency.Consistent {
+		t.Fatalf("persisted declaration %+v, %v", spec, err)
+	}
+
+	plain := newFixture(t, []any{})
+	plain.setRecipe(map[string]any{"name": "redis", "image": "redis:alpine"})
+	if r := plain.m.Create(api.Operator, map[string]any{"type": "app", "app": "redis", "name": "plain"}); !r.Status {
+		t.Fatalf("create failed: %v", r.Message)
+	}
+	plain.waitIdle(t)
+	if _, present := plain.findApp("plain")["backup"]; present {
+		t.Fatal("an app that declares nothing grew a backup member")
+	}
+
+	bad := newFixture(t, []any{})
+	bad.setRecipe(map[string]any{"name": "x", "image": "x", "backup": map[string]any{"engine": "oracle"}})
+	if r := bad.m.Create(api.Operator, map[string]any{"type": "app", "app": "x", "name": "bad"}); r.Status || bad.appCount() != 0 {
+		t.Fatalf("a bad declaration was accepted: %+v", r)
 	}
 }
