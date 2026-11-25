@@ -359,8 +359,8 @@ func (m *Manager) Stop() {
 		r.Release()
 	}
 	cancel()
-	m.workers.Wait()
 	m.others.Wait()
+	m.workers.Wait()
 	m.log.Log("Backups stopped; runs in flight are left to the next server")
 }
 

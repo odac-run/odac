@@ -751,6 +751,13 @@ func (m *Manager) StartRestore(ctx context.Context, req RestoreRequest) (*Restor
 	}
 	rctx, cancel := context.WithCancel(runCtx)
 	m.mu.Lock()
+	if m.cancel == nil || m.released {
+		m.restore = nil
+		m.mu.Unlock()
+		cancel()
+		os.RemoveAll(work)
+		return nil, errors.New("backup: backups are not running")
+	}
 	m.restore = &activeRestore{result: p.result, cancel: cancel}
 	m.workers.Add(1)
 	m.mu.Unlock()

@@ -490,6 +490,10 @@ func (m *Manager) scheduleSnapshots(ctx context.Context, now time.Time, next *ti
 // other snapshot work until it returns.
 func (m *Manager) queueSnapshotWork(ctx context.Context, fn func(context.Context)) {
 	m.mu.Lock()
+	if m.released {
+		m.mu.Unlock()
+		return
+	}
 	m.snapQueued = true
 	m.workers.Add(1)
 	m.mu.Unlock()

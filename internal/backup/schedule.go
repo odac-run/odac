@@ -284,6 +284,9 @@ func (m *Manager) targetBusy(target string) bool {
 // tracked goroutine. The next run time is written first, so a run handed
 // over in an update is not started again by the next server.
 func (m *Manager) startBackup(ctx context.Context, c candidate, now time.Time) {
+	if m.isReleased() {
+		return
+	}
 	rs := runSpec{job: c.job, run: newRunID(now), trigger: triggerSchedule, scheduled: c.due}
 	switch {
 	case c.follow != nil:
@@ -309,6 +312,10 @@ func (m *Manager) startBackup(ctx context.Context, c candidate, now time.Time) {
 		m.log.Error("Failed to save the backup state: %s", err.Error())
 	}
 	m.mu.Lock()
+	if m.released {
+		m.mu.Unlock()
+		return
+	}
 	m.backupSlot = true
 	m.busy[c.job.Target] = KindBackup
 	m.workers.Add(1)
@@ -420,6 +427,10 @@ func (m *Manager) scheduleMaintenance(ctx context.Context, jobs []settings.JobVi
 	})
 	for _, d := range dues {
 		m.mu.Lock()
+		if m.released {
+			m.mu.Unlock()
+			return
+		}
 		if m.busy[d.target] != "" || m.restoreWait[d.target] > 0 || d.target == SnapshotTarget && m.snapSlot {
 			m.mu.Unlock()
 			continue

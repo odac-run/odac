@@ -850,3 +850,19 @@ func TestVerificationIsScheduledInTheMaintenanceSlot(t *testing.T) {
 	}
 	h.m.workers.Wait()
 }
+
+func TestStopWhileSchedulingHasNoWorkerRace(t *testing.T) {
+	h := newHarness(t)
+	h.app("web")
+	h.job("j1", "t1", 60, "web")
+	now := h.clock.Now()
+	for range 20 {
+		h.m.state.update(func(d *stateData) {
+			d.job("j1").Next = ms(now.Add(-time.Minute))
+			d.target("t1").NextMaintain = ms(now.Add(-time.Minute))
+		})
+		h.m.Start()
+		h.m.poke()
+		h.m.Stop()
+	}
+}
