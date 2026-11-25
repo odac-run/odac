@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/maintenance"
@@ -376,7 +378,22 @@ func TestPinnedSnapshotsSurviveKopiaRetention(t *testing.T) {
 
 func TestGarbageCollection(t *testing.T) {
 	f := newFixture(t)
-	r := f.create()
+	// Kopia records content timestamps and deletion watermarks in whole Unix
+	// seconds, bumping a same-second delete to T+1. Shifting the live clock
+	// slightly behind wall time (well within Kopia's 5m clock-skew bound) and
+	// stepping it forward per SafetyNone pass preserves real sub-second order
+	// between manifest writes while ensuring each pass crosses a second
+	// boundary and stays behind filesystem mtimes under coarse Linux ticks.
+	var offset atomic.Int64
+	offset.Store(int64(-10 * time.Second))
+	cfg := f.config(testServer)
+	cfg.now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	r, err := Create(f.ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close(f.ctx) })
+
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "big.bin"), randomBytes(t, 8*mib))
 	res := backupDir(t, r, Source{Job: "nightly", App: "web", Name: "files"}, dir)
@@ -398,6 +415,7 @@ func TestGarbageCollection(t *testing.T) {
 	maintenanceSafety = maintenance.SafetyNone
 	defer func() { maintenanceSafety = maintenance.SafetyFull }()
 	for range 3 {
+		offset.Add(int64(2 * time.Second))
 		if err := r.Maintain(f.ctx, true); err != nil {
 			t.Fatal(err)
 		}
